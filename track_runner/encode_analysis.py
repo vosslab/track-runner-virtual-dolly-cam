@@ -937,10 +937,29 @@ def format_analysis_report(
 	lines.append("  solver context:")
 	lines.append(f"    seed density:     {solver_context['seed_density']} seeds/min")
 	lines.append(f"    desert count:     {solver_context['desert_count']}")
-	lines.append(f"    FWD/BWD conv:     median {solver_context['fwd_bwd_convergence_median']} px"
-		+ f", p90 {solver_context['fwd_bwd_convergence_p90']} px")
-	lines.append(f"    identity score:   {solver_context['identity_score_median']}")
-	lines.append(f"    competitor margin: {solver_context['competitor_margin_median']}")
+	# render metrics based on solver mode
+	if "velocity_consistency_median" in solver_context:
+		# analytical v3 metrics
+		lines.append(
+			f"    velocity consistency: {solver_context['velocity_consistency_median']}",
+		)
+		lines.append(
+			f"    size consistency:     {solver_context['size_consistency_median']}",
+		)
+		mq = solver_context.get("motion_quality_median", "n/a")
+		lines.append(f"    motion quality:      {mq}")
+	else:
+		# legacy v2 metrics
+		lines.append(
+			f"    FWD/BWD conv:     median {solver_context['fwd_bwd_convergence_median']} px"
+			+ f", p90 {solver_context['fwd_bwd_convergence_p90']} px",
+		)
+		lines.append(
+			f"    identity score:   {solver_context['identity_score_median']}",
+		)
+		lines.append(
+			f"    competitor margin: {solver_context['competitor_margin_median']}",
+		)
 	lines.append("")
 	# instability regions (top 5)
 	if regions:

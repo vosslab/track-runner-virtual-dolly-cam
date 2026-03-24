@@ -537,8 +537,13 @@ def rank_target_frames_by_severity(
 			agreement = 0.0
 			margin = 0.0
 		else:
-			agreement = float(best_score.get("agreement_score", 0.0))
-			margin = float(best_score.get("competitor_margin", 0.0))
+			# v3 analytical or v2 legacy metrics
+			if "confidence_tier" in best_score:
+				agreement = float(best_score.get("agreement", 0.0))
+				margin = float(best_score.get("velocity_consistency", 0.0))
+			else:
+				agreement = float(best_score.get("agreement_score", 0.0))
+				margin = float(best_score.get("competitor_margin", 0.0))
 		# round to bin nearby scores into the same tier
 		frame_scores[frame] = (round(agreement, 2), round(margin, 2))
 
@@ -600,7 +605,7 @@ def format_review_summary(diagnostics: dict) -> str:
 	# count intervals by confidence tier
 	from collections import Counter
 	tier_counts = Counter(
-		iv["interval_score"].get("confidence", "low")
+		_get_confidence(iv["interval_score"])
 		for iv in intervals
 	)
 	need_seed = tier_counts.get("low", 0) + tier_counts.get("fair", 0)
@@ -623,9 +628,6 @@ def format_review_summary(diagnostics: dict) -> str:
 		duration_s = (end_frame - start_frame) / max(1.0, fps)
 		score = iv["interval_score"]
 		confidence = _get_confidence(score)
-		agree = float(score.get("agreement_score", 0.0))
-		identity = float(score.get("identity_score", 0.0))
-		margin = float(score.get("competitor_margin", 0.0))
 		reasons = score.get("failure_reasons", [])
 
 		# format verdict label
@@ -636,11 +638,32 @@ def format_review_summary(diagnostics: dict) -> str:
 			reason_str = ", ".join(reasons) if reasons else "low_confidence"
 			verdict = f"[{tag}: {reason_str}]"
 
+		# format metrics line based on scoring mode
+		if "confidence_tier" in score:
+			# analytical v3 metrics
+			agree = float(score.get("agreement", 0.0))
+			vel_cons = float(score.get("velocity_consistency", 0.0))
+			size_cons = float(score.get("size_consistency", 0.0))
+			metrics_str = (
+				f"agree={agree:.2f}  "
+				f"vel_cons={vel_cons:.2f}  "
+				f"size_cons={size_cons:.2f}"
+			)
+		else:
+			# legacy v2 metrics
+			agree = float(score.get("agreement_score", 0.0))
+			identity = float(score.get("identity_score", 0.0))
+			margin = float(score.get("competitor_margin", 0.0))
+			metrics_str = (
+				f"agree={agree:.2f}  "
+				f"margin={margin:.2f}  "
+				f"identity={identity:.2f}"
+			)
+
 		line = (
 			f"  interval {start_frame:5d}-{end_frame:5d} "
 			f"({duration_s:.1f}s)  "
-			f"agree={agree:.2f}  margin={margin:.2f}  identity={identity:.2f}  "
-			f"{verdict}"
+			f"{metrics_str}  {verdict}"
 		)
 		lines.append(line)
 

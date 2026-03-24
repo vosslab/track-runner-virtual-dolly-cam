@@ -901,11 +901,30 @@ def _format_interval_result(result: dict, fps: float) -> str:
 	end_frame = result["end_frame"]
 	duration_s = (end_frame - start_frame) / fps
 	score = result["interval_score"]
-	agree = score["agreement_score"]
-	margin = score["competitor_margin"]
-	identity = score["identity_score"]
-	confidence = score["confidence"]
-	reasons = score["failure_reasons"]
+	reasons = score.get("failure_reasons", [])
+	# detect v3 analytical vs v2 legacy format
+	if "confidence_tier" in score:
+		# v3 analytical format
+		confidence = score["confidence_tier"]
+		agree = score.get("agreement", 0.0)
+		vel_cons = score.get("velocity_consistency", 0.0)
+		size_cons = score.get("size_consistency", 0.0)
+		metrics_str = (
+			f"agree={agree:.2f}  "
+			f"vel_cons={vel_cons:.2f}  "
+			f"size_cons={size_cons:.2f}"
+		)
+	else:
+		# v2 legacy format
+		confidence = score.get("confidence", "low")
+		agree = score.get("agreement_score", 0.0)
+		margin = score.get("competitor_margin", 0.0)
+		identity = score.get("identity_score", 0.0)
+		metrics_str = (
+			f"agree={agree:.2f}  "
+			f"margin={margin:.2f}  "
+			f"identity={identity:.2f}"
+		)
 	# format label by confidence tier
 	_confidence_labels = {
 		"high": "TRUST", "good": "GOOD", "fair": "FAIR", "low": "WEAK",
@@ -919,10 +938,7 @@ def _format_interval_result(result: dict, fps: float) -> str:
 	line = (
 		f"  interval {start_frame:5d}-{end_frame:5d} "
 		f"({duration_s:.1f}s)  "
-		f"agree={agree:.2f}  "
-		f"margin={margin:.2f}  "
-		f"identity={identity:.2f}  "
-		f"{label}"
+		f"{metrics_str}  {label}"
 	)
 	return line
 

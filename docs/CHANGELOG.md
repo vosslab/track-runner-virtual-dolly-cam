@@ -24,10 +24,28 @@
 - `precompute_camera_motion()` now selects estimator based on config["motion"]["estimator"]["type"].
 - `_run_solve()` checks `config.get("processing", {}).get("solver_backend", "scene_interp")` to select solver backend.
 - Scene_interp backend forces single-threaded solving (num_workers=1) due to analytical nature.
+- `state_io.py` `write_solver_diagnostics()` now writes nested `interval_score` dict with v3 fields for analytical mode (agreement, velocity_consistency, size_consistency, confidence_tier, severity, failure_reasons, warning_flags). Legacy v2 format preserved for legacy solver.
+- `review.py` `format_review_summary()` now renders v3 metrics (vel_cons, size_cons) for analytical intervals instead of legacy identity/margin fields.
+- `encode_analysis.py` report rendering now detects analytical vs legacy mode and prints velocity_consistency_median, size_consistency_median, motion_quality_median instead of legacy convergence/identity/margin.
+- `scoring.py` `compute_seed_confidences()` now reads v3 `interval_score` dict with agreement + velocity_consistency instead of legacy flat fields.
+- `scoring.py` `score_interval_analytical()` now implements all planned modifiers: long-interval demotion (>10s), low-motion-quality demotion (<0.5), occlusion cap at fair (>0.3), plus `long_occlusion`, `low_motion_quality` failure reasons and `approximate_span`, `no_directional_support`, `scale_unstable` warning flags.
+- Refreshed [docs/CODE_ARCHITECTURE.md](docs/CODE_ARCHITECTURE.md) to describe analytical solver as default backend, camera motion pipeline, scene_interp vs legacy_interval, and diagnostics v2/v3 schema.
 
 ### Fixes and Maintenance
 
 - Replaced starter-template changelog with project-specific history.
+- Fixed `_format_interval_result()` in `interval_solver.py` crashing with `KeyError: 'agreement_score'` on analytical v3 interval scores. Now detects v2/v3 format and renders correct metric names.
+- Fixed `_run_solve()` unconditionally creating YOLO detector even for `scene_interp` backend. Analytical path now passes `None` detector, removing the YOLO model download dependency.
+- Fixed `_build_predictions_from_diagnostics()` in `cli.py` reading only legacy fields (`confidence`, `agreement_score`, `competitor_margin`). Now extracts `confidence_tier`/`agreement`/`velocity_consistency` for v3 scores.
+- Fixed `rank_target_frames_by_severity()` in `review.py` reading `competitor_margin` for analytical scores. Now reads `velocity_consistency` when v3 format detected.
+- Fixed `default_cache_dir()` call in `cli.py` (function did not exist). Replaced with `tr_paths.ensure_data_dir()`.
+- Replaced stubbed scoring metrics in `scoring.py`: velocity_consistency now uses real slope-prediction error against support seeds; motion_quality reads from MotionTrack quality array; occlusion_fraction computed from approximate seeds in interval.
+- Fixed review.py `_get_confidence()` self-recursion caused by replace_all replacing the fallback line inside the function itself.
+- Removed erroneous shebangs from library modules (camera_motion.py, scene_coords.py, velocity_model.py, setup_mode.py) and test files that are not executable scripts.
+- Fixed unused pytest imports in test_camera_motion.py and test_scene_coords.py (pyflakes).
+- Fixed bandit B324 (weak MD5 hash) in camera_motion.py by adding `usedforsecurity=False`.
+- Fixed bandit B108 (hardcoded /tmp) in test_camera_motion.py by using `tmp_path` fixture.
+- Fixed `frame` vs `frame_index` key mismatch in velocity_model.py causing KeyError when called from interval_solver.
 
 ### Developer Tests and Notes
 

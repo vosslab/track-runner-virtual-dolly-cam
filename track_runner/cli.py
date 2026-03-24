@@ -279,11 +279,20 @@ def _build_predictions_from_diagnostics(diagnostics: dict) -> dict:
 		# build interval quality metadata once per interval
 		score = iv.get("interval_score", {})
 		severity = review.classify_interval_severity(iv, fps)
+		# extract metrics from v3 analytical or v2 legacy score
+		if "confidence_tier" in score:
+			conf_label = score.get("confidence_tier", "unknown")
+			agree_val = float(score.get("agreement", 0.0))
+			secondary_val = float(score.get("velocity_consistency", 0.0))
+		else:
+			conf_label = score.get("confidence", "unknown")
+			agree_val = float(score.get("agreement_score", 0.0))
+			secondary_val = float(score.get("competitor_margin", 0.0))
 		interval_info = {
 			"severity": severity,
-			"confidence": score.get("confidence", "unknown"),
-			"agreement": float(score.get("agreement_score", 0.0)),
-			"margin": float(score.get("competitor_margin", 0.0)),
+			"confidence": conf_label,
+			"agreement": agree_val,
+			"margin": secondary_val,
 			"reasons": score.get("failure_reasons", []),
 		}
 
@@ -594,10 +603,15 @@ def _run_solve(
 	with key_input.KeyInputReader() as kreader:
 		solve_kwargs["run_control"] = rc
 		solve_kwargs["key_reader"] = kreader
+		# skip YOLO detector when using analytical backend
+		if solver_backend == "scene_interp":
+			detector = None
+		else:
+			detector = tr_detection.create_detector(cfg)
 		with video_io.VideoReader(args.input_file) as reader:
 			diagnostics = interval_solver.solve_all_intervals(
 				reader, seeds,
-				tr_detection.create_detector(cfg),
+				detector,
 				cfg,
 				scene_transform=scene_transform,
 				motion_track=motion_track_data,

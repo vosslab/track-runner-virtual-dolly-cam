@@ -451,11 +451,29 @@ def score_interval_analytical(
 	else:
 		confidence_tier = "low"
 
-	# tier modifiers for short/long intervals
+	# tier modifiers
+	tier_order = ["low", "fair", "good", "high"]
+
+	# short intervals (<= 5 frames): promote one tier (never to high)
 	if interval_len <= 5 and confidence_tier != "high":
-		tier_order = ["low", "fair", "good", "high"]
 		idx = tier_order.index(confidence_tier)
 		confidence_tier = tier_order[min(idx + 1, len(tier_order) - 1)]
+
+	# long intervals (> 10s): demote one tier
+	fps_val = 30.0
+	if interval_len > fps_val * 10.0:
+		idx = tier_order.index(confidence_tier)
+		confidence_tier = tier_order[max(idx - 1, 0)]
+
+	# low motion quality: demote one tier
+	if motion_quality < 0.5:
+		idx = tier_order.index(confidence_tier)
+		confidence_tier = tier_order[max(idx - 1, 0)]
+
+	# high occlusion fraction: cap at fair
+	if occlusion_fraction > 0.3:
+		if tier_order.index(confidence_tier) > tier_order.index("fair"):
+			confidence_tier = "fair"
 
 	# failure reasons
 	failure_reasons = []
@@ -463,6 +481,10 @@ def score_interval_analytical(
 		failure_reasons.append("low_agreement")
 	if velocity_consistency < 0.5:
 		failure_reasons.append("weak_motion_model")
+	if occlusion_fraction > 0.3:
+		failure_reasons.append("long_occlusion")
+	if motion_quality < 0.5:
+		failure_reasons.append("low_motion_quality")
 	if len(support_seeds_left) + len(support_seeds_right) < 2:
 		failure_reasons.append("sparse_support")
 
@@ -474,8 +496,18 @@ def score_interval_analytical(
 	else:
 		severity = "low"
 
-	# warning flags (placeholder)
+	# short-interval demotion: intervals < 10 frames demote high -> medium
+	if interval_len < 10 and severity == "high":
+		severity = "medium"
+
+	# warning flags
 	warning_flags = []
+	if occlusion_fraction > 0.0:
+		warning_flags.append("approximate_span")
+	if len(support_seeds_left) < 2 or len(support_seeds_right) < 2:
+		warning_flags.append("no_directional_support")
+	if size_consistency < 0.5:
+		warning_flags.append("scale_unstable")
 
 	result = {
 		"agreement": agreement,
@@ -528,19 +560,30 @@ def compute_seed_confidences(
 				"adjacent_intervals": 0,
 			}
 			continue
-		# combine metrics from adjacent intervals
+		# combine metrics from adjacent intervals (v2 or v3 format)
+		# detect format from first adjacent interval
+		iscore = adjacent[0].get("interval_score", adjacent[0])
+		is_v3 = "confidence_tier" in iscore
 		agreements = []
-		margins = []
-		identities = []
+		secondary_scores = []
 		for iv in adjacent:
-			agreements.append(float(iv.get("agreement_score", 0.0)))
-			margins.append(float(iv.get("competitor_margin", 0.0)))
-			identities.append(float(iv.get("identity_score", 0.0)))
+			iv_score = iv.get("interval_score", iv)
+			if is_v3:
+				# analytical v3: use agreement + velocity_consistency
+				agreements.append(float(iv_score.get("agreement", 0.0)))
+				secondary_scores.append(
+					float(iv_score.get("velocity_consistency", 0.5)),
+				)
+			else:
+				# legacy v2: use agreement_score + competitor_margin
+				agreements.append(float(iv_score.get("agreement_score", 0.0)))
+				secondary_scores.append(
+					float(iv_score.get("competitor_margin", 0.0)),
+				)
 		avg_agreement = float(numpy.mean(agreements))
-		min_margin = float(min(margins))
-		avg_identity = float(numpy.mean(identities))
+		avg_secondary = float(numpy.mean(secondary_scores))
 		# weighted composite score
-		score = 0.5 * avg_agreement + 0.3 * min_margin + 0.2 * avg_identity
+		score = 0.6 * avg_agreement + 0.4 * avg_secondary
 		# classify label from composite score
 		if score > 0.7:
 			label = "high"
