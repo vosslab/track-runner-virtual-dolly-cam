@@ -144,3 +144,17 @@ def default_output_path(input_file: str) -> str:
 	stem, ext = os.path.splitext(input_file)
 	output_path = f"{stem}_tracked{ext}"
 	return output_path
+
+#============================================
+
+def default_motion_cache_path(input_file: str) -> str:
+	"""Return the default camera motion cache path for a given input file.
+
+	Args:
+		input_file: Input media file path.
+
+	Returns:
+		str: Camera motion cache NPZ file path inside tr_config/.
+	"""
+	motion_path = _data_file_path(input_file, ".camera_motion.npz")
+	return motion_path

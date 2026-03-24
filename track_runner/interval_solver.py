@@ -771,49 +771,9 @@ def solve_interval_analytical(
 		interval_curves, scene_transform,
 	)
 
-	if debug:
-		print("    converting to pixel coordinates...")
-
-	# convert back to pixel coordinates
-	forward_track = []
-	for i, state in enumerate(forward_track_scene):
-		frame_idx = start_frame + i
-		pixel_state = dict(state)
-		# scene_to_pixel expects (sx, sy, sw, sh) and returns (cx, cy, w, h)
-		cx, cy, w, h = scene_transform.scene_box_to_pixel(
-			frame_idx,
-			float(state["sx"]),
-			float(state["sy"]),
-			float(state["sw"]),
-			float(state["sh"]),
-		)
-		pixel_state["cx"] = cx
-		pixel_state["cy"] = cy
-		pixel_state["w"] = w
-		pixel_state["h"] = h
-		# remove scene coordinates from state dict
-		for key in ("sx", "sy", "sw", "sh"):
-			pixel_state.pop(key, None)
-		forward_track.append(pixel_state)
-
-	backward_track = []
-	for i, state in enumerate(backward_track_scene):
-		frame_idx = start_frame + i
-		pixel_state = dict(state)
-		cx, cy, w, h = scene_transform.scene_box_to_pixel(
-			frame_idx,
-			float(state["sx"]),
-			float(state["sy"]),
-			float(state["sw"]),
-			float(state["sh"]),
-		)
-		pixel_state["cx"] = cx
-		pixel_state["cy"] = cy
-		pixel_state["w"] = w
-		pixel_state["h"] = h
-		for key in ("sx", "sy", "sw", "sh"):
-			pixel_state.pop(key, None)
-		backward_track.append(pixel_state)
+	# velocity model returns pixel coordinates directly (already converted)
+	forward_track = list(forward_track_scene)
+	backward_track = list(backward_track_scene)
 
 	if debug:
 		print(f"    fusing tracks ({len(forward_track)}+{len(backward_track)} "

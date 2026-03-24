@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Scene coordinate transformations for tracked camera motion.
 
 Converts between pixel coordinates (frame-specific) and scene coordinates
@@ -10,9 +9,6 @@ Converts between pixel coordinates (frame-specific) and scene coordinates
 
 # PIP3 modules
 import numpy
-
-# local repo modules
-import camera_motion
 
 
 #============================================

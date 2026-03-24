@@ -26,6 +26,25 @@ _REASON_EXPLANATIONS = {
 
 
 #============================================
+def _get_confidence(score: dict) -> str:
+	"""Extract confidence label from v2 or v3 interval score.
+
+	Args:
+		score: Interval score dict (legacy or analytical format).
+
+	Returns:
+		Confidence label string (high, good, fair, or low).
+	"""
+	# v3 analytical format uses confidence_tier
+	if "confidence_tier" in score:
+		result = score["confidence_tier"]
+		return result
+	# v2 legacy format uses confidence
+	result = score.get("confidence", "low")
+	return result
+
+
+#============================================
 def _midpoint_frame(start_frame: int, end_frame: int) -> int:
 	"""Return the midpoint frame index between two frames.
 
@@ -212,7 +231,7 @@ def identify_weak_spans(diagnostics: dict) -> list:
 		start_frame = int(interval["start_frame"])
 		end_frame = int(interval["end_frame"])
 		score = interval["interval_score"]
-		confidence = score.get("confidence", "low")
+		confidence = _get_confidence(score)
 		failure_reasons = list(score.get("failure_reasons", []))
 
 		# check for occlusion frames in the fused track
@@ -349,7 +368,7 @@ def generate_refinement_targets(
 	if severity is not None:
 		for idx, iv in enumerate(intervals):
 			score = iv["interval_score"]
-			if score.get("confidence", "low") in ("high", "good"):
+			if _get_confidence(score) in ("high", "good"):
 				continue
 			iv_severity = classify_interval_severity(iv, fps)
 			if _SEVERITY_RANK.get(iv_severity, 0) < min_rank:
@@ -603,7 +622,7 @@ def format_review_summary(diagnostics: dict) -> str:
 		end_frame = int(iv["end_frame"])
 		duration_s = (end_frame - start_frame) / max(1.0, fps)
 		score = iv["interval_score"]
-		confidence = score.get("confidence", "low")
+		confidence = _get_confidence(score)
 		agree = float(score.get("agreement_score", 0.0))
 		identity = float(score.get("identity_score", 0.0))
 		margin = float(score.get("competitor_margin", 0.0))
@@ -659,7 +678,7 @@ def needs_refinement(diagnostics: dict) -> bool:
 	intervals = diagnostics.get("intervals", [])
 	for iv in intervals:
 		score = iv["interval_score"]
-		confidence = score.get("confidence", "low")
+		confidence = _get_confidence(score)
 		if confidence in ("low", "fair"):
 			return True
 	return False

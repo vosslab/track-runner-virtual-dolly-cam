@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Camera motion estimation from video frames.
 
 Estimates per-frame camera translation (dx, dy) and scale from consecutive
@@ -209,6 +208,267 @@ class FixedZoomEstimator(MotionEstimator):
 
 
 #============================================
+class DiscreteZoomEstimator(MotionEstimator):
+	"""Estimator for cameras with discrete zoom steps (e.g. iPhone 1x/2x/5x).
+
+	Detects zoom transitions using a sliding window and snaps detected
+	scale ratios to known zoom levels from config.
+	"""
+
+	#============================================
+	def estimate(self, reader: object, config: dict) -> MotionTrack:
+		"""Estimate per-frame motion with discrete zoom jump detection.
+
+		Args:
+			reader: FrameReader with read_frame(idx), total_frames, fps.
+			config: Config dict with camera.zoom_levels list.
+
+		Returns:
+			MotionTrack with per-frame dx, dy, scale, quality, event_flags.
+		"""
+		total = reader.total_frames
+		dx_arr = numpy.zeros(total, dtype=numpy.float64)
+		dy_arr = numpy.zeros(total, dtype=numpy.float64)
+		# raw per-frame scale from log-polar correlation
+		raw_scale = numpy.ones(total, dtype=numpy.float64)
+		quality_arr = numpy.zeros(total, dtype=numpy.float64)
+		event_flags_arr = numpy.zeros(total, dtype=numpy.int32)
+
+		# read first frame
+		frame0 = reader.read_frame(0)
+		if frame0 is None:
+			motion = MotionTrack(
+				dx=dx_arr, dy=dy_arr,
+				scale=numpy.ones(total, dtype=numpy.float64),
+				quality=quality_arr, event_flags=event_flags_arr,
+			)
+			return motion
+		prev_gray = cv2.cvtColor(frame0, cv2.COLOR_BGR2GRAY)
+		h_frame, w_frame = prev_gray.shape
+		# build hann window matching frame size
+		hann = cv2.createHanningWindow((w_frame, h_frame), cv2.CV_64F)
+
+		# estimate translation and raw scale for each frame pair
+		for frame_idx in range(1, total):
+			curr_frame = reader.read_frame(frame_idx)
+			if curr_frame is None:
+				prev_gray = prev_gray
+				continue
+			curr_gray = cv2.cvtColor(curr_frame, cv2.COLOR_BGR2GRAY)
+
+			# translation via phase correlation
+			prev_f = numpy.float64(prev_gray)
+			curr_f = numpy.float64(curr_gray)
+			shift, response = cv2.phaseCorrelate(prev_f, curr_f, hann)
+			dx_arr[frame_idx] = shift[0]
+			dy_arr[frame_idx] = shift[1]
+			quality_arr[frame_idx] = response
+
+			# scale via log-polar phase correlation
+			scale_ratio = self._estimate_scale_logpolar(
+				prev_gray, curr_gray, w_frame, h_frame,
+			)
+			raw_scale[frame_idx] = scale_ratio
+
+			prev_gray = curr_gray
+
+		# detect zoom jumps using 5-frame sliding window
+		window_size = 5
+		zoom_levels = config.get("camera", {}).get("zoom_levels", [1])
+		scale_arr = numpy.ones(total, dtype=numpy.float64)
+		cumulative_scale = 1.0
+
+		for i in range(1, total):
+			# sliding window around current frame
+			win_start = max(1, i - window_size // 2)
+			win_end = min(total, i + window_size // 2 + 1)
+			window_scales = raw_scale[win_start:win_end]
+			if len(window_scales) < 2:
+				continue
+			# check for large variation in window
+			max_s = numpy.max(window_scales)
+			min_s = numpy.min(window_scales)
+			ratio = max_s / max(min_s, 1e-6)
+			if ratio > 1.40:
+				# zoom transition detected
+				event_flags_arr[i] |= (1 << 0)
+				# snap to nearest zoom level ratio
+				cumulative_scale *= raw_scale[i]
+				snapped = self._snap_to_zoom_level(
+					cumulative_scale, zoom_levels,
+				)
+				scale_arr[i] = snapped / (cumulative_scale / raw_scale[i])
+				cumulative_scale = snapped
+			else:
+				# stable -- no zoom change
+				scale_arr[i] = 1.0
+
+		# apply 3-frame median filter to dx, dy
+		fze = FixedZoomEstimator()
+		dx_arr = fze._median_filter_1d(dx_arr, 3)
+		dy_arr = fze._median_filter_1d(dy_arr, 3)
+
+		motion = MotionTrack(
+			dx=dx_arr, dy=dy_arr, scale=scale_arr,
+			quality=quality_arr, event_flags=event_flags_arr,
+		)
+		return motion
+
+	#============================================
+	def _estimate_scale_logpolar(
+		self,
+		prev_gray: numpy.ndarray,
+		curr_gray: numpy.ndarray,
+		w: int,
+		h: int,
+	) -> float:
+		"""Estimate scale ratio between two frames via log-polar correlation.
+
+		Args:
+			prev_gray: Previous grayscale frame.
+			curr_gray: Current grayscale frame.
+			w: Frame width.
+			h: Frame height.
+
+		Returns:
+			Scale ratio (>1 means zoom in, <1 means zoom out).
+		"""
+		center = (w / 2.0, h / 2.0)
+		max_radius = min(w, h) / 2.0
+		# log-polar warp size
+		lp_size = (256, 256)
+		lp_prev = cv2.warpPolar(
+			prev_gray, lp_size, center, max_radius,
+			cv2.WARP_POLAR_LOG + cv2.INTER_LINEAR,
+		)
+		lp_curr = cv2.warpPolar(
+			curr_gray, lp_size, center, max_radius,
+			cv2.WARP_POLAR_LOG + cv2.INTER_LINEAR,
+		)
+		# phase correlate on log-polar images
+		lp_prev_f = numpy.float64(lp_prev)
+		lp_curr_f = numpy.float64(lp_curr)
+		hann_lp = cv2.createHanningWindow(
+			(lp_size[0], lp_size[1]), cv2.CV_64F,
+		)
+		shift, response = cv2.phaseCorrelate(lp_prev_f, lp_curr_f, hann_lp)
+		# x-shift in log-polar corresponds to log(scale)
+		log_base = max_radius / lp_size[0]
+		if response < 0.1:
+			scale_ratio = 1.0
+		else:
+			scale_ratio = numpy.exp(shift[0] * numpy.log(log_base))
+			# clamp to reasonable range
+			scale_ratio = max(0.5, min(2.0, scale_ratio))
+		return scale_ratio
+
+	#============================================
+	def _snap_to_zoom_level(
+		self,
+		cumulative: float,
+		zoom_levels: list,
+	) -> float:
+		"""Snap a cumulative scale value to the nearest zoom level ratio.
+
+		Args:
+			cumulative: Current cumulative scale factor.
+			zoom_levels: List of zoom level integers (e.g. [1, 2, 5]).
+
+		Returns:
+			Nearest zoom level ratio relative to base level.
+		"""
+		if not zoom_levels:
+			return cumulative
+		base = zoom_levels[0]
+		ratios = [z / base for z in zoom_levels]
+		# find closest ratio
+		best = min(ratios, key=lambda r: abs(cumulative - r))
+		return best
+
+
+#============================================
+class ContinuousZoomEstimator(MotionEstimator):
+	"""Estimator for cameras with smooth continuous zoom.
+
+	Uses log-polar phase correlation for per-frame scale estimation
+	with stricter quality gating than discrete zoom.
+	"""
+
+	#============================================
+	def estimate(self, reader: object, config: dict) -> MotionTrack:
+		"""Estimate per-frame motion with continuous scale tracking.
+
+		Args:
+			reader: FrameReader with read_frame(idx), total_frames, fps.
+			config: Config dict.
+
+		Returns:
+			MotionTrack with per-frame dx, dy, scale, quality, event_flags.
+		"""
+		total = reader.total_frames
+		dx_arr = numpy.zeros(total, dtype=numpy.float64)
+		dy_arr = numpy.zeros(total, dtype=numpy.float64)
+		scale_arr = numpy.ones(total, dtype=numpy.float64)
+		quality_arr = numpy.zeros(total, dtype=numpy.float64)
+		event_flags_arr = numpy.zeros(total, dtype=numpy.int32)
+
+		frame0 = reader.read_frame(0)
+		if frame0 is None:
+			motion = MotionTrack(
+				dx=dx_arr, dy=dy_arr, scale=scale_arr,
+				quality=quality_arr, event_flags=event_flags_arr,
+			)
+			return motion
+		prev_gray = cv2.cvtColor(frame0, cv2.COLOR_BGR2GRAY)
+		h_frame, w_frame = prev_gray.shape
+		hann = cv2.createHanningWindow((w_frame, h_frame), cv2.CV_64F)
+
+		# reuse log-polar helper from discrete estimator
+		discrete_est = DiscreteZoomEstimator()
+
+		for frame_idx in range(1, total):
+			curr_frame = reader.read_frame(frame_idx)
+			if curr_frame is None:
+				continue
+			curr_gray = cv2.cvtColor(curr_frame, cv2.COLOR_BGR2GRAY)
+
+			# translation
+			prev_f = numpy.float64(prev_gray)
+			curr_f = numpy.float64(curr_gray)
+			shift, response = cv2.phaseCorrelate(prev_f, curr_f, hann)
+			dx_arr[frame_idx] = shift[0]
+			dy_arr[frame_idx] = shift[1]
+			quality_arr[frame_idx] = response
+
+			# continuous scale via log-polar
+			scale_ratio = discrete_est._estimate_scale_logpolar(
+				prev_gray, curr_gray, w_frame, h_frame,
+			)
+
+			# stricter quality gating for continuous zoom
+			if response < 0.3:
+				scale_arr[frame_idx] = 1.0
+				# set low quality flag
+				event_flags_arr[frame_idx] |= (1 << 1)
+			else:
+				scale_arr[frame_idx] = scale_ratio
+
+			prev_gray = curr_gray
+
+		# apply 3-frame median filter to dx, dy, and scale
+		fze = FixedZoomEstimator()
+		dx_arr = fze._median_filter_1d(dx_arr, 3)
+		dy_arr = fze._median_filter_1d(dy_arr, 3)
+		scale_arr = fze._median_filter_1d(scale_arr, 3)
+
+		motion = MotionTrack(
+			dx=dx_arr, dy=dy_arr, scale=scale_arr,
+			quality=quality_arr, event_flags=event_flags_arr,
+		)
+		return motion
+
+
+#============================================
 def _compute_config_fingerprint(config: dict) -> str:
 	"""Compute a hash fingerprint of the motion estimation config.
 
@@ -219,7 +479,10 @@ def _compute_config_fingerprint(config: dict) -> str:
 		Hex string representing the config state.
 	"""
 	config_json = json.dumps(config, sort_keys=True, default=str)
-	fingerprint = hashlib.md5(config_json.encode()).hexdigest()
+	# md5 used for cache fingerprinting, not security
+	fingerprint = hashlib.md5(
+		config_json.encode(), usedforsecurity=False,
+	).hexdigest()
 	return fingerprint
 
 
@@ -261,7 +524,7 @@ def save_motion_cache(
 		motion_track: MotionTrack instance to save.
 		cache_path: Path to the output .npz file.
 	"""
-	track_runner.tr_paths.ensure_parent_dir(cache_path)
+	tr_paths.ensure_parent_dir(cache_path)
 	numpy.savez(
 		cache_path,
 		dx=motion_track.dx,
@@ -317,7 +580,7 @@ def precompute_camera_motion(
 		MotionTrack with per-frame motion data.
 	"""
 	# build video identity for cache validation
-	video_identity = track_runner.tr_video_identity.make_video_identity(
+	video_identity = tr_video_identity.make_video_identity(
 		input_file,
 		video_info,
 	)
@@ -336,9 +599,14 @@ def precompute_camera_motion(
 	if cached_motion is not None:
 		return cached_motion
 
-	# estimate motion (currently only FixedZoomEstimator supported)
-	if estimator_type == "FixedZoomEstimator":
+	# select estimator by type or zoom_type config alias
+	zoom_type = config.get("camera", {}).get("zoom_type", "fixed")
+	if estimator_type == "FixedZoomEstimator" or zoom_type == "fixed":
 		estimator = FixedZoomEstimator()
+	elif estimator_type == "DiscreteZoomEstimator" or zoom_type == "iphone_discrete":
+		estimator = DiscreteZoomEstimator()
+	elif estimator_type == "ContinuousZoomEstimator" or zoom_type == "continuous":
+		estimator = ContinuousZoomEstimator()
 	else:
 		raise ValueError(f"unsupported estimator type: {estimator_type}")
 

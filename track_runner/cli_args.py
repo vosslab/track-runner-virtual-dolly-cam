@@ -162,6 +162,11 @@ def parse_args() -> argparse.Namespace:
 		help="Override crop aspect ratio (e.g. '1:1', '16:9').",
 	)
 
+	# -- setup mode --
+	subparsers.add_parser(
+		"setup", help="Configure camera settings for this video.",
+	)
+
 	args = parser.parse_args()
 	# no subcommand given: print help and exit
 	if args.mode is None:

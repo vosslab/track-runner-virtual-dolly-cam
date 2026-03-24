@@ -806,54 +806,88 @@ def analyze_solver_context(
 	# analytical mode (v3): has velocity_consistency, size_consistency
 	# optical-flow mode (v2): has identity_score, competitor_margin, meeting_point_error
 	convergence_errors = []
+	velocity_consistencies = []
+	size_consistencies = []
+	motion_qualities = []
+	# legacy v2 fields
 	identity_scores = []
 	competitor_margins = []
-	for result in interval_results:
-		iscore = result.get("interval_score", {})
-		# try analytical metrics first (v3)
+	# detect if analytical or legacy mode from first interval
+	is_analytical = False
+	for result_item in interval_results:
+		iscore = result_item.get("interval_score", {})
 		if "velocity_consistency" in iscore:
-			# analytical mode: use velocity_consistency as proxy for identity
-			# and size_consistency as proxy for margin
+			is_analytical = True
+		break
+	for result_item in interval_results:
+		iscore = result_item.get("interval_score", {})
+		if is_analytical:
+			# analytical mode (v3): direct field extraction
 			vel_cons = iscore.get("velocity_consistency", 0.5)
+			velocity_consistencies.append(float(vel_cons))
 			size_cons = iscore.get("size_consistency", 0.5)
-			identity_scores.append(float(vel_cons))
-			competitor_margins.append(float(size_cons))
-		# fallback to optical-flow metrics (v2)
+			size_consistencies.append(float(size_cons))
+			mq = iscore.get("motion_quality", 1.0)
+			motion_qualities.append(float(mq))
 		else:
-			# convergence error from meeting_point_error list
+			# legacy v2: old field names
 			mpe_list = iscore.get("meeting_point_error", [])
 			for mpe in mpe_list:
 				center_err = mpe.get("center_err_px")
 				if center_err is not None:
 					convergence_errors.append(float(center_err))
-			# identity score
 			id_score = iscore.get("identity_score")
 			if id_score is not None:
 				identity_scores.append(float(id_score))
-			# competitor margin
 			margin = iscore.get("competitor_margin")
 			if margin is not None:
 				competitor_margins.append(float(margin))
-	# compute stats
-	conv_median = 0.0
-	conv_p90 = 0.0
-	if convergence_errors:
-		conv_median = round(statistics.median(convergence_errors), 2)
-		conv_p90 = round(_percentile(convergence_errors, 0.90), 2)
-	id_median = 0.0
-	if identity_scores:
-		id_median = round(statistics.median(identity_scores), 3)
-	margin_median = 0.0
-	if competitor_margins:
-		margin_median = round(statistics.median(competitor_margins), 3)
+	# compute stats based on mode
 	result = {
 		"seed_density": seed_density,
 		"desert_count": desert_count,
-		"fwd_bwd_convergence_median": conv_median,
-		"fwd_bwd_convergence_p90": conv_p90,
-		"identity_score_median": id_median,
-		"competitor_margin_median": margin_median,
 	}
+	if is_analytical:
+		# analytical metrics
+		vel_median = 0.0
+		if velocity_consistencies:
+			vel_median = round(
+				statistics.median(velocity_consistencies), 3,
+			)
+		size_median = 0.0
+		if size_consistencies:
+			size_median = round(
+				statistics.median(size_consistencies), 3,
+			)
+		mq_median = 0.0
+		if motion_qualities:
+			mq_median = round(statistics.median(motion_qualities), 3)
+		result["velocity_consistency_median"] = vel_median
+		result["size_consistency_median"] = size_median
+		result["motion_quality_median"] = mq_median
+	else:
+		# legacy metrics
+		conv_median = 0.0
+		conv_p90 = 0.0
+		if convergence_errors:
+			conv_median = round(
+				statistics.median(convergence_errors), 2,
+			)
+			conv_p90 = round(
+				_percentile(convergence_errors, 0.90), 2,
+			)
+		id_median = 0.0
+		if identity_scores:
+			id_median = round(statistics.median(identity_scores), 3)
+		margin_median = 0.0
+		if competitor_margins:
+			margin_median = round(
+				statistics.median(competitor_margins), 3,
+			)
+		result["fwd_bwd_convergence_median"] = conv_median
+		result["fwd_bwd_convergence_p90"] = conv_p90
+		result["identity_score_median"] = id_median
+		result["competitor_margin_median"] = margin_median
 	return result
 
 

@@ -395,18 +395,42 @@ def write_solver_diagnostics(
 			"end_frame": iv["end_frame"],
 			"start_s": round(iv["start_frame"] / max(1.0, fps), 3),
 			"end_s": round(iv["end_frame"] / max(1.0, fps), 3),
-			"agreement_score": round(
-				float(score.get("agreement_score", 0.0)), 4,
-			),
-			"identity_score": round(
-				float(score.get("identity_score", 0.0)), 4,
-			),
-			"competitor_margin": round(
-				float(score.get("competitor_margin", 0.0)), 4,
-			),
-			"confidence": score.get("confidence", "low"),
-			"failure_reasons": score.get("failure_reasons", []),
 		}
+		# detect analytical (v3) vs legacy (v2) interval scores
+		if "confidence_tier" in score:
+			# analytical interval_score_v2 format
+			entry["interval_score"] = {
+				"agreement": round(float(score.get("agreement", 0.0)), 4),
+				"velocity_consistency": round(
+					float(score.get("velocity_consistency", 0.0)), 4,
+				),
+				"size_consistency": round(
+					float(score.get("size_consistency", 0.0)), 4,
+				),
+				"motion_quality": round(
+					float(score.get("motion_quality", 0.0)), 4,
+				),
+				"occlusion_fraction": round(
+					float(score.get("occlusion_fraction", 0.0)), 4,
+				),
+				"confidence_tier": score.get("confidence_tier", "low"),
+				"severity": score.get("severity", "high"),
+				"failure_reasons": score.get("failure_reasons", []),
+				"warning_flags": score.get("warning_flags", []),
+			}
+		else:
+			# legacy v2 format (flattened fields for backward compat)
+			entry["agreement_score"] = round(
+				float(score.get("agreement_score", 0.0)), 4,
+			)
+			entry["identity_score"] = round(
+				float(score.get("identity_score", 0.0)), 4,
+			)
+			entry["competitor_margin"] = round(
+				float(score.get("competitor_margin", 0.0)), 4,
+			)
+			entry["confidence"] = score.get("confidence", "low")
+			entry["failure_reasons"] = score.get("failure_reasons", [])
 		intervals_summary.append(entry)
 
 	# preserve cyclical prior if detected

@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Analytical velocity model using directionally asymmetric Hermite curves.
 
 For each seed-to-seed interval, fits cubic Hermite splines with separate
@@ -11,9 +10,6 @@ import math
 
 # PIP3 modules
 import numpy
-
-# local repo modules
-import scene_coords
 
 
 #============================================
@@ -264,8 +260,8 @@ def fit_interval_curves(
 		- end_frame: int.
 		- is_stationary: bool (if displacement < 3% of box dimension).
 	"""
-	left_frame = int(left_seed["frame"])
-	right_frame = int(right_seed["frame"])
+	left_frame = int(left_seed["frame_index"])
+	right_frame = int(right_seed["frame_index"])
 	start_frame = left_frame
 	end_frame = right_frame
 
