@@ -2,58 +2,101 @@
 
 ## Design principle
 
-> Human establishes identity. Machine interpolates geometry.
+> Analytic model for geometry, visual cues for validation and short-range correction.
 
-Users place seed annotations to identify who the runner is. The solver propagates tracking between seeds using optical flow, patch correlation, and person detection. See [docs/archive/TRACK_RUNNER_DESIGN.md](archive/TRACK_RUNNER_DESIGN.md) for the full design philosophy.
+Users place seed annotations to identify who the runner is. The solver interpolates
+runner position between seeds using phase-correlation camera motion estimation and
+cubic Hermite velocity models. See [docs/archive/TRACK_RUNNER_DESIGN.md](archive/TRACK_RUNNER_DESIGN.md)
+for the original design philosophy and the plan at
+[docs/archive/TRACK_RUNNER_PLAN_07_ANALYTICAL_REFACTOR.md](archive/TRACK_RUNNER_PLAN_07_ANALYTICAL_REFACTOR.md)
+for the analytical rewrite rationale.
+
+## Solver backends
+
+The tool supports two solver backends selected by `processing.solver_backend` in config:
+
+- `scene_interp` (default) -- analytical solver. Pre-computes camera motion via
+  phase correlation, converts seeds to scene coordinates, fits directionally
+  asymmetric Hermite curves for FWD/BWD propagation. No optical flow or detection
+  during solve.
+- `legacy_interval` -- original optical-flow solver. Uses Lucas-Kanade flow,
+  patch correlation, and YOLO person detection. Kept for rollback.
 
 ## Pipeline overview
 
 ```
-seed --> solve --> crop trajectory --> encode
-  ^         |
-  |         v
-  +--- refine (incremental re-solve)
+setup --> seed --> solve --> crop trajectory --> encode
+  ^          ^         |
+  |          |         v
+  |          +--- refine (incremental re-solve)
+  +--- camera config questionnaire (one-time)
 ```
 
-1. **Seeding** -- user places bounding box annotations on key frames via a PySide6 GUI.
-2. **Interval solving** -- each pair of adjacent seeds defines an interval. Forward and backward propagation meet in the middle. Disagreement between directions signals uncertainty.
-3. **Crop trajectory** -- adaptive smoothing with exponential filtering, deadband, and velocity capping produces a stable crop path.
-4. **Encoding** -- ffmpeg-based encoding with optional filter pipeline (bilateral, auto-levels, hqdn3d).
+1. **Setup** -- interactive CLI questionnaire collects camera properties (zoom type,
+   height, position, track size). Stored in per-video config YAML.
+2. **Seeding** -- user places bounding box annotations on key frames via PySide6 GUI.
+3. **Interval solving** -- each pair of adjacent seeds defines an interval.
+   - `scene_interp`: camera motion pre-computed for whole video, runner position
+     interpolated analytically between seeds using directionally asymmetric
+     FWD/BWD Hermite curves. Disagreement between directions signals uncertainty.
+   - `legacy_interval`: optical flow frame-by-frame tracking with YOLO detection.
+4. **Crop trajectory** -- adaptive smoothing with exponential filtering, deadband,
+   and velocity capping produces a stable crop path.
+5. **Encoding** -- ffmpeg-based encoding with optional filter pipeline.
 
 ## Module map
 
 ### CLI layer
 
-- `cli.py` -- main entry point, subcommand dispatch, orchestration.
-- `cli_args.py` -- argparse configuration for all subcommands.
+- `cli.py` -- main entry point, subcommand dispatch, solver backend selection.
+- `cli_args.py` -- argparse configuration for all subcommands (seed, edit, target,
+  solve, refine, encode, analyze, setup).
+- `setup_mode.py` -- interactive camera configuration questionnaire.
+
+### Analytical solver (scene_interp backend)
+
+- `camera_motion.py` -- `MotionTrack` dataclass, `MotionEstimator` interface,
+  three estimators (`FixedZoomEstimator`, `DiscreteZoomEstimator`,
+  `ContinuousZoomEstimator`), NPZ caching.
+- `scene_coords.py` -- `SceneTransform` class for pixel-to-scene coordinate
+  conversion using accumulated camera motion.
+- `velocity_model.py` -- directional slope estimation, cubic Hermite interpolation,
+  PCHIP log-space size interpolation, stationary lock, FWD/BWD analytical propagation.
 
 ### Core pipeline
 
 - `seeding.py` -- seed frame collection logic.
-- `interval_solver.py` -- forward/backward propagation, interval merging, and confidence scoring.
-- `propagator.py` -- frame-to-frame optical flow and patch correlation.
+- `interval_solver.py` -- `solve_interval_analytical()` (scene_interp) and
+  `solve_interval()` (legacy) paths, interval merging, trajectory stitching.
+- `propagator.py` -- frame-to-frame tracking wrapper. Delegates to velocity_model
+  when scene_transform is provided, otherwise uses legacy optical flow.
 - `tr_crop.py` -- adaptive crop rectangle computation with smoothing.
 - `encoder.py` -- video encoding with optional filter pipeline.
 
 ### Scoring and review
 
-- `scoring.py` -- interval confidence and agreement scoring.
-- `review.py` -- interval quality assessment and severity classification.
+- `scoring.py` -- `score_interval_analytical()` (v3: agreement, velocity_consistency,
+  size_consistency, motion_quality, occlusion_fraction) and legacy `score_interval()`
+  (v2: agreement, identity, competitor margin).
+- `review.py` -- interval quality assessment, severity classification, seed
+  suggestions. Reads confidence_tier (v3) or confidence (v2) via `_get_confidence()`.
 - `regime_classifier.py` -- motion regime classification (straight, curve, stationary).
 - `regime_policies.py` -- per-regime parameter policies.
 
-### Detection and tracking
+### Detection (legacy/subordinate)
 
-- `tr_detection.py` -- YOLOv8n person detection via OpenCV DNN (no ultralytics at runtime).
-- `hypothesis.py` -- track hypothesis representation.
-- `seed_color.py` -- jersey color extraction for identity matching.
+- `tr_detection.py` -- YOLOv8n person detection. Not used in scene_interp solve
+  path. Kept for future subordinate visual validation roles.
+- `hypothesis.py` -- stub. Competitor tracking removed in analytical rewrite.
+- `seed_color.py` -- jersey color extraction.
 - `box_utils.py` -- bounding box utilities.
 
 ### State and config
 
 - `state_io.py` -- JSON serialization for seeds, intervals, and diagnostics.
-- `tr_config.py` -- YAML config file parsing.
-- `tr_paths.py` -- path utilities for state and output files.
+  Diagnostics v3 stores nested `interval_score_v2` for analytical mode.
+- `tr_config.py` -- YAML config parsing with camera section and solver_backend.
+- `tr_paths.py` -- path utilities for state, output, and motion cache files.
 - `tr_video_identity.py` -- video file identity tracking (hash-based).
 
 ### UI (PySide6)
@@ -75,7 +118,9 @@ All UI modules are in `track_runner/ui/`:
 
 ### Analysis and encoding
 
-- `encode_analysis.py` -- encoding quality analysis.
+- `encode_analysis.py` -- encoding quality analysis. Reports analytical metrics
+  (velocity_consistency, size_consistency, motion_quality) or legacy metrics
+  (convergence, identity, competitor margin) depending on solver mode.
 - `video_io.py` -- video I/O utilities.
 - `key_input.py` -- keyboard input handling.
 
@@ -87,5 +132,19 @@ All UI modules are in `track_runner/ui/`:
 
 ### Configuration files
 
-- `track_runner/track_runner.config.yaml` -- default runtime config.
+- `track_runner/track_runner.config.yaml` -- default runtime config (includes
+  camera section, solver_backend, detection, processing).
 - `track_runner/overlay_styles.yaml` -- visualization overlay styles.
+
+## Diagnostics schema
+
+Two versions coexist:
+
+- **v2 (legacy)** -- flat fields: `agreement_score`, `identity_score`,
+  `competitor_margin`, `confidence`. Written by legacy solver.
+- **v3 (analytical)** -- nested `interval_score` dict with: `agreement`,
+  `velocity_consistency`, `size_consistency`, `motion_quality`,
+  `occlusion_fraction`, `confidence_tier`, `severity`, `failure_reasons`,
+  `warning_flags`. Written by analytical solver.
+
+Seeds JSON format is unchanged across both versions.
