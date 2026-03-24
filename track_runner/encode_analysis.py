@@ -803,28 +803,37 @@ def analyze_solver_context(
 	if seed_frames and (last_end - seed_frames[-1]) > desert_threshold:
 		desert_count += 1
 	# extract per-interval scores from interval_score dict
-	# the actual structure is: result["interval_score"]["identity_score"]
-	# and result["interval_score"]["meeting_point_error"] is a list of
-	# per-frame dicts with "center_err_px" and "scale_err_pct"
+	# analytical mode (v3): has velocity_consistency, size_consistency
+	# optical-flow mode (v2): has identity_score, competitor_margin, meeting_point_error
 	convergence_errors = []
 	identity_scores = []
 	competitor_margins = []
 	for result in interval_results:
 		iscore = result.get("interval_score", {})
-		# convergence error from meeting_point_error list
-		mpe_list = iscore.get("meeting_point_error", [])
-		for mpe in mpe_list:
-			center_err = mpe.get("center_err_px")
-			if center_err is not None:
-				convergence_errors.append(float(center_err))
-		# identity score
-		id_score = iscore.get("identity_score")
-		if id_score is not None:
-			identity_scores.append(float(id_score))
-		# competitor margin
-		margin = iscore.get("competitor_margin")
-		if margin is not None:
-			competitor_margins.append(float(margin))
+		# try analytical metrics first (v3)
+		if "velocity_consistency" in iscore:
+			# analytical mode: use velocity_consistency as proxy for identity
+			# and size_consistency as proxy for margin
+			vel_cons = iscore.get("velocity_consistency", 0.5)
+			size_cons = iscore.get("size_consistency", 0.5)
+			identity_scores.append(float(vel_cons))
+			competitor_margins.append(float(size_cons))
+		# fallback to optical-flow metrics (v2)
+		else:
+			# convergence error from meeting_point_error list
+			mpe_list = iscore.get("meeting_point_error", [])
+			for mpe in mpe_list:
+				center_err = mpe.get("center_err_px")
+				if center_err is not None:
+					convergence_errors.append(float(center_err))
+			# identity score
+			id_score = iscore.get("identity_score")
+			if id_score is not None:
+				identity_scores.append(float(id_score))
+			# competitor margin
+			margin = iscore.get("competitor_margin")
+			if margin is not None:
+				competitor_margins.append(float(margin))
 	# compute stats
 	conv_median = 0.0
 	conv_p90 = 0.0

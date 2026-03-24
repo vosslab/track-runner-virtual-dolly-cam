@@ -13,23 +13,15 @@ more seeds. Provides human-readable summaries and refinement target lists.
 # Listed here for documentation and validation
 _KNOWN_REASONS = (
 	"low_agreement",
-	"low_separation",
-	"weak_appearance",
-	"detector_conflict",
-	"stationary_ambiguity",
-	"likely_occlusion",
-	"likely_identity_swap",
+	"weak_motion_model",
+	"sparse_support",
 )
 
 # Human-readable explanation for each failure reason
 _REASON_EXPLANATIONS = {
 	"low_agreement": "forward/backward trajectories diverge",
-	"low_separation": "competitor margin too small",
-	"weak_appearance": "appearance evidence collapsed",
-	"detector_conflict": "YOLO detections contradict tracked path",
-	"stationary_ambiguity": "unclear whether runner is stationary or moving",
-	"likely_occlusion": "tracked region partially or fully obscured",
-	"likely_identity_swap": "strong competitor overtakes target mid-interval",
+	"weak_motion_model": "velocity model fit is weak or inconsistent",
+	"sparse_support": "too few directional support seeds for robust fitting",
 }
 
 
@@ -106,9 +98,9 @@ _SHORT_INTERVAL_FRAMES = 10
 def classify_interval_severity(interval: dict, fps: float) -> str:
 	"""Classify an interval's weakness severity as high, medium, or low.
 
-	Uses both tracking quality scores and interval duration. Longer weak
-	intervals are more damaging to the output video, so duration promotes
-	severity upward.
+	Uses interval_score from analytical or optical-flow solver. For analytical
+	mode, reads confidence_tier and severity directly. For optical-flow (legacy),
+	reconstructs from agreement and margin.
 
 	Args:
 		interval: Interval dict with interval_score sub-dict, start_frame, end_frame.
@@ -118,6 +110,13 @@ def classify_interval_severity(interval: dict, fps: float) -> str:
 		"high", "medium", or "low" severity string.
 	"""
 	score = interval["interval_score"]
+
+	# check if this is analytical mode (has confidence_tier) or optical-flow (has agreement_score)
+	if "confidence_tier" in score:
+		# analytical mode: use severity field directly
+		return score.get("severity", "low")
+
+	# optical-flow mode (legacy): reconstruct from agreement and margin
 	agreement = float(score.get("agreement_score", 0.0))
 	margin = float(score.get("competitor_margin", 0.0))
 	failure_reasons = score.get("failure_reasons", [])

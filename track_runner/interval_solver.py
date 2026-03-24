@@ -26,6 +26,7 @@ import hypothesis
 import scoring
 import state_io
 import key_input
+import velocity_model
 
 # module-level shared counter for parallel workers
 # set by _init_worker() via ProcessPoolExecutor initializer
@@ -708,6 +709,140 @@ def solve_interval(
 
 
 #============================================
+def solve_interval_analytical(
+	seed_start: dict,
+	seed_end: dict,
+	scene_transform: object,
+	all_seeds_scene: list,
+	fps: float,
+	debug: bool = False,
+) -> dict:
+	"""Solve one interval using analytical velocity model (no optical flow).
+
+	Fits directionally asymmetric Hermite curves to seed positions in scene
+	coordinates, propagates forward and backward, fuses tracks, and scores
+	the interval using velocity consistency and size consistency.
+
+	Args:
+		seed_start: Seed dict at interval start with cx, cy, w, h, frame_index.
+		seed_end: Seed dict at interval end with same fields.
+		scene_transform: SceneTransform instance for coordinate conversion.
+		all_seeds_scene: List of all seeds as (frame, sx, sy, sw, sh) tuples
+			in scene coordinates.
+		fps: Video frame rate for duration thresholds.
+		debug: If True, print diagnostic information.
+
+	Returns:
+		Dict with keys:
+			- start_frame, end_frame: frame indices
+			- fused_track: list of tracking state dicts (pixel coords)
+			- forward_track: forward pass (for diagnostics)
+			- backward_track: backward pass (for diagnostics)
+			- interval_score: interval_score_v2 dict from score_interval_analytical
+	"""
+	start_frame = int(seed_start["frame_index"])
+	end_frame = int(seed_end["frame_index"])
+
+	# reject degenerate intervals
+	if start_frame >= end_frame:
+		raise RuntimeError(
+			f"degenerate interval: start_frame={start_frame} >= "
+			f"end_frame={end_frame}"
+		)
+
+	if debug:
+		print(f"    fitting Hermite curves {start_frame}-{end_frame}...")
+
+	# fit interval curves in scene coordinates
+	interval_curves = velocity_model.fit_interval_curves(
+		seed_start, seed_end, all_seeds_scene, scene_transform,
+	)
+
+	if debug:
+		print("    propagating forward/backward analytically...")
+
+	# propagate forward (backward-looking slopes)
+	forward_track_scene = velocity_model.propagate_forward_analytical(
+		interval_curves, scene_transform,
+	)
+
+	# propagate backward (forward-looking slopes)
+	backward_track_scene = velocity_model.propagate_backward_analytical(
+		interval_curves, scene_transform,
+	)
+
+	if debug:
+		print("    converting to pixel coordinates...")
+
+	# convert back to pixel coordinates
+	forward_track = []
+	for i, state in enumerate(forward_track_scene):
+		frame_idx = start_frame + i
+		pixel_state = dict(state)
+		# scene_to_pixel expects (sx, sy, sw, sh) and returns (cx, cy, w, h)
+		cx, cy, w, h = scene_transform.scene_box_to_pixel(
+			frame_idx,
+			float(state["sx"]),
+			float(state["sy"]),
+			float(state["sw"]),
+			float(state["sh"]),
+		)
+		pixel_state["cx"] = cx
+		pixel_state["cy"] = cy
+		pixel_state["w"] = w
+		pixel_state["h"] = h
+		# remove scene coordinates from state dict
+		for key in ("sx", "sy", "sw", "sh"):
+			pixel_state.pop(key, None)
+		forward_track.append(pixel_state)
+
+	backward_track = []
+	for i, state in enumerate(backward_track_scene):
+		frame_idx = start_frame + i
+		pixel_state = dict(state)
+		cx, cy, w, h = scene_transform.scene_box_to_pixel(
+			frame_idx,
+			float(state["sx"]),
+			float(state["sy"]),
+			float(state["sw"]),
+			float(state["sh"]),
+		)
+		pixel_state["cx"] = cx
+		pixel_state["cy"] = cy
+		pixel_state["w"] = w
+		pixel_state["h"] = h
+		for key in ("sx", "sy", "sw", "sh"):
+			pixel_state.pop(key, None)
+		backward_track.append(pixel_state)
+
+	if debug:
+		print(f"    fusing tracks ({len(forward_track)}+{len(backward_track)} "
+			f"states)...")
+
+	# fuse forward and backward tracks
+	fused_track = fuse_tracks(forward_track, backward_track)
+
+	if debug:
+		print("    scoring interval analytically...")
+
+	# score the interval using analytical metrics
+	interval_score = scoring.score_interval_analytical(
+		forward_track, backward_track, all_seeds_scene,
+		interval_curves, scene_transform,
+	)
+
+	result = {
+		"start_frame": start_frame,
+		"end_frame": end_frame,
+		"fused_track": fused_track,
+		"forward_track": forward_track,
+		"backward_track": backward_track,
+		"interval_score": interval_score,
+	}
+	return result
+
+
+#============================================
 def stitch_trajectories(
 	interval_results: list,
 ) -> list:
@@ -918,19 +1053,18 @@ def _apply_trajectory_erasure(
 	"""Erase trajectory near seeds that lack accurate position data.
 
 	Callers pass ALL seeds; this function decides what to erase based
-	on the four drawing modes:
+	on the drawing modes:
 
 	- visible: precise torso box, fully visible runner. NO erasure.
 	- partial: precise torso box, partially hidden but position known.
 	  NO erasure.
-	- approximate: larger approx area where the runner is believed to
-	  be (fully hidden behind obstruction). Erase within
-	  APPROX_ERASE_RADIUS_S. Position is uncertain.
+	- approximate: larger approx area where runner is believed to be.
+	  NO longer erased (provides useful trajectory guidance).
 	- not_in_frame: runner completely outside the frame. Erase within
 	  NOT_IN_FRAME_ERASE_RADIUS_S. No position data at all.
 
 	Legacy seeds with status "obstructed" are treated the same as
-	"approximate".
+	"approximate" (not erased in analytical mode).
 
 	Args:
 		trajectory: List of tracking state dicts (or None) indexed by frame.
@@ -956,11 +1090,12 @@ def _apply_trajectory_erasure(
 		# partial: precise torso box, position known -- keep
 		if status == "partial":
 			continue
-		# approximate (or legacy "obstructed"): uncertain position -- erase
+		# approximate (or legacy "obstructed"): NO LONGER ERASED
+		# In analytical mode, approximate seeds provide useful guidance
 		if status in ("approximate", "obstructed"):
-			radius_frames = int(round(APPROX_ERASE_RADIUS_S * fps))
+			continue
 		# not_in_frame: runner off-screen -- erase
-		elif status == "not_in_frame":
+		if status == "not_in_frame":
 			radius_frames = int(round(NOT_IN_FRAME_ERASE_RADIUS_S * fps))
 		else:
 			# unknown status, skip safely
@@ -974,20 +1109,8 @@ def _apply_trajectory_erasure(
 			# skip visible/partial seed frames -- they have precise positions
 			if fi in protected_frames:
 				continue
-			if status in ("approximate", "obstructed"):
-				# use the approx seed position as a low-confidence hint
-				# instead of None which becomes a center-frame fallback
-				trajectory[fi] = {
-					"cx": float(seed["cx"]),
-					"cy": float(seed["cy"]),
-					"w": float(seed["w"]),
-					"h": float(seed["h"]),
-					"conf": 0.3,
-					"source": "approx_seed_hint",
-				}
-			else:
-				# not_in_frame: runner truly off-screen, erase to None
-				trajectory[fi] = None
+			# not_in_frame: runner truly off-screen, erase to None
+			trajectory[fi] = None
 	if erase_count > 0:
 		print(f"  erasing trajectory near {erase_count} seeds")
 	return trajectory
@@ -1530,6 +1653,7 @@ def solve_all_intervals(
 	on_interval_solved: object = None,
 	run_control: object = None,
 	key_reader: object = None,
+	scene_transform: object = None,
 ) -> dict:
 	"""Solve all seed-to-seed intervals and stitch into a full trajectory.
 
@@ -1537,8 +1661,12 @@ def solve_all_intervals(
 	stitches results, and returns a diagnostics-format dict with per-interval
 	scoring and the full trajectory.
 
-	When num_workers > 1, intervals are solved in parallel using separate
-	processes, each with its own VideoReader and detector instance.
+	When scene_transform is provided, uses analytical velocity model instead
+	of optical flow (no detector needed, no parallel processing).
+
+	When num_workers > 1 and scene_transform is None, intervals are solved
+	in parallel using separate processes, each with its own VideoReader and
+	detector instance.
 
 	Console output is emitted for each interval in the format:
 		interval  150- 450 (10.0s)  agree=0.92  margin=0.71  identity=0.88  [TRUST]
@@ -1547,9 +1675,11 @@ def solve_all_intervals(
 		reader: VideoReader with read_frame() and get_info() methods.
 		seeds: List of seed dicts sorted by frame_index. Each seed must have
 			cx, cy, w, h, frame_index keys. Non-visible seeds are skipped.
-		detector: Person detector with a detect(frame) method.
+		detector: Person detector with a detect(frame) method (optional if
+			scene_transform is provided).
 		config: Project configuration dict (currently unused; reserved).
 		num_workers: Number of parallel workers for solving. Default 1 (sequential).
+			Ignored when scene_transform is provided.
 		debug: If True, show per-frame debug output and progress bars.
 		on_interval_complete: Optional callback called with each interval result
 			dict as intervals finish. Used for interactive seed requesting.
@@ -1557,6 +1687,8 @@ def solve_all_intervals(
 			previously solved intervals. Keys are from state_io.interval_fingerprint().
 		on_interval_solved: Optional callback(fingerprint, result) called when
 			a new interval is solved, for persisting to the solved-intervals file.
+		scene_transform: Optional SceneTransform instance. When provided, uses
+			analytical velocity model instead of optical flow solver.
 
 	Returns:
 		Dict with keys:
@@ -1566,7 +1698,123 @@ def solve_all_intervals(
 	info = reader.get_info()
 	fps = float(info.get("fps", 30.0))
 
-	# filter to usable seeds for interval endpoint solving:
+	# analytical mode: use velocity model instead of optical flow
+	if scene_transform is not None:
+		# convert all seeds to scene coordinates
+		all_seeds_scene = []
+		for seed in seeds:
+			frame_idx = int(seed["frame_index"])
+			cx = float(seed["cx"])
+			cy = float(seed["cy"])
+			w = float(seed["w"])
+			h = float(seed["h"])
+			sx, sy, sw, sh = scene_transform.pixel_box_to_scene(
+				frame_idx, cx, cy, w, h,
+			)
+			all_seeds_scene.append((frame_idx, sx, sy, sw, sh))
+
+		# filter to usable seeds
+		usable_seeds = [
+			_prepare_usable_seed(s) for s in seeds
+			if s["status"] in ("visible", "partial", "approximate")
+			or (s["status"] == "obstructed" and s.get("torso_box") is not None)
+		]
+
+		if len(usable_seeds) < 2:
+			print("  interval_solver: need at least 2 usable seeds to solve intervals")
+			return {"intervals": [], "trajectory": []}
+
+		usable_seeds_sorted = sorted(usable_seeds, key=lambda s: int(s["frame_index"]))
+		total_intervals = len(usable_seeds_sorted) - 1
+		interval_results = []
+		t_start = time.time()
+
+		# deduplicate seeds by frame_index
+		seen_frames = {}
+		for seed in usable_seeds_sorted:
+			fi = int(seed["frame_index"])
+			if fi in seen_frames:
+				existing = seen_frames[fi]
+				if int(seed["pass"]) >= int(existing["pass"]):
+					print(f"  WARNING: duplicate seed at frame {fi}, "
+						f"keeping pass {seed['pass']} over pass {existing['pass']}")
+					seen_frames[fi] = seed
+				else:
+					print(f"  WARNING: duplicate seed at frame {fi}, "
+						f"keeping pass {existing['pass']} over pass {seed['pass']}")
+			else:
+				seen_frames[fi] = seed
+		if len(seen_frames) < len(usable_seeds_sorted):
+			dropped = len(usable_seeds_sorted) - len(seen_frames)
+			print(f"  deduplicated {dropped} seeds with duplicate frame_index values")
+			usable_seeds_sorted = sorted(seen_frames.values(), key=lambda s: int(s["frame_index"]))
+			total_intervals = len(usable_seeds_sorted) - 1
+
+		print(f"  solving {total_intervals} intervals (analytical mode)...")
+		seq_frame_counter = [0]
+		with rich.progress.Progress(
+			rich.progress.TextColumn("{task.description}"),
+			BlockBarColumn(),
+			rich.progress.TaskProgressColumn(),
+			rich.progress.TimeRemainingColumn(),
+		) as progress:
+			task = progress.add_task(
+				"  solving intervals", total=total_intervals,
+			)
+			for pair_idx in range(total_intervals):
+				if run_control is not None and run_control.quit_requested:
+					break
+				if key_reader is not None and run_control is not None:
+					ch = key_reader.poll()
+					key_input.handle_key(ch, run_control, key_reader, progress)
+				if run_control is not None and run_control.quit_requested:
+					break
+
+				seed_start = usable_seeds_sorted[pair_idx]
+				seed_end = usable_seeds_sorted[pair_idx + 1]
+				start_frame = int(seed_start["frame_index"])
+				end_frame = int(seed_end["frame_index"])
+
+				progress.console.print(
+					f"  solving interval {pair_idx + 1}/{total_intervals} "
+					f"(frames {start_frame}-{end_frame})"
+				)
+
+				result = solve_interval_analytical(
+					seed_start, seed_end, scene_transform,
+					all_seeds_scene, fps, debug=debug,
+				)
+				interval_results.append(result)
+				_print_interval_result_rich(result, fps, progress)
+				if on_interval_complete is not None:
+					on_interval_complete(result)
+				n_frames = result["end_frame"] - result["start_frame"]
+				seq_frame_counter[0] += n_frames
+				progress.update(task, advance=1)
+
+		if run_control is not None and run_control.quit_requested:
+			done = len([r for r in interval_results if r is not None])
+			key_input._quit_trace(
+				"FUNCTION_RETURN", context="solve_all_intervals_analytical",
+				quit_requested=True, intervals_done=done,
+				intervals_total=total_intervals,
+			)
+			print(f"  quit requested: {done}/{total_intervals} intervals completed")
+			print("  hint: re-run 'solve' to resume")
+
+		# stitch and finalize
+		trajectory = stitch_trajectories(interval_results)
+		trajectory = anchor_to_seeds(trajectory, seeds)
+		trajectory = _stamp_seed_confidence(trajectory, seeds)
+		trajectory = _apply_trajectory_erasure(trajectory, seeds, fps)
+
+		output = {
+			"intervals": interval_results,
+			"trajectory": trajectory,
+		}
+		return output
+
+	# filter to usable seeds for interval endpoint solving (optical flow mode):
 	# - visible: precise torso box, fully visible runner
 	# - partial: precise torso box, partially hidden but position known
 	# - approximate (or legacy obstructed with torso_box): uncertain position,

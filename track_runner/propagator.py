@@ -517,11 +517,15 @@ def propagate_forward(
 	appearance_model: dict,
 	debug: bool = False,
 	prior_track: dict = None,
+	scene_transform: object = None,
+	all_seeds_scene: list = None,
+	left_seed: dict = None,
+	right_seed: dict = None,
 ) -> list:
 	"""Propagate a tracking state forward from start_frame to end_frame.
 
-	Reads frames from frames_reader and tracks the torso bounding box
-	forward one frame at a time using optical flow and patch correlation.
+	When scene_transform is provided, uses analytical velocity model.
+	Otherwise uses legacy optical flow and patch correlation.
 
 	Args:
 		frames_reader: VideoReader with read_frame(index) and get_info().
@@ -533,11 +537,34 @@ def propagate_forward(
 		prior_track: Optional dict keyed by absolute frame index, mapping
 			to fused state dicts. Used in refinement pass to inject the
 			first-pass fused track as a soft spatial prior.
+		scene_transform: SceneTransform instance. When provided, uses
+			analytical velocity model instead of optical flow.
+		all_seeds_scene: List of all seeds as (frame, sx, sy, sw, sh).
+			Required when scene_transform is provided.
+		left_seed: Seed dict for interval start. Required when scene_transform
+			is provided.
+		right_seed: Seed dict for interval end. Required when scene_transform
+			is provided.
 
 	Returns:
 		List of tracking state dicts, one per frame from start_frame to
 		end_frame inclusive. Index 0 is the state at start_frame (the seed).
 	"""
+	# use analytical velocity model if scene_transform is provided
+	if scene_transform is not None:
+		if all_seeds_scene is None or left_seed is None or right_seed is None:
+			raise ValueError(
+				"scene_transform provided but missing all_seeds_scene, "
+				"left_seed, or right_seed"
+			)
+		import track_runner.velocity_model
+		interval_curves = track_runner.velocity_model.fit_interval_curves(
+			left_seed, right_seed, all_seeds_scene, scene_transform,
+		)
+		return track_runner.velocity_model.propagate_forward_analytical(
+			interval_curves, scene_transform,
+		)
+
 	states = [start_state]
 	prev_state = start_state
 	prev_frame = frames_reader.read_frame(start_frame)
@@ -601,12 +628,17 @@ def propagate_backward(
 	appearance_model: dict,
 	debug: bool = False,
 	prior_track: dict = None,
+	scene_transform: object = None,
+	all_seeds_scene: list = None,
+	left_seed: dict = None,
+	right_seed: dict = None,
 ) -> list:
 	"""Propagate a tracking state backward from start_frame to end_frame.
 
-	Reads frames from frames_reader and tracks the torso bounding box
-	backward one frame at a time. Returns states in reverse order so that
-	index 0 corresponds to end_frame and the last element to start_frame.
+	When scene_transform is provided, uses analytical velocity model.
+	Otherwise uses legacy optical flow and patch correlation.
+	Returns states in reverse order so that index 0 corresponds to end_frame
+	and the last element to start_frame.
 
 	Args:
 		frames_reader: VideoReader with read_frame(index) and get_info().
@@ -618,11 +650,34 @@ def propagate_backward(
 		prior_track: Optional dict keyed by absolute frame index, mapping
 			to fused state dicts. Used in refinement pass to inject the
 			first-pass fused track as a soft spatial prior.
+		scene_transform: SceneTransform instance. When provided, uses
+			analytical velocity model instead of optical flow.
+		all_seeds_scene: List of all seeds as (frame, sx, sy, sw, sh).
+			Required when scene_transform is provided.
+		left_seed: Seed dict for interval start. Required when scene_transform
+			is provided.
+		right_seed: Seed dict for interval end. Required when scene_transform
+			is provided.
 
 	Returns:
 		List of tracking state dicts from end_frame to start_frame inclusive.
 		Index 0 is the state at end_frame, last index is at start_frame.
 	"""
+	# use analytical velocity model if scene_transform is provided
+	if scene_transform is not None:
+		if all_seeds_scene is None or left_seed is None or right_seed is None:
+			raise ValueError(
+				"scene_transform provided but missing all_seeds_scene, "
+				"left_seed, or right_seed"
+			)
+		import track_runner.velocity_model
+		interval_curves = track_runner.velocity_model.fit_interval_curves(
+			left_seed, right_seed, all_seeds_scene, scene_transform,
+		)
+		return track_runner.velocity_model.propagate_backward_analytical(
+			interval_curves, scene_transform,
+		)
+
 	# collect states in reverse order, then flip
 	reverse_states = [start_state]
 	prev_state = start_state
