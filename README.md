@@ -1,20 +1,51 @@
-# starter_repo_template
-`starter_repo_template` is canonical bootstrap infrastructure for Python repositories that need consistent repository policy, Python style conventions, licensing boundaries, and test/lint scaffolding before project-specific code is added.
+# Track runner virtual dolly cam
 
-Only `README.md` and `docs/CHANGELOG.md` are intentionally repository-specific; every other file is designed to remain generic for downstream template users.
+Track runner is a Python tool that tracks a runner in track meet video and produces a cropped, stabilized output -- a virtual dolly camera effect. Users place seed annotations on key frames to identify the runner, and the solver automatically propagates tracking between seeds using optical flow, patch correlation, and person detection. The result is a smooth cropped video that follows the athlete.
 
-## Documentation
-
-- [docs/REPO_STYLE.md](docs/REPO_STYLE.md): Repository structure, naming, versioning, dependency manifest, and licensing conventions.
-- [docs/PYTHON_STYLE.md](docs/PYTHON_STYLE.md): Python implementation rules for formatting, structure, imports, argparse, and testing.
-- [docs/MARKDOWN_STYLE.md](docs/MARKDOWN_STYLE.md): Markdown writing and formatting conventions for repository documentation.
-- [docs/AUTHORS.md](docs/AUTHORS.md): Canonical authorship and attribution metadata for template maintenance.
-- [docs/CHANGELOG.md](docs/CHANGELOG.md): Repository-specific history of updates to this template.
+**Status:** v26.02, active development.
 
 ## Quick start
 
-Run one focused repo check:
+```bash
+source source_me.sh
+
+# 1. Place seed annotations on the runner
+python track_runner/track_runner.py -i VIDEO.mp4 seed
+
+# 2. Solve tracking between seeds
+python track_runner/track_runner.py -i VIDEO.mp4 solve
+
+# 3. Encode cropped output video
+python track_runner/track_runner.py -i VIDEO.mp4 encode
+```
+
+See [docs/USAGE.md](docs/USAGE.md) for the full subcommand reference and workflow details.
+
+## Documentation
+
+- [docs/INSTALL.md](docs/INSTALL.md): Setup steps, system dependencies, and pip requirements.
+- [docs/USAGE.md](docs/USAGE.md): Subcommand reference, global options, and typical workflow.
+- [docs/CODE_ARCHITECTURE.md](docs/CODE_ARCHITECTURE.md): Pipeline overview and module descriptions.
+- [docs/FILE_STRUCTURE.md](docs/FILE_STRUCTURE.md): Directory map with what belongs where.
+- [docs/CHANGELOG.md](docs/CHANGELOG.md): Chronological record of changes.
+- [docs/AUTHORS.md](docs/AUTHORS.md): Maintainer and attribution information.
+
+### Style guides
+
+- [docs/PYTHON_STYLE.md](docs/PYTHON_STYLE.md): Python formatting, imports, and testing conventions.
+- [docs/REPO_STYLE.md](docs/REPO_STYLE.md): Repository structure, naming, and versioning conventions.
+- [docs/MARKDOWN_STYLE.md](docs/MARKDOWN_STYLE.md): Markdown writing and formatting conventions.
+
+### Design archive
+
+Historical design documents, specifications, and implementation plans are in [docs/archive/](docs/archive/).
+
+## Testing
 
 ```bash
-/opt/homebrew/opt/python@3.12/bin/python3.12 -m pytest tests/test_shebangs.py -q
+source source_me.sh && python -m pytest tests/ -q
 ```
+
+## Maintainer
+
+Neil Voss, https://bsky.app/profile/neilvosslab.bsky.social

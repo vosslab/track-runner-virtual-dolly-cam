@@ -1,0 +1,6 @@
+numpy  # array operations and numerical computing
+opencv-python  # computer vision, video I/O, and DNN inference
+PySide6  # Qt6 GUI framework for annotation interface
+pyyaml  # YAML configuration file parsing
+rich  # progress bars and formatted console output
+scipy  # interpolation for interval solving
