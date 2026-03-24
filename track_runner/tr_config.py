@@ -38,6 +38,23 @@ def read_default_config() -> dict:
 
 #============================================
 
+def _get_default_camera_config() -> dict:
+	"""
+	Get default camera configuration section.
+
+	Returns:
+		dict: Default camera config with all required keys.
+	"""
+	return {
+		"zoom_type": "fixed",
+		"zoom_levels": [1],
+		"camera_height": "elevated",
+		"camera_position": "side",
+		"track_size": 400,
+	}
+
+#============================================
+
 def validate_config(config: dict) -> None:
 	"""
 	Validate that required keys are present in the config.
@@ -64,6 +81,12 @@ def validate_config(config: dict) -> None:
 	for section in required_sections:
 		if section not in config:
 			raise RuntimeError(f"config missing required key: {section}")
+	# camera section is optional; fill with defaults if missing
+	if "camera" not in config:
+		config["camera"] = _get_default_camera_config()
+	# solver_backend is optional under processing; use default if missing
+	if "solver_backend" not in config.get("processing", {}):
+		config.setdefault("processing", {})["solver_backend"] = "scene_interp"
 
 #============================================
 

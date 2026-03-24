@@ -13,24 +13,35 @@ more seeds. Provides human-readable summaries and refinement target lists.
 # Listed here for documentation and validation
 _KNOWN_REASONS = (
 	"low_agreement",
-	"low_separation",
-	"weak_appearance",
-	"detector_conflict",
-	"stationary_ambiguity",
-	"likely_occlusion",
-	"likely_identity_swap",
+	"weak_motion_model",
+	"sparse_support",
 )
 
 # Human-readable explanation for each failure reason
 _REASON_EXPLANATIONS = {
 	"low_agreement": "forward/backward trajectories diverge",
-	"low_separation": "competitor margin too small",
-	"weak_appearance": "appearance evidence collapsed",
-	"detector_conflict": "YOLO detections contradict tracked path",
-	"stationary_ambiguity": "unclear whether runner is stationary or moving",
-	"likely_occlusion": "tracked region partially or fully obscured",
-	"likely_identity_swap": "strong competitor overtakes target mid-interval",
+	"weak_motion_model": "velocity model fit is weak or inconsistent",
+	"sparse_support": "too few directional support seeds for robust fitting",
 }
+
+
+#============================================
+def _get_confidence(score: dict) -> str:
+	"""Extract confidence label from v2 or v3 interval score.
+
+	Args:
+		score: Interval score dict (legacy or analytical format).
+
+	Returns:
+		Confidence label string (high, good, fair, or low).
+	"""
+	# v3 analytical format uses confidence_tier
+	if "confidence_tier" in score:
+		result = score["confidence_tier"]
+		return result
+	# v2 legacy format uses confidence
+	result = score.get("confidence", "low")
+	return result
 
 
 #============================================
@@ -106,9 +117,9 @@ _SHORT_INTERVAL_FRAMES = 10
 def classify_interval_severity(interval: dict, fps: float) -> str:
 	"""Classify an interval's weakness severity as high, medium, or low.
 
-	Uses both tracking quality scores and interval duration. Longer weak
-	intervals are more damaging to the output video, so duration promotes
-	severity upward.
+	Uses interval_score from analytical or optical-flow solver. For analytical
+	mode, reads confidence_tier and severity directly. For optical-flow (legacy),
+	reconstructs from agreement and margin.
 
 	Args:
 		interval: Interval dict with interval_score sub-dict, start_frame, end_frame.
@@ -118,6 +129,13 @@ def classify_interval_severity(interval: dict, fps: float) -> str:
 		"high", "medium", or "low" severity string.
 	"""
 	score = interval["interval_score"]
+
+	# check if this is analytical mode (has confidence_tier) or optical-flow (has agreement_score)
+	if "confidence_tier" in score:
+		# analytical mode: use severity field directly
+		return score.get("severity", "low")
+
+	# optical-flow mode (legacy): reconstruct from agreement and margin
 	agreement = float(score.get("agreement_score", 0.0))
 	margin = float(score.get("competitor_margin", 0.0))
 	failure_reasons = score.get("failure_reasons", [])
@@ -213,7 +231,7 @@ def identify_weak_spans(diagnostics: dict) -> list:
 		start_frame = int(interval["start_frame"])
 		end_frame = int(interval["end_frame"])
 		score = interval["interval_score"]
-		confidence = score.get("confidence", "low")
+		confidence = _get_confidence(score)
 		failure_reasons = list(score.get("failure_reasons", []))
 
 		# check for occlusion frames in the fused track
@@ -350,7 +368,7 @@ def generate_refinement_targets(
 	if severity is not None:
 		for idx, iv in enumerate(intervals):
 			score = iv["interval_score"]
-			if score.get("confidence", "low") in ("high", "good"):
+			if _get_confidence(score) in ("high", "good"):
 				continue
 			iv_severity = classify_interval_severity(iv, fps)
 			if _SEVERITY_RANK.get(iv_severity, 0) < min_rank:
@@ -604,7 +622,7 @@ def format_review_summary(diagnostics: dict) -> str:
 		end_frame = int(iv["end_frame"])
 		duration_s = (end_frame - start_frame) / max(1.0, fps)
 		score = iv["interval_score"]
-		confidence = score.get("confidence", "low")
+		confidence = _get_confidence(score)
 		agree = float(score.get("agreement_score", 0.0))
 		identity = float(score.get("identity_score", 0.0))
 		margin = float(score.get("competitor_margin", 0.0))
@@ -660,7 +678,7 @@ def needs_refinement(diagnostics: dict) -> bool:
 	intervals = diagnostics.get("intervals", [])
 	for iv in intervals:
 		score = iv["interval_score"]
-		confidence = score.get("confidence", "low")
+		confidence = _get_confidence(score)
 		if confidence in ("low", "fair"):
 			return True
 	return False

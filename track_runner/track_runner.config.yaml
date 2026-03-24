@@ -8,7 +8,15 @@ processing:
   crop_fill_ratio: 0.30
   video_codec: libx264
   crf: 18
+  solver_backend: scene_interp
   encode_filters:
   - bilateral
   - auto_levels
   - hqdn3d
+camera:
+  zoom_type: fixed
+  zoom_levels:
+  - 1
+  camera_height: elevated
+  camera_position: side
+  track_size: 400

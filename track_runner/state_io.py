@@ -19,7 +19,7 @@ SEEDS_HEADER_VALUE = 2
 
 # header key and version for diagnostics JSON files
 DIAGNOSTICS_HEADER_KEY = "track_runner_diagnostics"
-DIAGNOSTICS_HEADER_VALUE = 2
+DIAGNOSTICS_HEADER_VALUE = 3
 
 # header key and version for solved-intervals JSON files
 INTERVALS_HEADER_KEY = "track_runner_intervals"
@@ -200,29 +200,31 @@ def load_diagnostics(path: str) -> dict:
 		data = json.load(fh)
 	if not isinstance(data, dict):
 		raise RuntimeError(f"diagnostics file did not parse as a mapping: {path}")
-	# validate the header key and version
+	# validate the header key and version: accept both v2 and v3
 	header_val = data.get(DIAGNOSTICS_HEADER_KEY)
-	if header_val != DIAGNOSTICS_HEADER_VALUE:
+	if header_val not in (2, 3):
 		raise RuntimeError(
 			f"diagnostics file header mismatch in {path}: "
-			f"expected {DIAGNOSTICS_HEADER_KEY}={DIAGNOSTICS_HEADER_VALUE}, got {header_val}"
+			f"expected {DIAGNOSTICS_HEADER_KEY} in (2, 3), got {header_val}"
 		)
-	# reconstruct interval_score sub-dict from flat on-disk fields
+	# reconstruct interval_score sub-dict from flat on-disk fields (v2 format)
 	# write_solver_diagnostics flattens interval_score to top-level keys,
 	# but consumers expect iv["interval_score"]["confidence"] etc.
-	_score_keys = (
-		"agreement_score", "identity_score", "competitor_margin",
-		"confidence", "failure_reasons",
-	)
-	for iv in data.get("intervals", []):
-		if not isinstance(iv, dict):
-			continue
-		if "interval_score" not in iv:
-			score = {}
-			for key in _score_keys:
-				if key in iv:
-					score[key] = iv[key]
-			iv["interval_score"] = score
+	if header_val == 2:
+		_score_keys = (
+			"agreement_score", "identity_score", "competitor_margin",
+			"confidence", "failure_reasons",
+		)
+		for iv in data.get("intervals", []):
+			if not isinstance(iv, dict):
+				continue
+			if "interval_score" not in iv:
+				score = {}
+				for key in _score_keys:
+					if key in iv:
+						score[key] = iv[key]
+				iv["interval_score"] = score
+	# v3 format stores interval_score as nested dict, no flattening needed
 	return data
 
 
@@ -393,18 +395,42 @@ def write_solver_diagnostics(
 			"end_frame": iv["end_frame"],
 			"start_s": round(iv["start_frame"] / max(1.0, fps), 3),
 			"end_s": round(iv["end_frame"] / max(1.0, fps), 3),
-			"agreement_score": round(
-				float(score.get("agreement_score", 0.0)), 4,
-			),
-			"identity_score": round(
-				float(score.get("identity_score", 0.0)), 4,
-			),
-			"competitor_margin": round(
-				float(score.get("competitor_margin", 0.0)), 4,
-			),
-			"confidence": score.get("confidence", "low"),
-			"failure_reasons": score.get("failure_reasons", []),
 		}
+		# detect analytical (v3) vs legacy (v2) interval scores
+		if "confidence_tier" in score:
+			# analytical interval_score_v2 format
+			entry["interval_score"] = {
+				"agreement": round(float(score.get("agreement", 0.0)), 4),
+				"velocity_consistency": round(
+					float(score.get("velocity_consistency", 0.0)), 4,
+				),
+				"size_consistency": round(
+					float(score.get("size_consistency", 0.0)), 4,
+				),
+				"motion_quality": round(
+					float(score.get("motion_quality", 0.0)), 4,
+				),
+				"occlusion_fraction": round(
+					float(score.get("occlusion_fraction", 0.0)), 4,
+				),
+				"confidence_tier": score.get("confidence_tier", "low"),
+				"severity": score.get("severity", "high"),
+				"failure_reasons": score.get("failure_reasons", []),
+				"warning_flags": score.get("warning_flags", []),
+			}
+		else:
+			# legacy v2 format (flattened fields for backward compat)
+			entry["agreement_score"] = round(
+				float(score.get("agreement_score", 0.0)), 4,
+			)
+			entry["identity_score"] = round(
+				float(score.get("identity_score", 0.0)), 4,
+			)
+			entry["competitor_margin"] = round(
+				float(score.get("competitor_margin", 0.0)), 4,
+			)
+			entry["confidence"] = score.get("confidence", "low")
+			entry["failure_reasons"] = score.get("failure_reasons", [])
 		intervals_summary.append(entry)
 
 	# preserve cyclical prior if detected
