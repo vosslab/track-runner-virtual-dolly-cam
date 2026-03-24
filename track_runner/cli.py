@@ -572,13 +572,15 @@ def _run_solve(
 
 	# Prepare scene_transform if using scene_interp backend
 	scene_transform = None
+	motion_track_data = None
 	if solver_backend == "scene_interp":
 		print("precomputing camera motion...")
-		cache_dir = tr_paths.default_cache_dir(args.input_file)
+		cache_dir = tr_paths.ensure_data_dir()
 		with video_io.VideoReader(args.input_file) as reader:
 			motion_track = camera_motion.precompute_camera_motion(
 				reader, cfg, args.input_file, video_info, cache_dir
 			)
+		motion_track_data = motion_track
 		scene_transform = scene_coords.SceneTransform(motion_track)
 		# scene_interp uses single-threaded analytical solver
 		solve_kwargs["num_workers"] = 1
@@ -598,6 +600,7 @@ def _run_solve(
 				tr_detection.create_detector(cfg),
 				cfg,
 				scene_transform=scene_transform,
+				motion_track=motion_track_data,
 				**solve_kwargs,
 			)
 	# restore default signal handler

@@ -5,6 +5,9 @@ returns agreement score, identity score, competitor margin, and a
 final confidence label.
 """
 
+# Standard Library
+import math
+
 # PIP3 modules
 import numpy
 
@@ -275,6 +278,8 @@ def score_interval_analytical(
 	all_seeds_scene: list,
 	interval_curves: dict,
 	scene_transform: object,
+	motion_track: object = None,
+	all_seeds: list = None,
 ) -> dict:
 	"""Score an interval using analytical velocity model metrics.
 
@@ -287,6 +292,8 @@ def score_interval_analytical(
 		backward_track: List of tracking state dicts from propagate_backward_analytical.
 		all_seeds_scene: List of all seeds as (frame, sx, sy, sw, sh) tuples
 			in scene coordinates.
+		motion_track: Optional MotionTrack for computing motion_quality.
+		all_seeds: Optional list of original seed dicts for occlusion_fraction.
 		interval_curves: Dict from fit_interval_curves with curve parameters.
 		scene_transform: SceneTransform instance.
 
@@ -319,21 +326,44 @@ def score_interval_analytical(
 		elif frame > end_frame:
 			support_seeds_right.append((frame, sx, sy, sw, sh))
 
-	# compute LOO velocity consistency
+	# compute LOO velocity consistency using slope prediction error
+	# for each support seed, compare its actual position to the position
+	# predicted by the slope estimated from the OTHER support seeds
 	velocity_errors = []
-	for seed_data in support_seeds_left[:4] + support_seeds_right[:4]:
+	left_pos = interval_curves["left_pos"]
+	right_pos = interval_curves["right_pos"]
+	left_frame = start_frame
+	right_frame = end_frame
+	# check left-side support seeds: predict their position from interval slope
+	for seed_data in support_seeds_left[-4:]:
 		frame, sx, sy, _, _ = seed_data
-		# predicted position from Hermite curve at this frame
-		if frame < start_frame:
-			# use backward-looking curve extrapolation (not typical, neutral)
-			pred_error = 0.5
-		else:
-			# outside interval, skip
-			pred_error = 0.5
-		velocity_errors.append(pred_error)
+		# predict from left endpoint using FWD slope
+		fwd_slopes = interval_curves["fwd_slopes"]
+		dt = float(frame - left_frame)
+		pred_sx = left_pos[0] + fwd_slopes[0] * dt
+		pred_sy = left_pos[1] + fwd_slopes[1] * dt
+		# error normalized by interval span
+		dist = math.sqrt((pred_sx - sx) ** 2 + (pred_sy - sy) ** 2)
+		# normalize by box size for scale-invariance
+		left_sh = interval_curves["left_size"][1]
+		norm_error = dist / max(left_sh, 1.0)
+		velocity_errors.append(min(norm_error, 1.0))
+	# check right-side support seeds: predict from right endpoint using BWD slope
+	for seed_data in support_seeds_right[:4]:
+		frame, sx, sy, _, _ = seed_data
+		bwd_slopes = interval_curves["bwd_slopes"]
+		dt = float(frame - right_frame)
+		pred_sx = right_pos[0] + bwd_slopes[0] * dt
+		pred_sy = right_pos[1] + bwd_slopes[1] * dt
+		dist = math.sqrt((pred_sx - sx) ** 2 + (pred_sy - sy) ** 2)
+		right_sh = interval_curves["right_size"][1]
+		norm_error = dist / max(right_sh, 1.0)
+		velocity_errors.append(min(norm_error, 1.0))
 
 	if velocity_errors:
-		velocity_consistency = 1.0 - float(numpy.mean(velocity_errors))
+		# invert so higher = better consistency
+		avg_error = float(numpy.mean(velocity_errors))
+		velocity_consistency = max(0.0, 1.0 - avg_error)
 	else:
 		# no support seeds: neutral score
 		velocity_consistency = 0.5
@@ -362,12 +392,53 @@ def score_interval_analytical(
 	else:
 		size_consistency = 1.0
 
-	# motion_quality: set to 1.0 (computed during camera motion estimation)
-	motion_quality = 1.0
+	# motion_quality: mean phase-correlation response for this interval's frames
+	if motion_track is not None and hasattr(motion_track, "quality"):
+		q_arr = motion_track.quality
+		# extract quality values for frames in this interval
+		f_start = max(0, start_frame)
+		f_end = min(len(q_arr), end_frame + 1)
+		if f_end > f_start:
+			interval_quality = q_arr[f_start:f_end]
+			motion_quality = float(numpy.mean(interval_quality))
+		else:
+			motion_quality = 1.0
+	else:
+		motion_quality = 1.0
 
-	# occlusion_fraction: frames in approximate-seed spans
-	# (placeholder: 0.0 for analytical mode which has good visibility)
+	# occlusion_fraction: fraction of interval frames in approximate-seed spans
+	# a hidden span runs from an approximate seed to the next visible/partial seed
 	occlusion_fraction = 0.0
+	if all_seeds is not None:
+		# count frames covered by approximate seeds within this interval
+		hidden_frames = 0
+		approx_frames = set()
+		for seed in all_seeds:
+			status = seed.get("status", "")
+			frame = int(seed.get("frame_index", -1))
+			if status in ("approximate", "obstructed"):
+				if start_frame <= frame <= end_frame:
+					approx_frames.add(frame)
+		# for each approximate seed, count frames from it to the next
+		# visible/partial seed (or interval endpoint) as hidden span
+		visible_frames = set()
+		for seed in all_seeds:
+			status = seed.get("status", "")
+			frame = int(seed.get("frame_index", -1))
+			if status in ("visible", "partial"):
+				if start_frame <= frame <= end_frame:
+					visible_frames.add(frame)
+		for af in sorted(approx_frames):
+			# find next visible/partial frame after this approximate seed
+			span_end = end_frame
+			for vf in sorted(visible_frames):
+				if vf > af:
+					span_end = vf
+					break
+			hidden_frames += (span_end - af)
+		if interval_length > 0:
+			occlusion_fraction = hidden_frames / interval_length
+			occlusion_fraction = min(1.0, occlusion_fraction)
 
 	# confidence tier classification
 	interval_len = len(forward_track)

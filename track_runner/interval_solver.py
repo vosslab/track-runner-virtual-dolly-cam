@@ -716,6 +716,8 @@ def solve_interval_analytical(
 	all_seeds_scene: list,
 	fps: float,
 	debug: bool = False,
+	motion_track: object = None,
+	all_seeds: list = None,
 ) -> dict:
 	"""Solve one interval using analytical velocity model (no optical flow).
 
@@ -789,6 +791,8 @@ def solve_interval_analytical(
 	interval_score = scoring.score_interval_analytical(
 		forward_track, backward_track, all_seeds_scene,
 		interval_curves, scene_transform,
+		motion_track=motion_track,
+		all_seeds=all_seeds,
 	)
 
 	result = {
@@ -1614,6 +1618,7 @@ def solve_all_intervals(
 	run_control: object = None,
 	key_reader: object = None,
 	scene_transform: object = None,
+	motion_track: object = None,
 ) -> dict:
 	"""Solve all seed-to-seed intervals and stitch into a full trajectory.
 
@@ -1743,6 +1748,8 @@ def solve_all_intervals(
 				result = solve_interval_analytical(
 					seed_start, seed_end, scene_transform,
 					all_seeds_scene, fps, debug=debug,
+					motion_track=motion_track,
+					all_seeds=seeds,
 				)
 				interval_results.append(result)
 				_print_interval_result_rich(result, fps, progress)
