@@ -34,6 +34,8 @@
 ### Fixes and Maintenance
 
 - Replaced starter-template changelog with project-specific history.
+- Fixed `./track_runner/track_runner.py` launcher import path so repo-root packages like `common_tools/` resolve correctly when running the script directly from the repository root.
+- Fixed `source source_me.sh && ./track_runner/track_runner.py ...` bootstrap to prefer Homebrew Python from `/opt/homebrew/bin`, so the executable launcher uses the repo's Python 3.12 environment instead of macOS system Python.
 - Fixed `_format_interval_result()` in `interval_solver.py` crashing with `KeyError: 'agreement_score'` on analytical v3 interval scores. Now detects v2/v3 format and renders correct metric names.
 - Fixed `_run_solve()` unconditionally creating YOLO detector even for `scene_interp` backend. Analytical path now passes `None` detector, removing the YOLO model download dependency.
 - Fixed `_build_predictions_from_diagnostics()` in `cli.py` reading only legacy fields (`confidence`, `agreement_score`, `competitor_margin`). Now extracts `confidence_tier`/`agreement`/`velocity_consistency` for v3 scores.
