@@ -603,7 +603,7 @@ def precompute_camera_motion(
 	zoom_type = config.get("camera", {}).get("zoom_type", "fixed")
 	if estimator_type == "FixedZoomEstimator" or zoom_type == "fixed":
 		estimator = FixedZoomEstimator()
-	elif estimator_type == "DiscreteZoomEstimator" or zoom_type == "iphone_discrete":
+	elif estimator_type in ("DiscreteZoomEstimator", "iphone_discrete") or zoom_type in ("iphone_discrete", "discrete"):
 		estimator = DiscreteZoomEstimator()
 	elif estimator_type == "ContinuousZoomEstimator" or zoom_type == "continuous":
 		estimator = ContinuousZoomEstimator()

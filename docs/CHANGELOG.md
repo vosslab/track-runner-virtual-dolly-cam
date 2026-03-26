@@ -2,6 +2,7 @@
 
 ### Additions and New Features
 
+- Created [tools/benchmark_solver_gates.py](tools/benchmark_solver_gates.py): standalone M4/M5 benchmark gate evaluation script for the analytical solver. Re-solves all 7 test videos from seeds, evaluates 12 numeric closure gates from Plan 07 acceptance criteria (WP-4.10), and writes audit artifact to `output_smoke/benchmark_gates.txt`. Supports `--video` for single-video runs and `--verbose` for per-frame details.
 - Ported track runner code from parent repo into self-contained project repository.
 - Copied `common_tools/` package (frame_filters, frame_reader, tools_common) into the repo.
 - Created [docs/INSTALL.md](docs/INSTALL.md) with setup steps, system dependencies, and pip requirements.
@@ -33,6 +34,7 @@
 
 ### Fixes and Maintenance
 
+- Fixed estimator dispatch in [track_runner/camera_motion.py](track_runner/camera_motion.py): `precompute_camera_motion()` now recognizes `estimator_type == "iphone_discrete"` and `zoom_type == "discrete"` as aliases for `DiscreteZoomEstimator`. Previously only matched `"DiscreteZoomEstimator"` or `zoom_type == "iphone_discrete"`, causing `ValueError: unsupported estimator type` for per-video configs saved by the setup wizard.
 - Replaced starter-template changelog with project-specific history.
 - Fixed `./track_runner/track_runner.py` launcher import path so repo-root packages like `common_tools/` resolve correctly when running the script directly from the repository root.
 - Fixed `source source_me.sh && ./track_runner/track_runner.py ...` bootstrap to prefer Homebrew Python from `/opt/homebrew/bin`, so the executable launcher uses the repo's Python 3.12 environment instead of macOS system Python.
