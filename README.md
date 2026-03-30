@@ -1,6 +1,6 @@
 # Track runner virtual dolly cam
 
-Track runner is a Python tool that tracks a runner in track meet video and produces a cropped, stabilized output -- a virtual dolly camera effect. Users place seed annotations on key frames to identify the runner, and the solver automatically propagates tracking between seeds using optical flow, patch correlation, and person detection. The result is a smooth cropped video that follows the athlete.
+Track runner is a Python tool that tracks a runner in track meet video and produces a cropped, stabilized "virtual dolly camera" output. Users place seed annotations on key frames, and the solver propagates tracking between seeds to produce a smooth cropped video that follows the athlete.
 
 **Status:** v26.02, active development.
 
@@ -45,6 +45,10 @@ Historical design documents, specifications, and implementation plans are in [do
 ```bash
 source source_me.sh && python -m pytest tests/ -q
 ```
+
+## License
+
+Code is licensed under [LGPLv3](LICENSE.LGPL_v3). Non-code content is licensed under [CC BY 4.0](LICENSE.CC_BY_4_0).
 
 ## Maintainer
 

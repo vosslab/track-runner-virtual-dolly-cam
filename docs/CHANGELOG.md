@@ -1,3 +1,9 @@
+## 2026-03-29
+
+### Fixes and Maintenance
+
+- Added license section to [README.md](README.md) linking [LICENSE.LGPL_v3](../LICENSE.LGPL_v3) and [LICENSE.CC_BY_4_0](../LICENSE.CC_BY_4_0).
+
 ## 2026-03-24
 
 ### Additions and New Features
