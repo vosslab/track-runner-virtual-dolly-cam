@@ -6,7 +6,7 @@ scale bar, and activation lifecycle.
 """
 
 # Standard Library
-# (none)
+import time
 
 # PIP3 modules
 from PySide6.QtCore import QObject, Qt, QTimer
@@ -102,6 +102,9 @@ class BaseAnnotationController(QObject):
 
 		# Peek suppression state
 		self._preds_suppressed: bool = False
+
+		# Quit double-press confirmation state
+		self._quit_pending_time: float = 0.0
 
 		# Per-overlay persistent visibility toggles
 		self._overlay_visibility: dict = {
@@ -385,7 +388,17 @@ class BaseAnnotationController(QObject):
 		min_area = 10
 		max_area = frame_w * frame_h * 0.5
 
-		if box_area < min_area or box_area > max_area:
+		if box_area < min_area:
+			if self._window is not None:
+				self._window.statusBar().showMessage(
+					"Box too small -- draw a larger rectangle", 3000
+				)
+			return
+		if box_area > max_area:
+			if self._window is not None:
+				self._window.statusBar().showMessage(
+					"Box too large -- draw a smaller rectangle", 3000
+				)
 			return
 
 		box = [int(x), int(y), int(w), int(h)]
@@ -406,7 +419,16 @@ class BaseAnnotationController(QObject):
 			True if handled, None if not.
 		"""
 		if key == Qt.Key.Key_Escape or key == Qt.Key.Key_Q:
-			self._on_quit()
+			now = time.monotonic()
+			# require double-press within 2 seconds to quit
+			if now - self._quit_pending_time < 2.0:
+				self._on_quit()
+			else:
+				self._quit_pending_time = now
+				if self._window is not None:
+					self._window.statusBar().showMessage(
+						"Press ESC/Q again to quit", 2000
+					)
 			return True
 		elif key == Qt.Key.Key_P:
 			self._on_partial_toggle()

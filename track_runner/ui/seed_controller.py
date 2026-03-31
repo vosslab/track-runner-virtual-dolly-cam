@@ -362,6 +362,11 @@ class SeedController(BaseAnnotationController):
 			title += f" | {quality_text}"
 		self._window.setWindowTitle(title)
 
+		# show targeting reasons in status bar when available
+		reason_text = self._get_targeting_reason_text()
+		if reason_text:
+			self._window.statusBar().showMessage(reason_text, 0)
+
 	#============================================
 
 	def _get_interval_quality_text(self) -> str:
@@ -391,6 +396,31 @@ class SeedController(BaseAnnotationController):
 			# use short labels: strip common prefixes for brevity
 			short_reasons = [r.replace("likely_", "").replace("_", " ") for r in reasons]
 			text += f" ({', '.join(short_reasons)})"
+		return text
+
+	#============================================
+
+	def _get_targeting_reason_text(self) -> str:
+		"""Build a human-readable targeting reason from interval info.
+
+		Returns:
+			String like "Targeted: FWD/BWD diverge, low agreement"
+			or empty string if no targeting info available.
+		"""
+		if self._predictions is None:
+			return ""
+		preds = self._predictions.get(self._current_frame)
+		if preds is None:
+			return ""
+		info = preds.get("interval_info")
+		if info is None:
+			return ""
+		reasons = info.get("reasons", [])
+		if not reasons:
+			return ""
+		# format reasons into readable text
+		readable = [r.replace("_", " ") for r in reasons]
+		text = f"Targeted: {', '.join(readable)}"
 		return text
 
 	#============================================
@@ -657,12 +687,62 @@ class SeedController(BaseAnnotationController):
 		self._done = True
 		print(f"  user quit at frame {self._current_frame} "
 			f"({self._list_idx + 1}/{len(self._seed_frame_indices)})")
+		# print seed statistics summary
+		all_seeds = self._all_seeds + self._new_seeds
+		self._print_seed_stats(all_seeds)
 		if self._return_callback is not None:
 			# Return to edit mode with collected seeds
 			self._return_callback(self._new_seeds)
 			return
 		if self._window is not None:
 			self._window.close()
+
+	#============================================
+
+	def _print_seed_stats(self, seeds: list) -> None:
+		"""Print seed coverage statistics to console.
+
+		Shows total count, average spacing, and largest gap to help
+		the user judge whether coverage is sufficient.
+
+		Args:
+			seeds: List of all seed dicts (existing + new).
+		"""
+		# count only usable seeds (visible or partial)
+		usable = [
+			s for s in seeds
+			if s.get("status") in ("visible", "partial")
+		]
+		not_in_frame = sum(
+			1 for s in seeds if s.get("status") == "not_in_frame"
+		)
+		approximate = sum(
+			1 for s in seeds if s.get("status") == "approximate"
+		)
+		print(f"  seed stats: {len(seeds)} total, "
+			f"{len(usable)} usable, "
+			f"{not_in_frame} not-in-frame, "
+			f"{approximate} approximate")
+		if len(usable) < 2:
+			print("  warning: need at least 2 usable seeds to solve")
+			return
+		# compute gaps between usable seeds sorted by frame index
+		sorted_frames = sorted(
+			float(s["frame_index"]) for s in usable
+		)
+		gaps = []
+		for i in range(1, len(sorted_frames)):
+			gap_s = (sorted_frames[i] - sorted_frames[i - 1]) / self._fps
+			gaps.append(gap_s)
+		avg_gap = sum(gaps) / len(gaps)
+		max_gap = max(gaps)
+		print(f"  average spacing: {avg_gap:.1f}s, "
+			f"largest gap: {max_gap:.1f}s")
+		# warn if largest gap is more than double the average
+		if max_gap > avg_gap * 2.5:
+			print(f"  warning: largest gap ({max_gap:.1f}s) is "
+				f"much larger than average ({avg_gap:.1f}s) "
+				f"-- consider adding seeds in that region")
 
 	#============================================
 
@@ -774,15 +854,27 @@ class SeedController(BaseAnnotationController):
 	def _on_fwd_bwd_avg(self) -> None:
 		"""Auto-accept average of FWD/BWD predictions if overlap sufficient."""
 		if self._predictions is None:
+			if self._window is not None:
+				self._window.statusBar().showMessage(
+					"No predictions available for F-key", 3000
+				)
 			return
 
 		preds = self._predictions.get(self._current_frame)
 		if preds is None:
+			if self._window is not None:
+				self._window.statusBar().showMessage(
+					"No predictions available for F-key", 3000
+				)
 			return
 
 		fwd = preds.get("forward")
 		bwd = preds.get("backward")
 		if fwd is None or bwd is None:
+			if self._window is not None:
+				self._window.statusBar().showMessage(
+					"Need both FWD and BWD predictions for F-key", 3000
+				)
 			return
 
 		# Compute FWD and BWD boxes
@@ -813,6 +905,10 @@ class SeedController(BaseAnnotationController):
 
 		# Check overlap ratio
 		if total <= 0 or intersection / total < 0.1:
+			if self._window is not None:
+				self._window.statusBar().showMessage(
+					"FWD/BWD overlap too low to auto-accept", 3000
+				)
 			return
 
 		# Compute average box

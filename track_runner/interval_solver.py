@@ -22,7 +22,6 @@ import rich.measure
 
 # local repo modules
 import propagator
-import hypothesis
 import scoring
 import state_io
 import key_input
