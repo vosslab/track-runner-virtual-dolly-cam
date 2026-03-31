@@ -294,6 +294,47 @@ def test_review_handles_v3_confidence():
 
 
 #============================================
+def test_solve_all_intervals_calls_on_interval_solved():
+	"""Analytical solve persists each interval through the callback hook."""
+	n_frames = 300
+	motion = _make_synthetic_motion_track(n_frames)
+	scene_transform = scene_coords.SceneTransform(motion)
+	seeds = _make_seeds_linear_motion(
+		n_seeds=4, start_frame=10, frame_spacing=50,
+		start_x=100.0, start_y=200.0,
+		dx_per_frame=2.0, dy_per_frame=0.0,
+		box_w=30.0, box_h=60.0,
+	)
+
+	class _DummyReader:
+		def get_info(self) -> dict:
+			return {"fps": 30.0}
+
+	captured = []
+
+	def _on_interval_solved(fingerprint: str, result: dict) -> None:
+		captured.append((fingerprint, result))
+
+	diagnostics = interval_solver.solve_all_intervals(
+		_DummyReader(),
+		seeds,
+		detector=None,
+		config={},
+		scene_transform=scene_transform,
+		motion_track=motion,
+		on_interval_solved=_on_interval_solved,
+	)
+
+	assert len(diagnostics["intervals"]) == 3
+	assert len(captured) == 3
+	for fingerprint, result in captured:
+		assert isinstance(fingerprint, str)
+		assert "|" in fingerprint
+		assert "start_frame" in result
+		assert "end_frame" in result
+
+
+#============================================
 def test_setup_mode_importable():
 	"""Verify setup_mode module is importable and has run_setup."""
 	import setup_mode

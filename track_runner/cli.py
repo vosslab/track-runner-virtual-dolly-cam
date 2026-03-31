@@ -199,6 +199,60 @@ def _validate_diagnostics_confidence(diagnostics: dict) -> None:
 
 
 #============================================
+def _ensure_target_diagnostics(
+	args: argparse.Namespace,
+	cfg: dict,
+	video_info: dict,
+	seeds: list,
+	diag_path: str,
+	intervals_path: str,
+) -> dict:
+	"""Return diagnostics usable by target mode, solving when needed.
+
+	Target mode depends on interval diagnostics to rank weak spans and
+	build prediction overlays. If the diagnostics file is missing,
+	empty, or stale, this helper runs a fresh solve so the interactive
+	target workflow does not require a separate manual solve step.
+
+	Args:
+		args: Parsed argparse namespace.
+		cfg: Configuration dict.
+		video_info: Video metadata dict.
+		seeds: Loaded seed list.
+		diag_path: Path to diagnostics JSON file.
+		intervals_path: Path to solved-intervals JSON file.
+
+	Returns:
+		Diagnostics dict with interval confidence data.
+	"""
+	need_solve = False
+	reason = None
+	if not os.path.isfile(diag_path):
+		need_solve = True
+		reason = "missing diagnostics"
+	else:
+		diag_data = state_io.load_diagnostics(diag_path)
+		if not diag_data.get("intervals"):
+			need_solve = True
+			reason = "diagnostics file has no intervals"
+		else:
+			try:
+				_validate_diagnostics_confidence(diag_data)
+				return diag_data
+			except RuntimeError:
+				need_solve = True
+				reason = "diagnostics missing confidence data"
+	if need_solve:
+		num_workers = _resolve_workers(args)
+		print(f"  target mode: {reason}; running solve first")
+		return _run_solve(
+			args, cfg, seeds, video_info,
+			intervals_path, diag_path, num_workers,
+		)
+	return diag_data
+
+
+#============================================
 def _print_quality_summary(diagnostics: dict, fps: float) -> None:
 	"""Print a human-readable quality summary from diagnostics.
 
@@ -850,23 +904,15 @@ def _mode_target(
 		diag_path: Path to diagnostics JSON file.
 		intervals_path: Path to solved-intervals JSON file.
 	"""
-	fps = video_info["fps"]
-	# require diagnostics from a prior solve
-	if not os.path.isfile(diag_path):
-		raise RuntimeError(
-			f"no diagnostics found at {diag_path}. "
-			f"Run 'solve' or 'run' first to generate interval data."
-		)
-	diag_data = state_io.load_diagnostics(diag_path)
-	if not diag_data.get("intervals"):
-		raise RuntimeError("diagnostics file has no intervals")
-	_validate_diagnostics_confidence(diag_data)
-
 	# load seeds
 	seeds = _load_and_deduplicate_seeds(seeds_path)
 	if not seeds:
 		raise RuntimeError(f"no seeds found in {seeds_path}")
 	print(f"loaded {len(seeds)} seeds from {seeds_path}")
+	fps = video_info["fps"]
+	diag_data = _ensure_target_diagnostics(
+		args, cfg, video_info, seeds, diag_path, intervals_path,
+	)
 
 	# back up seeds before modifying
 	backup_path = seeds_path + ".bak"

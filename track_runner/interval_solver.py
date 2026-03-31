@@ -19,6 +19,7 @@ import rich.measure
 # local repo modules
 import scoring
 import key_input
+import state_io
 import velocity_model
 
 
@@ -1216,6 +1217,11 @@ def solve_all_intervals(
 				motion_track=motion_track,
 				all_seeds=seeds,
 			)
+			if on_interval_solved is not None:
+				fingerprint = state_io.interval_fingerprint(
+					seed_start, seed_end,
+				)
+				on_interval_solved(fingerprint, result)
 			interval_results.append(result)
 			_print_interval_result_rich(result, fps, progress)
 			if on_interval_complete is not None:

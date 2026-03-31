@@ -18,7 +18,10 @@ PERSON_CLASS_ID = 0  # COCO class 0 = person
 
 
 #============================================
-def ensure_yolo_weights(cache_dir: str | None = None) -> str:
+def ensure_yolo_weights(
+	cache_dir: str | None = None,
+	quiet: bool = False,
+) -> str:
 	"""Get YOLOv8n ONNX weights from cache.
 
 	Checks for the cached ONNX file. If missing, prints instructions
@@ -27,6 +30,8 @@ def ensure_yolo_weights(cache_dir: str | None = None) -> str:
 	Args:
 		cache_dir: Directory to look for the weights file.
 			Defaults to ~/.cache/track_runner/.
+		quiet: If True, suppress console instructions when weights
+			are missing or invalid.
 
 	Returns:
 		Path to the ONNX weights file, or empty string if not found.
@@ -41,14 +46,16 @@ def ensure_yolo_weights(cache_dir: str | None = None) -> str:
 		file_size = os.path.getsize(onnx_path)
 		if YOLO_EXPECTED_ONNX_MIN <= file_size <= YOLO_EXPECTED_ONNX_MAX:
 			return onnx_path
-		print(f"WARNING: existing ONNX file has unexpected size "
-			f"({file_size} bytes), please re-export")
+		if not quiet:
+			print(f"WARNING: existing ONNX file has unexpected size "
+				f"({file_size} bytes), please re-export")
 	# ONNX file not found, print instructions
-	print(f"YOLO ONNX weights not found at {onnx_path}")
-	print("Run the one-time export script to create them:")
-	print("  pip3 install ultralytics")
-	print("  python3 tools/export_yolo_onnx.py")
-	print("  pip3 uninstall ultralytics  # optional cleanup")
+	if not quiet:
+		print(f"YOLO ONNX weights not found at {onnx_path}")
+		print("Run the one-time export script to create them:")
+		print("  pip3 install ultralytics")
+		print("  python3 tools/export_yolo_onnx.py")
+		print("  pip3 uninstall ultralytics  # optional cleanup")
 	return ""
 
 

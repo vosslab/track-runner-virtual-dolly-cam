@@ -82,6 +82,7 @@ class SeedController(BaseAnnotationController):
 		# auto-seed suggestion state
 		self._suggestion: dict | None = None
 		self._detector: object = None
+		self._detector_unavailable: bool = False
 		self._detection_cache: dict = {}
 
 	#============================================
@@ -100,12 +101,12 @@ class SeedController(BaseAnnotationController):
 		# Navigation buttons
 		btn_prev = QPushButton("<  Prev")
 		btn_prev.setToolTip("Previous frame (Shift+LEFT)")
-		btn_prev.clicked.connect(self._on_prev)
+		btn_prev.clicked.connect(self._on_prev_button)
 		layout.addWidget(btn_prev)
 
 		btn_next = QPushButton("Next  >")
 		btn_next.setToolTip("Next frame (Shift+RIGHT)")
-		btn_next.clicked.connect(self._on_next)
+		btn_next.clicked.connect(self._on_next_button)
 		layout.addWidget(btn_next)
 
 		btn_skip = QPushButton("Skip")
@@ -266,16 +267,19 @@ class SeedController(BaseAnnotationController):
 		Returns:
 			YoloDetector instance or None if weights unavailable.
 		"""
+		if self._detector_unavailable:
+			return None
 		if self._detector is None:
 			# lazy import to avoid circular dependencies
 			import tr_detection as detection_module
 
 			# ensure weights exist before creating detector
 			weights_path = (
-				detection_module.ensure_yolo_weights()
+				detection_module.ensure_yolo_weights(quiet=True)
 			)
 			if not weights_path:
-				# weights unavailable, silently degrade
+				# seed UI can function without YOLO suggestions
+				self._detector_unavailable = True
 				return None
 
 			# create detector directly without create_detector()
@@ -470,20 +474,20 @@ class SeedController(BaseAnnotationController):
 			self._on_skip()
 			return True
 		elif key == Qt.Key.Key_Left:
-			if shift_held:
-				# Shift+LEFT always scrubs backward (time nav)
+			if shift_held or self._window.get_frame_view().is_fit_zoom():
+				# Shift+LEFT always scrubs; plain LEFT scrubs when pan is unavailable.
 				mult = self._step_multiplier(modifiers)
 				self._on_prev(mult)
 				return True
-			# plain LEFT: let QGraphicsView handle pan (no-op at fit-zoom)
+			# plain LEFT while zoomed in: let QGraphicsView handle pan
 			return False
 		elif key == Qt.Key.Key_Right:
-			if shift_held:
-				# Shift+RIGHT always scrubs forward (time nav)
+			if shift_held or self._window.get_frame_view().is_fit_zoom():
+				# Shift+RIGHT always scrubs; plain RIGHT scrubs when pan is unavailable.
 				mult = self._step_multiplier(modifiers)
 				self._on_next(mult)
 				return True
-			# plain RIGHT: let QGraphicsView handle pan (no-op at fit-zoom)
+			# plain RIGHT while zoomed in: let QGraphicsView handle pan
 			return False
 		elif key == Qt.Key.Key_BracketLeft:
 			self._decrease_step()
@@ -784,6 +788,13 @@ class SeedController(BaseAnnotationController):
 
 	#============================================
 
+	def _on_prev_button(self, checked: bool = False) -> None:
+		"""Handle toolbar previous button clicks."""
+		_ = checked
+		self._on_prev(1)
+
+	#============================================
+
 	def _on_next(self, multiplier: int = 1) -> None:
 		"""Scrub forward by the current step size times multiplier.
 
@@ -794,6 +805,13 @@ class SeedController(BaseAnnotationController):
 		max_frame = self._seed_frame_indices[-1] if self._seed_frame_indices else 0
 		self._current_frame = min(max_frame, self._current_frame + self._scrub_step_frames * multiplier)
 		self._refresh_frame()
+
+	#============================================
+
+	def _on_next_button(self, checked: bool = False) -> None:
+		"""Handle toolbar next button clicks."""
+		_ = checked
+		self._on_next(1)
 
 	#============================================
 

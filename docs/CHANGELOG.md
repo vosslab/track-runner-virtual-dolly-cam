@@ -10,6 +10,10 @@
 
 ### Fixes and Maintenance
 
+- Fixed [`track_runner/cli.py`](../track_runner/cli.py): `target` mode now auto-runs a fresh solve when diagnostics are missing, empty, or stale instead of aborting and forcing a separate manual solve step first.
+- Fixed optional YOLO warning spam in [`track_runner/ui/seed_controller.py`](../track_runner/ui/seed_controller.py) and [`track_runner/tr_detection.py`](../track_runner/tr_detection.py): normal seed collection no longer repeatedly prints missing ONNX export instructions when detector-backed auto-suggestions are unavailable. Manual seeding continues to work without ONNX weights.
+- Fixed seed navigation in [`track_runner/ui/seed_controller.py`](../track_runner/ui/seed_controller.py): Prev/Next toolbar buttons now advance frames again, and plain left/right arrow keys now scrub at fit-to-view zoom instead of no-oping when pan is unavailable.
+- Fixed analytical solve persistence in [`track_runner/interval_solver.py`](../track_runner/interval_solver.py): each solved interval now writes through the existing `on_interval_solved` callback so [`track_runner/cli.py`](../track_runner/cli.py) analyze/encode modes can reconstruct trajectories from `*.intervals.json` after a completed solve or refine run.
 - Removed dead legacy code from [track_runner/seeding.py](../track_runner/seeding.py): deleted `SEED_WINDOW_TITLE` constant, `_draw_trajectory_preview()` function, and `_interactive_draw_box()` function (285 lines total). Removed unused imports `numpy` and `overlay_config` that only supported these functions. This completes the migration from legacy cv2-based interactive UI to PySide6 controllers.
 
 ### Removals and Deprecations
