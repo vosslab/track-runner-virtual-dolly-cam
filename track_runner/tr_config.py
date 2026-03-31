@@ -84,9 +84,6 @@ def validate_config(config: dict) -> None:
 	# camera section is optional; fill with defaults if missing
 	if "camera" not in config:
 		config["camera"] = _get_default_camera_config()
-	# solver_backend is optional under processing; use default if missing
-	if "solver_backend" not in config.get("processing", {}):
-		config.setdefault("processing", {})["solver_backend"] = "scene_interp"
 
 #============================================
 

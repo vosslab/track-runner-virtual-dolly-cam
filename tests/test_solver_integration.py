@@ -3,25 +3,14 @@
 Tests the full solve path components: camera motion -> scene transform ->
 velocity model -> scoring -> diagnostics, using synthetic data.
 
-Note: interval_solver.py uses bare imports (import propagator) which require
-the track_runner directory on sys.path. These tests use sys.path manipulation
-to make those imports work, matching the runtime behavior.
+Bare imports (e.g. import scoring) are resolved via conftest.py which
+adds track_runner/ to sys.path.
 """
-
-# Standard Library
-import os
-import sys
 
 # PIP3 modules
 import numpy
 
-# add track_runner to sys.path so bare imports work (matches runtime behavior)
-_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_TR_DIR = os.path.join(_REPO_ROOT, "track_runner")
-if _TR_DIR not in sys.path:
-	sys.path.insert(0, _TR_DIR)
-
-# local repo modules (bare imports matching runtime behavior)
+# local repo modules (bare imports resolved by conftest.py)
 import camera_motion
 import scene_coords
 import state_io
@@ -322,4 +311,4 @@ def test_config_camera_defaults():
 	tr_config.validate_config(config)
 	assert "camera" in config
 	assert config["camera"]["zoom_type"] == "fixed"
-	assert config["processing"]["solver_backend"] == "scene_interp"
+	# solver_backend removed -- analytical is the only solver now

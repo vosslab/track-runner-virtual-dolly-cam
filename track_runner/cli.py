@@ -28,7 +28,6 @@ import tr_config
 import state_io
 import tr_paths
 import tr_video_identity
-import tr_detection
 import encoder
 import video_io
 import seeding
@@ -540,10 +539,6 @@ def _run_solve(
 ) -> dict:
 	"""Run the interval solver and write diagnostics.
 
-	Supports two solver backends:
-	  - scene_interp (default): analytical solver with camera motion compensation
-	  - legacy_interval: original optical-flow based solver
-
 	Args:
 		args: Parsed argparse namespace.
 		cfg: Configuration dict.
@@ -560,12 +555,8 @@ def _run_solve(
 	fps = video_info["fps"]
 	usable_seeds, _, _ = _validate_usable_seeds(seeds)
 
-	# Determine solver backend from config
-	solver_backend = cfg.get("processing", {}).get("solver_backend", "scene_interp")
-
-	print(f"running interval solver "
-		f"({len(usable_seeds)} usable seeds, {num_workers} workers, "
-		f"backend={solver_backend})...")
+	print(f"solving... "
+		f"({len(usable_seeds)} usable seeds, {num_workers} workers)")
 	print("  (press Q to quit, P to pause)")
 	t_solve_start = time.time()
 	prior_ivs, on_solved_cb = _load_prior_results(intervals_path)
@@ -579,20 +570,17 @@ def _run_solve(
 	if on_interval_complete is not None:
 		solve_kwargs["on_interval_complete"] = on_interval_complete
 
-	# Prepare scene_transform if using scene_interp backend
-	scene_transform = None
-	motion_track_data = None
-	if solver_backend == "scene_interp":
-		print("precomputing camera motion...")
-		cache_dir = tr_paths.ensure_data_dir()
-		with video_io.VideoReader(args.input_file) as reader:
-			motion_track = camera_motion.precompute_camera_motion(
-				reader, cfg, args.input_file, video_info, cache_dir
-			)
-		motion_track_data = motion_track
-		scene_transform = scene_coords.SceneTransform(motion_track)
-		# scene_interp uses single-threaded analytical solver
-		solve_kwargs["num_workers"] = 1
+	# Precompute camera motion for scene coordinate transformation
+	print("precomputing camera motion...")
+	cache_dir = tr_paths.ensure_data_dir()
+	with video_io.VideoReader(args.input_file) as reader:
+		motion_track = camera_motion.precompute_camera_motion(
+			reader, cfg, args.input_file, video_info, cache_dir
+		)
+	motion_track_data = motion_track
+	scene_transform = scene_coords.SceneTransform(motion_track)
+	# Analytical solver uses single-threaded execution
+	solve_kwargs["num_workers"] = 1
 
 	# set up keyboard controls and signal handler
 	rc = key_input.RunControl()
@@ -603,11 +591,8 @@ def _run_solve(
 	with key_input.KeyInputReader() as kreader:
 		solve_kwargs["run_control"] = rc
 		solve_kwargs["key_reader"] = kreader
-		# skip YOLO detector when using analytical backend
-		if solver_backend == "scene_interp":
-			detector = None
-		else:
-			detector = tr_detection.create_detector(cfg)
+		# analytical solver does not use YOLO detector
+		detector = None
 		with video_io.VideoReader(args.input_file) as reader:
 			diagnostics = interval_solver.solve_all_intervals(
 				reader, seeds,

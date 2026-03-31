@@ -1,17 +1,13 @@
-"""Per-interval bounded solving with cyclical prior injection for track_runner.
+"""Per-interval analytical solving for track_runner.
 
-Splits the video timeline into seed-to-seed intervals, solves each interval
-using forward/backward propagation and competitor hypothesis tracking, and
+Splits the video timeline into seed-to-seed intervals, solves each
+interval using analytical velocity models in scene coordinates, and
 stitches results into a full trajectory.
 """
 
 # Standard Library
 import math
 import time
-import multiprocessing
-import threading
-import concurrent.futures
-import concurrent.futures.process
 
 # PIP3 modules
 import numpy
@@ -21,15 +17,9 @@ import rich.text
 import rich.measure
 
 # local repo modules
-import propagator
 import scoring
-import state_io
 import key_input
 import velocity_model
-
-# module-level shared counter for parallel workers
-# set by _init_worker() via ProcessPoolExecutor initializer
-_FRAME_COUNTER = None
 
 
 #============================================
@@ -161,30 +151,9 @@ class FrameETAColumn(rich.progress.ProgressColumn):
 
 
 #============================================
-def _init_worker(shared_counter: multiprocessing.Value) -> None:
-	"""Initialize worker process with a shared frame counter.
-
-	Called by ProcessPoolExecutor as the initializer for each worker.
-	Stores the shared counter as a module-level global so
-	_solve_interval_worker() can increment it per-frame.
-
-	Args:
-		shared_counter: multiprocessing.Value('i') shared across workers.
-	"""
-	global _FRAME_COUNTER
-	_FRAME_COUNTER = shared_counter
-
-
-#============================================
 # Agreement tolerance: Dice coefficient threshold for FWD/BWD agreement.
 # Any overlap is meaningful for this method, so a low threshold is used.
 AGREE_DICE_THRESHOLD = 0.3
-# Minimum number of frames for cyclical prior detection
-# retained for potential future bbox area refinement
-CYCLICAL_MIN_FRAMES = 900   # ~30s at 30fps
-# Expected lap period range in seconds for track events
-CYCLICAL_PERIOD_MIN_S = 25.0
-CYCLICAL_PERIOD_MAX_S = 60.0
 
 
 #============================================
@@ -281,430 +250,6 @@ def fuse_tracks(
 		fused.append(state)
 
 	return fused
-
-
-#============================================
-# retained for potential future bbox area refinement
-def _detect_cyclical_prior(
-	trajectory: list,
-	fps: float,
-) -> dict | None:
-	"""Detect a repeating position pattern in a completed trajectory.
-
-	Looks for a period in [CYCLICAL_PERIOD_MIN_S, CYCLICAL_PERIOD_MAX_S]
-	by computing autocorrelation of the x-coordinate signal. Returns a
-	soft prior dict if a clear period is found, else None.
-
-	Args:
-		trajectory: List of tracking state dicts for completed frames.
-		fps: Video frame rate in frames per second.
-
-	Returns:
-		Dict with "period_frames" and "period_s" if detected, else None.
-	"""
-	if len(trajectory) < CYCLICAL_MIN_FRAMES:
-		return None
-
-	# extract cx signal, replacing None entries with interpolated values
-	cx_vals = []
-	for state in trajectory:
-		if state is not None:
-			cx_vals.append(float(state["cx"]))
-		elif cx_vals:
-			cx_vals.append(cx_vals[-1])
-		else:
-			cx_vals.append(0.0)
-
-	cx_arr = numpy.array(cx_vals, dtype=float)
-	# detrend by subtracting mean
-	cx_arr -= numpy.mean(cx_arr)
-
-	# compute normalized autocorrelation
-	# restrict to lags in the expected period range
-	min_lag = int(CYCLICAL_PERIOD_MIN_S * fps)
-	max_lag = int(CYCLICAL_PERIOD_MAX_S * fps)
-	max_lag = min(max_lag, len(cx_arr) // 2)
-
-	if min_lag >= max_lag:
-		return None
-
-	n = len(cx_arr)
-	# variance for normalization
-	variance = float(numpy.var(cx_arr))
-	if variance < 1e-6:
-		return None
-
-	# compute autocorrelation at each lag in range
-	best_corr = 0.0
-	best_lag = -1
-	for lag in range(min_lag, max_lag + 1):
-		corr = float(numpy.mean(cx_arr[:n - lag] * cx_arr[lag:])) / variance
-		if corr > best_corr:
-			best_corr = corr
-			best_lag = lag
-
-	# require reasonably strong correlation to trust the period
-	if best_corr < 0.4 or best_lag < 0:
-		return None
-
-	period_s = best_lag / fps
-	prior = {
-		"period_frames": best_lag,
-		"period_s": period_s,
-		"correlation": best_corr,
-	}
-	return prior
-
-
-#============================================
-def refine_interval(
-	reader: object,
-	start_frame: int,
-	end_frame: int,
-	start_state: dict,
-	end_state: dict,
-	fused_track: list,
-	appearance_model: dict,
-	backward_reader: object = None,
-	debug: bool = False,
-) -> list:
-	"""Re-propagate an interval using the first-pass fused track as soft prior.
-
-	Converts fused_track into a dict keyed by absolute frame index, then
-	re-runs forward and backward propagation with prior_track so that each
-	frame's position is gently pulled toward the fused reference. Re-fuses
-	the refined passes and returns the result.
-
-	This does NOT re-run competitor/identity scoring (preserves first-pass
-	diagnostic signal for seed recommendation).
-
-	Args:
-		reader: VideoReader with read_frame() and get_info().
-		start_frame: First frame index of the interval.
-		end_frame: Last frame index of the interval.
-		start_state: Propagator seed state at start_frame.
-		end_state: Propagator seed state at end_frame.
-		fused_track: First-pass fused track list (index 0 = start_frame).
-		appearance_model: Appearance model from propagator.build_appearance_model().
-		backward_reader: Optional second VideoReader for concurrent backward pass.
-		debug: If True, print propagation heartbeats.
-
-	Returns:
-		Refined fused track list, same length and indexing as fused_track.
-	"""
-	# build prior dict keyed by absolute frame index
-	prior_dict = {}
-	for i, state in enumerate(fused_track):
-		if state is not None:
-			prior_dict[start_frame + i] = state
-
-	# re-propagate with fused track as soft prior
-	if backward_reader is not None:
-		# concurrent forward + backward
-		with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-			fwd_future = pool.submit(
-				propagator.propagate_forward,
-				reader, start_frame, start_state, end_frame, appearance_model,
-				debug, prior_track=prior_dict,
-			)
-			bwd_future = pool.submit(
-				propagator.propagate_backward,
-				backward_reader, end_frame, end_state, start_frame,
-				appearance_model, debug, prior_track=prior_dict,
-			)
-			refined_fwd = fwd_future.result()
-			refined_bwd_raw = bwd_future.result()
-	else:
-		# sequential
-		refined_fwd = propagator.propagate_forward(
-			reader, start_frame, start_state, end_frame, appearance_model,
-			debug=debug, prior_track=prior_dict,
-		)
-		refined_bwd_raw = propagator.propagate_backward(
-			reader, end_frame, end_state, start_frame, appearance_model,
-			debug=debug, prior_track=prior_dict,
-		)
-
-	# align lengths
-	n = min(len(refined_fwd), len(refined_bwd_raw))
-	refined_fwd = refined_fwd[:n]
-	refined_bwd = refined_bwd_raw[:n]
-
-	# re-fuse the refined passes
-	refined_fused = fuse_tracks(refined_fwd, refined_bwd)
-	return refined_fused
-
-
-#============================================
-def solve_interval(
-	reader: object,
-	seed_start: dict,
-	seed_end: dict,
-	detector: object,
-	appearance_model: dict,
-	show_progress: bool = False,
-	frame_counter: object = None,
-	backward_reader: object = None,
-	debug: bool = False,
-	detection_cache: dict = None,
-) -> dict:
-	"""Solve one interval between two seed frames.
-
-	Propagates forward from seed_start and backward from seed_end, generates
-	competitor hypotheses, computes per-frame identity scores and competitor
-	margins, fuses the two tracks, and scores the interval.
-
-	Args:
-		reader: VideoReader with read_frame() and get_info() methods.
-		seed_start: Seed state dict at the start of the interval. Must have
-			cx, cy, w, h, conf, and frame_index keys.
-		seed_end: Seed state dict at the end of the interval.
-		detector: Person detector with a detect(frame) method.
-		appearance_model: Appearance model from propagator.build_appearance_model().
-		show_progress: If True, show a rich progress bar for per-frame processing.
-		frame_counter: Optional multiprocessing.Value('i') shared counter.
-			Incremented after each frame is processed for progress reporting.
-		backward_reader: Optional second VideoReader for backward propagation.
-			When provided, forward and backward passes run concurrently in threads.
-			When None, both passes use `reader` sequentially.
-		debug: If True, print per-frame debug info (detection count, confidence).
-		detection_cache: Optional dict mapping frame_index to list of detection
-			dicts. When provided, cached detections are reused instead of
-			re-running the detector. New detections are added to the cache.
-
-	Returns:
-		Dict with keys: start_frame, end_frame, fused_track, forward_track,
-		backward_track, interval_score, identity_scores, competitor_margins,
-		detection_cache.
-	"""
-	start_frame = int(seed_start["frame_index"])
-	end_frame = int(seed_end["frame_index"])
-
-	# reject degenerate intervals where start equals or exceeds end
-	if start_frame >= end_frame:
-		raise RuntimeError(
-			f"degenerate interval: start_frame={start_frame} >= end_frame={end_frame}. "
-			f"Seeds likely have duplicate frame_index values."
-		)
-
-	# build start and end propagator states from seeds
-	start_state = propagator.make_seed_state(
-		cx=float(seed_start["cx"]),
-		cy=float(seed_start["cy"]),
-		w=float(seed_start["w"]),
-		h=float(seed_start["h"]),
-		# None means unscored human seed, treat as full confidence
-		conf=1.0 if seed_start["conf"] is None else float(seed_start["conf"]),
-		seed_status=seed_start.get("status", ""),
-	)
-	end_state = propagator.make_seed_state(
-		cx=float(seed_end["cx"]),
-		cy=float(seed_end["cy"]),
-		w=float(seed_end["w"]),
-		h=float(seed_end["h"]),
-		# None means unscored human seed, treat as full confidence
-		conf=1.0 if seed_end["conf"] is None else float(seed_end["conf"]),
-		seed_status=seed_end.get("status", ""),
-	)
-
-	# propagate forward from start to end, and backward from end to start
-	n_frames = end_frame - start_frame
-
-	if backward_reader is not None:
-		# run forward and backward concurrently using threads
-		# OpenCV releases the GIL during frame reads so threads give real parallelism
-		if debug:
-			print(f"    propagating forward+backward {n_frames} frames concurrently...", flush=True)
-		with concurrent.futures.ThreadPoolExecutor(max_workers=2) as thread_pool:
-			fwd_future = thread_pool.submit(
-				propagator.propagate_forward,
-				reader, start_frame, start_state, end_frame, appearance_model,
-				debug,
-			)
-			bwd_future = thread_pool.submit(
-				propagator.propagate_backward,
-				backward_reader, end_frame, end_state, start_frame, appearance_model,
-				debug,
-			)
-			forward_track = fwd_future.result()
-			backward_raw = bwd_future.result()
-		if debug:
-			print(f"    forward+backward done ({len(forward_track)}+{len(backward_raw)} states)", flush=True)
-	else:
-		# sequential path: single reader for both passes
-		if debug:
-			print(f"    propagating forward {n_frames} frames ({start_frame}-{end_frame})...", flush=True)
-		forward_track = propagator.propagate_forward(
-			reader, start_frame, start_state, end_frame, appearance_model,
-			debug=debug,
-		)
-		if debug:
-			print(f"    forward done ({len(forward_track)} states)", flush=True)
-		if debug:
-			print(f"    propagating backward {n_frames} frames ({end_frame}-{start_frame})...", flush=True)
-		backward_raw = propagator.propagate_backward(
-			reader, end_frame, end_state, start_frame, appearance_model,
-			debug=debug,
-		)
-		if debug:
-			print(f"    backward done ({len(backward_raw)} states)", flush=True)
-	# backward_raw index 0 = start_frame (earliest), last = end_frame
-	# align length with forward_track
-	n = min(len(forward_track), len(backward_raw))
-	forward_track = forward_track[:n]
-	backward_aligned = backward_raw[:n]
-
-	# compute per-frame identity scores and competitor margins
-	identity_scores = []
-	competitor_margins = []
-	competitors = []
-
-	# initialize detection cache: reuse existing or start fresh
-	if detection_cache is None:
-		detection_cache = {}
-	det_cache = detection_cache
-
-	# optional rich progress bar for per-frame debug output
-	progress_ctx = None
-	progress_task = None
-	if show_progress:
-		progress_ctx = rich.progress.Progress(
-			rich.progress.TextColumn("{task.description}"),
-			BlockBarColumn(),
-			rich.progress.TaskProgressColumn(),
-			rich.progress.TimeRemainingColumn(),
-		)
-		progress_ctx.start()
-		progress_task = progress_ctx.add_task(
-			f"  solving {start_frame}-{end_frame}", total=n,
-		)
-
-	for i in range(n):
-		frame_idx = start_frame + i
-		frame = reader.read_frame(frame_idx)
-		if frame is None:
-			identity_scores.append(0.5)
-			competitor_margins.append(0.5)
-			continue
-
-		# use forward state as the target for this frame
-		target = forward_track[i]
-
-		# run detector: check cache first, then ROI or full-frame
-		if frame_idx in det_cache:
-			# reuse cached detections for this frame
-			detections = det_cache[frame_idx]
-		elif detector is None:
-			detections = []
-		elif i == 0:
-			# first frame: no prior prediction, run full-frame detection
-			detections = detector.detect(frame)
-			det_cache[frame_idx] = detections
-		else:
-			# frames 1+: crop around predicted position for better resolution
-			roi_center = (float(target["cx"]), float(target["cy"]))
-			roi_size = (float(target["w"]), float(target["h"]))
-			detections = detector.detect_roi(
-				frame, roi_center, roi_size,
-			)
-			det_cache[frame_idx] = detections
-
-		# generate competitors from new detections
-		if i == 0:
-			competitors = hypothesis.generate_competitors(
-				frame, target, detections, appearance_model,
-			)
-		else:
-			prev_frame = reader.read_frame(frame_idx - 1)
-			if prev_frame is not None:
-				competitors = hypothesis.maintain_paths(
-					competitors, frame, prev_frame, detections,
-				)
-			else:
-				competitors = hypothesis.generate_competitors(
-					frame, target, detections, appearance_model,
-				)
-
-		# compute identity score for the target
-		id_score = hypothesis.compute_identity_score(frame, target, appearance_model)
-		identity_scores.append(id_score)
-
-		# update target identity_score for margin computation
-		target_with_id = dict(target)
-		target_with_id["identity_score"] = id_score
-		for comp in competitors:
-			if "identity_score" not in comp:
-				comp["identity_score"] = hypothesis.compute_identity_score(
-					frame, comp, appearance_model,
-				)
-
-		margin = hypothesis.compute_competitor_margin(target_with_id, competitors)
-		competitor_margins.append(margin)
-
-		# compute occlusion risk: target near any other detection
-		occlusion_flag = hypothesis.compute_occlusion_risk(target, detections)
-		# stamp occlusion_risk onto the forward track state for this frame
-		forward_track[i]["occlusion_risk"] = occlusion_flag
-
-		# update rich progress bar when active
-		if progress_ctx is not None:
-			progress_ctx.update(progress_task, advance=1)
-
-		# increment shared frame counter for parallel progress reporting
-		if frame_counter is not None:
-			with frame_counter.get_lock():
-				frame_counter.value += 1
-
-		# debug: print per-frame status
-		if debug and progress_ctx is not None:
-			det_count = len(detections)
-			comp_count = len(competitors)
-			progress_ctx.console.print(
-				f"    frame {frame_idx}: "
-				f"dets={det_count} comps={comp_count} "
-				f"id={id_score:.2f} margin={margin:.2f}"
-			)
-
-	# stop rich progress bar when active
-	if progress_ctx is not None:
-		progress_ctx.stop()
-
-	# fuse forward and backward tracks
-	fused_track = fuse_tracks(forward_track, backward_aligned)
-
-	# score the FIRST-PASS fused track (diagnostic: raw uncertainty)
-	# this preserves FWD/BWD disagreement signal for seed recommendation
-	interval_score = scoring.score_interval(
-		forward_track,
-		backward_aligned,
-		identity_scores,
-		competitor_margins,
-	)
-
-	# refinement pass: re-propagate with fused track as soft prior
-	refined_track = refine_interval(
-		reader, start_frame, end_frame,
-		start_state, end_state, fused_track, appearance_model,
-		backward_reader=backward_reader, debug=debug,
-	)
-
-	result = {
-		"start_frame": start_frame,
-		"end_frame": end_frame,
-		# refined fused track used for crop/output
-		"fused_track": refined_track,
-		# first-pass tracks preserved for diagnostics
-		"forward_track": forward_track,
-		"backward_track": backward_aligned,
-		# interval_score from first-pass (diagnostic, not refined)
-		"interval_score": interval_score,
-		"identity_scores": identity_scores,
-		"competitor_margins": competitor_margins,
-		# detection cache: {frame_index: [detection_dicts]}
-		# pass to subsequent solve_interval() calls to skip redundant YOLO
-		"detection_cache": det_cache,
-	}
-	return result
 
 
 #============================================
@@ -816,7 +361,7 @@ def stitch_trajectories(
 	(if any) are left as None.
 
 	Args:
-		interval_results: List of interval result dicts from solve_interval(),
+		interval_results: List of interval result dicts from solve_interval_analytical(),
 			sorted by start_frame.
 
 	Returns:
@@ -841,56 +386,13 @@ def stitch_trajectories(
 	return trajectory
 
 
-#============================================
-#============================================
-def _solve_interval_worker(
-	video_path: str,
-	seed_start: dict,
-	seed_end: dict,
-	appearance_data: dict,
-	config: dict,
-	worker_id: int,
-) -> dict:
-	"""Worker function for parallel interval solving.
-
-	Creates its own VideoReader pair and detector, solves one interval
-	with concurrent forward/backward propagation, then closes resources.
-	Must be a module-level function for pickling.
-
-	Args:
-		video_path: Path to input video file.
-		seed_start: Seed state dict for interval start.
-		seed_end: Seed state dict for interval end.
-		appearance_data: Serializable appearance model dict.
-		config: Project configuration dict.
-		worker_id: Worker identifier for progress display.
-
-	Returns:
-		Interval result dict from solve_interval().
-	"""
-	# each worker creates its own VideoReader pair and detector
-	import video_io as _vio
-	import tr_detection as _det
-	reader = _vio.VideoReader(video_path)
-	backward_reader = _vio.VideoReader(video_path)
-	detector = _det.create_detector(config)
-	# use the module-level shared counter set by _init_worker()
-	result = solve_interval(
-		reader, seed_start, seed_end, detector, appearance_data,
-		show_progress=False, frame_counter=_FRAME_COUNTER,
-		backward_reader=backward_reader,
-	)
-	reader.close()
-	backward_reader.close()
-	return result
-
 
 #============================================
 def _format_interval_result(result: dict, fps: float) -> str:
 	"""Format a single interval result as a summary string.
 
 	Args:
-		result: Interval result dict from solve_interval().
+		result: Interval result dict from solve_interval_analytical().
 		fps: Video frame rate for duration calculation.
 
 	Returns:
@@ -947,7 +449,7 @@ def _print_interval_result(result: dict, fps: float) -> None:
 	"""Print a single interval result summary line.
 
 	Args:
-		result: Interval result dict from solve_interval().
+		result: Interval result dict from solve_interval_analytical().
 		fps: Video frame rate for duration calculation.
 	"""
 	print(_format_interval_result(result, fps))
@@ -965,7 +467,7 @@ def _print_interval_result_rich(
 	with the live progress bar display.
 
 	Args:
-		result: Interval result dict from solve_interval().
+		result: Interval result dict from solve_interval_analytical().
 		fps: Video frame rate for duration calculation.
 		progress: Active rich Progress instance.
 	"""
@@ -1578,46 +1080,6 @@ def _prepare_usable_seed(seed: dict) -> dict:
 	return seed
 
 
-#============================================
-def _force_kill_pool(pool: concurrent.futures.ProcessPoolExecutor) -> None:
-	"""Kill all worker processes and prevent blocking at interpreter shutdown.
-
-	ProcessPoolExecutor has two shutdown hooks that can block:
-	1. concurrent.futures.process._python_exit (atexit) joins the management thread
-	2. threading._shutdown joins all non-daemon threads at interpreter exit
-
-	Simply killing worker processes is not enough because the management thread
-	is non-daemon and stays alive. This function kills workers, deregisters
-	the management thread from both hooks, and calls shutdown.
-	"""
-	# snapshot processes to avoid dict-changed-size race with management thread
-	procs = list(pool._processes.values())
-	worker_pids = [proc.pid for proc in procs]
-	key_input._quit_trace("POOL_KILL_START", workers=worker_pids)
-	# kill worker processes
-	for proc in procs:
-		proc.kill()
-	# wait briefly and log per-worker status
-	for proc in procs:
-		proc.join(timeout=2)
-		key_input._quit_trace(
-			"POOL_KILL_DONE", worker_pid=proc.pid,
-			alive=proc.is_alive(), exitcode=proc.exitcode,
-		)
-	pool._processes.clear()
-	# deregister the management thread from both shutdown hooks
-	if hasattr(pool, '_executor_manager_thread') and pool._executor_manager_thread is not None:
-		mgmt_thread = pool._executor_manager_thread
-		# remove from atexit registry so _python_exit does not join it
-		concurrent.futures.process._threads_wakeups.pop(mgmt_thread, None)
-		# remove tstate lock from threading._shutdown_locks so
-		# threading._shutdown does not join this non-daemon thread at exit
-		tstate_lock = mgmt_thread._tstate_lock
-		if tstate_lock is not None:
-			with threading._shutdown_locks_lock:
-				threading._shutdown_locks.discard(tstate_lock)
-	pool.shutdown(wait=False, cancel_futures=True)
-
 
 #============================================
 def solve_all_intervals(
@@ -1637,29 +1099,18 @@ def solve_all_intervals(
 ) -> dict:
 	"""Solve all seed-to-seed intervals and stitch into a full trajectory.
 
-	Splits the seed list into consecutive pairs, solves each interval,
-	stitches results, and returns a diagnostics-format dict with per-interval
-	scoring and the full trajectory.
-
-	When scene_transform is provided, uses analytical velocity model instead
-	of optical flow (no detector needed, no parallel processing).
-
-	When num_workers > 1 and scene_transform is None, intervals are solved
-	in parallel using separate processes, each with its own VideoReader and
-	detector instance.
-
-	Console output is emitted for each interval in the format:
-		interval  150- 450 (10.0s)  agree=0.92  margin=0.71  identity=0.88  [TRUST]
+	Splits the seed list into consecutive pairs, solves each interval using
+	analytical velocity models in scene coordinates, stitches results, and
+	returns a diagnostics-format dict with per-interval scoring and the
+	full trajectory.
 
 	Args:
 		reader: VideoReader with read_frame() and get_info() methods.
 		seeds: List of seed dicts sorted by frame_index. Each seed must have
 			cx, cy, w, h, frame_index keys. Non-visible seeds are skipped.
-		detector: Person detector with a detect(frame) method (optional if
-			scene_transform is provided).
+		detector: Person detector with a detect(frame) method (currently unused).
 		config: Project configuration dict (currently unused; reserved).
-		num_workers: Number of parallel workers for solving. Default 1 (sequential).
-			Ignored when scene_transform is provided.
+		num_workers: Number of parallel workers for solving (currently unused).
 		debug: If True, show per-frame debug output and progress bars.
 		on_interval_complete: Optional callback called with each interval result
 			dict as intervals finish. Used for interactive seed requesting.
@@ -1667,8 +1118,10 @@ def solve_all_intervals(
 			previously solved intervals. Keys are from state_io.interval_fingerprint().
 		on_interval_solved: Optional callback(fingerprint, result) called when
 			a new interval is solved, for persisting to the solved-intervals file.
-		scene_transform: Optional SceneTransform instance. When provided, uses
-			analytical velocity model instead of optical flow solver.
+		scene_transform: SceneTransform instance for coordinate conversion.
+		motion_track: Optional motion track for scoring.
+		run_control: Optional run control object for quit handling.
+		key_reader: Optional key reader for interactive quit.
 
 	Returns:
 		Dict with keys:
@@ -1678,130 +1131,20 @@ def solve_all_intervals(
 	info = reader.get_info()
 	fps = float(info.get("fps", 30.0))
 
-	# analytical mode: use velocity model instead of optical flow
-	if scene_transform is not None:
-		# convert all seeds to scene coordinates
-		all_seeds_scene = []
-		for seed in seeds:
-			frame_idx = int(seed["frame_index"])
-			cx = float(seed["cx"])
-			cy = float(seed["cy"])
-			w = float(seed["w"])
-			h = float(seed["h"])
-			sx, sy, sw, sh = scene_transform.pixel_box_to_scene(
-				frame_idx, cx, cy, w, h,
-			)
-			all_seeds_scene.append((frame_idx, sx, sy, sw, sh))
+	# convert all seeds to scene coordinates
+	all_seeds_scene = []
+	for seed in seeds:
+		frame_idx = int(seed["frame_index"])
+		cx = float(seed["cx"])
+		cy = float(seed["cy"])
+		w = float(seed["w"])
+		h = float(seed["h"])
+		sx, sy, sw, sh = scene_transform.pixel_box_to_scene(
+			frame_idx, cx, cy, w, h,
+		)
+		all_seeds_scene.append((frame_idx, sx, sy, sw, sh))
 
-		# filter to usable seeds
-		usable_seeds = [
-			_prepare_usable_seed(s) for s in seeds
-			if s["status"] in ("visible", "partial", "approximate")
-			or (s["status"] == "obstructed" and s.get("torso_box") is not None)
-		]
-
-		if len(usable_seeds) < 2:
-			print("  interval_solver: need at least 2 usable seeds to solve intervals")
-			return {"intervals": [], "trajectory": []}
-
-		usable_seeds_sorted = sorted(usable_seeds, key=lambda s: int(s["frame_index"]))
-		total_intervals = len(usable_seeds_sorted) - 1
-		interval_results = []
-		t_start = time.time()
-
-		# deduplicate seeds by frame_index
-		seen_frames = {}
-		for seed in usable_seeds_sorted:
-			fi = int(seed["frame_index"])
-			if fi in seen_frames:
-				existing = seen_frames[fi]
-				if int(seed["pass"]) >= int(existing["pass"]):
-					print(f"  WARNING: duplicate seed at frame {fi}, "
-						f"keeping pass {seed['pass']} over pass {existing['pass']}")
-					seen_frames[fi] = seed
-				else:
-					print(f"  WARNING: duplicate seed at frame {fi}, "
-						f"keeping pass {existing['pass']} over pass {seed['pass']}")
-			else:
-				seen_frames[fi] = seed
-		if len(seen_frames) < len(usable_seeds_sorted):
-			dropped = len(usable_seeds_sorted) - len(seen_frames)
-			print(f"  deduplicated {dropped} seeds with duplicate frame_index values")
-			usable_seeds_sorted = sorted(seen_frames.values(), key=lambda s: int(s["frame_index"]))
-			total_intervals = len(usable_seeds_sorted) - 1
-
-		print(f"  solving {total_intervals} intervals (analytical mode)...")
-		seq_frame_counter = [0]
-		with rich.progress.Progress(
-			rich.progress.TextColumn("{task.description}"),
-			BlockBarColumn(),
-			rich.progress.TaskProgressColumn(),
-			rich.progress.TimeRemainingColumn(),
-		) as progress:
-			task = progress.add_task(
-				"  solving intervals", total=total_intervals,
-			)
-			for pair_idx in range(total_intervals):
-				if run_control is not None and run_control.quit_requested:
-					break
-				if key_reader is not None and run_control is not None:
-					ch = key_reader.poll()
-					key_input.handle_key(ch, run_control, key_reader, progress)
-				if run_control is not None and run_control.quit_requested:
-					break
-
-				seed_start = usable_seeds_sorted[pair_idx]
-				seed_end = usable_seeds_sorted[pair_idx + 1]
-				start_frame = int(seed_start["frame_index"])
-				end_frame = int(seed_end["frame_index"])
-
-				progress.console.print(
-					f"  solving interval {pair_idx + 1}/{total_intervals} "
-					f"(frames {start_frame}-{end_frame})"
-				)
-
-				result = solve_interval_analytical(
-					seed_start, seed_end, scene_transform,
-					all_seeds_scene, fps, debug=debug,
-					motion_track=motion_track,
-					all_seeds=seeds,
-				)
-				interval_results.append(result)
-				_print_interval_result_rich(result, fps, progress)
-				if on_interval_complete is not None:
-					on_interval_complete(result)
-				n_frames = result["end_frame"] - result["start_frame"]
-				seq_frame_counter[0] += n_frames
-				progress.update(task, advance=1)
-
-		if run_control is not None and run_control.quit_requested:
-			done = len([r for r in interval_results if r is not None])
-			key_input._quit_trace(
-				"FUNCTION_RETURN", context="solve_all_intervals_analytical",
-				quit_requested=True, intervals_done=done,
-				intervals_total=total_intervals,
-			)
-			print(f"  quit requested: {done}/{total_intervals} intervals completed")
-			print("  hint: re-run 'solve' to resume")
-
-		# stitch and finalize
-		trajectory = stitch_trajectories(interval_results)
-		trajectory = anchor_to_seeds(trajectory, seeds)
-		trajectory = _stamp_seed_confidence(trajectory, seeds)
-		trajectory = _apply_trajectory_erasure(trajectory, seeds, fps)
-
-		output = {
-			"intervals": interval_results,
-			"trajectory": trajectory,
-		}
-		return output
-
-	# filter to usable seeds for interval endpoint solving (optical flow mode):
-	# - visible: precise torso box, fully visible runner
-	# - partial: precise torso box, partially hidden but position known
-	# - approximate (or legacy obstructed with torso_box): uncertain position,
-	#   guides solver through gap as weak endpoint
-	# not_in_frame and legacy obstructed without torso_box are excluded
+	# filter to usable seeds
 	usable_seeds = [
 		_prepare_usable_seed(s) for s in seeds
 		if s["status"] in ("visible", "partial", "approximate")
@@ -1812,31 +1155,16 @@ def solve_all_intervals(
 		print("  interval_solver: need at least 2 usable seeds to solve intervals")
 		return {"intervals": [], "trajectory": []}
 
-	# sort by frame_index to ensure consecutive pairs are correct
 	usable_seeds_sorted = sorted(usable_seeds, key=lambda s: int(s["frame_index"]))
+	total_intervals = len(usable_seeds_sorted) - 1
+	interval_results = []
 
-	# validate required fields on each seed - fail loud, never default to 0
-	required_fields = ("cx", "cy", "w", "h", "frame_index")
-	for seed_idx, seed in enumerate(usable_seeds_sorted):
-		for field in required_fields:
-			if field not in seed:
-				raise RuntimeError(
-					f"seed {seed_idx} missing required field '{field}': {seed}"
-				)
-			val = seed[field]
-			if val is None or (isinstance(val, (int, float)) and val == 0
-				and field in ("w", "h")):
-				raise RuntimeError(
-					f"seed {seed_idx} has invalid value for '{field}': {val}"
-				)
-
-	# deduplicate seeds by frame_index: keep latest pass when collisions exist
+	# deduplicate seeds by frame_index
 	seen_frames = {}
 	for seed in usable_seeds_sorted:
 		fi = int(seed["frame_index"])
 		if fi in seen_frames:
 			existing = seen_frames[fi]
-			# keep the seed from the latest pass
 			if int(seed["pass"]) >= int(existing["pass"]):
 				print(f"  WARNING: duplicate seed at frame {fi}, "
 					f"keeping pass {seed['pass']} over pass {existing['pass']}")
@@ -1850,357 +1178,66 @@ def solve_all_intervals(
 		dropped = len(usable_seeds_sorted) - len(seen_frames)
 		print(f"  deduplicated {dropped} seeds with duplicate frame_index values")
 		usable_seeds_sorted = sorted(seen_frames.values(), key=lambda s: int(s["frame_index"]))
+		total_intervals = len(usable_seeds_sorted) - 1
 
-	# build appearance model from the first visible seed
-	# prefer visible seeds over partial (partial has unreliable appearance)
-	visible_only = [s for s in usable_seeds_sorted if s["status"] == "visible"]
-	if visible_only:
-		first_seed = visible_only[0]
-	else:
-		# fallback to partial if no visible seeds exist
-		first_seed = usable_seeds_sorted[0]
-	first_frame = reader.read_frame(int(first_seed["frame_index"]))
-	if first_frame is None:
-		raise RuntimeError(
-			f"Cannot read seed frame {first_seed['frame_index']} for appearance model"
+	print(f"  solving {total_intervals} intervals (analytical mode)...")
+	seq_frame_counter = [0]
+	with rich.progress.Progress(
+		rich.progress.TextColumn("{task.description}"),
+		BlockBarColumn(),
+		rich.progress.TaskProgressColumn(),
+		rich.progress.TimeRemainingColumn(),
+	) as progress:
+		task = progress.add_task(
+			"  solving intervals", total=total_intervals,
 		)
-
-	# construct a temporary bbox dict for build_appearance_model
-	seed_bbox = {
-		"cx": float(first_seed["cx"]),
-		"cy": float(first_seed["cy"]),
-		"w": float(first_seed["w"]),
-		"h": float(first_seed["h"]),
-	}
-	appearance_model = propagator.build_appearance_model(first_frame, seed_bbox)
-
-	total_intervals = len(usable_seeds_sorted) - 1
-	interval_results = []
-	t_start = time.time()
-
-	# build all interval pairs and compute fingerprints for reuse lookup
-	all_pairs = []
-	all_fingerprints = []
-	for pair_idx in range(total_intervals):
-		s_start = usable_seeds_sorted[pair_idx]
-		s_end = usable_seeds_sorted[pair_idx + 1]
-		all_pairs.append((s_start, s_end))
-		fp = state_io.interval_fingerprint(s_start, s_end)
-		all_fingerprints.append(fp)
-
-	# separate prior results from intervals that need solving
-	prior_results = [None] * total_intervals
-	new_indices = []
-	reused_count = 0
-	if prior_intervals:
 		for pair_idx in range(total_intervals):
-			fp = all_fingerprints[pair_idx]
-			if fp in prior_intervals:
-				prior_results[pair_idx] = prior_intervals[fp]
-				reused_count += 1
-			else:
-				new_indices.append(pair_idx)
-	else:
-		new_indices = list(range(total_intervals))
+			if run_control is not None and run_control.quit_requested:
+				break
+			if key_reader is not None and run_control is not None:
+				ch = key_reader.poll()
+				key_input.handle_key(ch, run_control, key_reader, progress)
+			if run_control is not None and run_control.quit_requested:
+				break
 
-	if reused_count > 0:
-		print(f"  {reused_count}/{total_intervals} intervals reused from prior solve")
-		# fire callbacks for prior intervals without printing each one
-		for pair_idx in range(total_intervals):
-			if prior_results[pair_idx] is not None:
-				result = prior_results[pair_idx]
-				if on_interval_complete is not None:
-					on_interval_complete(result)
+			seed_start = usable_seeds_sorted[pair_idx]
+			seed_end = usable_seeds_sorted[pair_idx + 1]
+			start_frame = int(seed_start["frame_index"])
+			end_frame = int(seed_end["frame_index"])
 
-	# helper to persist a newly solved interval to disk
-	def _persist_and_notify(pair_idx: int, result: dict) -> None:
-		"""Store a saveable subset of the result and call on_interval_solved."""
-		if on_interval_solved is not None:
-			# keep forward/backward tracks so refinement GUI can show FWD/BWD prediction boxes
-			saveable = {
-				"start_frame": result["start_frame"],
-				"end_frame": result["end_frame"],
-				"fused_track": result["fused_track"],
-				"forward_track": result["forward_track"],
-				"backward_track": result["backward_track"],
-				"interval_score": result["interval_score"],
-				"identity_scores": result["identity_scores"],
-				"competitor_margins": result["competitor_margins"],
-			}
-			fp = all_fingerprints[pair_idx]
-			on_interval_solved(fp, saveable)
-
-	new_count = len(new_indices)
-
-	# parallel solving path: only new intervals dispatched to the pool
-	if num_workers > 1 and new_count > 1:
-		# get video_path from reader for spawning worker readers
-		video_path = reader.video_path
-		# cap actual workers to new interval count
-		actual_workers = min(num_workers, new_count)
-		print(f"  solving {new_count} intervals ({actual_workers} workers)...")
-		# create shared frame counter for cross-worker progress
-		frame_counter = multiprocessing.Value("i", 0)
-		# map futures to their original pair index for ordered stitching
-		future_to_pair_idx = {}
-		with concurrent.futures.ProcessPoolExecutor(
-			max_workers=actual_workers,
-			initializer=_init_worker,
-			initargs=(frame_counter,),
-		) as pool:
-			for w_idx, ui in enumerate(new_indices):
-				s_start, s_end = all_pairs[ui]
-				future = pool.submit(
-					_solve_interval_worker,
-					video_path, s_start, s_end,
-					appearance_model, config, w_idx,
-				)
-				future_to_pair_idx[future] = ui
-			# track progress by intervals completed (not frames)
-			# frame-level tracking has off-by-one issues with 1-frame intervals
-			# because propagator includes both endpoints
-			parallel_results = {}
-			collected = set()
-			done_count = 0
-			# compute total new frames for ETA calculation
-			# add len(new_indices) because each interval scores end-start+1 frames (inclusive endpoints)
-			total_new_frames = sum(
-				int(all_pairs[ui][1]["frame_index"]) - int(all_pairs[ui][0]["frame_index"])
-				for ui in new_indices
-			) + len(new_indices)
-			with rich.progress.Progress(
-				rich.progress.TextColumn("{task.description}"),
-				BlockBarColumn(),
-				rich.progress.TaskProgressColumn(),
-				FrameETAColumn(frame_counter, total_new_frames),
-			) as progress:
-				interval_task = progress.add_task(
-					"  intervals solved", total=new_count,
-				)
-				last_wall_print = time.time()
-				key_input._quit_trace(
-					"WAIT_ENTER", context="solve_parallel",
-					futures=len(future_to_pair_idx),
-				)
-				try:
-					while done_count < new_count:
-						# check for newly completed futures (non-blocking)
-						for future in list(future_to_pair_idx):
-							if future.done() and future not in collected:
-								collected.add(future)
-								if future.cancelled():
-									continue
-								pair_idx = future_to_pair_idx[future]
-								result = future.result()
-								parallel_results[pair_idx] = result
-								done_count += 1
-								# persist to disk
-								_persist_and_notify(pair_idx, result)
-								# print interval result
-								_print_interval_result_rich(result, fps, progress)
-								if on_interval_complete is not None:
-									on_interval_complete(result)
-								if debug:
-									elapsed = time.time() - t_start
-									n_frames = result["end_frame"] - result["start_frame"]
-									progress.console.print(
-										f"    interval {result['start_frame']}-"
-										f"{result['end_frame']} done "
-										f"({n_frames} frames, {elapsed:.1f}s wall)"
-									)
-								# update interval-level progress bar
-								progress.update(
-									interval_task, completed=done_count,
-								)
-						# print wall time and throughput every 30 seconds
-						now = time.time()
-						if now - last_wall_print >= 30.0:
-							elapsed = now - t_start
-							current_frames = frame_counter.value
-							fps_rate = current_frames / max(0.1, elapsed)
-							# estimate remaining time from frame throughput
-							frames_left = total_new_frames - current_frames
-							eta_s = frames_left / fps_rate if fps_rate > 0 else 0
-							eta_m = int(eta_s) // 60
-							eta_sec = int(eta_s) % 60
-							progress.console.print(
-								f"  wall time {elapsed:.0f}s  "
-								f"intervals={done_count}/{new_count}  "
-								f"frames={current_frames}/{total_new_frames}  "
-								f"({fps_rate:.1f} frames/s)  "
-								f"ETA {eta_m}:{eta_sec:02d}"
-							)
-							last_wall_print = now
-						# poll for keyboard input during wait
-						if key_reader is not None and run_control is not None:
-							ch = key_reader.poll()
-							key_input.handle_key(ch, run_control, key_reader, progress)
-						if run_control is not None and run_control.quit_requested:
-							key_input._quit_trace(
-								"MAIN_LOOP", context="solve_parallel",
-								quit_requested=True,
-							)
-							# count in-progress vs pending futures
-							running = sum(
-								1 for f in future_to_pair_idx
-								if f.running()
-							)
-							pending = sum(
-								1 for f in future_to_pair_idx
-								if not f.done() and not f.running()
-							)
-							progress.console.print(
-								f"  quit requested: cancelling {pending} pending, "
-								f"terminating {running} running workers..."
-							)
-							# cancel pending futures
-							for future in future_to_pair_idx:
-								if not future.done():
-									future.cancel()
-							# collect any futures that already completed (not cancelled)
-							saved_on_quit = 0
-							for future in list(future_to_pair_idx):
-								if future.done() and future not in collected:
-									if future.cancelled():
-										continue
-									collected.add(future)
-									pair_idx = future_to_pair_idx[future]
-									result = future.result()
-									parallel_results[pair_idx] = result
-									done_count += 1
-									_persist_and_notify(pair_idx, result)
-									saved_on_quit += 1
-							if saved_on_quit > 0:
-								progress.console.print(
-									f"  saved {saved_on_quit} additional intervals during shutdown"
-								)
-							progress.console.print(
-								f"  {done_count}/{new_count} intervals saved to disk"
-							)
-							# forcibly kill pool so context manager exit is instant
-							_force_kill_pool(pool)
-							break
-						# brief sleep to avoid busy-waiting
-						time.sleep(0.2)
-				except KeyboardInterrupt:
-					# cancel pending futures and kill workers immediately
-					print("\n  interrupted: cancelling workers...", flush=True)
-					for future in future_to_pair_idx:
-						future.cancel()
-					# forcibly kill pool so context manager exit is instant
-					_force_kill_pool(pool)
-					raise
-				key_input._quit_trace(
-					"WAIT_EXIT", context="solve_parallel",
-					completed=done_count,
-				)
-				# set progress to final count (100% only if not interrupted)
-				if run_control is None or not run_control.quit_requested:
-					progress.update(
-						interval_task, completed=new_count,
-					)
-		# merge prior and newly solved results in original order
-		for pair_idx in range(total_intervals):
-			if prior_results[pair_idx] is not None:
-				interval_results.append(prior_results[pair_idx])
-			elif pair_idx in parallel_results:
-				interval_results.append(parallel_results[pair_idx])
-			else:
-				# interval was not solved (quit mid-run)
-				interval_results.append(None)
-	elif new_count > 0:
-		# sequential solving path with rich progress bar
-		# compute total new frames for ETA and use a list wrapper as counter
-		# add len(new_indices) because each interval scores end-start+1 frames (inclusive endpoints)
-		total_new_frames = sum(
-			int(all_pairs[ui][1]["frame_index"]) - int(all_pairs[ui][0]["frame_index"])
-			for ui in new_indices
-		) + len(new_indices)
-		seq_frame_counter = [0]
-		with rich.progress.Progress(
-			rich.progress.TextColumn("{task.description}"),
-			BlockBarColumn(),
-			rich.progress.TaskProgressColumn(),
-			FrameETAColumn(seq_frame_counter, total_new_frames),
-		) as progress:
-			task = progress.add_task(
-				"  solving intervals", total=new_count,
+			progress.console.print(
+				f"  solving interval {pair_idx + 1}/{total_intervals} "
+				f"(frames {start_frame}-{end_frame})"
 			)
-			for ui in new_indices:
-				# check for quit before starting next interval
-				if run_control is not None and run_control.quit_requested:
-					key_input._quit_trace(
-						"MAIN_LOOP", context="solve_sequential",
-						quit_requested=True,
-					)
-					break
-				# poll for keyboard input between intervals
-				if key_reader is not None and run_control is not None:
-					ch = key_reader.poll()
-					key_input.handle_key(ch, run_control, key_reader, progress)
-				if run_control is not None and run_control.quit_requested:
-					key_input._quit_trace(
-						"MAIN_LOOP", context="solve_sequential",
-						quit_requested=True, source="key_poll",
-					)
-					break
-				seed_start, seed_end = all_pairs[ui]
 
-				start_frame = int(seed_start["frame_index"])
-				end_frame = int(seed_end["frame_index"])
+			result = solve_interval_analytical(
+				seed_start, seed_end, scene_transform,
+				all_seeds_scene, fps, debug=debug,
+				motion_track=motion_track,
+				all_seeds=seeds,
+			)
+			interval_results.append(result)
+			_print_interval_result_rich(result, fps, progress)
+			if on_interval_complete is not None:
+				on_interval_complete(result)
+			n_frames = result["end_frame"] - result["start_frame"]
+			seq_frame_counter[0] += n_frames
+			progress.update(task, advance=1)
 
-				progress.console.print(
-					f"  solving interval {ui + 1}/{total_intervals} "
-					f"(frames {start_frame}-{end_frame})"
-				)
-
-				result = solve_interval(
-					reader, seed_start, seed_end, detector, appearance_model,
-					show_progress=debug, debug=debug,
-				)
-				prior_results[ui] = result
-				# persist to disk
-				_persist_and_notify(ui, result)
-				_print_interval_result_rich(result, fps, progress)
-				if on_interval_complete is not None:
-					on_interval_complete(result)
-				# update frame counter for ETA calculation
-				n_frames = result["end_frame"] - result["start_frame"]
-				seq_frame_counter[0] += n_frames
-				progress.update(task, advance=1)
-		# merge all results in original order
-		for pair_idx in range(total_intervals):
-			interval_results.append(prior_results[pair_idx])
-	else:
-		# all intervals reused from prior solve, no new solving needed
-		for pair_idx in range(total_intervals):
-			interval_results.append(prior_results[pair_idx])
-
-	# print quit summary when interrupted
 	if run_control is not None and run_control.quit_requested:
-		done = sum(1 for r in interval_results if r is not None)
+		done = len([r for r in interval_results if r is not None])
 		key_input._quit_trace(
-			"FUNCTION_RETURN", context="solve_all_intervals",
+			"FUNCTION_RETURN", context="solve_all_intervals_analytical",
 			quit_requested=True, intervals_done=done,
 			intervals_total=total_intervals,
 		)
-		print(f"  quit requested: {done}/{total_intervals} intervals saved to disk")
-		print("  hint: re-run 'solve' to resume from saved intervals")
+		print(f"  quit requested: {done}/{total_intervals} intervals completed")
+		print("  hint: re-run 'solve' to resume")
 
-	# filter out None entries from incomplete runs (quit mid-solve)
-	interval_results = [r for r in interval_results if r is not None]
-
-	# stitch all intervals into full trajectory
+	# stitch and finalize
 	trajectory = stitch_trajectories(interval_results)
-
-	# apply multi-seed anchored interpolation to reduce drift
 	trajectory = anchor_to_seeds(trajectory, seeds)
-
-	# stamp seed confidence onto trajectory at seed frames
-	# must happen before erasure so approx seeds get correct conf first
 	trajectory = _stamp_seed_confidence(trajectory, seeds)
-
-	# erase trajectory near absence seeds (function decides which seeds to erase)
 	trajectory = _apply_trajectory_erasure(trajectory, seeds, fps)
 
 	output = {

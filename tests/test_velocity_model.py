@@ -1,19 +1,9 @@
 """Tests for track_runner.velocity_model module."""
 
-# Standard Library
-import os
-import sys
-
 # PIP3 modules
 import numpy
 
-# add track_runner to sys.path so bare imports work (matches runtime)
-_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_TR_DIR = os.path.join(_REPO_ROOT, "track_runner")
-if _TR_DIR not in sys.path:
-	sys.path.insert(0, _TR_DIR)
-
-# local repo modules
+# local repo modules (bare imports resolved by conftest.py)
 import camera_motion
 import scene_coords
 import velocity_model
