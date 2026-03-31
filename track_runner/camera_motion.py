@@ -252,7 +252,6 @@ class DiscreteZoomEstimator(MotionEstimator):
 		for frame_idx in range(1, total):
 			curr_frame = reader.read_frame(frame_idx)
 			if curr_frame is None:
-				prev_gray = prev_gray
 				continue
 			curr_gray = cv2.cvtColor(curr_frame, cv2.COLOR_BGR2GRAY)
 

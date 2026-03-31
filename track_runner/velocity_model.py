@@ -338,6 +338,9 @@ def fit_interval_curves(
 
 
 #============================================
+# NOTE: analytical propagation functions initialize disp_history as empty.
+# The analytical path uses stationary_lock directly for stationarity.
+# propagator.py populates disp_history only in the legacy optical-flow path.
 def propagate_forward_analytical(
 	interval_curves: dict,
 	scene_transform: object,

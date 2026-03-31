@@ -232,7 +232,7 @@ def score_interval(
 			- "agreement_score": float, forward/backward agreement [0, 1]
 			- "identity_score": float, average identity match [0, 1]
 			- "competitor_margin": float, average competitor separation [0, 1]
-			- "confidence": str, "high", "medium", or "low"
+			- "confidence": str, "high", "good", "fair", or "low"
 			- "failure_reasons": list of str
 			- "meeting_point_error": list of per-frame error dicts
 	"""

@@ -346,53 +346,7 @@ class SeedController(BaseAnnotationController):
 
 	#============================================
 
-	def _draw_candidate_overlays(self, frame: object) -> None:
-		"""Draw numbered candidate boxes on the frame overlay.
-
-		Draws all candidates as rectangles with numbers 1-9.
-		The suggested candidate (if any) uses thicker/brighter color.
-
-		Args:
-			frame: Frame viewer object with draw_rectangle/draw_text.
-		"""
-		if self._suggestion is None:
-			return
-
-		candidates = self._suggestion.get("candidates", [])
-		suggestion_idx = self._suggestion.get("suggestion_index")
-
-		# colors: green for suggested, cyan for others
-		suggested_color = (0, 255, 0)  # bright green
-		other_color = (255, 255, 0)  # cyan
-
-		for idx, candidate in enumerate(candidates):
-			if idx >= 9:
-				# limit to 9 candidates (1-9 keys)
-				break
-
-			bbox = candidate["bbox"]
-			x, y, w, h = bbox
-			x2 = x + w
-			y2 = y + h
-
-			is_suggested = (idx == suggestion_idx)
-			color = suggested_color if is_suggested else other_color
-			thickness = 3 if is_suggested else 1
-
-			# draw rectangle
-			frame.draw_rectangle(
-				(x, y), (x2, y2), color, thickness
-			)
-
-			# draw number label (1-9) at top-left of bbox
-			label_text = str(idx + 1)
-			frame.draw_text(
-				label_text, (x + 5, y + 20), color
-			)
-
-	#============================================
-
-	def _refresh_frame_title(self) -> str:
+	def _refresh_frame_title(self) -> None:
 		"""Update window title with frame, step, zoom, and interval quality info."""
 		step_frames = self._scrub_step_frames
 		zoom = self._window.get_frame_view().get_zoom_factor()

@@ -350,19 +350,19 @@ def merge_seeds(existing_seeds: list, new_seeds: list) -> list:
 	Seeds at frames not already in existing_seeds are appended.
 
 	Args:
-		existing_seeds: List of existing seed dicts, each with a 'frame' key.
+		existing_seeds: List of existing seed dicts, each with a 'frame_index' key.
 		new_seeds: List of new seed dicts to merge in.
 
 	Returns:
 		list: Merged list of seed dicts with no duplicate frame entries.
 	"""
 	# build a set of frame numbers already present in existing seeds
-	existing_frames = {seed["frame"] for seed in existing_seeds}
+	existing_frames = {seed["frame_index"] for seed in existing_seeds}
 	# start with a copy of the existing seeds list
 	merged = list(existing_seeds)
 	# append only new seeds whose frame is not already present
 	for seed in new_seeds:
-		frame_num = seed["frame"]
+		frame_num = seed["frame_index"]
 		if frame_num not in existing_frames:
 			merged.append(seed)
 			# track this frame so duplicates within new_seeds are also skipped
@@ -501,12 +501,12 @@ if __name__ == "__main__":
 	os.unlink(tmp_path)
 
 	# test merge_seeds
-	existing = [{"frame": 10, "mode": "initial"}, {"frame": 20, "mode": "initial"}]
-	new = [{"frame": 10, "mode": "gap_refine"}, {"frame": 30, "mode": "interval_refine"}]
+	existing = [{"frame_index": 10, "mode": "initial"}, {"frame_index": 20, "mode": "initial"}]
+	new = [{"frame_index": 10, "mode": "gap_refine"}, {"frame_index": 30, "mode": "interval_refine"}]
 	merged = merge_seeds(existing, new)
 	assert len(merged) == 3
 	# frame 10 must be the original, not overwritten
-	frame_10 = next(s for s in merged if s["frame"] == 10)
+	frame_10 = next(s for s in merged if s["frame_index"] == 10)
 	assert frame_10["mode"] == "initial"
 
 	# test solved-intervals round-trip

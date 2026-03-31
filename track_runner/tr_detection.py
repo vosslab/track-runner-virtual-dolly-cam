@@ -246,8 +246,8 @@ def create_detector(config: dict) -> YoloDetector:
 	"""Create a YOLO person detector from config settings.
 
 	Args:
-		config: Configuration dict with settings.detection section.
-			Expected keys under settings.detection:
+		config: Configuration dict with top-level detection section.
+			Expected keys under detection:
 				confidence_threshold: float (optional, default 0.25)
 				nms_threshold: float (optional, default 0.45)
 
@@ -258,8 +258,7 @@ def create_detector(config: dict) -> YoloDetector:
 		RuntimeError: If YOLO weights cannot be obtained.
 	"""
 	# extract detection settings with defaults
-	settings = config.get("settings", {})
-	detection = settings.get("detection", {})
+	detection = config.get("detection", {})
 	confidence_threshold = float(detection.get("confidence_threshold", 0.25))
 	nms_threshold = float(detection.get("nms_threshold", 0.45))
 	# obtain YOLO weights, raise on failure

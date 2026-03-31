@@ -13,14 +13,24 @@ more seeds. Provides human-readable summaries and refinement target lists.
 # Listed here for documentation and validation
 _KNOWN_REASONS = (
 	"low_agreement",
+	"low_separation",
+	"likely_identity_swap",
+	"weak_appearance",
 	"weak_motion_model",
+	"long_occlusion",
+	"low_motion_quality",
 	"sparse_support",
 )
 
 # Human-readable explanation for each failure reason
 _REASON_EXPLANATIONS = {
 	"low_agreement": "forward/backward trajectories diverge",
+	"low_separation": "target and competitor scores are too close",
+	"likely_identity_swap": "competitor consistently outscores target",
+	"weak_appearance": "target appearance match is unreliable",
 	"weak_motion_model": "velocity model fit is weak or inconsistent",
+	"long_occlusion": "long occlusion span reduces reliability",
+	"low_motion_quality": "camera motion estimates are poor quality",
 	"sparse_support": "too few directional support seeds for robust fitting",
 }
 
