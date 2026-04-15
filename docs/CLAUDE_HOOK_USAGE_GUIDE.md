@@ -6,6 +6,11 @@ preferred alternatives for denied patterns.
 
 This doc is Claude-specific and does not apply to Codex.
 
+## Trust model
+
+The hook optimizes for high task completion with bounded blast radius: allow routine
+local work, deny/steer on machine-changing actions, prompt on high-impact operations.
+
 ## Overview
 
 The permissions hook intercepts every Claude Code tool call and evaluates it against
@@ -27,6 +32,10 @@ and checks each leaf independently:
 - **Passthrough**: if any leaf has no matching rule (and none are denied)
 
 The hook also unwraps `bash -c "..."` patterns and extracts commands inside `$(...)`.
+
+Environment-variable assignments (e.g., `NODE_PATH=/foo`) are stripped from leaf
+commands by the decomposer, so `NODE_PATH=/foo node script.js` is evaluated as
+just `node script.js`.
 
 ### Max chain length
 
@@ -85,6 +94,8 @@ bash -n script.sh        # syntax check only
 ./script.sh
 ./script.py
 ./subdir/script.py
+tools/runner.py          # bare relative-path scripts
+scripts/build.sh
 ```
 
 ### Safe utilities
@@ -93,31 +104,107 @@ These commands are allowed as single commands. Command substitution is blocked.
 
 **File and text processing:**
 `awk`, `cat`, `colordiff`, `comm`, `cut`, `diff`, `expand`, `file`, `fmt`, `fold`,
-`grep`, `head`, `jq`, `mediainfo`, `nl`, `od`, `paste`, `rg`, `sed`, `seq`, `shuf`,
-`sort`, `tac`, `tail`, `tee`, `tr`, `unexpand`, `uniq`, `wc`, `xargs`
+`grep`, `head`, `jq`, `mediainfo`, `nl`, `od`, `paste`, `pdftotext`, `rg`, `sed`,
+`seq`, `shuf`, `sort`, `tac`, `tail`, `tee`, `tr`, `unexpand`, `uniq`, `wc`, `xargs`
 
 **Filesystem navigation:**
-`basename`, `cd`, `chmod`, `cp`, `dirname`, `du`, `df`, `find`, `ls`, `lsof`,
-`mkdir`, `mktemp`, `readlink`, `realpath`, `stat`, `tar`, `touch`, `tree`, `unzip`
+`basename`, `cd`, `chmod`, `cp`, `dirname`, `du`, `df`, `ls`, `lsof`, `mkdir`,
+`mktemp`, `open`, `readlink`, `realpath`, `stat`, `tar`, `touch`, `tree`, `type`,
+`unzip`, `which`
 
 **Process and system info:**
 `curl`, `date`, `echo`, `env`, `export`, `expr`, `false`, `id`, `ln`, `md5`,
 `nproc`, `numfmt`, `pgrep`, `pkill`, `printenv`, `printf`, `ps`, `pwd`,
 `screencapture`, `sleep`, `source`, `test`, `timeout`, `true`, `tty`, `uname`,
-`unlink`, `wc`, `which`, `whoami`, `xcrun`, `xxd`
+`unlink`, `wc`, `whoami`, `xcrun`, `xxd`
 
-Note: Some of these (like `cat`, `grep`, `find`, `head`, `tail`) have deny rules
-that block them when used with file path arguments. See the denied commands section.
-Use the dedicated tools (Read, Grep, Glob) instead.
+Note: Some of these (like `cat`, `grep`, `head`, `tail`) have deny rules that block
+them when used with file path arguments. See the denied commands section. Use the
+dedicated tools (Read, Grep, Glob) instead.
 
-### Env-prefixed commands
+### Local runtimes
 
-One or more `VAR=value` prefixes before a safe command are allowed:
+**Node.js:**
+`node` is allowed for running `.js`, `.mjs`, and `.cjs` files, syntax checking with
+`-c` or `--check`, inline evaluation with `-e` or `--eval`, and `--version` queries.
 
 ```bash
-LC_ALL=C sort file.txt
-REPO_ROOT=/path PYTHONPATH=lib python3 -m pytest
+node script.js
+node -c script.js
+node -e "require('./data.json')"
+node --version
 ```
+
+**npx (whitelisted packages):**
+`npx` is allowed for a whitelist of known-safe local dev tool packages: `tsc`,
+`eslint`, `prettier`, `playwright`, `esbuild`. Unknown packages still require
+user approval (passthrough).
+
+```bash
+npx tsc --noEmit              # allowed
+npx eslint src/               # allowed
+npx prettier --check .        # allowed
+npx playwright screenshot ... # allowed
+npx esbuild src/x.ts          # allowed
+npx some-package              # requires approval
+```
+
+If `npx tsc` fails because TypeScript is not installed, stop and tell the user
+to run `npm install --save-dev typescript` (or `npm install -g typescript` for
+a global install). Do not work around the failure by calling
+`./node_modules/.bin/tsc` or `node_modules/typescript/bin/tsc` directly --
+those paths are denied (see "Denied commands" below).
+
+**eslint and prettier (direct):**
+`eslint` and `prettier` are allowed as direct commands for linting and formatting.
+
+```bash
+eslint src/app.ts
+prettier --write src/
+```
+
+**Deno:**
+`deno` is allowed for `run`, `check`, `fmt`, `lint`, and `test` subcommands,
+plus `--version` queries. Remote URLs and `deno eval` are not auto-allowed.
+
+```bash
+deno run script.ts
+deno check script.ts
+deno fmt --check
+deno lint
+deno test
+deno --version
+```
+
+### Podman (containers)
+
+Read-only inspection, build, compose, lifecycle, and exec are allowed:
+
+```bash
+podman ps
+podman pod ls
+podman images
+podman logs web
+podman inspect web
+podman info
+podman build -t foo .
+podman compose up -d
+podman compose down
+podman start web
+podman stop web
+podman restart web
+podman exec web ls /var/www
+podman exec web cat /etc/hostname
+```
+
+Destructive operations are denied: `podman rm -f`, `podman rmi -f`,
+`podman kill`, `podman stop -t 0`, `podman system prune`,
+`podman volume rm|prune`, `podman network rm|prune`, `podman image rm|prune`.
+Ask the user to run these manually if truly needed.
+
+Note: arguments to `podman exec` are not re-decomposed by the hook, so a
+destructive shell inside a container (`podman exec web rm -rf /tmp/x`) is not
+blocked. Destructive behavior inside a container is a container-level concern.
 
 ### File deletion (safe patterns)
 
@@ -125,29 +212,37 @@ The `rm` command is denied by default, but these specific patterns are allowed:
 
 | Pattern | Example |
 | --- | --- |
-| Underscore-prefixed files | `rm _temp.py`, `rm -f _scratch.sh` |
+| Underscore-prefixed files | `rm _temp.py`, `rm -f /path/to/_scratch.sh` |
 | `/tmp/` paths | `rm /tmp/test_output.json` |
 | Cache directories | `rm -rf __pycache__`, `rm -r ~/Library/Caches/foo` |
 | `git rm` with relative paths | `git rm old_file.py` |
 
-### Package managers (read-only)
+### Package managers
+
+**pip read-only:**
+`pip show`, `pip list`, `pip freeze`, `pip check`
+
+**npm read-only and run:**
+`npm list`, `npm root`, `npm ls`, `npm show`, `npm view`, `npm info`, `npm search`,
+`npm outdated`, `npm doctor`, `npm prefix`, `npm version`, `npm --version`
+
+`npm run` is allowed for executing scripts defined in local `package.json`.
+
+**brew read-only:**
+`brew list`, `brew info`, `brew search`, `brew --prefix`
 
 ```bash
 pip show numpy
-pip list
-pip freeze
-pip check
-brew list
+npm list --depth=0
+npm run build
 brew info python
-brew search qt
-brew --prefix
 ```
 
 ### File access zones
 
 | Tool | Allowed paths |
 | --- | --- |
-| Read | `~/` and below, Homebrew site-packages, `/tmp/`, `/var/folders/` |
+| Read | `~/nsh/`, `~/.<dotdirs>`, site-packages, `/tmp/`, `/var/folders/` |
 | Write | `~/nsh/`, `~/.claude/`, `/tmp/` |
 | Edit | `~/nsh/`, `~/.claude/`, `/tmp/` |
 | Glob | `~/nsh/`, `~/.claude/`, `/tmp/` |
@@ -161,12 +256,9 @@ All file tools block path traversal (`..`). Reading `.env` and `.secret` files i
 
 ### Agent types
 
-Allowed subagent types for the Agent tool:
-
-`Explore`, `general-purpose`, `Plan`, `Bash`, `haiku`, `sonnet`, `opus`,
-`statusline-setup`, `claude-code-guide`, `superpowers:code-reviewer`,
-`coder`, `reviewer`, `tester`, `maintainer`, `planner`, `orchestrator`,
-`integrator`, `architect`, `scheduler`, `monitor`, `parallelizer`
+Any agent with a valid name matching the pattern `^[a-zA-Z][a-zA-Z0-9_:-]*$` is
+allowed. This includes built-in types (Explore, Plan, general-purpose) and custom
+agents in `~/.claude/agents/`. Missing `subagent_type` falls through to user prompt.
 
 ### Orchestration tools
 
@@ -220,7 +312,7 @@ is still allowed.
 
 **Blocked:** `find . -name "*.py"`
 
-**Why:** The Glob tool is faster and supports recursive patterns.
+**Why:** The Glob tool is faster and supports recursive patterns. Also has a deny rule.
 
 **Instead:** Use `Glob(pattern='**/*.py', path='/search/dir')`.
 
@@ -232,6 +324,38 @@ is still allowed.
 
 **Instead:** Use `Read(file_path='file.txt', offset=10, limit=11)`.
 Other sed operations (substitution, etc.) are allowed.
+
+### `tsc` via `node_modules` paths
+
+**Blocked:** `./node_modules/.bin/tsc`, `./node_modules/typescript/bin/tsc`,
+`/abs/path/node_modules/typescript/bin/tsc`,
+`node node_modules/typescript/bin/tsc`
+
+**Why:** Project-local `tsc` paths are a workaround for `npx tsc` failing.
+Retrying different invocation forms wastes turns and masks missing installs.
+
+**Instead:** Use `npx tsc` (whitelisted). If `npx tsc` fails because TypeScript
+is not installed, run exactly one of these two commands (both are whitelisted):
+
+```bash
+npm install --save-dev typescript   # allowed
+npm install -g typescript           # allowed
+```
+
+Any other `npm install` variation (different flags, version pins, extra
+packages, bare `npm install`) still passes through for user approval.
+
+Do not work around the failure with absolute paths, `node node_modules/...`,
+or `source source_me.sh &&` chains.
+
+### `perl` on `.pg`/`.pgml` files
+
+**Blocked:** `perl -c problem.pgml`, `perl problem.pg`
+
+**Why:** PGML is not standard Perl. Running perl on these files produces misleading
+results.
+
+**Instead:** Use the `/webwork-writer` skill lint guide to validate WeBWorK problems.
 
 ### Heredocs (`<<EOF`)
 
@@ -259,6 +383,55 @@ Underscore-prefixed files can be removed freely.
 
 **Instead:** Run the command directly: `source source_me.sh && python3 script.py`.
 Running script files (`bash script.sh`, `bash -n script.sh`) is still allowed.
+
+### `sudo`
+
+**Blocked:** `sudo command`
+
+**Why:** Do not escalate to root. Ask the user to run privileged commands manually.
+
+**Instead:** Ask the user to run the command as root if truly necessary.
+
+### `git reset --hard`
+
+**Blocked:** `git reset --hard`, `git reset -hard HEAD~1`
+
+**Why:** Destructive history rewrite. Use safer alternatives.
+
+**Instead:** `git checkout -- file` or `git restore file` to discard working changes.
+
+### `git push --force` (including --force-with-lease)
+
+**Blocked:** `git push --force`, `git push origin main --force-with-lease`
+
+**Why:** Destructive remote history change.
+
+**Instead:** Ask the user to push manually if rebase is necessary.
+
+### `deno run` with URLs
+
+**Blocked:** `deno run https://example.com/script.ts`
+
+**Why:** Remote code execution. Download and review first.
+
+**Instead:** Download with `curl` to a file, review it, then run locally.
+
+### `curl`/`wget` piped to runtime
+
+**Blocked:** `curl https://example.com/install.sh | bash`, `wget -O - url | python3`
+
+**Why:** Executes remote code without local review.
+
+**Instead:** Download to a file first with `curl -o script.sh https://...`, review,
+then run.
+
+### Write/Edit to system directories
+
+**Blocked:** Writing to `/etc/`, `/usr/`, `/opt/`, `/System/`, `/Library/`
+
+**Why:** System files should only be modified by root or package managers.
+
+**Instead:** Write to `~/nsh/` or `/tmp/` instead.
 
 ### `mv`
 
@@ -320,6 +493,17 @@ useless.
 **Instead:** Write a `_temp.py` file and run it with
 `source source_me.sh && python3 _temp.py`.
 
+## Passthrough (requires user approval)
+
+These commands intentionally require user approval (passthrough) because they have
+significant side effects or security implications:
+
+- **npx (non-whitelisted)**: May fetch remote packages from npm registry
+- **npm install**: Modifies machine state, adds/updates dependencies
+- **pip install**: Modifies machine state, adds/updates Python packages
+- **git rebase**: Rewrites repository history
+- **deno eval**: Executes arbitrary inline code
+
 ## Passthrough (interactive tools)
 
 These tools intentionally passthrough to Claude Code's default permission flow
@@ -328,8 +512,6 @@ so the user sees interactive dialogs:
 | Tool | Reason |
 | --- | --- |
 | `AskUserQuestion` | User must see and answer the question dialog |
-| `EnterPlanMode` | User must consent to entering plan mode |
-| `ExitPlanMode` | User must review and approve the plan |
 | `EnterWorktree` | User must consent to worktree creation |
 | `ExitWorktree` | User must consent to keep/remove decision |
 | `CronCreate` | User should approve scheduled recurring jobs |
