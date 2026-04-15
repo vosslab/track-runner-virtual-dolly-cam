@@ -1,5 +1,9 @@
 ## 2026-04-15
 
+### Additions and New Features
+
+- Added a `rich.progress` progress bar to the "precomputing camera motion" pass in [track_runner/camera_motion.py](../track_runner/camera_motion.py). All three estimators (`FixedZoomEstimator`, `DiscreteZoomEstimator`, `ContinuousZoomEstimator`) now stream per-frame progress with the same column layout (`BlockBarColumn`, percent, ETA) as `encoder.encode_cropped_video`. A small shared helper `_make_motion_progress()` builds the configured Progress instance so all three loops stay in sync. Refresh is capped at 1 Hz to avoid flicker on the fast consecutive frame pairs.
+
 ### Behavior or Interface Changes
 
 - Added mode-ordering gates in [track_runner/cli.py](../track_runner/cli.py): `solve`, `refine`, and `target` now require a per-video config file to exist (i.e. `setup` has been run), and `refine` additionally requires a diagnostics file from a prior `solve`. Each gate raises a `RuntimeError` with the exact `setup` / `solve` command the user should run. `seed`, `edit`, `encode`, `analyze`, and `setup` itself are intentionally exempt so users can still collect seeds before configuring the camera. `target` is not gated on solve because it already auto-runs a fresh solve when diagnostics are missing.

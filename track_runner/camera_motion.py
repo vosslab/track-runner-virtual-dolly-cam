@@ -13,10 +13,34 @@ from dataclasses import dataclass
 # PIP3 modules
 import cv2
 import numpy
+import rich.progress
 
 # local repo modules
 import tr_paths
+import interval_solver
 import tr_video_identity
+
+
+#============================================
+def _make_motion_progress() -> rich.progress.Progress:
+	"""Build a rich Progress bar configured for motion-estimation loops.
+
+	Matches the column layout used in `encoder.encode_cropped_video` so the
+	UI feels consistent across long-running passes. Refresh is capped at
+	1 Hz to avoid flicker on fast consecutive frame pairs.
+
+	Returns:
+		An unstarted `rich.progress.Progress` instance. Use it as a context
+		manager and call `add_task("  camera motion", total=...)`.
+	"""
+	progress = rich.progress.Progress(
+		rich.progress.TextColumn("{task.description}"),
+		interval_solver.BlockBarColumn(),
+		rich.progress.TaskProgressColumn(),
+		rich.progress.TimeRemainingColumn(),
+		refresh_per_second=1,
+	)
+	return progress
 
 
 #============================================
@@ -137,34 +161,39 @@ class FixedZoomEstimator(MotionEstimator):
 			hann_window = None
 
 		# process each consecutive pair
-		for frame_idx in range(1, total_frames):
-			curr_frame = reader.read_frame(frame_idx)
-			if curr_frame is None:
-				break
-			curr_gray = cv2.cvtColor(curr_frame, cv2.COLOR_BGR2GRAY)
-
-			# compute phase correlation between frames
-			shift, response = cv2.phaseCorrelate(
-				prev_gray.astype(numpy.float32),
-				curr_gray.astype(numpy.float32),
-				hann_window
+		with _make_motion_progress() as progress:
+			task = progress.add_task(
+				"  camera motion", total=total_frames - 1,
 			)
+			for frame_idx in range(1, total_frames):
+				curr_frame = reader.read_frame(frame_idx)
+				if curr_frame is None:
+					break
+				curr_gray = cv2.cvtColor(curr_frame, cv2.COLOR_BGR2GRAY)
 
-			# extract translation and quality
-			dx_val = float(shift[0])
-			dy_val = float(shift[1])
-			quality_val = float(response)
+				# compute phase correlation between frames
+				shift, response = cv2.phaseCorrelate(
+					prev_gray.astype(numpy.float32),
+					curr_gray.astype(numpy.float32),
+					hann_window
+				)
 
-			dx_arr[frame_idx] = dx_val
-			dy_arr[frame_idx] = dy_val
-			quality_arr[frame_idx] = quality_val
+				# extract translation and quality
+				dx_val = float(shift[0])
+				dy_val = float(shift[1])
+				quality_val = float(response)
 
-			# set low_quality bit if confidence is below threshold
-			if quality_val < 0.5:
-				event_flags_arr[frame_idx] |= (1 << 1)
+				dx_arr[frame_idx] = dx_val
+				dy_arr[frame_idx] = dy_val
+				quality_arr[frame_idx] = quality_val
 
-			# move to next frame
-			prev_gray = curr_gray
+				# set low_quality bit if confidence is below threshold
+				if quality_val < 0.5:
+					event_flags_arr[frame_idx] |= (1 << 1)
+
+				# move to next frame
+				prev_gray = curr_gray
+				progress.update(task, advance=1)
 
 		# apply 3-frame median filter to smooth dx, dy
 		dx_arr = self._median_filter_1d(dx_arr, 3)
@@ -249,27 +278,31 @@ class DiscreteZoomEstimator(MotionEstimator):
 		hann = cv2.createHanningWindow((w_frame, h_frame), cv2.CV_64F)
 
 		# estimate translation and raw scale for each frame pair
-		for frame_idx in range(1, total):
-			curr_frame = reader.read_frame(frame_idx)
-			if curr_frame is None:
-				continue
-			curr_gray = cv2.cvtColor(curr_frame, cv2.COLOR_BGR2GRAY)
+		with _make_motion_progress() as progress:
+			task = progress.add_task("  camera motion", total=total - 1)
+			for frame_idx in range(1, total):
+				curr_frame = reader.read_frame(frame_idx)
+				if curr_frame is None:
+					progress.update(task, advance=1)
+					continue
+				curr_gray = cv2.cvtColor(curr_frame, cv2.COLOR_BGR2GRAY)
 
-			# translation via phase correlation
-			prev_f = numpy.float64(prev_gray)
-			curr_f = numpy.float64(curr_gray)
-			shift, response = cv2.phaseCorrelate(prev_f, curr_f, hann)
-			dx_arr[frame_idx] = shift[0]
-			dy_arr[frame_idx] = shift[1]
-			quality_arr[frame_idx] = response
+				# translation via phase correlation
+				prev_f = numpy.float64(prev_gray)
+				curr_f = numpy.float64(curr_gray)
+				shift, response = cv2.phaseCorrelate(prev_f, curr_f, hann)
+				dx_arr[frame_idx] = shift[0]
+				dy_arr[frame_idx] = shift[1]
+				quality_arr[frame_idx] = response
 
-			# scale via log-polar phase correlation
-			scale_ratio = self._estimate_scale_logpolar(
-				prev_gray, curr_gray, w_frame, h_frame,
-			)
-			raw_scale[frame_idx] = scale_ratio
+				# scale via log-polar phase correlation
+				scale_ratio = self._estimate_scale_logpolar(
+					prev_gray, curr_gray, w_frame, h_frame,
+				)
+				raw_scale[frame_idx] = scale_ratio
 
-			prev_gray = curr_gray
+				prev_gray = curr_gray
+				progress.update(task, advance=1)
 
 		# detect zoom jumps using 5-frame sliding window
 		window_size = 5
@@ -425,34 +458,38 @@ class ContinuousZoomEstimator(MotionEstimator):
 		# reuse log-polar helper from discrete estimator
 		discrete_est = DiscreteZoomEstimator()
 
-		for frame_idx in range(1, total):
-			curr_frame = reader.read_frame(frame_idx)
-			if curr_frame is None:
-				continue
-			curr_gray = cv2.cvtColor(curr_frame, cv2.COLOR_BGR2GRAY)
+		with _make_motion_progress() as progress:
+			task = progress.add_task("  camera motion", total=total - 1)
+			for frame_idx in range(1, total):
+				curr_frame = reader.read_frame(frame_idx)
+				if curr_frame is None:
+					progress.update(task, advance=1)
+					continue
+				curr_gray = cv2.cvtColor(curr_frame, cv2.COLOR_BGR2GRAY)
 
-			# translation
-			prev_f = numpy.float64(prev_gray)
-			curr_f = numpy.float64(curr_gray)
-			shift, response = cv2.phaseCorrelate(prev_f, curr_f, hann)
-			dx_arr[frame_idx] = shift[0]
-			dy_arr[frame_idx] = shift[1]
-			quality_arr[frame_idx] = response
+				# translation
+				prev_f = numpy.float64(prev_gray)
+				curr_f = numpy.float64(curr_gray)
+				shift, response = cv2.phaseCorrelate(prev_f, curr_f, hann)
+				dx_arr[frame_idx] = shift[0]
+				dy_arr[frame_idx] = shift[1]
+				quality_arr[frame_idx] = response
 
-			# continuous scale via log-polar
-			scale_ratio = discrete_est._estimate_scale_logpolar(
-				prev_gray, curr_gray, w_frame, h_frame,
-			)
+				# continuous scale via log-polar
+				scale_ratio = discrete_est._estimate_scale_logpolar(
+					prev_gray, curr_gray, w_frame, h_frame,
+				)
 
-			# stricter quality gating for continuous zoom
-			if response < 0.3:
-				scale_arr[frame_idx] = 1.0
-				# set low quality flag
-				event_flags_arr[frame_idx] |= (1 << 1)
-			else:
-				scale_arr[frame_idx] = scale_ratio
+				# stricter quality gating for continuous zoom
+				if response < 0.3:
+					scale_arr[frame_idx] = 1.0
+					# set low quality flag
+					event_flags_arr[frame_idx] |= (1 << 1)
+				else:
+					scale_arr[frame_idx] = scale_ratio
 
-			prev_gray = curr_gray
+				prev_gray = curr_gray
+				progress.update(task, advance=1)
 
 		# apply 3-frame median filter to dx, dy, and scale
 		fze = FixedZoomEstimator()
