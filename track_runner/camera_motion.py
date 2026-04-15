@@ -103,13 +103,13 @@ class FixedZoomEstimator(MotionEstimator):
 
 		Args:
 			reader: FrameReader with read_frame(frame_idx) method and
-				.total_frames attribute.
+				.frame_count attribute.
 			config: Configuration dict (unused for fixed zoom estimator).
 
 		Returns:
 			MotionTrack with translation and quality metrics.
 		"""
-		total_frames = reader.total_frames
+		total_frames = reader.frame_count
 		# allocate output arrays
 		dx_arr = numpy.zeros(total_frames, dtype=numpy.float32)
 		dy_arr = numpy.zeros(total_frames, dtype=numpy.float32)
@@ -220,13 +220,13 @@ class DiscreteZoomEstimator(MotionEstimator):
 		"""Estimate per-frame motion with discrete zoom jump detection.
 
 		Args:
-			reader: FrameReader with read_frame(idx), total_frames, fps.
+			reader: FrameReader with read_frame(idx), frame_count, fps.
 			config: Config dict with camera.zoom_levels list.
 
 		Returns:
 			MotionTrack with per-frame dx, dy, scale, quality, event_flags.
 		"""
-		total = reader.total_frames
+		total = reader.frame_count
 		dx_arr = numpy.zeros(total, dtype=numpy.float64)
 		dy_arr = numpy.zeros(total, dtype=numpy.float64)
 		# raw per-frame scale from log-polar correlation
@@ -398,13 +398,13 @@ class ContinuousZoomEstimator(MotionEstimator):
 		"""Estimate per-frame motion with continuous scale tracking.
 
 		Args:
-			reader: FrameReader with read_frame(idx), total_frames, fps.
+			reader: FrameReader with read_frame(idx), frame_count, fps.
 			config: Config dict.
 
 		Returns:
 			MotionTrack with per-frame dx, dy, scale, quality, event_flags.
 		"""
-		total = reader.total_frames
+		total = reader.frame_count
 		dx_arr = numpy.zeros(total, dtype=numpy.float64)
 		dy_arr = numpy.zeros(total, dtype=numpy.float64)
 		scale_arr = numpy.ones(total, dtype=numpy.float64)
@@ -569,7 +569,7 @@ def precompute_camera_motion(
 	"""Estimate camera motion, checking cache first.
 
 	Args:
-		reader: FrameReader instance with read_frame() and total_frames.
+		reader: FrameReader instance with read_frame() and frame_count.
 		config: Configuration dict with motion estimator settings.
 		input_file: Path to the input video file (used for cache key).
 		video_info: Video probe info dict (width, height, fps, etc.).

@@ -1,3 +1,9 @@
+## 2026-04-15
+
+### Fixes and Maintenance
+
+- Fixed `AttributeError: 'VideoReader' object has no attribute 'total_frames'` in [track_runner/camera_motion.py](../track_runner/camera_motion.py): `FixedZoomEstimator.estimate`, `DiscreteZoomEstimator.estimate`, and `ContinuousZoomEstimator.estimate` now read `reader.frame_count` to match the `VideoReader` API in [track_runner/video_io.py](../track_runner/video_io.py). The bug was masked whenever a motion cache `.npz` already existed, so it only surfaced on the first `solve` run for a new video. Docstrings on all three estimators and on `precompute_camera_motion` updated to match.
+
 ## 2026-03-31
 
 ### Additions and New Features
