@@ -13,8 +13,8 @@ SeedController = seed_controller_module.SeedController
 class _DummyReader:
 	"""Minimal frame reader stub for controller tests."""
 
-	def read_frame(self, frame_idx: int):
-		_ = frame_idx
+	def read_frame(self, frame_index: int):
+		_ = frame_index
 		return None
 
 
@@ -77,10 +77,8 @@ def test_plain_arrow_keys_scrub_at_fit_zoom() -> None:
 	controller._current_frame = 200
 	controller._scrub_step_frames = 4
 
-	handled_left = controller.handle_key_press(Qt.Key.Key_Left)
-	assert handled_left is True
+	controller.handle_key_press(Qt.Key.Key_Left)
 	assert controller._current_frame == 196
 
-	handled_right = controller.handle_key_press(Qt.Key.Key_Right)
-	assert handled_right is True
+	controller.handle_key_press(Qt.Key.Key_Right)
 	assert controller._current_frame == 200

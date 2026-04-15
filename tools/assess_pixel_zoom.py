@@ -260,12 +260,12 @@ def analyze_video_zoom(
 
 	print(f"Analyzing {frames_to_analyze} frames...")
 
-	for frame_idx in range(frames_to_analyze):
+	for frame_index in range(frames_to_analyze):
 		ret, frame = cap.read()
 		if not ret:
 			break
 
-		absolute_frame = start_frame + frame_idx
+		absolute_frame = start_frame + frame_index
 		time_s = absolute_frame / fps
 
 		gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -283,7 +283,7 @@ def analyze_video_zoom(
 			lp_prev = lp_curr
 			lp_anchor = lp_curr
 			frame_data.append({
-				"frame": absolute_frame,
+				"frame_index": absolute_frame,
 				"time_s": time_s,
 				"local_scale": 1.0,
 				"cumulative_zoom_raw": 0.0,
@@ -299,9 +299,9 @@ def analyze_video_zoom(
 			anchor_scale.append(1.0)
 			zoom_velocity_log.append(0.0)
 			zoom_jerk.append(0.0)
-			if (frame_idx + 1) % 100 == 0:
-				print(f"  frame {frame_idx + 1}/{frames_to_analyze} "
-					f"({100.0 * (frame_idx + 1) / frames_to_analyze:.1f}%)")
+			if (frame_index + 1) % 100 == 0:
+				print(f"  frame {frame_index + 1}/{frames_to_analyze} "
+					f"({100.0 * (frame_index + 1) / frames_to_analyze:.1f}%)")
 			lp_prev = lp_curr
 			continue
 
@@ -344,13 +344,13 @@ def analyze_video_zoom(
 		zoom_velocity_val = local_scale_val - 1.0
 
 		# jerk
-		if frame_idx == 1:
+		if frame_index == 1:
 			zoom_jerk_val = abs(log_scale - 0.0)
 		else:
-			zoom_jerk_val = abs(log_scale - zoom_velocity_log[frame_idx - 1])
+			zoom_jerk_val = abs(log_scale - zoom_velocity_log[frame_index - 1])
 
 		frame_data.append({
-			"frame": absolute_frame,
+			"frame_index": absolute_frame,
 			"time_s": time_s,
 			"local_scale": local_scale_val,
 			"cumulative_zoom_raw": cumulative_zoom_raw,
@@ -370,13 +370,13 @@ def analyze_video_zoom(
 		correlation_values.append(correlation)
 
 		# anchor refresh every 300 frames (for runs > 480)
-		if frames_to_analyze > 480 and frame_idx >= anchor_refresh_at:
+		if frames_to_analyze > 480 and frame_index >= anchor_refresh_at:
 			lp_anchor = lp_curr
 			anchor_refresh_at += anchor_interval
 
-		if (frame_idx + 1) % 100 == 0:
-			print(f"  frame {frame_idx + 1}/{frames_to_analyze} "
-				f"({100.0 * (frame_idx + 1) / frames_to_analyze:.1f}%)")
+		if (frame_index + 1) % 100 == 0:
+			print(f"  frame {frame_index + 1}/{frames_to_analyze} "
+				f"({100.0 * (frame_index + 1) / frames_to_analyze:.1f}%)")
 
 		lp_prev = lp_curr
 

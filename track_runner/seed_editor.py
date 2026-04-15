@@ -77,7 +77,7 @@ def _draw_seed_overlay(
 def _draw_predictions_overlay(
 	frame: numpy.ndarray,
 	predictions: dict | None,
-	frame_idx: int,
+	frame_index: int,
 	alpha: float = 0.15,
 ) -> None:
 	"""Draw forward/backward prediction boxes with transparency.
@@ -85,12 +85,12 @@ def _draw_predictions_overlay(
 	Args:
 		frame: BGR image to draw on (modified in place).
 		predictions: Optional dict mapping frame_index to prediction dicts.
-		frame_idx: Current frame index to look up.
+		frame_index: Current frame index to look up.
 		alpha: Opacity for the overlay rectangles.
 	"""
 	if predictions is None:
 		return
-	frame_preds = predictions.get(frame_idx)
+	frame_preds = predictions.get(frame_index)
 	if frame_preds is None:
 		return
 	# forward prediction
@@ -235,7 +235,7 @@ def _refine_box_yolo(
 def _refine_box_consensus(
 	seed: dict,
 	predictions: dict | None,
-	frame_idx: int,
+	frame_index: int,
 ) -> dict | None:
 	"""Refine a seed box using forward/backward prediction consensus.
 
@@ -246,7 +246,7 @@ def _refine_box_consensus(
 		seed: Seed dict with cx, cy, w, h keys.
 		predictions: Dict mapping frame_index to prediction dicts with
 			'forward' and 'backward' keys.
-		frame_idx: Frame index to look up predictions for.
+		frame_index: Frame index to look up predictions for.
 
 	Returns:
 		Refined box dict with cx, cy, w, h keys, or None if no
@@ -254,7 +254,7 @@ def _refine_box_consensus(
 	"""
 	if predictions is None:
 		return None
-	frame_preds = predictions.get(frame_idx)
+	frame_preds = predictions.get(frame_index)
 	if frame_preds is None:
 		return None
 	cx = float(seed["cx"])

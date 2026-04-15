@@ -201,8 +201,8 @@ class EditController(BaseAnnotationController):
 		# Seek to nearest seed at or after start_frame if provided
 		if self._start_frame is not None and self._filtered_indices:
 			for i, idx in enumerate(self._filtered_indices):
-				frame_idx = int(self._work_seeds[idx]["frame_index"])
-				if frame_idx >= self._start_frame:
+				frame_index = int(self._work_seeds[idx]["frame_index"])
+				if frame_index >= self._start_frame:
 					self._nav_idx = i
 					break
 			else:
@@ -316,16 +316,16 @@ class EditController(BaseAnnotationController):
 		seed_list_idx = self._filtered_indices[self._nav_idx]
 		seed = self._work_seeds[seed_list_idx]
 		self._current_seed = seed
-		frame_idx = int(seed["frame_index"])
+		frame_index = int(seed["frame_index"])
 
 		# Read the frame
-		frame = self._reader.read_frame(frame_idx)
+		frame = self._reader.read_frame(frame_index)
 		if frame is None:
 			self._nav_idx += 1
 			self._load_current_seed()
 			return
 
-		self._current_frame = frame_idx
+		self._current_frame = frame_index
 		self._current_bgr = frame
 		self._window.set_frame(frame)
 
@@ -343,11 +343,11 @@ class EditController(BaseAnnotationController):
 		# Update status presenter
 		seed_confidence = None
 		if self._seed_confidences is not None:
-			seed_confidence = self._seed_confidences.get(frame_idx)
+			seed_confidence = self._seed_confidences.get(frame_index)
 		# look up interval_info for severity display
 		interval_info = None
 		if self._predictions is not None:
-			preds = self._predictions.get(frame_idx)
+			preds = self._predictions.get(frame_index)
 			if preds is not None:
 				interval_info = preds.get("interval_info")
 		self._status_presenter.update(
@@ -525,7 +525,7 @@ class EditController(BaseAnnotationController):
 
 		seed_list_idx = self._filtered_indices[self._nav_idx]
 		seed = self._work_seeds[seed_list_idx]
-		frame_idx = int(seed["frame_index"])
+		frame_index = int(seed["frame_index"])
 
 		if self._approx_mode:
 			self._approx_mode = False
@@ -536,9 +536,8 @@ class EditController(BaseAnnotationController):
 			cx = float(tx + tw / 2.0)
 			cy = float(ty + th / 2.0)
 			new_seed = {
-				"frame_index": frame_idx,
-				"frame": frame_idx,
-				"time_s": seed.get("time_s", round(frame_idx / self._fps, 3)),
+				"frame_index": frame_index,
+				"time_s": seed.get("time_s", round(frame_index / self._fps, 3)),
 				"status": "approximate",
 				"torso_box": norm_box,
 				"cx": cx,
@@ -554,7 +553,7 @@ class EditController(BaseAnnotationController):
 			self._redrawn += 1
 			self._reviewed += 1
 			self._status_changed += 1
-			self._changed_frames.add(frame_idx)
+			self._changed_frames.add(frame_index)
 			self._save_callback(self._work_seeds)
 			self._advance()
 			return
@@ -567,8 +566,8 @@ class EditController(BaseAnnotationController):
 				self._current_bgr, norm_box
 			)
 			new_seed = seed_color._build_seed_dict(
-				frame_idx,
-				frame_idx / self._fps,
+				frame_index,
+				frame_index / self._fps,
 				norm_box,
 				jersey_hsv,
 				seed["pass"],
@@ -578,7 +577,7 @@ class EditController(BaseAnnotationController):
 			self._reviewed += 1
 			self._redrawn += 1
 			self._status_changed += 1
-			self._changed_frames.add(frame_idx)
+			self._changed_frames.add(frame_index)
 			self._work_seeds[seed_list_idx] = new_seed
 			self._save_callback(self._work_seeds)
 			self._advance()
@@ -588,8 +587,8 @@ class EditController(BaseAnnotationController):
 				self._current_bgr, norm_box
 			)
 			new_seed = seed_color._build_seed_dict(
-				frame_idx,
-				frame_idx / self._fps,
+				frame_index,
+				frame_index / self._fps,
 				norm_box,
 				jersey_hsv,
 				seed["pass"],
@@ -597,7 +596,7 @@ class EditController(BaseAnnotationController):
 			)
 			self._reviewed += 1
 			self._redrawn += 1
-			self._changed_frames.add(frame_idx)
+			self._changed_frames.add(frame_index)
 			self._work_seeds[seed_list_idx] = new_seed
 			self._save_callback(self._work_seeds)
 			self._advance()
@@ -622,12 +621,12 @@ class EditController(BaseAnnotationController):
 	def _on_delete(self) -> None:
 		"""Delete the current seed."""
 		seed_list_idx = self._filtered_indices[self._nav_idx]
-		frame_idx = int(self._work_seeds[seed_list_idx]["frame_index"])
+		frame_index = int(self._work_seeds[seed_list_idx]["frame_index"])
 
 		self._reviewed += 1
 		self._deleted += 1
 		self._delete_indices.add(seed_list_idx)
-		self._changed_frames.add(frame_idx)
+		self._changed_frames.add(frame_index)
 		self._save_callback(self._work_seeds)
 		self._advance()
 
@@ -641,16 +640,15 @@ class EditController(BaseAnnotationController):
 		"""
 		seed_list_idx = self._filtered_indices[self._nav_idx]
 		seed = self._work_seeds[seed_list_idx]
-		frame_idx = int(seed["frame_index"])
+		frame_index = int(seed["frame_index"])
 
 		self._reviewed += 1
 		self._status_changed += 1
-		self._changed_frames.add(frame_idx)
+		self._changed_frames.add(frame_index)
 
 		# Build new seed without torso_box
 		new_seed = {
 			"frame_index": seed["frame_index"],
-			"frame": int(seed["frame_index"]),
 			"time_s": seed.get("time_s"),
 			"status": new_status,
 			"conf": None,
@@ -730,9 +728,9 @@ class EditController(BaseAnnotationController):
 		if status in ("not_in_frame",):
 			return
 		import seed_editor as seed_editor_module
-		frame_idx = int(self._current_seed["frame_index"])
+		frame_index = int(self._current_seed["frame_index"])
 		refined = seed_editor_module._refine_box_consensus(
-			self._current_seed, self._predictions, frame_idx,
+			self._current_seed, self._predictions, frame_index,
 		)
 		if refined is None:
 			self._status_presenter.get_widget().setText(
@@ -787,8 +785,8 @@ class EditController(BaseAnnotationController):
 			return
 		refined = self._pending_refined
 		seed = self._current_seed
-		frame_idx = int(seed["frame_index"])
-		time_sec = seed.get("time_s", frame_idx / self._fps)
+		frame_index = int(seed["frame_index"])
+		time_sec = seed.get("time_s", frame_index / self._fps)
 		rx = int(refined["cx"] - refined["w"] / 2.0)
 		ry = int(refined["cy"] - refined["h"] / 2.0)
 		polish_box = [rx, ry, int(refined["w"]), int(refined["h"])]
@@ -798,14 +796,14 @@ class EditController(BaseAnnotationController):
 			self._current_bgr, norm_box
 		)
 		new_seed = seed_color._build_seed_dict(
-			frame_idx, time_sec, norm_box, jersey_hsv, seed["pass"],
+			frame_index, time_sec, norm_box, jersey_hsv, seed["pass"],
 			"bbox_polish",
 		)
 		seed_list_idx = self._filtered_indices[self._nav_idx]
 		self._work_seeds[seed_list_idx] = new_seed
 		self._redrawn += 1
 		self._reviewed += 1
-		self._changed_frames.add(frame_idx)
+		self._changed_frames.add(frame_index)
 		self._save_callback(self._work_seeds)
 		self._clear_polish_preview()
 		self._advance()
@@ -822,14 +820,14 @@ class EditController(BaseAnnotationController):
 		)
 		if seed_list_idx < 0:
 			return
-		frame_idx = int(self._current_seed["frame_index"])
+		frame_index = int(self._current_seed["frame_index"])
 		conf = None
 		if self._seed_confidences is not None:
-			conf = self._seed_confidences.get(frame_idx)
+			conf = self._seed_confidences.get(frame_index)
 		# look up interval_info for severity display
 		interval_info = None
 		if self._predictions is not None:
-			preds = self._predictions.get(frame_idx)
+			preds = self._predictions.get(frame_index)
 			if preds is not None:
 				interval_info = preds.get("interval_info")
 		self._status_presenter.update(
@@ -883,8 +881,8 @@ class EditController(BaseAnnotationController):
 			idx = (self._nav_idx + offset) % total
 			seed_list_idx = self._filtered_indices[idx]
 			seed = self._work_seeds[seed_list_idx]
-			frame_idx = int(seed["frame_index"])
-			conf = self._seed_confidences.get(frame_idx)
+			frame_index = int(seed["frame_index"])
+			conf = self._seed_confidences.get(frame_index)
 			if conf is not None and float(conf.get("score", 1.0)) < 0.5:
 				self._nav_idx = idx
 				self._load_current_seed()
@@ -1006,8 +1004,8 @@ class EditController(BaseAnnotationController):
 
 		saved = getattr(self, "_saved_frame_index", 0)
 		for i, idx in enumerate(self._filtered_indices):
-			frame_idx = int(self._work_seeds[idx]["frame_index"])
-			if frame_idx >= saved:
+			frame_index = int(self._work_seeds[idx]["frame_index"])
+			if frame_index >= saved:
 				self._nav_idx = i
 				return
 		# All seeds before saved frame, go to last

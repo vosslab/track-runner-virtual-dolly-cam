@@ -757,10 +757,10 @@ def evaluate_supplemental(
 			# skip seeds without spatial data (e.g. not_in_frame)
 			if "cx" not in seed or "cy" not in seed:
 				continue
-			frame_idx = int(seed["frame_index"])
-			if frame_idx >= len(trajectory) or trajectory[frame_idx] is None:
+			frame_index = int(seed["frame_index"])
+			if frame_index >= len(trajectory) or trajectory[frame_index] is None:
 				continue
-			pred = trajectory[frame_idx]
+			pred = trajectory[frame_index]
 			dx = pred["cx"] - seed["cx"]
 			dy = pred["cy"] - seed["cy"]
 			dist = float(numpy.sqrt(dx * dx + dy * dy))

@@ -294,7 +294,7 @@ def normalize_seed_box(box: list, config: dict) -> list:
 #============================================
 
 def _build_seed_dict(
-	frame_idx: int,
+	frame_index: int,
 	time_sec: float,
 	torso_box: list,
 	jersey_hsv: tuple,
@@ -305,7 +305,7 @@ def _build_seed_dict(
 	"""Build a v2 seed dict from collected fields.
 
 	Args:
-		frame_idx: Frame index (0-based).
+		frame_index: Frame index (0-based).
 		time_sec: Time in seconds.
 		torso_box: Normalized torso box as [x, y, w, h].
 		jersey_hsv: Tuple of (h, s, v) median HSV values.
@@ -322,8 +322,7 @@ def _build_seed_dict(
 	cx = float(tx + tw / 2.0)
 	cy = float(ty + th / 2.0)
 	seed = {
-		"frame_index": frame_idx,
-		"frame": frame_idx,
+		"frame_index": frame_index,
 		"time_s": round(time_sec, 3),
 		"torso_box": torso_box,
 		"jersey_hsv": list(jersey_hsv),

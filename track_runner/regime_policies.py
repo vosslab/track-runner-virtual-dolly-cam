@@ -67,7 +67,7 @@ def _get_regime_params(regime: str, distance_flag: str = None) -> dict:
 
 #============================================
 def get_frame_params(
-	frame_idx: int,
+	frame_index: int,
 	regime_spans: list,
 ) -> dict:
 	"""Get fill_ratio and size_update_mode for a specific frame.
@@ -77,7 +77,7 @@ def get_frame_params(
 	the incoming span's mode (no interpolation).
 
 	Args:
-		frame_idx: Frame index to query.
+		frame_index: Frame index to query.
 		regime_spans: List of span dicts from classify_regimes().
 
 	Returns:
@@ -93,7 +93,7 @@ def get_frame_params(
 		}
 
 	# find which span this frame belongs to
-	span_idx = _find_span_index(frame_idx, regime_spans)
+	span_idx = _find_span_index(frame_index, regime_spans)
 	span = regime_spans[span_idx]
 	params = _get_regime_params(span["regime"], span["distance_flag"])
 
@@ -103,7 +103,7 @@ def get_frame_params(
 
 	# blend-in zone: interpolate from previous span's fill_ratio
 	blend_in = span["blend_in"]
-	local_offset = frame_idx - span["start_frame"]
+	local_offset = frame_index - span["start_frame"]
 	if blend_in > 0 and local_offset < blend_in and span_idx > 0:
 		prev_span = regime_spans[span_idx - 1]
 		prev_params = _get_regime_params(
@@ -116,7 +116,7 @@ def get_frame_params(
 
 	# blend-out zone: interpolate toward next span's fill_ratio
 	blend_out = span["blend_out"]
-	frames_from_end = span["end_frame"] - 1 - frame_idx
+	frames_from_end = span["end_frame"] - 1 - frame_index
 	if blend_out > 0 and frames_from_end < blend_out and span_idx < len(regime_spans) - 1:
 		next_span = regime_spans[span_idx + 1]
 		next_params = _get_regime_params(
@@ -136,11 +136,11 @@ def get_frame_params(
 
 
 #============================================
-def _find_span_index(frame_idx: int, regime_spans: list) -> int:
+def _find_span_index(frame_index: int, regime_spans: list) -> int:
 	"""Find the span index that contains a given frame.
 
 	Args:
-		frame_idx: Frame index to search for.
+		frame_index: Frame index to search for.
 		regime_spans: List of span dicts with start_frame and end_frame.
 
 	Returns:
@@ -148,7 +148,7 @@ def _find_span_index(frame_idx: int, regime_spans: list) -> int:
 		beyond all spans.
 	"""
 	for i, span in enumerate(regime_spans):
-		if frame_idx < span["end_frame"]:
+		if frame_index < span["end_frame"]:
 			return i
 	# frame beyond all spans, return last
 	return len(regime_spans) - 1

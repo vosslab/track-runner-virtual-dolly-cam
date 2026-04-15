@@ -763,7 +763,7 @@ def analyze_solver_context(
 	Args:
 		interval_results: List of solved interval result dicts, sorted
 			by start_frame.
-		seeds: List of seed dicts with at least "frame" key.
+		seeds: List of seed dicts with at least "frame_index" key.
 		fps: Video frame rate.
 
 	Returns:
@@ -790,7 +790,7 @@ def analyze_solver_context(
 	seed_count = len(seeds)
 	seed_density = round(seed_count / max(0.001, duration_min), 1)
 	# desert count: seedless gaps > 5 seconds
-	seed_frames = sorted(s["frame"] for s in seeds)
+	seed_frames = sorted(s["frame_index"] for s in seeds)
 	desert_threshold = 5.0 * fps
 	desert_count = 0
 	for i in range(1, len(seed_frames)):

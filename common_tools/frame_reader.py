@@ -79,11 +79,11 @@ class FrameReader:
 		self._seq_pos = -1
 
 	#============================================
-	def read_frame(self, frame_idx: int) -> numpy.ndarray | None:
+	def read_frame(self, frame_index: int) -> numpy.ndarray | None:
 		"""Read a single frame by index, trying multiple strategies.
 
 		Args:
-			frame_idx: Target frame index (0-based).
+			frame_index: Target frame index (0-based).
 
 		Returns:
 			BGR frame as numpy array, or None if all strategies fail.
@@ -91,21 +91,21 @@ class FrameReader:
 		results = {}
 
 		# strategy 1: seek by milliseconds
-		time_msec = (frame_idx / self._fps) * 1000.0
+		time_msec = (frame_index / self._fps) * 1000.0
 		self._cap.set(cv2.CAP_PROP_POS_MSEC, time_msec)
 		ret, frame = self._cap.read()
 		if ret:
 			results["seek_msec"] = "OK"
-			self._print_debug(frame_idx, results)
+			self._print_debug(frame_index, results)
 			return frame
 		results["seek_msec"] = "FAIL"
 
 		# strategy 2: seek by frame index
-		self._cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+		self._cap.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
 		ret, frame = self._cap.read()
 		if ret:
 			results["seek_frame"] = "OK"
-			self._print_debug(frame_idx, results)
+			self._print_debug(frame_index, results)
 			return frame
 		results["seek_frame"] = "FAIL"
 
@@ -113,19 +113,19 @@ class FrameReader:
 		self._cap.release()
 		self._cap = cv2.VideoCapture(self._active_path)
 		if self._cap.isOpened():
-			self._cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+			self._cap.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
 			ret, frame = self._cap.read()
 			if ret:
 				results["reopen"] = "OK"
-				self._print_debug(frame_idx, results)
+				self._print_debug(frame_index, results)
 				return frame
 		results["reopen"] = "FAIL"
 
 		# strategy 4: sequential forward read on dedicated capture
-		frame = self._sequential_read(frame_idx)
+		frame = self._sequential_read(frame_index)
 		if frame is not None:
 			results["sequential"] = "OK"
-			self._print_debug(frame_idx, results)
+			self._print_debug(frame_index, results)
 			return frame
 		results["sequential"] = "FAIL"
 
@@ -135,14 +135,14 @@ class FrameReader:
 			if remuxed:
 				results["remux"] = "OK"
 				# retry strategies 1-4 on the remuxed file
-				frame = self._retry_after_remux(frame_idx, results)
+				frame = self._retry_after_remux(frame_index, results)
 				if frame is not None:
-					self._print_debug(frame_idx, results)
+					self._print_debug(frame_index, results)
 					return frame
 			else:
 				results["remux"] = "FAIL"
 
-		self._print_debug(frame_idx, results)
+		self._print_debug(frame_index, results)
 		return None
 
 	#============================================
@@ -198,18 +198,18 @@ class FrameReader:
 		return True
 
 	#============================================
-	def _retry_after_remux(self, frame_idx: int, results: dict) -> numpy.ndarray | None:
+	def _retry_after_remux(self, frame_index: int, results: dict) -> numpy.ndarray | None:
 		"""Retry strategies 1-4 after successful remux.
 
 		Args:
-			frame_idx: Target frame index.
+			frame_index: Target frame index.
 			results: Strategy results dict to update.
 
 		Returns:
 			BGR frame as numpy array, or None if still failing.
 		"""
 		# retry strategy 1: seek by msec on remuxed file
-		time_msec = (frame_idx / self._fps) * 1000.0
+		time_msec = (frame_index / self._fps) * 1000.0
 		self._cap.set(cv2.CAP_PROP_POS_MSEC, time_msec)
 		ret, frame = self._cap.read()
 		if ret:
@@ -217,14 +217,14 @@ class FrameReader:
 			return frame
 		results["retry_seek_msec"] = "FAIL"
 		# retry strategy 2: seek by frame index on remuxed file
-		self._cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+		self._cap.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
 		ret, frame = self._cap.read()
 		if ret:
 			results["retry_seek_frame"] = "OK"
 			return frame
 		results["retry_seek_frame"] = "FAIL"
 		# retry strategy 4: sequential on remuxed file
-		frame = self._sequential_read(frame_idx)
+		frame = self._sequential_read(frame_index)
 		if frame is not None:
 			results["retry_sequential"] = "OK"
 			return frame
@@ -232,7 +232,7 @@ class FrameReader:
 		return None
 
 	#============================================
-	def _sequential_read(self, frame_idx: int) -> numpy.ndarray | None:
+	def _sequential_read(self, frame_index: int) -> numpy.ndarray | None:
 		"""Read forward sequentially to the target frame.
 
 		Uses a dedicated capture (self._seq_cap) that is never touched
@@ -242,13 +242,13 @@ class FrameReader:
 		the capture from the beginning.
 
 		Args:
-			frame_idx: Target frame index.
+			frame_index: Target frame index.
 
 		Returns:
 			BGR frame as numpy array, or None on failure.
 		"""
 		# if target is behind current position or cap not initialized, reopen
-		if self._seq_cap is None or frame_idx <= self._seq_pos or self._seq_pos < 0:
+		if self._seq_cap is None or frame_index <= self._seq_pos or self._seq_pos < 0:
 			if self._seq_cap is not None:
 				self._seq_cap.release()
 			self._seq_cap = cv2.VideoCapture(self._active_path)
@@ -258,21 +258,21 @@ class FrameReader:
 
 		# read forward, discarding frames until we reach target
 		frame = None
-		while self._seq_pos < frame_idx:
+		while self._seq_pos < frame_index:
 			ret, frame = self._seq_cap.read()
 			if not ret:
 				return None
 			self._seq_pos += 1
 
-		# self._seq_pos should now equal frame_idx
+		# self._seq_pos should now equal frame_index
 		return frame
 
 	#============================================
-	def _print_debug(self, frame_idx: int, results: dict) -> None:
+	def _print_debug(self, frame_index: int, results: dict) -> None:
 		"""Print per-frame debug output showing strategy results.
 
 		Args:
-			frame_idx: Frame index that was read.
+			frame_index: Frame index that was read.
 			results: Dict mapping strategy name to "OK" or "FAIL".
 		"""
 		if not self._debug:
@@ -287,7 +287,7 @@ class FrameReader:
 			if strategy in results:
 				parts.append(f"{strategy}={results[strategy]}")
 		status_str = " ".join(parts)
-		print(f"  frame {frame_idx}: {status_str}")
+		print(f"  frame {frame_index}: {status_str}")
 
 	#============================================
 	def close(self) -> None:

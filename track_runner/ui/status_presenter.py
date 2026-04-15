@@ -66,14 +66,14 @@ class StatusPresenter:
 			interval_info: Optional dict with severity, agreement, margin,
 				and reasons keys from prediction diagnostics.
 		"""
-		frame_idx = int(seed.get("frame_index", 0))
+		frame_index = int(seed.get("frame_index", 0))
 		status = seed.get("status", "unknown")
 		time_s = float(seed.get("time_s", 0.0))
 
 		# primary info line
 		text = (
 			f"Seed {seed_index + 1}/{total_seeds}  "
-			f"frame {frame_idx}  "
+			f"frame {frame_index}  "
 			f"{time_s:.1f}s  "
 			f"{status}"
 		)

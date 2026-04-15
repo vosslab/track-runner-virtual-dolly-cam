@@ -104,7 +104,7 @@ def _reason_to_suggestion(
 	time_s = frame / max(1.0, fps)
 	explanation = _REASON_EXPLANATIONS.get(reason, reason)
 	suggestion = {
-		"frame": frame,
+		"frame_index": frame,
 		"time_s": time_s,
 		"reason": reason,
 		"competitor_summary": explanation,
@@ -269,7 +269,7 @@ def identify_weak_spans(diagnostics: dict) -> list:
 				for frame in exits:
 					time_s = frame / max(1.0, fps)
 					suggestion = {
-						"frame": frame,
+						"frame_index": frame,
 						"time_s": time_s,
 						"reason": "likely_occlusion",
 						"competitor_summary": (
@@ -289,7 +289,7 @@ def identify_weak_spans(diagnostics: dict) -> list:
 						for frame in exits:
 							time_s = frame / max(1.0, fps)
 							suggestion = {
-								"frame": frame,
+								"frame_index": frame,
 								"time_s": time_s,
 								"reason": "likely_occlusion",
 								"competitor_summary": (
@@ -313,7 +313,7 @@ def identify_weak_spans(diagnostics: dict) -> list:
 			frame = _midpoint_frame(start_frame, end_frame)
 			time_s = frame / max(1.0, fps)
 			suggestion = {
-				"frame": frame,
+				"frame_index": frame,
 				"time_s": time_s,
 				"reason": "low_confidence",
 				"competitor_summary": "interval scored below threshold",
@@ -324,12 +324,12 @@ def identify_weak_spans(diagnostics: dict) -> list:
 	seen_frames = set()
 	unique_suggestions = []
 	for s in suggestions:
-		if s["frame"] not in seen_frames:
-			seen_frames.add(s["frame"])
+		if s["frame_index"] not in seen_frames:
+			seen_frames.add(s["frame_index"])
 			unique_suggestions.append(s)
 
 	# sort by frame index
-	unique_suggestions.sort(key=lambda s: s["frame"])
+	unique_suggestions.sort(key=lambda s: s["frame_index"])
 	return unique_suggestions
 
 
@@ -414,8 +414,8 @@ def generate_refinement_targets(
 		# use weak span suggestions, filtered by severity
 		suggestions = identify_weak_spans(diagnostics)
 		for s in suggestions:
-			if _in_range(s["frame"]) and not _frame_in_excluded_interval(s["frame"]):
-				target_set.add(s["frame"])
+			if _in_range(s["frame_index"]) and not _frame_in_excluded_interval(s["frame_index"]):
+				target_set.add(s["frame_index"])
 
 	if "interval" in active_modes:
 		# evenly spaced frames; find total frame span from intervals
@@ -683,7 +683,7 @@ def format_review_summary(diagnostics: dict) -> str:
 		lines.append("Suggested seed frames:")
 		for s in suggestions:
 			time_s = float(s["time_s"])
-			frame = int(s["frame"])
+			frame = int(s["frame_index"])
 			reason = s["reason"]
 			summary = s.get("competitor_summary") or ""
 			lines.append(f"  frame {frame:5d}  ({time_s:.1f}s)  {reason}  -- {summary}")

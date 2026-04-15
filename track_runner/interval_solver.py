@@ -380,9 +380,9 @@ def stitch_trajectories(
 		start = result["start_frame"]
 		fused = result["fused_track"]
 		for i, state in enumerate(fused):
-			frame_idx = start + i
-			if 0 <= frame_idx <= last_end:
-				trajectory[frame_idx] = state
+			frame_index = start + i
+			if 0 <= frame_index <= last_end:
+				trajectory[frame_index] = state
 
 	return trajectory
 
@@ -500,21 +500,21 @@ def _stamp_seed_confidence(
 	n = len(trajectory)
 	stamped = 0
 	for seed in seeds:
-		frame_idx = int(seed["frame_index"])
-		if frame_idx < 0 or frame_idx >= n:
+		frame_index = int(seed["frame_index"])
+		if frame_index < 0 or frame_index >= n:
 			continue
-		if trajectory[frame_idx] is None:
+		if trajectory[frame_index] is None:
 			continue
 		status = seed.get("status", "")
 		# visible and partial seeds have precise position
 		if status in ("visible", "partial"):
-			trajectory[frame_idx]["conf"] = 1.0
-			trajectory[frame_idx]["seed_status"] = status
+			trajectory[frame_index]["conf"] = 1.0
+			trajectory[frame_index]["seed_status"] = status
 			stamped += 1
 		# approx seeds have uncertain but useful position
 		elif status in ("approximate", "obstructed"):
-			trajectory[frame_idx]["conf"] = 0.3
-			trajectory[frame_idx]["seed_status"] = status
+			trajectory[frame_index]["conf"] = 0.3
+			trajectory[frame_index]["seed_status"] = status
 			stamped += 1
 	if stamped > 0:
 		print(f"  stamped confidence on {stamped} seed frames")
@@ -1135,15 +1135,15 @@ def solve_all_intervals(
 	# convert all seeds to scene coordinates
 	all_seeds_scene = []
 	for seed in seeds:
-		frame_idx = int(seed["frame_index"])
+		frame_index = int(seed["frame_index"])
 		cx = float(seed["cx"])
 		cy = float(seed["cy"])
 		w = float(seed["w"])
 		h = float(seed["h"])
 		sx, sy, sw, sh = scene_transform.pixel_box_to_scene(
-			frame_idx, cx, cy, w, h,
+			frame_index, cx, cy, w, h,
 		)
-		all_seeds_scene.append((frame_idx, sx, sy, sw, sh))
+		all_seeds_scene.append((frame_index, sx, sy, sw, sh))
 
 	# filter to usable seeds
 	usable_seeds = [

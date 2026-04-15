@@ -352,7 +352,7 @@ def _build_predictions_from_diagnostics(diagnostics: dict) -> dict:
 		start_frame = int(iv["start_frame"])
 		n = min(len(fwd_track), len(bwd_track))
 		for i in range(n):
-			frame_idx = start_frame + i
+			frame_index = start_frame + i
 			frame_preds = {
 				"forward": fwd_track[i],
 				"backward": bwd_track[i],
@@ -371,7 +371,7 @@ def _build_predictions_from_diagnostics(diagnostics: dict) -> dict:
 				"h": (float(fwd_box["h"]) + float(bwd_box["h"])) / 2.0,
 			}
 			frame_preds["consensus"] = consensus
-			predictions[frame_idx] = frame_preds
+			predictions[frame_index] = frame_preds
 	return predictions
 
 

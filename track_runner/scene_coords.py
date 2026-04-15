@@ -42,14 +42,14 @@ class SceneTransform:
 	#============================================
 	def pixel_to_scene(
 		self,
-		frame_idx: int,
+		frame_index: int,
 		px: float,
 		py: float,
 	) -> tuple[float, float]:
 		"""Convert pixel coordinates to scene coordinates.
 
 		Args:
-			frame_idx: Frame index (0-based).
+			frame_index: Frame index (0-based).
 			px: X coordinate in frame pixels.
 			py: Y coordinate in frame pixels.
 
@@ -57,9 +57,9 @@ class SceneTransform:
 			Tuple (scene_x, scene_y) in scene coordinate space.
 		"""
 		# retrieve cumulative translation and scale at this frame
-		cum_dx = float(self.cum_dx[frame_idx])
-		cum_dy = float(self.cum_dy[frame_idx])
-		cum_scale = float(self.cum_scale[frame_idx])
+		cum_dx = float(self.cum_dx[frame_index])
+		cum_dy = float(self.cum_dy[frame_index])
+		cum_scale = float(self.cum_scale[frame_index])
 
 		# invert the affine transform: pixel = scene * scale + translation
 		# so scene = (pixel - translation) / scale
@@ -71,14 +71,14 @@ class SceneTransform:
 	#============================================
 	def scene_to_pixel(
 		self,
-		frame_idx: int,
+		frame_index: int,
 		sx: float,
 		sy: float,
 	) -> tuple[float, float]:
 		"""Convert scene coordinates to pixel coordinates.
 
 		Args:
-			frame_idx: Frame index (0-based).
+			frame_index: Frame index (0-based).
 			sx: X coordinate in scene space.
 			sy: Y coordinate in scene space.
 
@@ -86,9 +86,9 @@ class SceneTransform:
 			Tuple (pixel_x, pixel_y) in frame pixel space.
 		"""
 		# retrieve cumulative translation and scale at this frame
-		cum_dx = float(self.cum_dx[frame_idx])
-		cum_dy = float(self.cum_dy[frame_idx])
-		cum_scale = float(self.cum_scale[frame_idx])
+		cum_dx = float(self.cum_dx[frame_index])
+		cum_dy = float(self.cum_dy[frame_index])
+		cum_scale = float(self.cum_scale[frame_index])
 
 		# forward transform: pixel = scene * scale + translation
 		px = sx * cum_scale + cum_dx
@@ -99,7 +99,7 @@ class SceneTransform:
 	#============================================
 	def pixel_box_to_scene(
 		self,
-		frame_idx: int,
+		frame_index: int,
 		cx: float,
 		cy: float,
 		w: float,
@@ -108,7 +108,7 @@ class SceneTransform:
 		"""Transform bounding box from pixel to scene coordinates.
 
 		Args:
-			frame_idx: Frame index (0-based).
+			frame_index: Frame index (0-based).
 			cx: X position of box center in pixels.
 			cy: Y position of box center in pixels.
 			w: Width of box in pixels.
@@ -118,10 +118,10 @@ class SceneTransform:
 			Tuple (scene_cx, scene_cy, scene_w, scene_h).
 		"""
 		# transform center position
-		scene_cx, scene_cy = self.pixel_to_scene(frame_idx, cx, cy)
+		scene_cx, scene_cy = self.pixel_to_scene(frame_index, cx, cy)
 
 		# retrieve cumulative scale at this frame
-		cum_scale = float(self.cum_scale[frame_idx])
+		cum_scale = float(self.cum_scale[frame_index])
 
 		# scale the size: scene_size = pixel_size / cum_scale
 		scene_w = w / cum_scale
@@ -132,7 +132,7 @@ class SceneTransform:
 	#============================================
 	def scene_box_to_pixel(
 		self,
-		frame_idx: int,
+		frame_index: int,
 		sx: float,
 		sy: float,
 		sw: float,
@@ -141,7 +141,7 @@ class SceneTransform:
 		"""Transform bounding box from scene to pixel coordinates.
 
 		Args:
-			frame_idx: Frame index (0-based).
+			frame_index: Frame index (0-based).
 			sx: X position of box center in scene space.
 			sy: Y position of box center in scene space.
 			sw: Width of box in scene space.
@@ -151,10 +151,10 @@ class SceneTransform:
 			Tuple (pixel_cx, pixel_cy, pixel_w, pixel_h).
 		"""
 		# transform center position
-		pixel_cx, pixel_cy = self.scene_to_pixel(frame_idx, sx, sy)
+		pixel_cx, pixel_cy = self.scene_to_pixel(frame_index, sx, sy)
 
 		# retrieve cumulative scale at this frame
-		cum_scale = float(self.cum_scale[frame_idx])
+		cum_scale = float(self.cum_scale[frame_index])
 
 		# scale the size: pixel_size = scene_size * cum_scale
 		pixel_w = sw * cum_scale

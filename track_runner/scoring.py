@@ -78,7 +78,7 @@ def compute_meeting_point_errors(
 
 	Returns:
 		List of dicts with keys:
-			- "frame": int, frame index
+			- "frame_index": int, frame index
 			- "center_err_px": float, Euclidean center distance in pixels
 			- "scale_err_pct": float, fractional height difference (0.0 to 1.0+)
 	"""
@@ -102,7 +102,7 @@ def compute_meeting_point_errors(
 		else:
 			scale_err = 1.0
 		frame_error = {
-			"frame": i,
+			"frame_index": i,
 			"center_err_px": center_err,
 			"scale_err_pct": scale_err,
 		}
@@ -376,8 +376,8 @@ def score_interval_analytical(
 		# average interpolation error over interval
 		size_errors = []
 		for i, state in enumerate(forward_track):
-			frame_idx = start_frame + i
-			t = (frame_idx - start_frame) / interval_length
+			frame_index = start_frame + i
+			t = (frame_index - start_frame) / interval_length
 			# expected height by linear interpolation
 			expected_h = (1.0 - t) * left_sh + t * right_sh
 			actual_h = float(state.get("h", expected_h))

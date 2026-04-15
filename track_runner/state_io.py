@@ -57,13 +57,13 @@ def validate_seed(seed: dict) -> int | None:
 	# legacy "obstructed" without torso_box is a data problem
 	if status == "obstructed":
 		if "torso_box" not in seed or seed["torso_box"] is None:
-			frame_idx = seed.get("frame_index")
-			return frame_idx
+			frame_index = seed.get("frame_index")
+			return frame_index
 	# "approximate" should always have torso_box
 	if status == "approximate":
 		if "torso_box" not in seed or seed["torso_box"] is None:
-			frame_idx = seed.get("frame_index")
-			return frame_idx
+			frame_index = seed.get("frame_index")
+			return frame_index
 	return None
 
 #============================================
@@ -469,7 +469,7 @@ if __name__ == "__main__":
 		"video_file": "test.mov",
 		"seeds": [
 			{
-				"frame": 150,
+				"frame_index": 150,
 				"time_s": 5.0,
 				"torso_box": [640, 360, 40, 60],
 				"jersey_hsv": [120, 180, 200],
@@ -483,14 +483,14 @@ if __name__ == "__main__":
 		tmp_path = tmp.name
 	write_seeds(tmp_path, seeds_data)
 	loaded = load_seeds(tmp_path)
-	assert loaded["seeds"][0]["frame"] == 150
+	assert loaded["seeds"][0]["frame_index"] == 150
 	assert loaded[SEEDS_HEADER_KEY] == SEEDS_HEADER_VALUE
 	os.unlink(tmp_path)
 
 	# test diagnostics round-trip
 	diag_data = {
 		"intervals": [1, 2, 3],
-		"trajectory": [{"frame": 0, "x": 100}],
+		"trajectory": [{"frame_index": 0, "x": 100}],
 	}
 	with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
 		tmp_path = tmp.name

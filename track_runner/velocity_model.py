@@ -26,7 +26,7 @@ def estimate_directional_slope(
 	use simple finite difference; if 0 neighbors, return (0, 0).
 
 	Args:
-		seeds_scene: List of (frame_idx, sx, sy, sw, sh) tuples in scene coords.
+		seeds_scene: List of (frame_index, sx, sy, sw, sh) tuples in scene coords.
 		anchor_idx: Index into seeds_scene of the anchor seed.
 		direction: "backward" (left neighbors) or "forward" (right neighbors).
 		frame_indices: Unused; kept for API consistency.
@@ -112,7 +112,7 @@ def estimate_directional_size_slope(
 	to handle multiplicative scale changes.
 
 	Args:
-		seeds_scene: List of (frame_idx, sx, sy, sw, sh) tuples in scene coords.
+		seeds_scene: List of (frame_index, sx, sy, sw, sh) tuples in scene coords.
 		anchor_idx: Index into seeds_scene of the anchor seed.
 		direction: "backward" (left neighbors) or "forward" (right neighbors).
 		frame_indices: Unused; kept for API consistency.
@@ -396,12 +396,12 @@ def propagate_forward_analytical(
 	conf_floor = 0.1
 	start_conf = 1.0
 
-	for frame_idx in range(start_frame, end_frame + 1):
+	for frame_index in range(start_frame, end_frame + 1):
 		# parametric distance along interval
 		if interval_length > 0:
-			t = (frame_idx - start_frame) / interval_length
+			t = (frame_index - start_frame) / interval_length
 		else:
-			t = 0.0 if frame_idx == start_frame else 1.0
+			t = 0.0 if frame_index == start_frame else 1.0
 
 		# clamp t to [0, 1]
 		t = max(0.0, min(1.0, t))
@@ -433,11 +433,11 @@ def propagate_forward_analytical(
 
 		# convert scene coords back to pixel coords
 		pixel_cx, pixel_cy, pixel_w, pixel_h = (
-			scene_transform.scene_box_to_pixel(frame_idx, scene_cx, scene_cy, scene_w, scene_h)
+			scene_transform.scene_box_to_pixel(frame_index, scene_cx, scene_cy, scene_w, scene_h)
 		)
 
 		# compute confidence: decay from start
-		frames_from_start = frame_idx - start_frame
+		frames_from_start = frame_index - start_frame
 		confidence = max(conf_floor, start_conf * (conf_decay_per_frame ** frames_from_start))
 
 		state = {
@@ -512,12 +512,12 @@ def propagate_backward_analytical(
 	conf_floor = 0.1
 	start_conf = 1.0
 
-	for frame_idx in range(end_frame, start_frame - 1, -1):
+	for frame_index in range(end_frame, start_frame - 1, -1):
 		# parametric distance along interval (still measured from start)
 		if interval_length > 0:
-			t = (frame_idx - start_frame) / interval_length
+			t = (frame_index - start_frame) / interval_length
 		else:
-			t = 1.0 if frame_idx == end_frame else 0.0
+			t = 1.0 if frame_index == end_frame else 0.0
 
 		# clamp t to [0, 1]
 		t = max(0.0, min(1.0, t))
@@ -548,11 +548,11 @@ def propagate_backward_analytical(
 
 		# convert scene coords back to pixel coords
 		pixel_cx, pixel_cy, pixel_w, pixel_h = (
-			scene_transform.scene_box_to_pixel(frame_idx, scene_cx, scene_cy, scene_w, scene_h)
+			scene_transform.scene_box_to_pixel(frame_index, scene_cx, scene_cy, scene_w, scene_h)
 		)
 
 		# compute confidence: decay from end
-		frames_from_end = end_frame - frame_idx
+		frames_from_end = end_frame - frame_index
 		confidence = max(conf_floor, start_conf * (conf_decay_per_frame ** frames_from_end))
 
 		state = {

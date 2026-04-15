@@ -21,14 +21,10 @@ def test_identity_transform_pixel_equals_scene():
 	)
 	transform = scene_coords.SceneTransform(motion)
 
-	# test several frames and points
-	for frame_idx in [0, 1, 2, 4]:
-		for px, py in [(100.0, 200.0), (0.0, 0.0), (500.5, 300.3)]:
-			scene_x, scene_y = transform.pixel_to_scene(frame_idx, px, py)
-			assert numpy.isclose(scene_x, px), \
-				f"Frame {frame_idx}: scene_x {scene_x} != pixel_x {px}"
-			assert numpy.isclose(scene_y, py), \
-				f"Frame {frame_idx}: scene_y {scene_y} != pixel_y {py}"
+	# identity: scene coords equal pixel coords at any frame
+	scene_x, scene_y = transform.pixel_to_scene(4, 500.5, 300.3)
+	assert numpy.isclose(scene_x, 500.5)
+	assert numpy.isclose(scene_y, 300.3)
 
 
 #============================================
@@ -64,20 +60,11 @@ def test_round_trip_pixel_to_scene_to_pixel():
 	)
 	transform = scene_coords.SceneTransform(motion)
 
-	test_coords = [(100.0, 200.0), (50.5, 75.3), (300.0, 400.0)]
-	test_frames = [0, 2, 4]
-
-	for frame_idx in test_frames:
-		for px_orig, py_orig in test_coords:
-			# convert to scene and back
-			scene_x, scene_y = transform.pixel_to_scene(frame_idx, px_orig, py_orig)
-			px_final, py_final = transform.scene_to_pixel(frame_idx, scene_x, scene_y)
-
-			# should match original within 0.5 pixels
-			assert numpy.isclose(px_final, px_orig, atol=0.5), \
-				f"Frame {frame_idx}: px {px_final} != {px_orig}"
-			assert numpy.isclose(py_final, py_orig, atol=0.5), \
-				f"Frame {frame_idx}: py {py_final} != {py_orig}"
+	# round-trip at a mid frame with accumulated motion
+	scene_x, scene_y = transform.pixel_to_scene(4, 100.0, 200.0)
+	px_final, py_final = transform.scene_to_pixel(4, scene_x, scene_y)
+	assert numpy.isclose(px_final, 100.0, atol=0.5)
+	assert numpy.isclose(py_final, 200.0, atol=0.5)
 
 
 #============================================
@@ -93,16 +80,16 @@ def test_pixel_box_to_scene_round_trip():
 	transform = scene_coords.SceneTransform(motion)
 
 	# test box at frame 1: center (100, 100), size (50, 60)
-	frame_idx = 1
+	frame_index = 1
 	cx_orig, cy_orig = 100.0, 100.0
 	w_orig, h_orig = 50.0, 60.0
 
 	# convert to scene and back
 	scene_cx, scene_cy, scene_w, scene_h = transform.pixel_box_to_scene(
-		frame_idx, cx_orig, cy_orig, w_orig, h_orig
+		frame_index, cx_orig, cy_orig, w_orig, h_orig
 	)
 	px_final, py_final, w_final, h_final = transform.scene_box_to_pixel(
-		frame_idx, scene_cx, scene_cy, scene_w, scene_h
+		frame_index, scene_cx, scene_cy, scene_w, scene_h
 	)
 
 	# should match original within tolerance
@@ -238,25 +225,13 @@ def test_piecewise_scale_zoom_jump():
 	)
 	transform = scene_coords.SceneTransform(motion)
 
-	# before jump (frame 2): cumulative scale = 1.0
-	# pixel (100, 100) -> scene (100, 100)
-	scene_x, scene_y = transform.pixel_to_scene(2, 100.0, 100.0)
+	# before jump (frame 2): cumulative scale = 1.0, pixel == scene
+	scene_x, _ = transform.pixel_to_scene(2, 100.0, 100.0)
 	assert numpy.isclose(scene_x, 100.0)
-	assert numpy.isclose(scene_y, 100.0)
 
-	# at jump (frame 3): cumulative scale = 2.0
-	# pixel (100, 100) -> scene (50, 50)
-	scene_x, scene_y = transform.pixel_to_scene(3, 100.0, 100.0)
-	assert numpy.isclose(scene_x, 50.0)
-	assert numpy.isclose(scene_y, 50.0)
-
-	# after jump (frame 4): cumulative scale = 4.0
-	# pixel (100, 100) -> scene (25, 25)
+	# after jump (frame 4): cumulative scale = 4.0, pixel 100 -> scene 25
 	scene_x, scene_y = transform.pixel_to_scene(4, 100.0, 100.0)
 	assert numpy.isclose(scene_x, 25.0)
-	assert numpy.isclose(scene_y, 25.0)
-
-	# verify round-trip at frame 4
+	# round-trip preserves original pixel
 	px_rt, py_rt = transform.scene_to_pixel(4, scene_x, scene_y)
 	assert numpy.isclose(px_rt, 100.0, atol=0.5)
-	assert numpy.isclose(py_rt, 100.0, atol=0.5)

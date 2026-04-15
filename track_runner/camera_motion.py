@@ -82,7 +82,7 @@ class MotionEstimator:
 		"""Estimate per-frame camera motion from video frames.
 
 		Args:
-			reader: FrameReader instance with read_frame(frame_idx) method.
+			reader: FrameReader instance with read_frame(frame_index) method.
 			config: Configuration dict (structure depends on estimator type).
 
 		Returns:
@@ -126,7 +126,7 @@ class FixedZoomEstimator(MotionEstimator):
 		"""Estimate motion using phase correlation on consecutive frames.
 
 		Args:
-			reader: FrameReader with read_frame(frame_idx) method and
+			reader: FrameReader with read_frame(frame_index) method and
 				.frame_count attribute.
 			config: Configuration dict (unused for fixed zoom estimator).
 
@@ -165,8 +165,8 @@ class FixedZoomEstimator(MotionEstimator):
 			task = progress.add_task(
 				"  camera motion", total=total_frames - 1,
 			)
-			for frame_idx in range(1, total_frames):
-				curr_frame = reader.read_frame(frame_idx)
+			for frame_index in range(1, total_frames):
+				curr_frame = reader.read_frame(frame_index)
 				if curr_frame is None:
 					break
 				curr_gray = cv2.cvtColor(curr_frame, cv2.COLOR_BGR2GRAY)
@@ -183,13 +183,13 @@ class FixedZoomEstimator(MotionEstimator):
 				dy_val = float(shift[1])
 				quality_val = float(response)
 
-				dx_arr[frame_idx] = dx_val
-				dy_arr[frame_idx] = dy_val
-				quality_arr[frame_idx] = quality_val
+				dx_arr[frame_index] = dx_val
+				dy_arr[frame_index] = dy_val
+				quality_arr[frame_index] = quality_val
 
 				# set low_quality bit if confidence is below threshold
 				if quality_val < 0.5:
-					event_flags_arr[frame_idx] |= (1 << 1)
+					event_flags_arr[frame_index] |= (1 << 1)
 
 				# move to next frame
 				prev_gray = curr_gray
@@ -280,8 +280,8 @@ class DiscreteZoomEstimator(MotionEstimator):
 		# estimate translation and raw scale for each frame pair
 		with _make_motion_progress() as progress:
 			task = progress.add_task("  camera motion", total=total - 1)
-			for frame_idx in range(1, total):
-				curr_frame = reader.read_frame(frame_idx)
+			for frame_index in range(1, total):
+				curr_frame = reader.read_frame(frame_index)
 				if curr_frame is None:
 					progress.update(task, advance=1)
 					continue
@@ -291,15 +291,15 @@ class DiscreteZoomEstimator(MotionEstimator):
 				prev_f = numpy.float64(prev_gray)
 				curr_f = numpy.float64(curr_gray)
 				shift, response = cv2.phaseCorrelate(prev_f, curr_f, hann)
-				dx_arr[frame_idx] = shift[0]
-				dy_arr[frame_idx] = shift[1]
-				quality_arr[frame_idx] = response
+				dx_arr[frame_index] = shift[0]
+				dy_arr[frame_index] = shift[1]
+				quality_arr[frame_index] = response
 
 				# scale via log-polar phase correlation
 				scale_ratio = self._estimate_scale_logpolar(
 					prev_gray, curr_gray, w_frame, h_frame,
 				)
-				raw_scale[frame_idx] = scale_ratio
+				raw_scale[frame_index] = scale_ratio
 
 				prev_gray = curr_gray
 				progress.update(task, advance=1)
@@ -460,8 +460,8 @@ class ContinuousZoomEstimator(MotionEstimator):
 
 		with _make_motion_progress() as progress:
 			task = progress.add_task("  camera motion", total=total - 1)
-			for frame_idx in range(1, total):
-				curr_frame = reader.read_frame(frame_idx)
+			for frame_index in range(1, total):
+				curr_frame = reader.read_frame(frame_index)
 				if curr_frame is None:
 					progress.update(task, advance=1)
 					continue
@@ -471,9 +471,9 @@ class ContinuousZoomEstimator(MotionEstimator):
 				prev_f = numpy.float64(prev_gray)
 				curr_f = numpy.float64(curr_gray)
 				shift, response = cv2.phaseCorrelate(prev_f, curr_f, hann)
-				dx_arr[frame_idx] = shift[0]
-				dy_arr[frame_idx] = shift[1]
-				quality_arr[frame_idx] = response
+				dx_arr[frame_index] = shift[0]
+				dy_arr[frame_index] = shift[1]
+				quality_arr[frame_index] = response
 
 				# continuous scale via log-polar
 				scale_ratio = discrete_est._estimate_scale_logpolar(
@@ -482,11 +482,11 @@ class ContinuousZoomEstimator(MotionEstimator):
 
 				# stricter quality gating for continuous zoom
 				if response < 0.3:
-					scale_arr[frame_idx] = 1.0
+					scale_arr[frame_index] = 1.0
 					# set low quality flag
-					event_flags_arr[frame_idx] |= (1 << 1)
+					event_flags_arr[frame_index] |= (1 << 1)
 				else:
-					scale_arr[frame_idx] = scale_ratio
+					scale_arr[frame_index] = scale_ratio
 
 				prev_gray = curr_gray
 				progress.update(task, advance=1)

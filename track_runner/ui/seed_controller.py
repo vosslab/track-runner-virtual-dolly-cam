@@ -614,7 +614,6 @@ class SeedController(BaseAnnotationController):
 			cy = float(ty + th / 2.0)
 			seed = {
 				"frame_index": self._current_frame,
-				"frame": self._current_frame,
 				"time_s": round(self._current_frame / self._fps, 3),
 				"status": "approximate",
 				"torso_box": norm_box,
@@ -856,7 +855,6 @@ class SeedController(BaseAnnotationController):
 		"""Mark runner as not in frame."""
 		seed = {
 			"frame_index": self._current_frame,
-			"frame": self._current_frame,
 			"time_s": round(self._current_frame / self._fps, 3),
 			"status": "not_in_frame",
 			"conf": None,
