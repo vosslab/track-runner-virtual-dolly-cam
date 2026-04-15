@@ -1,8 +1,13 @@
 ## 2026-04-15
 
+### Behavior or Interface Changes
+
+- Added mode-ordering gates in [track_runner/cli.py](../track_runner/cli.py): `solve`, `refine`, and `target` now require a per-video config file to exist (i.e. `setup` has been run), and `refine` additionally requires a diagnostics file from a prior `solve`. Each gate raises a `RuntimeError` with the exact `setup` / `solve` command the user should run. `seed`, `edit`, `encode`, `analyze`, and `setup` itself are intentionally exempt so users can still collect seeds before configuring the camera. `target` is not gated on solve because it already auto-runs a fresh solve when diagnostics are missing.
+
 ### Fixes and Maintenance
 
 - Fixed `AttributeError: 'VideoReader' object has no attribute 'total_frames'` in [track_runner/camera_motion.py](../track_runner/camera_motion.py): `FixedZoomEstimator.estimate`, `DiscreteZoomEstimator.estimate`, and `ContinuousZoomEstimator.estimate` now read `reader.frame_count` to match the `VideoReader` API in [track_runner/video_io.py](../track_runner/video_io.py). The bug was masked whenever a motion cache `.npz` already existed, so it only surfaced on the first `solve` run for a new video. Docstrings on all three estimators and on `precompute_camera_motion` updated to match.
+- Fixed redraw-seed key drift in [track_runner/ui/edit_controller.py](../track_runner/ui/edit_controller.py): the rebuilt seed dict was copying `seed.get("frame")` (legacy key) instead of the canonical `seed["frame_index"]`, which would silently write `None` for any incoming seed that only carried the canonical key. Both the legacy `frame` field and the canonical `frame_index` field are now derived from `seed["frame_index"]`.
 
 ## 2026-03-31
 

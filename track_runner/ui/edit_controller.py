@@ -649,8 +649,8 @@ class EditController(BaseAnnotationController):
 
 		# Build new seed without torso_box
 		new_seed = {
-			"frame_index": seed.get("frame_index"),
-			"frame": seed.get("frame"),
+			"frame_index": seed["frame_index"],
+			"frame": int(seed["frame_index"]),
 			"time_s": seed.get("time_s"),
 			"status": new_status,
 			"conf": None,

@@ -1527,8 +1527,11 @@ def main() -> None:
 	if os.path.isfile(analysis_path):
 		print(f"analysis:    {os.path.abspath(analysis_path)}")
 
-	# load config: per-video file if it exists, otherwise defaults
-	if os.path.isfile(config_path):
+	# load config: per-video file if it exists, otherwise defaults.
+	# track whether a per-video config already existed so we can gate
+	# modes that need `setup` to have been run first (solve/refine/target).
+	had_config_file = os.path.isfile(config_path)
+	if had_config_file:
 		cfg = tr_config.load_config(config_path)
 	else:
 		cfg = tr_config.read_default_config()
@@ -1556,6 +1559,29 @@ def main() -> None:
 
 	# dispatch to mode function
 	mode = args.mode
+
+	# gate modes that consume setup-only config (zoom_type, camera.*,
+	# track_size): require a per-video config file to exist. `seed`,
+	# `edit`, `encode`, `analyze`, and `setup` itself are intentionally
+	# exempt so users can collect seeds before configuring the camera.
+	if mode in ("solve", "refine", "target") and not had_config_file:
+		raise RuntimeError(
+			f"no per-video config at {config_path} -- "
+			f"run 'setup' mode first: "
+			f"./track_runner/track_runner.py -i {args.input_file} setup"
+		)
+
+	# gate `refine` on `solve` having been run at least once: refine
+	# reads per-interval diagnostics to decide which intervals to redo.
+	# `target` is not gated on solve because target-mode auto-runs a
+	# fresh solve when diagnostics are missing (see cli.py:_mode_target).
+	if mode == "refine" and not os.path.isfile(diag_path):
+		raise RuntimeError(
+			f"no diagnostics at {diag_path} -- "
+			f"run 'solve' mode first: "
+			f"./track_runner/track_runner.py -i {args.input_file} solve"
+		)
+
 	if mode == "seed":
 		_mode_seed(args, cfg, video_info, seeds_path)
 	elif mode == "edit":
