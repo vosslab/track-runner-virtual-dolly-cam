@@ -1,3 +1,7 @@
 TRACK_VIDEOS/
 report_*.txt
 .DS_Store
+*.mp4
+*.mkv
+*.avi
+*.mov
