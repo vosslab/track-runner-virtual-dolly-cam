@@ -888,6 +888,7 @@ def refine_with_motion_cues(
 	seeds: list,
 	half_window: int = DEFAULT_HALF_WINDOW,
 	threshold: float = DEFAULT_THRESHOLD,
+	race_start_frame: int = None,
 ) -> list:
 	"""Apply per-frame motion-cue observation fusion to a fused trajectory.
 
@@ -902,6 +903,9 @@ def refine_with_motion_cues(
 		seeds: All seed dicts (for seed-frame protection).
 		half_window: Background subtraction window (default 4 = 9 frames).
 		threshold: Motion intensity threshold.
+		race_start_frame: If not None, frames before this index are
+			skipped entirely (pre-race veto). The runner is stationary,
+			so motion-cue has no valid signal and should not be fused.
 
 	Returns:
 		Modified trajectory list (same object, modified in place).
@@ -942,6 +946,7 @@ def refine_with_motion_cues(
 	frames_accepted = 0
 	frames_vetoed = 0
 	frames_rejected = 0
+	frames_pre_race = 0
 	alpha_sum = 0.0
 
 	# find first and last valid frame indices
@@ -1011,6 +1016,18 @@ def refine_with_motion_cues(
 				)
 
 			entry = trajectory[frame_index]
+
+			# pre-race veto: runner is stationary, motion-cue has no valid
+			# signal here. break the temporal chain so stale pre-race blob
+			# state cannot bleed across the race-start boundary.
+			if race_start_frame is not None and frame_index < race_start_frame:
+				state["prev_accepted_blob"] = None
+				state["miss_count"] = 0
+				if state["current_chain_length"] > 0:
+					state["chain_lengths"].append(state["current_chain_length"])
+					state["current_chain_length"] = 0
+				frames_pre_race += 1
+				continue
 
 			# skip empty frames
 			if entry is None:
@@ -1090,6 +1107,9 @@ def refine_with_motion_cues(
 		mean_chain = 0.0
 
 	print(f"  motion-cue fusion: {frames_processed} frames processed")
+	if frames_pre_race > 0:
+		print(f"    pre-race skipped: {frames_pre_race} "
+			f"(race_start_frame={race_start_frame})")
 	print(f"    observation usage: {frames_accepted}/{frames_processed} "
 		f"({usage_rate:.1%})")
 	print(f"    vetoed: {frames_vetoed} ({veto_rate:.1%}), "

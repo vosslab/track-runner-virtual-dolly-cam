@@ -191,7 +191,8 @@ def _validate_diagnostics_confidence(diagnostics: dict) -> None:
 	"""
 	for iv in diagnostics.get("intervals", []):
 		score = iv["interval_score"]
-		if "confidence" not in score:
+		# accept legacy "confidence" or analytical "confidence_tier"
+		if "confidence" not in score and "confidence_tier" not in score:
 			raise RuntimeError(
 				"diagnostics missing confidence data. "
 				"Run 'solve' to regenerate."
@@ -243,11 +244,8 @@ def _ensure_target_diagnostics(
 				need_solve = True
 				reason = "diagnostics missing confidence data"
 	if need_solve:
-		num_workers = _resolve_workers(args)
-		print(f"  target mode: {reason}; running solve first")
-		return _run_solve(
-			args, cfg, seeds, video_info,
-			intervals_path, diag_path, num_workers,
+		raise RuntimeError(
+			f"target mode: {reason}. Run 'solve' first, then re-run target."
 		)
 	return diag_data
 
@@ -676,6 +674,19 @@ def _run_solve(
 		diagnostics["video_identity"] = VIDEO_IDENTITY
 	state_io.write_solver_diagnostics(diagnostics, diag_path, fps)
 	print(f"  diagnostics written to {diag_path}")
+	# optional debug sidecar: per-frame agreement data for investigation
+	if args.debug:
+		debug_path = diag_path.replace(
+			".diagnostics.json", ".agreement_debug.json",
+		)
+		n_written = state_io.write_agreement_debug_sidecar(
+			diagnostics, debug_path,
+		)
+		if n_written > 0:
+			print(
+				f"  agreement-debug sidecar: {n_written} intervals "
+				f"-> {debug_path}"
+			)
 	_print_quality_summary(diagnostics, fps)
 	if rc.quit_requested:
 		print(f"  quit to exit: {rc.quit_elapsed():.1f}s")

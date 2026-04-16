@@ -7,9 +7,14 @@ Provides the AnnotationWindow with mode toolbar and annotation controls.
 # (none needed)
 
 # PIP3 modules
-from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QProgressBar
-from PySide6.QtCore import QSettings
-from PySide6.QtGui import QAction, QActionGroup, QIcon, QPixmap, QColor
+from PySide6.QtWidgets import (
+	QApplication, QLabel, QPushButton, QProgressBar,
+	QWidget, QVBoxLayout, QDialog, QTextBrowser,
+)
+from PySide6.QtCore import QSettings, Qt
+from PySide6.QtGui import (
+	QAction, QActionGroup, QIcon, QPixmap, QColor, QKeySequence, QShortcut,
+)
 
 # local repo modules
 import overlay_config
@@ -43,9 +48,33 @@ class AnnotationWindow(AppShell):
 
 		self.setWindowTitle(title)
 
-		# Create frame view as central widget
+		# Create frame view and wrap it with a persistent hint bar below
 		self._frame_view = FrameView()
-		self.setCentralWidget(self._frame_view)
+		# hint bar: monospace QLabel that shows current-mode shortcuts
+		self._hint_bar = QLabel("")
+		self._hint_bar.setTextFormat(Qt.TextFormat.RichText)
+		self._hint_bar.setStyleSheet(
+			"QLabel { background: #111111; color: #C0C0C0; "
+			"padding: 4px 8px; font-family: monospace; font-size: 11px; }"
+		)
+		self._hint_bar.setMinimumHeight(22)
+		# central widget wraps frame view + hint bar
+		central = QWidget()
+		layout = QVBoxLayout(central)
+		layout.setContentsMargins(0, 0, 0, 0)
+		layout.setSpacing(0)
+		layout.addWidget(self._frame_view, 1)
+		layout.addWidget(self._hint_bar, 0)
+		self.setCentralWidget(central)
+		# cache last hints so the help dialog can render the full list
+		self._last_hint_mode = ""
+		self._last_hint_text = ""
+		self._last_hint_color = "#FFFFFF"
+		# F1 / ? opens a help dialog listing the current-mode shortcuts
+		help_shortcut_f1 = QShortcut(QKeySequence("F1"), self)
+		help_shortcut_f1.activated.connect(self._show_help_dialog)
+		help_shortcut_q = QShortcut(QKeySequence("?"), self)
+		help_shortcut_q.activated.connect(self._show_help_dialog)
 
 		# Mode colors loaded from overlay_styles.yaml
 		self._mode_colors = {
@@ -347,6 +376,82 @@ class AnnotationWindow(AppShell):
 			bgr_array, self._current_filter
 		)
 		self._frame_view.set_frame(filtered)
+
+	#============================================
+
+	def set_hints(self, mode_label: str, hints: str, mode_color: str = "#FFFFFF") -> None:
+		"""Update the persistent hint bar with current-mode shortcuts.
+
+		Args:
+			mode_label: Short mode name (e.g. "SEED", "EDIT").
+			hints: Space-separated keybinding hints string.
+			mode_color: Hex color for the mode label.
+		"""
+		self._last_hint_mode = mode_label
+		self._last_hint_text = hints
+		self._last_hint_color = mode_color
+		html = (
+			f"<span style='color: {mode_color}; font-weight: bold;'>"
+			f"{mode_label}</span>"
+			f"  <span style='color: #C0C0C0;'>{hints}</span>"
+			f"  <span style='color: #707070;'>(F1 for help)</span>"
+		)
+		self._hint_bar.setText(html)
+
+	#============================================
+
+	def clear_hints(self) -> None:
+		"""Clear the hint bar text (called on controller deactivation)."""
+		self._last_hint_mode = ""
+		self._last_hint_text = ""
+		self._hint_bar.setText("")
+
+	#============================================
+
+	def _show_help_dialog(self) -> None:
+		"""Pop up a dialog listing the current-mode shortcuts.
+
+		Reads the last hints string set via set_hints() and renders
+		each space-run as a separate row for readability.
+		"""
+		mode = self._last_hint_mode or "(no mode)"
+		hints = self._last_hint_text or "(no shortcuts available)"
+		# split hints into "KEY=action" tokens on whitespace runs
+		tokens = [t for t in hints.split("  ") if t.strip()]
+		rows = ""
+		for token in tokens:
+			if "=" in token:
+				key_part, action_part = token.split("=", 1)
+				rows += (
+					"<tr>"
+					f"<td style='color: #7DD3FC; padding-right: 14px; "
+					f"font-weight: bold;'>{key_part.strip()}</td>"
+					f"<td style='color: #E5E7EB;'>{action_part.strip()}</td>"
+					"</tr>"
+				)
+			else:
+				rows += (
+					f"<tr><td colspan='2' style='color: #E5E7EB;'>"
+					f"{token}</td></tr>"
+				)
+		html = (
+			f"<h3 style='color: {self._last_hint_color};'>"
+			f"{mode} mode shortcuts</h3>"
+			f"<table cellspacing='2'>{rows}</table>"
+			"<p style='color: #707070; font-size: 10px;'>"
+			"See docs/TRACK_RUNNER_KEYBINDINGS.md for the full reference."
+			"</p>"
+		)
+		dialog = QDialog(self)
+		dialog.setWindowTitle("Keyboard shortcuts")
+		dialog.resize(520, 420)
+		browser = QTextBrowser(dialog)
+		browser.setHtml(html)
+		browser.setStyleSheet("QTextBrowser { background: #1A1A2E; }")
+		layout = QVBoxLayout(dialog)
+		layout.setContentsMargins(8, 8, 8, 8)
+		layout.addWidget(browser)
+		dialog.exec()
 
 	#============================================
 

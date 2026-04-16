@@ -111,6 +111,84 @@ def compute_meeting_point_errors(
 
 
 #============================================
+def compute_agreement_debug(
+	forward_track: list,
+	backward_track: list,
+	start_frame: int = 0,
+) -> dict:
+	"""Compute FWD/BWD agreement with per-frame diagnostic records.
+
+	Returns the same aggregate Dice that compute_agreement() returns, plus
+	per-frame records (iou, center distance, width/height ratios) and iou
+	percentiles. This is meant for --debug runs so the agreement metric
+	can be investigated empirically without changing the metric itself.
+
+	Args:
+		forward_track: List of tracking state dicts from forward propagation.
+		backward_track: List of tracking state dicts from backward propagation,
+			aligned frame-by-frame with forward_track.
+		start_frame: Absolute frame index of forward_track[0], used to tag
+			per-frame records with their absolute frame_index.
+
+	Returns:
+		Dict with keys:
+			- agreement: float [0, 1], mean Dice (same as compute_agreement)
+			- iou_p10, iou_p50, iou_p90: float percentile summary of per-frame Dice
+			- per_frame: list of dicts with frame_index, fwd_cx, fwd_cy,
+				fwd_w, fwd_h, bwd_cx, bwd_cy, bwd_w, bwd_h, iou,
+				center_dist_px, size_ratio_w, size_ratio_h
+	"""
+	num_frames = min(len(forward_track), len(backward_track))
+	if num_frames == 0:
+		return {
+			"agreement": 0.0,
+			"iou_p10": 0.0, "iou_p50": 0.0, "iou_p90": 0.0,
+			"per_frame": [],
+		}
+
+	per_frame = []
+	ious = []
+	for i in range(num_frames):
+		fwd = forward_track[i]
+		bwd = backward_track[i]
+		iou = _compute_dice_coefficient(fwd, bwd)
+		ious.append(iou)
+		dx = float(fwd["cx"]) - float(bwd["cx"])
+		dy = float(fwd["cy"]) - float(bwd["cy"])
+		center_dist = math.sqrt(dx * dx + dy * dy)
+		# ratios always >= 1.0: larger / smaller; 1.0 means identical size
+		fwd_w = max(1.0, float(fwd.get("w", 0.0)))
+		fwd_h = max(1.0, float(fwd.get("h", 0.0)))
+		bwd_w = max(1.0, float(bwd.get("w", 0.0)))
+		bwd_h = max(1.0, float(bwd.get("h", 0.0)))
+		size_ratio_w = max(fwd_w, bwd_w) / min(fwd_w, bwd_w)
+		size_ratio_h = max(fwd_h, bwd_h) / min(fwd_h, bwd_h)
+		per_frame.append({
+			"frame_index": start_frame + i,
+			"fwd_cx": round(float(fwd["cx"]), 2),
+			"fwd_cy": round(float(fwd["cy"]), 2),
+			"fwd_w": round(fwd_w, 2),
+			"fwd_h": round(fwd_h, 2),
+			"bwd_cx": round(float(bwd["cx"]), 2),
+			"bwd_cy": round(float(bwd["cy"]), 2),
+			"bwd_w": round(bwd_w, 2),
+			"bwd_h": round(bwd_h, 2),
+			"iou": round(iou, 4),
+			"center_dist_px": round(center_dist, 2),
+			"size_ratio_w": round(size_ratio_w, 3),
+			"size_ratio_h": round(size_ratio_h, 3),
+		})
+
+	return {
+		"agreement": float(numpy.mean(ious)),
+		"iou_p10": float(numpy.percentile(ious, 10)),
+		"iou_p50": float(numpy.percentile(ious, 50)),
+		"iou_p90": float(numpy.percentile(ious, 90)),
+		"per_frame": per_frame,
+	}
+
+
+#============================================
 def compute_agreement(forward_track: list, backward_track: list) -> float:
 	"""Compute overall agreement score between forward and backward tracks.
 
@@ -272,6 +350,82 @@ def score_interval(
 
 
 #============================================
+# minimum-real-motion floor for velocity_consistency, in scene units per
+# frame. Prevents the ratio median(|a|) / median(|v|) from blowing up when
+# the runner is nearly stationary. Calibrated to roughly match the
+# stationary baseline used in race_phases.py. Not a perfect constant
+# (actual stationary speed depends on image scale) but a conservative
+# lower bound so we never divide by tiny numbers.
+VELOCITY_FLOOR_SCENE_UNITS_PER_FRAME = 1.5
+
+
+#============================================
+def _compute_velocity_smoothness(
+	track: list,
+	start_frame: int,
+	scene_transform: object,
+) -> float:
+	"""Measure internal trajectory smoothness in scene coordinates.
+
+	For each frame i (i >= 1) compute v_i = ||p_i - p_{i-1}|| in scene space
+	(camera motion removed), then a_i = v_i - v_{i-1} for i >= 2. The metric
+	is::
+
+		1.0 - clamp(median(|a_i|) / max(median(|v_i|), v_floor), 0.0, 1.0)
+
+	Smooth steady motion produces small |a_i| relative to typical |v_i|,
+	giving scores near 1.0. Curved motion is unpenalized because only speed
+	magnitudes appear in the ratio. Identity swaps, propagator failures, and
+	frame drops produce acceleration spikes that lower the score.
+
+	Args:
+		track: List of state dicts with "cx", "cy" in pixel coords.
+		start_frame: Absolute frame index of track[0].
+		scene_transform: SceneTransform for pixel_to_scene conversion.
+
+	Returns:
+		Float in [0.0, 1.0]. Returns 1.0 for trivially short tracks (< 3
+		frames) where acceleration is undefined.
+	"""
+	n = len(track)
+	if n < 3:
+		return 1.0
+
+	# convert all centers to scene coordinates so camera motion is removed
+	scene_xy = []
+	for i, state in enumerate(track):
+		frame_index = start_frame + i
+		sx, sy = scene_transform.pixel_to_scene(
+			frame_index, float(state["cx"]), float(state["cy"]),
+		)
+		scene_xy.append((sx, sy))
+
+	# per-frame speed magnitudes in scene units per frame
+	speeds = []
+	for i in range(1, n):
+		dx = scene_xy[i][0] - scene_xy[i - 1][0]
+		dy = scene_xy[i][1] - scene_xy[i - 1][1]
+		speeds.append(math.sqrt(dx * dx + dy * dy))
+
+	# per-frame acceleration magnitudes (change in speed)
+	accels = []
+	for i in range(1, len(speeds)):
+		accels.append(abs(speeds[i] - speeds[i - 1]))
+
+	if not accels:
+		return 1.0
+
+	median_speed = float(numpy.median(speeds))
+	median_accel = float(numpy.median(accels))
+	# clamp denominator to the real-motion floor to avoid exploding ratios
+	# when the runner is nearly stationary and the numerator is pure noise
+	denom = max(median_speed, VELOCITY_FLOOR_SCENE_UNITS_PER_FRAME)
+	ratio = median_accel / denom
+	# clamp and invert so higher = smoother
+	return max(0.0, min(1.0, 1.0 - ratio))
+
+
+#============================================
 def score_interval_analytical(
 	forward_track: list,
 	backward_track: list,
@@ -280,12 +434,14 @@ def score_interval_analytical(
 	scene_transform: object,
 	motion_track: object = None,
 	all_seeds: list = None,
+	fused_track: list = None,
+	fps: float = 30.0,
 ) -> dict:
 	"""Score an interval using analytical velocity model metrics.
 
-	Computes agreement (Dice FWD/BWD), velocity consistency (LOO prediction
-	error), size consistency (interpolation residual), and assigns confidence
-	tier and failure reasons.
+	Computes agreement (Dice FWD/BWD), velocity consistency (internal
+	trajectory smoothness in scene coordinates), size consistency
+	(interpolation residual), and assigns confidence tier and failure reasons.
 
 	Args:
 		forward_track: List of tracking state dicts from propagate_forward_analytical.
@@ -296,11 +452,15 @@ def score_interval_analytical(
 		all_seeds: Optional list of original seed dicts for occlusion_fraction.
 		interval_curves: Dict from fit_interval_curves with curve parameters.
 		scene_transform: SceneTransform instance.
+		fused_track: Optional list of fused FWD/BWD states used for the
+			velocity_consistency smoothness computation. If None, falls back
+			to forward_track.
+		fps: Video frame rate. Used for the long-interval demotion threshold.
 
 	Returns:
 		Dict with keys (interval_score_v2 schema):
 			- agreement: float [0, 1], Dice FWD/BWD overlap
-			- velocity_consistency: float [0, 1], LOO prediction error (higher=better)
+			- velocity_consistency: float [0, 1], internal smoothness (higher=better)
 			- size_consistency: float [0, 1], box-size interpolation residual
 			- motion_quality: float, set to 1.0 (computed during camera motion)
 			- occlusion_fraction: float [0, 1], fraction in approx-seed spans
@@ -312,12 +472,18 @@ def score_interval_analytical(
 	# compute agreement between forward and backward tracks
 	agreement = compute_agreement(forward_track, backward_track)
 
-	# compute velocity consistency: LOO prediction error for support seeds
+	# velocity consistency: internal trajectory smoothness in scene coords
+	# rationale: the previous LOO-slope metric measured whether a linear
+	# extrapolation outside the interval matched external seeds. On curved
+	# motion (real tracks) that metric systematically fails even for correct
+	# tracking, because linear extrapolation is the wrong model. This metric
+	# instead measures how jerky the fused trajectory is relative to its
+	# typical speed. Smooth motion on a curve scores high; identity swaps,
+	# frame drops, or propagator failures inject spikes that drop the score.
 	start_frame = interval_curves["start_frame"]
 	end_frame = interval_curves["end_frame"]
 
-	# find directional support seeds for LOO analysis
-	# collect seeds near but not at endpoints
+	# support-seed lists are only used for the sparse_support warning now
 	support_seeds_left = []
 	support_seeds_right = []
 	for frame, sx, sy, sw, sh in all_seeds_scene:
@@ -326,47 +492,10 @@ def score_interval_analytical(
 		elif frame > end_frame:
 			support_seeds_right.append((frame, sx, sy, sw, sh))
 
-	# compute LOO velocity consistency using slope prediction error
-	# for each support seed, compare its actual position to the position
-	# predicted by the slope estimated from the OTHER support seeds
-	velocity_errors = []
-	left_pos = interval_curves["left_pos"]
-	right_pos = interval_curves["right_pos"]
-	left_frame = start_frame
-	right_frame = end_frame
-	# check left-side support seeds: predict their position from interval slope
-	for seed_data in support_seeds_left[-4:]:
-		frame, sx, sy, _, _ = seed_data
-		# predict from left endpoint using FWD slope
-		fwd_slopes = interval_curves["fwd_slopes"]
-		dt = float(frame - left_frame)
-		pred_sx = left_pos[0] + fwd_slopes[0] * dt
-		pred_sy = left_pos[1] + fwd_slopes[1] * dt
-		# error normalized by interval span
-		dist = math.sqrt((pred_sx - sx) ** 2 + (pred_sy - sy) ** 2)
-		# normalize by box size for scale-invariance
-		left_sh = interval_curves["left_size"][1]
-		norm_error = dist / max(left_sh, 1.0)
-		velocity_errors.append(min(norm_error, 1.0))
-	# check right-side support seeds: predict from right endpoint using BWD slope
-	for seed_data in support_seeds_right[:4]:
-		frame, sx, sy, _, _ = seed_data
-		bwd_slopes = interval_curves["bwd_slopes"]
-		dt = float(frame - right_frame)
-		pred_sx = right_pos[0] + bwd_slopes[0] * dt
-		pred_sy = right_pos[1] + bwd_slopes[1] * dt
-		dist = math.sqrt((pred_sx - sx) ** 2 + (pred_sy - sy) ** 2)
-		right_sh = interval_curves["right_size"][1]
-		norm_error = dist / max(right_sh, 1.0)
-		velocity_errors.append(min(norm_error, 1.0))
-
-	if velocity_errors:
-		# invert so higher = better consistency
-		avg_error = float(numpy.mean(velocity_errors))
-		velocity_consistency = max(0.0, 1.0 - avg_error)
-	else:
-		# no support seeds: neutral score
-		velocity_consistency = 0.5
+	velocity_consistency = _compute_velocity_smoothness(
+		fused_track if fused_track is not None else forward_track,
+		start_frame, scene_transform,
+	)
 
 	# compute size consistency: box height interpolation residual
 	left_sw, left_sh = interval_curves["left_size"]
@@ -459,9 +588,8 @@ def score_interval_analytical(
 		idx = tier_order.index(confidence_tier)
 		confidence_tier = tier_order[min(idx + 1, len(tier_order) - 1)]
 
-	# long intervals (> 10s): demote one tier
-	fps_val = 30.0
-	if interval_len > fps_val * 10.0:
+	# long intervals (> 10s of real time): demote one tier
+	if interval_len > fps * 10.0:
 		idx = tier_order.index(confidence_tier)
 		confidence_tier = tier_order[max(idx - 1, 0)]
 

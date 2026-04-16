@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Race phase detection from solved trajectory.
 
 Post-hoc interpretation layer: reads a finished trajectory and produces
@@ -31,6 +30,12 @@ T_MIN_FLOOR = 0.5
 
 # Confidence scaling
 R_HIGH = 5.0				# ratio for full confidence
+
+# Minimum detection confidence required before the detected race start
+# is allowed to gate downstream consumers (e.g., motion-cue fusion).
+# Below this, consumers treat the result as "not detected" rather than
+# suppressing frames based on a weak signal.
+GATE_MIN_CONFIDENCE = 0.3
 
 
 #============================================
@@ -246,8 +251,8 @@ def detect_race_start(
 
 	Returns:
 		Dict with keys:
-			start_frame: int or None (frame index of race start)
-			start_s: float or None (start time in seconds)
+			race_start_frame: int or None (frame index of race start)
+			race_start_s: float or None (start time in seconds)
 			confidence: float in [0.0, 1.0]
 			method: str identifying the detection method
 			threshold_used: float (T_min in scene units/s)
@@ -262,22 +267,22 @@ def detect_race_start(
 	t_min = _estimate_stationary_baseline(velocities, fps)
 
 	# scan for onset
-	start_frame, confidence = _scan_for_onset(velocities, fps, t_min)
+	race_start_frame, confidence = _scan_for_onset(velocities, fps, t_min)
 
 	# handle "already moving at first evaluable frame"
 	pre_window = max(2, int(PRE_WINDOW_S * fps))
-	if start_frame is not None and start_frame == pre_window:
+	if race_start_frame is not None and race_start_frame == pre_window:
 		# no stationary pre-phase observed, reduce confidence
 		confidence = min(confidence, 0.4)
 
 	# build result
-	start_s = None
-	if start_frame is not None:
-		start_s = round(start_frame / fps, 3)
+	race_start_s = None
+	if race_start_frame is not None:
+		race_start_s = round(race_start_frame / fps, 3)
 
 	result = {
-		"start_frame": start_frame,
-		"start_s": start_s,
+		"race_start_frame": race_start_frame,
+		"race_start_s": race_start_s,
 		"confidence": round(confidence, 4),
 		"method": "velocity_ratio_onset",
 		"threshold_used": round(t_min, 4),

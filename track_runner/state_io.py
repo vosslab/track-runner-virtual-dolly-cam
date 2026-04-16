@@ -457,8 +457,8 @@ def write_solver_diagnostics(
 	race_phase = diagnostics.get("race_phase")
 	if race_phase is not None:
 		diag_out["race_phase"] = {
-			"start_frame": race_phase.get("start_frame"),
-			"start_s": race_phase.get("start_s"),
+			"race_start_frame": race_phase.get("race_start_frame"),
+			"race_start_s": race_phase.get("race_start_s"),
 			"confidence": round(float(race_phase.get("confidence", 0.0)), 4),
 			"method": race_phase.get("method", ""),
 			"threshold_used": round(float(race_phase.get("threshold_used", 0.0)), 4),
@@ -469,6 +469,50 @@ def write_solver_diagnostics(
 	if video_identity is not None:
 		diag_out["video_identity"] = video_identity
 	write_diagnostics(path, diag_out)
+
+
+#============================================
+def write_agreement_debug_sidecar(
+	diagnostics: dict,
+	path: str,
+) -> int:
+	"""Write per-frame agreement debug data to a sidecar JSON.
+
+	Only intervals that carry an `agreement_debug` sub-dict are written
+	(populated when solve runs with --debug). Safe to call when no interval
+	has debug data: this returns 0 and writes nothing.
+
+	Args:
+		diagnostics: Dict from interval_solver.solve_all_intervals().
+		path: Output sidecar JSON path (e.g.
+			`<basename>.track_runner.agreement_debug.json`).
+
+	Returns:
+		Number of intervals written. 0 means nothing written.
+	"""
+	intervals_with_debug = []
+	for iv in diagnostics.get("intervals", []):
+		ad = iv.get("agreement_debug")
+		if ad is None:
+			continue
+		intervals_with_debug.append({
+			"start_frame": iv["start_frame"],
+			"end_frame": iv["end_frame"],
+			"agreement_mean": round(float(ad["agreement"]), 4),
+			"iou_p10": round(float(ad["iou_p10"]), 4),
+			"iou_p50": round(float(ad["iou_p50"]), 4),
+			"iou_p90": round(float(ad["iou_p90"]), 4),
+			"per_frame": ad["per_frame"],
+		})
+	if not intervals_with_debug:
+		return 0
+	payload = {
+		"schema": "track_runner.agreement_debug.v1",
+		"intervals": intervals_with_debug,
+	}
+	with open(path, "w") as f:
+		json.dump(payload, f, indent=2)
+	return len(intervals_with_debug)
 
 
 #============================================

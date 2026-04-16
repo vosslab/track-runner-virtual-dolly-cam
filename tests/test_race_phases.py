@@ -64,17 +64,17 @@ def test_stationary_then_moving():
 	trajectory = _make_trajectory(positions)
 	result = race_phases.detect_race_start(trajectory, transform, fps)
 
-	assert result["start_frame"] is not None
+	assert result["race_start_frame"] is not None
 	assert result["method"] == "velocity_ratio_onset"
 	# start should be near frame 60 (some tolerance for window effects)
-	assert 55 <= result["start_frame"] <= 75
+	assert 55 <= result["race_start_frame"] <= 75
 	assert result["confidence"] > 0.5
-	assert result["start_s"] is not None
+	assert result["race_start_s"] is not None
 
 
 #============================================
 def test_all_stationary():
-	"""Runner never moves. Should return start_frame=None."""
+	"""Runner never moves. Should return race_start_frame=None."""
 	fps = 30.0
 	transform = MockSceneTransform()
 
@@ -83,8 +83,8 @@ def test_all_stationary():
 	trajectory = _make_trajectory(positions)
 	result = race_phases.detect_race_start(trajectory, transform, fps)
 
-	assert result["start_frame"] is None
-	assert result["start_s"] is None
+	assert result["race_start_frame"] is None
+	assert result["race_start_s"] is None
 	assert result["confidence"] == 0.0
 
 
@@ -105,7 +105,7 @@ def test_already_moving():
 	# may or may not detect a start depending on ratio behavior
 	# with constant velocity, v_pre and v_post are similar so ratio ~ 1
 	# this means no onset is detected, which is correct
-	if result["start_frame"] is not None:
+	if result["race_start_frame"] is not None:
 		# if detected, confidence should be low
 		assert result["confidence"] <= 0.5
 
@@ -134,10 +134,10 @@ def test_false_burst_then_real_start():
 	trajectory = _make_trajectory(positions)
 	result = race_phases.detect_race_start(trajectory, transform, fps)
 
-	if result["start_frame"] is not None:
+	if result["race_start_frame"] is not None:
 		# should detect the real start, not the false burst
 		# real motion starts at frame 64 (30 + 4 + 30)
-		assert result["start_frame"] >= 55
+		assert result["race_start_frame"] >= 55
 
 
 #============================================
@@ -162,8 +162,8 @@ def test_gradual_acceleration():
 	result = race_phases.detect_race_start(trajectory, transform, fps)
 
 	# should detect onset somewhere after frame 60
-	if result["start_frame"] is not None:
-		assert result["start_frame"] >= 55
+	if result["race_start_frame"] is not None:
+		assert result["race_start_frame"] >= 55
 
 
 #============================================
@@ -176,7 +176,7 @@ def test_return_dict_keys():
 	result = race_phases.detect_race_start(trajectory, transform, fps)
 
 	expected_keys = {
-		"start_frame", "start_s", "confidence",
+		"race_start_frame", "race_start_s", "confidence",
 		"method", "threshold_used", "debounce_frames",
 	}
 	assert set(result.keys()) == expected_keys

@@ -340,6 +340,8 @@ def solve_interval_analytical(
 		interval_curves, scene_transform,
 		motion_track=motion_track,
 		all_seeds=all_seeds,
+		fused_track=fused_track,
+		fps=fps,
 	)
 
 	result = {
@@ -350,6 +352,17 @@ def solve_interval_analytical(
 		"backward_track": backward_track,
 		"interval_score": interval_score,
 	}
+
+	# in debug mode, capture per-frame agreement records for investigation.
+	# the aggregate agreement is already in interval_score; this adds the
+	# per-frame iou/center_dist/size_ratio + p10/p50/p90 percentiles that
+	# the main metric averages away. sidecar only, never touches the main
+	# diagnostics schema.
+	if debug:
+		agreement_debug = scoring.compute_agreement_debug(
+			forward_track, backward_track, start_frame=start_frame,
+		)
+		result["agreement_debug"] = agreement_debug
 	return result
 
 
@@ -1247,12 +1260,20 @@ def solve_all_intervals(
 
 	# stitch and finalize
 	trajectory = stitch_trajectories(interval_results)
+	# race phase detection runs BEFORE motion-cue fusion so the detected
+	# race start can gate motion-cue (pre-race frames have no valid motion
+	# signal). Operates on the stitched trajectory before any refinement.
+	race_phase = race_phases.detect_race_start(trajectory, scene_transform, fps)
+	# only gate on strong detections; weak detections fall through and
+	# motion-cue runs on all frames as before.
+	gate_race_start = race_phase["race_start_frame"]
+	if race_phase["confidence"] < race_phases.GATE_MIN_CONFIDENCE:
+		gate_race_start = None
 	# per-frame motion-cue observation fusion (Hermite scaffold + blob center)
 	trajectory = residual_motion.refine_with_motion_cues(
 		trajectory, reader, scene_transform, seeds,
+		race_start_frame=gate_race_start,
 	)
-	# race phase detection (post-hoc interpretation, does not modify trajectory)
-	race_phase = race_phases.detect_race_start(trajectory, scene_transform, fps)
 	trajectory = anchor_to_seeds(trajectory, seeds)
 	trajectory = _stamp_seed_confidence(trajectory, seeds)
 	trajectory = _apply_trajectory_erasure(trajectory, seeds, fps)

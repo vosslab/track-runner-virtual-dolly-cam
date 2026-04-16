@@ -21,7 +21,6 @@ PreviewBoxItem = overlay_items_module.PreviewBoxItem
 RectItem = overlay_items_module.RectItem
 ScaleBarItem = overlay_items_module.ScaleBarItem
 PredictionLegendItem = overlay_items_module.PredictionLegendItem
-KeyHintOverlay = overlay_items_module.KeyHintOverlay
 
 #============================================
 
@@ -98,7 +97,6 @@ class BaseAnnotationController(QObject):
 		self._consensus_item: object = None
 		self._scale_bar_item: object = None
 		self._legend_item: object = None
-		self._key_hint_item: object = None
 
 		# Peek suppression state
 		self._preds_suppressed: bool = False
@@ -162,23 +160,18 @@ class BaseAnnotationController(QObject):
 			scene.addItem(self._legend_item)
 			self._overlay_items.append(self._legend_item)
 
-		# Add keybinding hint overlay at bottom of frame
-		scene_rect = scene.sceneRect()
-		if scene_rect.width() > 0 and scene_rect.height() > 0:
-			self._key_hint_item = KeyHintOverlay(
-				scene_rect.width(), scene_rect.height(),
-			)
-			# populate with mode-specific hints
-			mode_color = overlay_config.get_workspace_mode_color(
-				self._get_mode_name()
-			)
-			self._key_hint_item.update_text(
+		# Populate the persistent hint bar below the frame view.
+		# Previously this was an in-scene QGraphicsItem whose font scaled
+		# with the frame and became unreadable on high-res video.
+		mode_color = overlay_config.get_workspace_mode_color(
+			self._get_mode_name()
+		)
+		if hasattr(self._window, "set_hints"):
+			self._window.set_hints(
 				self._get_mode_name().upper(),
 				self._get_keybinding_hints(),
 				mode_color,
 			)
-			scene.addItem(self._key_hint_item)
-			self._overlay_items.append(self._key_hint_item)
 
 		# Subclass hook
 		self._on_activated()
@@ -206,7 +199,9 @@ class BaseAnnotationController(QObject):
 		self._consensus_item = None
 		self._scale_bar_item = None
 		self._legend_item = None
-		self._key_hint_item = None
+		# clear the persistent hint bar too
+		if self._window is not None and hasattr(self._window, "clear_hints"):
+			self._window.clear_hints()
 		# Remove preview item if present
 		if self._preview_item is not None and self._window is not None:
 			scene = self._window.get_frame_view().scene()
