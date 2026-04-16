@@ -38,14 +38,33 @@ Detection approach: use the target runner's fused track velocity, not global mot
 - Must use track-specific velocity, not global cues, because other runners or
   officials may be moving before the target runner starts
 
-### Motion-based automatic seed generation
+### Motion-cue seed recommendation (advisory)
 
-Use the residual motion diagnostic's blob tracking (corridor filtering + temporal
-consistency) to place automatic anchor points between manual seeds. This would
-reduce the number of manual seeds required, especially in long inter-seed gaps
-where solver confidence is low.
+Use the residual motion diagnostic's blob tracking as an advisory seed
+recommendation tool. For low-confidence intervals, identify frames where the
+motion cue is strong and the solver's geometric interpolation is weak. Report
+as "review candidates" -- frames the user should inspect and potentially
+re-seed. Strictly advisory: the user decides identity.
 
-Depends on: race start/end detection (above), gate 1 passing on the motion diagnostic.
+Depends on: race start/end detection (above).
+
+## In progress
+
+### Per-frame motion-cue observation fusion (implemented)
+
+Residual motion blob tracking is now integrated as a per-frame center-position
+observation channel inside the Hermite kinematic scaffold. Implemented in
+`track_runner/residual_motion.py`, called between `stitch_trajectories()` and
+`anchor_to_seeds()` in the solve pipeline.
+
+Hermite owns geometry (path shape, size, continuity). Blob owns center
+observation only. Two-tier acceptance gate with temporal continuity as primary
+identity defense. Anisotropic correction: cross-track tighter, along-track
+looser and downweighted.
+
+Remaining work: parameter tuning on real videos, user-pain metric validation
+(intervals flagged for review, seeds needed). See
+[docs/active_plans/MOTION_CUE_OBSERVATION_FUSION.md](active_plans/MOTION_CUE_OBSERVATION_FUSION.md).
 
 ## Not started
 

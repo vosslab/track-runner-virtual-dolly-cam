@@ -341,8 +341,12 @@ def select_diagnostic_frames(
 		# if we got fewer seeds than budget, give extra to gaps
 		gap_budget += seed_budget - len(selected_seeds)
 
-	# gap pool: find moving gaps and select midpoints
+	# gap pool: place gap frames at a random offset from selected seed frames
+	# this tests whether the Hermite correction holds just outside known truth
+	gap_offset_min = 10
+	gap_offset_max = 20
 	seed_frame_list = sorted(int(s["frame_index"]) for s in usable_seeds)
+	# build list of moving gap intervals for boundary checking
 	moving_gaps = []
 	stationary_count = 0
 	if len(seed_frame_list) >= 2:
@@ -359,22 +363,36 @@ def select_diagnostic_frames(
 		print(f"  frame sampler: skipped {stationary_count} stationary gap(s)")
 
 	if moving_gaps and gap_budget > 0:
-		# distribute across active range with random jitter
-		# so repeat runs sample different frames
-		earliest = min(g[0] for g in moving_gaps)
-		latest = max(g[1] for g in moving_gaps)
-		active_range = latest - earliest
-		step = max(1, active_range // (gap_budget + 1))
-		# jitter up to +/- 25% of step size
-		jitter_range = max(1, step // 4)
-		gap_frames_selected = []
-		for i in range(gap_budget):
-			base = earliest + step * (i + 1)
-			jitter = random.randint(-jitter_range, jitter_range)
-			f = base + jitter
-			# clamp to valid range
-			f = max(1, min(f, frame_count - 2))
-			gap_frames_selected.append(f)
+		# collect selected seed frame indices
+		selected_seed_frames = sorted(
+			f["frame_index"] for f in frames if f["pool"] == "seed"
+		)
+		# for each selected seed, try +offset and -offset into adjacent gaps
+		gap_candidates = []
+		for sf in selected_seed_frames:
+			for direction in (+1, -1):
+				# random offset between 10-20 frames from seed
+				offset = random.randint(gap_offset_min, gap_offset_max)
+				candidate = sf + direction * offset
+				# check that candidate falls inside a moving gap
+				for gap_start, gap_end, gap_len in moving_gaps:
+					# must be inside gap and away from the seed boundaries
+					if gap_start < candidate < gap_end:
+						gap_candidates.append(candidate)
+						break
+
+		# deduplicate and clamp
+		gap_candidates = sorted(set(gap_candidates))
+		gap_candidates = [
+			f for f in gap_candidates
+			if 1 <= f <= frame_count - 2
+		]
+
+		# if we have more candidates than budget, sample; otherwise use all
+		if len(gap_candidates) > gap_budget:
+			gap_frames_selected = random.sample(gap_candidates, gap_budget)
+		else:
+			gap_frames_selected = gap_candidates
 
 		for f in gap_frames_selected:
 			frames.append({
@@ -382,6 +400,8 @@ def select_diagnostic_frames(
 				"pool": "gap",
 				"truth_box": None,
 			})
+		print(f"  frame sampler: gap frames at +/-{gap_offset_min}-"
+			f"{gap_offset_max} from selected seeds")
 
 	# sort by frame index
 	frames.sort(key=lambda x: x["frame_index"])
@@ -612,6 +632,73 @@ def corridor_half_width(
 	tier_scale = {"high": 1.0, "fair": 1.5, "low": 2.0}
 	multiplier = tier_scale.get(tier, 2.0)
 	result = base_radius * multiplier
+	return result
+
+
+#============================================
+# along-track clamp is looser than cross-track because a runner can be
+# ahead or behind the Hermite point and still be correct
+ALONG_TRACK_CLAMP_FACTOR = 2.0
+
+
+#============================================
+def apply_hermite_correction(
+	blob_x: float,
+	blob_y: float,
+	hermite_cx: float,
+	hermite_cy: float,
+	tangent: tuple,
+	corridor_radius: float,
+) -> dict:
+	"""Correct blob center using Hermite scaffold as coordinate system.
+
+	Decomposes the blob-to-Hermite offset into along-track and cross-track
+	components, clamps them with anisotropic limits, and reconstructs the
+	corrected position. Cross-track is clamped tightly (corridor_radius)
+	because lateral error is suspicious. Along-track is clamped looser
+	(ALONG_TRACK_CLAMP_FACTOR * corridor_radius) because the runner can
+	be ahead or behind the Hermite prediction and still be correct.
+
+	Args:
+		blob_x: Raw blob centroid x.
+		blob_y: Raw blob centroid y.
+		hermite_cx: Hermite fused track center x.
+		hermite_cy: Hermite fused track center y.
+		tangent: (tx, ty, nx, ny) unit vectors from compute_local_tangent.
+		corridor_radius: Cross-track clamp limit in pixels.
+
+	Returns:
+		Dict with keys: corrected_x, corrected_y, raw_along, raw_cross,
+		clamped_along, clamped_cross, correction_mag.
+	"""
+	tx, ty, nx, ny = tangent
+	# offset from Hermite center to blob
+	dx = blob_x - hermite_cx
+	dy = blob_y - hermite_cy
+	# decompose into along-track and cross-track
+	raw_along = dx * tx + dy * ty
+	raw_cross = dx * nx + dy * ny
+	# anisotropic clamp: cross-track tight, along-track looser
+	cross_limit = corridor_radius
+	along_limit = ALONG_TRACK_CLAMP_FACTOR * corridor_radius
+	clamped_along = max(-along_limit, min(along_limit, raw_along))
+	clamped_cross = max(-cross_limit, min(cross_limit, raw_cross))
+	# reconstruct corrected position in pixel space
+	corrected_x = hermite_cx + clamped_along * tx + clamped_cross * nx
+	corrected_y = hermite_cy + clamped_along * ty + clamped_cross * ny
+	# correction magnitude: how far the corrected point moved from raw blob
+	corr_dx = corrected_x - blob_x
+	corr_dy = corrected_y - blob_y
+	correction_mag = (corr_dx**2 + corr_dy**2)**0.5
+	result = {
+		"corrected_x": corrected_x,
+		"corrected_y": corrected_y,
+		"raw_along": raw_along,
+		"raw_cross": raw_cross,
+		"clamped_along": clamped_along,
+		"clamped_cross": clamped_cross,
+		"correction_mag": correction_mag,
+	}
 	return result
 
 
@@ -1250,21 +1337,36 @@ def compute_frame_statistics(
 			candidate_blob = closest[1]
 
 	if candidate_blob is not None:
-		stats["candidate_x"] = candidate_blob["centroid_x"]
-		stats["candidate_y"] = candidate_blob["centroid_y"]
-		dx = candidate_blob["centroid_x"] - ref_cx
-		dy = candidate_blob["centroid_y"] - ref_cy
-		stats["blob_dist"] = (dx**2 + dy**2)**0.5
+		# store raw blob centroid before correction
+		raw_bx = candidate_blob["centroid_x"]
+		raw_by = candidate_blob["centroid_y"]
+		stats["raw_blob_x"] = raw_bx
+		stats["raw_blob_y"] = raw_by
+		raw_dx = raw_bx - ref_cx
+		raw_dy = raw_by - ref_cy
+		stats["raw_blob_dist"] = (raw_dx**2 + raw_dy**2)**0.5
+
+		# apply Hermite scaffold correction: clamp blob offset within corridor
+		correction = apply_hermite_correction(
+			raw_bx, raw_by, ref_cx, ref_cy, tangent,
+			stats["corridor_radius"],
+		)
+		stats["candidate_x"] = correction["corrected_x"]
+		stats["candidate_y"] = correction["corrected_y"]
+		# corrected distance from Hermite center
+		cdx = correction["corrected_x"] - ref_cx
+		cdy = correction["corrected_y"] - ref_cy
+		stats["blob_dist"] = (cdx**2 + cdy**2)**0.5
 		stats["candidate_strength"] = candidate_blob["integrated_mag"]
+		stats["correction_mag"] = correction["correction_mag"]
 
-		# cross-track and along-track decomposition
-		tx, ty, nx, ny = tangent
-		stats["cross_track"] = dx * nx + dy * ny
-		stats["along_track"] = dx * tx + dy * ty
+		# cross-track and along-track from clamped correction
+		stats["cross_track"] = correction["clamped_cross"]
+		stats["along_track"] = correction["clamped_along"]
 
-		# comp vs raw at candidate location
-		cand_ix = int(candidate_blob["centroid_x"])
-		cand_iy = int(candidate_blob["centroid_y"])
+		# comp vs raw at corrected candidate location
+		cand_ix = int(correction["corrected_x"])
+		cand_iy = int(correction["corrected_y"])
 		h, w = comp_mag.shape[:2]
 		# sample a small region around candidate
 		r = 10
@@ -1281,18 +1383,23 @@ def compute_frame_statistics(
 		else:
 			stats["comp_vs_raw"] = 0.0
 
-		# check seed-box overlap for seed frames
+		# check seed-box overlap for seed frames (use corrected position)
 		if pool == "seed" and truth_box is not None:
-			# does blob centroid fall within expanded seed box (1.5x)?
+			# does corrected centroid fall within expanded seed box (1.5x)?
 			expand = 1.5
-			in_box = (abs(dx) <= ref_w * expand / 2 and abs(dy) <= ref_h * expand / 2)
+			in_box = (abs(cdx) <= ref_w * expand / 2
+				and abs(cdy) <= ref_h * expand / 2)
 			stats["overlaps_seed"] = in_box
 	else:
 		# no candidate found
 		stats["candidate_x"] = None
 		stats["candidate_y"] = None
+		stats["raw_blob_x"] = None
+		stats["raw_blob_y"] = None
+		stats["raw_blob_dist"] = None
 		stats["blob_dist"] = None
 		stats["candidate_strength"] = None
+		stats["correction_mag"] = None
 		stats["cross_track"] = None
 		stats["along_track"] = None
 		stats["comp_vs_raw"] = None
@@ -1315,6 +1422,52 @@ def compute_frame_statistics(
 		and best_score >= REVIEW_MIN_SCORE
 	)
 	stats["review_candidate"] = eligible
+
+	# review metrics layer: per-frame scores for seed recommendation
+	# visual_agreement_score: 0-1, how well blob agrees with solver position
+	# combines cross-track tightness, track persistence, and blob strength
+	va_score = 0.0
+	if candidate_blob is not None and ref_h > 0:
+		# cross-track component: 1.0 at zero, decays to 0 at corridor edge
+		cross_abs = abs(cross_val) if cross_val is not None else 999.0
+		corridor_r = stats.get("corridor_radius", ref_h)
+		cross_agreement = max(0.0, 1.0 - cross_abs / corridor_r)
+		# persistence component: track_length / window_size
+		persist = min(1.0, trk_len / tracking_window)
+		# strength component: normalized by reference box area
+		ref_area = ref_w * ref_h
+		strength_val = stats.get("candidate_strength", 0.0) or 0.0
+		# cap at 1.0, typical runner fills ~half the box area
+		strength_norm = min(1.0, strength_val / max(ref_area * 0.5, 1.0))
+		# weighted combination
+		va_score = 0.5 * cross_agreement + 0.3 * persist + 0.2 * strength_norm
+	stats["visual_agreement"] = va_score
+
+	# blob_track_confidence: 0-1, how reliable the tracking itself is
+	# high when track is long, strong, and smooth
+	bt_conf = 0.0
+	if best_track is not None and len(best_track) >= 2:
+		persist_c = min(1.0, len(best_track) / tracking_window)
+		# smoothness: low displacement variance = high confidence
+		positions = [(b["centroid_x"], b["centroid_y"]) for _, b in best_track]
+		if len(positions) >= 2:
+			displacements = []
+			for j in range(1, len(positions)):
+				dx_t = positions[j][0] - positions[j - 1][0]
+				dy_t = positions[j][1] - positions[j - 1][1]
+				displacements.append((dx_t**2 + dy_t**2)**0.5)
+			disp_var = numpy.var(displacements) if displacements else 0.0
+			# normalize: variance of 100 px^2 -> 0 confidence
+			smooth_c = max(0.0, 1.0 - disp_var / 100.0)
+		else:
+			smooth_c = 0.5
+		bt_conf = 0.6 * persist_c + 0.4 * smooth_c
+	stats["blob_track_confidence"] = bt_conf
+
+	# cross_track_disagreement: signed cross-track distance
+	# positive = blob is to one side, negative = other side
+	# large absolute value = visual cue disagrees with solver
+	stats["cross_track_disagreement"] = cross_val if cross_val is not None else None
 
 	return stats
 
@@ -1530,15 +1683,25 @@ def render_diagnostic_png(
 			draw_box_on_frame(panel_tl, ref_cx, ref_cy, ref_w, ref_h,
 				(0, 255, 0), 2, "predicted")
 
-	# draw candidate crosshair and line from reference to candidate
+	# draw raw blob centroid (dim dot) and corrected candidate (crosshair)
 	cand_x = stats.get("candidate_x")
 	cand_y = stats.get("candidate_y")
+	raw_bx = stats.get("raw_blob_x")
+	raw_by = stats.get("raw_blob_y")
+	if raw_bx is not None:
+		# dim dot for raw blob position
+		cv2.circle(panel_tl, (int(raw_bx), int(raw_by)), 5, (180, 100, 180), -1)
 	if cand_x is not None:
+		# bright crosshair for corrected position
 		draw_crosshair(panel_tl, cand_x, cand_y)
-		# draw line from reference point to candidate to show offset
+		# line from raw blob to corrected position showing correction
+		if raw_bx is not None:
+			cv2.line(panel_tl, (int(raw_bx), int(raw_by)),
+				(int(cand_x), int(cand_y)), (255, 0, 255), 1)
+		# line from Hermite reference to corrected position
 		if ref_cx is not None:
 			cv2.line(panel_tl, (int(ref_cx), int(ref_cy)),
-				(int(cand_x), int(cand_y)), (255, 0, 255), 1)
+				(int(cand_x), int(cand_y)), (0, 255, 0), 1)
 
 	# diagnostic text overlay on top-left panel
 	text_y = 50
@@ -1551,11 +1714,21 @@ def render_diagnostic_png(
 	n_cand = stats.get("num_corridor_candidates", 0)
 	score = stats.get("track_score", 0.0)
 
+	raw_d = stats.get("raw_blob_dist")
+	corr_mag = stats.get("correction_mag")
+
 	if cand_x is not None:
 		dist_str = f"dist={blob_d:.0f}px" if blob_d is not None else "dist=?"
+		raw_str = f"raw={raw_d:.0f}" if raw_d is not None else ""
+		corr_str = f"corr={corr_mag:.0f}" if corr_mag is not None else ""
 		cross_str = f"cross={cross:.0f}" if cross is not None else ""
 		along_str = f"along={along:.0f}" if along is not None else ""
-		cv2.putText(panel_tl, f"candidate: {dist_str}  {cross_str}  {along_str}",
+		cv2.putText(panel_tl,
+			f"candidate: {dist_str}  {raw_str}  {corr_str}",
+			(10, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 200, 255), 1)
+		text_y += 18
+		cv2.putText(panel_tl,
+			f"  {cross_str}  {along_str}",
 			(10, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 200, 255), 1)
 		text_y += 18
 		cvr_str = f"c/r={cvr:.1f}" if cvr is not None else "c/r=?"
@@ -1607,8 +1780,14 @@ def render_diagnostic_png(
 	best_track = stats.get("best_track")
 	if best_track is not None:
 		draw_track_on_frame(panel_tr, best_track)
+	# draw raw blob (dim) and corrected candidate (bright) on residual panel
+	if raw_bx is not None:
+		cv2.circle(panel_tr, (int(raw_bx), int(raw_by)), 5, (180, 100, 180), -1)
 	if cand_x is not None:
 		draw_crosshair(panel_tr, cand_x, cand_y, color=(0, 255, 0))
+		if raw_bx is not None:
+			cv2.line(panel_tr, (int(raw_bx), int(raw_by)),
+				(int(cand_x), int(cand_y)), (255, 0, 255), 1)
 		if blob_d is not None:
 			cv2.putText(panel_tr, f"{blob_d:.0f}px",
 				(int(cand_x) + 15, int(cand_y) - 5),
@@ -1659,9 +1838,17 @@ def render_diagnostic_png(
 
 	# build cropped 2x2 grid centered on reference point (8x torso box, square)
 	ref_h_val = stats.get("ref_h", 50)
-	# use candidate position as crop center if available, else reference
-	crop_cx = cand_x if cand_x is not None else ref_cx
-	crop_cy = cand_y if cand_y is not None else ref_cy
+	# center crop midway between Hermite reference and corrected candidate
+	# so both points are visible when they disagree
+	if cand_x is not None and ref_cx is not None:
+		crop_cx = (ref_cx + cand_x) / 2.0
+		crop_cy = (ref_cy + cand_y) / 2.0
+	elif ref_cx is not None:
+		crop_cx = ref_cx
+		crop_cy = ref_cy
+	else:
+		crop_cx = None
+		crop_cy = None
 	if crop_cx is not None and ref_h_val > 0:
 		crop_tl = crop_square_around_point(panel_tl, crop_cx, crop_cy, ref_h_val)
 		crop_tr = crop_square_around_point(panel_tr, crop_cx, crop_cy, ref_h_val)
@@ -1851,12 +2038,13 @@ def print_statistics_table(all_stats: list) -> None:
 		all_stats: List of per-frame stats dicts.
 	"""
 	print()
-	line_w = 130
+	line_w = 168
 	print("=" * line_w)
 	print(f"{'frame':>7} {'pool':>5} {'tier':>6} "
-		f"{'trk_ln':>6} {'blob_d':>7} {'cross':>7} {'along':>7} "
+		f"{'trk_ln':>6} {'raw_d':>7} {'blob_d':>7} {'corr':>6} "
+		f"{'cross':>7} {'along':>7} "
 		f"{'strnth':>7} {'c/r':>5} {'#cand':>5} {'#blob':>5} "
-		f"{'score':>6} {'revw?':>5}")
+		f"{'score':>6} {'v_agr':>5} {'b_con':>5} {'revw?':>5}")
 	print("-" * line_w)
 
 	for stats in all_stats:
@@ -1865,7 +2053,9 @@ def print_statistics_table(all_stats: list) -> None:
 		tier = stats.get("tier", "?")
 
 		trk_len = stats.get("track_length", 0)
+		raw_d = stats.get("raw_blob_dist")
 		blob_d = stats.get("blob_dist")
+		corr_m = stats.get("correction_mag")
 		cross = stats.get("cross_track")
 		along = stats.get("along_track")
 		strength = stats.get("candidate_strength")
@@ -1873,10 +2063,14 @@ def print_statistics_table(all_stats: list) -> None:
 		n_cand = stats.get("num_corridor_candidates", 0)
 		n_blob = stats.get("num_blobs", 0)
 		score = stats.get("track_score", 0.0)
+		va = stats.get("visual_agreement", 0.0)
+		bc = stats.get("blob_track_confidence", 0.0)
 		eligible = stats.get("review_candidate", False)
 
 		# format nullable values
+		rd_s = f"{raw_d:>7.1f}" if raw_d is not None else "   none"
 		bd_s = f"{blob_d:>7.1f}" if blob_d is not None else "   none"
+		cm_s = f"{corr_m:>6.1f}" if corr_m is not None else "  none"
 		cr_s = f"{cross:>7.1f}" if cross is not None else "   none"
 		al_s = f"{along:>7.1f}" if along is not None else "   none"
 		st_s = f"{strength:>7.0f}" if strength is not None else "   none"
@@ -1884,9 +2078,10 @@ def print_statistics_table(all_stats: list) -> None:
 		el_s = "  YES" if eligible else "   NO"
 
 		print(f"{frame_idx:>7} {pool:>5} {tier:>6} "
-			f"{trk_len:>6} {bd_s} {cr_s} {al_s} "
+			f"{trk_len:>6} {rd_s} {bd_s} {cm_s} "
+			f"{cr_s} {al_s} "
 			f"{st_s} {cv_s} {n_cand:>5} {n_blob:>5} "
-			f"{score:>6.2f} {el_s}")
+			f"{score:>6.2f} {va:>5.2f} {bc:>5.2f} {el_s}")
 
 	print("=" * line_w)
 
@@ -1950,20 +2145,96 @@ def print_statistics_table(all_stats: list) -> None:
 			print(f"  median comp/raw: {med_cvr:.2f} ({helps})")
 		if gap_scores:
 			print(f"  median track score: {float(numpy.median(gap_scores)):.2f}")
-		# auto-seed eligibility
+		# review candidate count
 		gap_eligible = sum(1 for s in gap_stats if s.get("review_candidate", False))
-		print(f"  auto-seed eligible: {gap_eligible}/{len(gap_stats)} "
+		print(f"  review candidates: {gap_eligible}/{len(gap_stats)} "
 			f"(trk>={REVIEW_MIN_TRACK_LENGTH}, "
 			f"|cross|<={REVIEW_MAX_CROSS_TRACK:.0f}, "
 			f"|along|<={REVIEW_MAX_ALONG_TRACK:.0f}, "
 			f"score>={REVIEW_MIN_SCORE})")
+
+	# review metrics summary
+	gap_va = [s["visual_agreement"] for s in gap_stats] if gap_stats else []
+	gap_bc = [s["blob_track_confidence"] for s in gap_stats] if gap_stats else []
+	if gap_va:
+		print("\nReview metrics (gap frames):")
+		print(f"  median visual agreement: {float(numpy.median(gap_va)):.2f}")
+		print(f"  median blob track confidence: {float(numpy.median(gap_bc)):.2f}")
+
+	# interval-level needs_review: flag intervals with low visual agreement
+	if all_stats:
+		# group gap frames by interval
+		interval_scores = {}
+		for s in all_stats:
+			if s["pool"] != "gap":
+				continue
+			iv = s.get("interval", -1)
+			if iv < 0:
+				continue
+			if iv not in interval_scores:
+				interval_scores[iv] = []
+			interval_scores[iv].append(s)
+
+		# flag intervals where median visual agreement is low
+		review_threshold = 0.3
+		needs_review = []
+		for iv_idx, frames in sorted(interval_scores.items()):
+			va_vals = [f["visual_agreement"] for f in frames]
+			med_va = float(numpy.median(va_vals))
+			# compute reasons for flagging
+			reasons = []
+			if med_va < review_threshold:
+				reasons.append(f"low visual agreement ({med_va:.2f})")
+			# check for high cross-track disagreement
+			cross_vals = [f["cross_track_disagreement"]
+				for f in frames if f.get("cross_track_disagreement") is not None]
+			if cross_vals:
+				max_cross = max(abs(c) for c in cross_vals)
+				if max_cross > REVIEW_MAX_CROSS_TRACK:
+					reasons.append(f"cross-track disagreement ({max_cross:.0f}px)")
+			# check for missing candidates
+			no_cand = sum(1 for f in frames if f.get("track_length", 0) == 0)
+			if no_cand > 0:
+				reasons.append(f"{no_cand} frames with no candidate")
+			if reasons:
+				needs_review.append((iv_idx, reasons, frames))
+
+		if needs_review:
+			print(f"\nIntervals needing review ({len(needs_review)}):")
+			for iv_idx, reasons, frames in needs_review:
+				frame_nums = [f["frame_index"] for f in frames]
+				reason_str = "; ".join(reasons)
+				print(f"  interval {iv_idx} (frames {frame_nums}): {reason_str}")
+		else:
+			print("\n  No intervals flagged for review.")
+
+		# top-N seed recommendations: gap frames ranked by visual agreement
+		if gap_stats:
+			# frames with low agreement are where the user should look
+			low_va_frames = sorted(gap_stats, key=lambda s: s["visual_agreement"])
+			n_suggest = min(3, len(low_va_frames))
+			print(f"\nSeed recommendation: top {n_suggest} frames to inspect:")
+			for s in low_va_frames[:n_suggest]:
+				va_val = s["visual_agreement"]
+				fi = s["frame_index"]
+				reason_parts = []
+				if va_val < review_threshold:
+					reason_parts.append(f"low agreement ({va_val:.2f})")
+				ct = s.get("cross_track_disagreement")
+				if ct is not None and abs(ct) > 50:
+					reason_parts.append(f"cross-track {ct:.0f}px")
+				tl = s.get("track_length", 0)
+				if tl < REVIEW_MIN_TRACK_LENGTH:
+					reason_parts.append(f"short track ({tl})")
+				reason_str = "; ".join(reason_parts) if reason_parts else "weakest agreement"
+				print(f"  frame {fi}: {reason_str}")
 
 	# interpretation guide
 	print("\nInterpretation:")
 	print("  works on seeds, fails in gaps = signal exists, "
 		"alignment degrades in hard regions")
 	print("  fails on seeds = method too weak for this video")
-	print("  works on both = auto-seed generation is plausible")
+	print("  works on both = seed recommendations are reliable")
 	print()
 
 

@@ -21,6 +21,7 @@ import scoring
 import key_input
 import state_io
 import velocity_model
+import residual_motion
 
 
 #============================================
@@ -1242,6 +1243,10 @@ def solve_all_intervals(
 
 	# stitch and finalize
 	trajectory = stitch_trajectories(interval_results)
+	# per-frame motion-cue observation fusion (Hermite scaffold + blob center)
+	trajectory = residual_motion.refine_with_motion_cues(
+		trajectory, reader, scene_transform, seeds,
+	)
 	trajectory = anchor_to_seeds(trajectory, seeds)
 	trajectory = _stamp_seed_confidence(trajectory, seeds)
 	trajectory = _apply_trajectory_erasure(trajectory, seeds, fps)
