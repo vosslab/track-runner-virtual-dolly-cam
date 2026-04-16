@@ -21,6 +21,7 @@ import warnings
 # PIP3 modules
 import cv2
 import numpy
+import rich.progress
 
 # === Tunable constants ===
 
@@ -30,9 +31,14 @@ MIN_BLOB_AREA = 25
 # motion intensity threshold for blob extraction
 DEFAULT_THRESHOLD = 10.0
 
-# half-window for background estimation (4 = 9-frame window)
-# validated on diagnostic runs; provisional default, may reduce for speed
-DEFAULT_HALF_WINDOW = 4
+# half-window for background estimation (2 = 5-frame window)
+# diagnostic tool uses 4 (9-frame) for sparse sampling; pipeline uses 2
+# because it processes every frame sequentially, so temporal coverage is dense
+DEFAULT_HALF_WINDOW = 2
+
+# ROI multiplier: crop region is this many times the torso box height
+# matches the 8x used in tools/diagnose_residual_motion.py
+ROI_MULTIPLIER = 8.0
 
 # maximum blend weight toward blob observation
 ALPHA_MAX = 0.6
@@ -273,12 +279,48 @@ def _read_gray_frame(
 
 
 #============================================
+def _compute_roi(
+	pred_cx: float,
+	pred_cy: float,
+	pred_h: float,
+	frame_w: int,
+	frame_h: int,
+) -> tuple:
+	"""Compute ROI bounds for residual computation around predicted position.
+
+	Uses ROI_MULTIPLIER * pred_h as the square crop side length.
+	Clamps to frame boundaries. If ROI would cover most of the frame,
+	returns the full frame bounds.
+
+	Args:
+		pred_cx: Predicted center x in pixels.
+		pred_cy: Predicted center y in pixels.
+		pred_h: Predicted box height in pixels.
+		frame_w: Full frame width.
+		frame_h: Full frame height.
+
+	Returns:
+		Tuple of (x1, y1, x2, y2) pixel bounds, clamped to frame.
+	"""
+	half_side = int(ROI_MULTIPLIER * pred_h / 2)
+	# minimum ROI size of 100px
+	half_side = max(half_side, 50)
+
+	x1 = max(0, int(pred_cx) - half_side)
+	y1 = max(0, int(pred_cy) - half_side)
+	x2 = min(frame_w, int(pred_cx) + half_side)
+	y2 = min(frame_h, int(pred_cy) + half_side)
+	return (x1, y1, x2, y2)
+
+
+#============================================
 def compute_residual_for_frame(
 	reader: object,
 	frame_index: int,
 	scene_transform: object,
 	half_window: int = DEFAULT_HALF_WINDOW,
 	cache: dict = None,
+	roi: tuple = None,
 ) -> tuple:
 	"""Compute residual magnitude and validity mask for one frame.
 
@@ -286,8 +328,10 @@ def compute_residual_for_frame(
 	a median background from the aligned stack, and subtracts it to
 	reveal moving objects.
 
-	Uses cache dict to avoid re-reading frames in sequential processing.
-	Scale factor is always 1.0 (full resolution).
+	When roi is provided, only processes that region of each frame,
+	reducing compute cost proportional to the area ratio.
+
+	Uses cache dict to avoid re-reading full frames in sequential processing.
 
 	Args:
 		reader: VideoReader instance.
@@ -295,19 +339,34 @@ def compute_residual_for_frame(
 		scene_transform: SceneTransform instance.
 		half_window: Frames on each side for background (default 4 = 9 frames).
 		cache: Optional dict for frame caching. Modified in place.
+		roi: Optional (x1, y1, x2, y2) bounds to restrict computation.
+			Blob centroids are returned in full-frame coordinates.
 
 	Returns:
 		Tuple of (residual_mag, validity_mask) or (None, None).
+		When roi is used, these are cropped to the ROI with blob
+		centroids adjusted by roi offset.
 	"""
 	if cache is None:
 		cache = {}
 
-	# read center frame as grayscale float
-	center_float = _read_gray_frame(reader, frame_index, cache)
-	if center_float is None:
+	# read center frame as grayscale float (full frame, cached)
+	center_full = _read_gray_frame(reader, frame_index, cache)
+	if center_full is None:
 		return (None, None)
 
-	h_frame, w_frame = center_float.shape[:2]
+	h_frame, w_frame = center_full.shape[:2]
+
+	# crop to ROI if specified
+	if roi is not None:
+		rx1, ry1, rx2, ry2 = roi
+		center_float = center_full[ry1:ry2, rx1:rx2]
+		roi_h, roi_w = center_float.shape[:2]
+	else:
+		center_float = center_full
+		roi_h, roi_w = h_frame, w_frame
+		rx1, ry1 = 0, 0
+
 	scale_factor = 1.0
 
 	# collect aligned neighbor frames into a stack for median computation
@@ -319,16 +378,28 @@ def compute_residual_for_frame(
 		if fi_other < 0 or fi_other >= reader.frame_count:
 			continue
 
-		# read neighbor frame as BGR for warping
-		other_bgr = reader.read_frame(fi_other)
+		# read neighbor frame as BGR for warping (use cache to avoid re-reads)
+		cache_key_bgr = ("bgr", fi_other)
+		if cache_key_bgr in cache:
+			other_bgr = cache[cache_key_bgr]
+		else:
+			other_bgr = reader.read_frame(fi_other)
+			if other_bgr is None:
+				continue
+			cache[cache_key_bgr] = other_bgr
 		if other_bgr is None:
 			continue
 
-		# warp into center frame's camera position
+		# warp full frame into center frame's camera position
 		warp_mat = build_warp_matrix(
 			scene_transform, frame_index, fi_other, scale_factor,
 		)
-		warped = cv2.warpAffine(other_bgr, warp_mat, (w_frame, h_frame))
+		# warp only the ROI region by adjusting output size and offset
+		# translate warp matrix to ROI origin
+		roi_warp = warp_mat.copy()
+		roi_warp[0, 2] -= rx1
+		roi_warp[1, 2] -= ry1
+		warped = cv2.warpAffine(other_bgr, roi_warp, (roi_w, roi_h))
 
 		# validity mask for warped regions
 		pair_validity = compute_validity_mask(warped)
@@ -667,6 +738,149 @@ def _compute_corrected_position(
 
 
 #============================================
+def _process_one_frame(
+	frame_index: int,
+	entry: dict,
+	original_trajectory: list,
+	reader: object,
+	scene_transform: object,
+	prev_accepted_blob: dict,
+	half_window: int,
+	threshold: float,
+	cache: dict,
+) -> tuple:
+	"""Process a single frame for motion-cue observation fusion.
+
+	Computes residual, extracts blobs, applies two-tier gate, and
+	returns the correction result.
+
+	Args:
+		frame_index: Current frame index.
+		entry: Trajectory state dict for this frame.
+		original_trajectory: Snapshot of uncorrected trajectory (for tangent).
+		reader: VideoReader instance.
+		scene_transform: SceneTransform instance.
+		prev_accepted_blob: Previous accepted blob dict, or None.
+		half_window: Background subtraction window.
+		threshold: Motion threshold.
+		cache: Frame cache dict, modified in place.
+
+	Returns:
+		Tuple of (outcome, blob, alpha_used) where outcome is one of:
+		  "accepted" - blob passed, alpha_used > 0, entry updated
+		  "vetoed" - blob found but ambiguous
+		  "rejected" - blob failed tier-1
+		  "no_data" - no residual or no blobs found
+		  "no_tangent" - tangent unstable, skipped
+	"""
+	# get predicted position and size
+	pred_cx = float(entry["cx"])
+	pred_cy = float(entry["cy"])
+	pred_w = float(entry["w"])
+	pred_h = float(entry["h"])
+	traj_conf = float(entry.get("conf", 0.0) or 0.0)
+
+	# compute tangent from ORIGINAL trajectory (never corrected)
+	tangent = compute_trajectory_tangent(original_trajectory, frame_index)
+	tx, ty, nx, ny = tangent
+	tangent_mag = (tx**2 + ty**2)**0.5
+	if tangent_mag < 0.001:
+		return ("no_tangent", None, 0.0)
+
+	# compute ROI around predicted position (8x torso box)
+	frame_w = reader.width if hasattr(reader, "width") else 1920
+	frame_h = reader.height if hasattr(reader, "height") else 1080
+	roi = _compute_roi(pred_cx, pred_cy, pred_h, frame_w, frame_h)
+	roi_x1, roi_y1 = roi[0], roi[1]
+
+	# compute residual within ROI only
+	residual, validity_mask = compute_residual_for_frame(
+		reader, frame_index, scene_transform, half_window, cache, roi,
+	)
+	if residual is None:
+		return ("no_data", None, 0.0)
+
+	# extract blobs (centroids are in ROI coordinates)
+	blobs = extract_frame_blobs(residual, validity_mask, threshold)
+	# convert blob centroids from ROI to full-frame coordinates
+	for blob in blobs:
+		blob["centroid_x"] += roi_x1
+		blob["centroid_y"] += roi_y1
+	if not blobs:
+		return ("no_data", None, 0.0)
+
+	# filter blobs to corridor
+	corridor_radius = max(1.5 * pred_w, 0.75 * pred_h)
+	corridor_blobs = filter_blobs_to_corridor(
+		blobs, pred_cx, pred_cy, tangent, corridor_radius,
+	)
+	if not corridor_blobs:
+		return ("no_data", None, 0.0)
+
+	# score all corridor blobs
+	blob_scores = []
+	for blob in corridor_blobs:
+		score = compute_cue_confidence(
+			blob, pred_cx, pred_cy, pred_w, pred_h, tangent,
+		)
+		blob_scores.append((blob, score))
+	blob_scores.sort(key=lambda x: x[1], reverse=True)
+
+	best_blob, best_confidence = blob_scores[0]
+	second_best_confidence = blob_scores[1][1] if len(blob_scores) > 1 else 0.0
+
+	# tier-1 hard gate
+	passes_tier1 = _apply_tier1_gate(
+		best_blob, pred_cx, pred_cy, pred_w, pred_h,
+		best_confidence, prev_accepted_blob, tangent, corridor_radius,
+	)
+	if not passes_tier1:
+		return ("rejected", None, 0.0)
+
+	# tier-2 soft penalties
+	effective_confidence = _apply_tier2_penalties(
+		best_blob, best_confidence, pred_cx, pred_cy, pred_w, pred_h,
+		tangent, prev_accepted_blob, second_best_confidence,
+	)
+
+	# ambiguity veto
+	if effective_confidence < VETO_CONFIDENCE_THRESHOLD:
+		return ("vetoed", None, 0.0)
+
+	# accepted: compute corrected position
+	new_cx, new_cy, alpha_used = _compute_corrected_position(
+		best_blob, pred_cx, pred_cy, pred_w, pred_h,
+		tangent, effective_confidence, traj_conf,
+	)
+
+	# update trajectory entry (position only, not size)
+	entry["cx"] = new_cx
+	entry["cy"] = new_cy
+
+	return ("accepted", best_blob, alpha_used)
+
+
+#============================================
+def _handle_miss(state: dict) -> None:
+	"""Update temporal state after a missed frame (no blob, rejected, no data).
+
+	Increments miss_count. If miss_count exceeds SHORT_MEMORY_FRAMES,
+	breaks the chain and clears prev_accepted_blob.
+
+	Args:
+		state: Mutable dict with prev_accepted_blob, miss_count,
+			current_chain_length, chain_lengths, chain_break_count.
+	"""
+	state["miss_count"] += 1
+	if state["miss_count"] > SHORT_MEMORY_FRAMES:
+		if state["current_chain_length"] > 0:
+			state["chain_lengths"].append(state["current_chain_length"])
+			state["current_chain_length"] = 0
+			state["chain_break_count"] += 1
+		state["prev_accepted_blob"] = None
+
+
+#============================================
 def refine_with_motion_cues(
 	trajectory: list,
 	reader: object,
@@ -677,22 +891,9 @@ def refine_with_motion_cues(
 ) -> list:
 	"""Apply per-frame motion-cue observation fusion to a fused trajectory.
 
-	For each non-seed frame with a valid trajectory state:
-	  1. Predict position from current trajectory
-	  2. Compute residual motion (background subtraction)
-	  3. Find best corridor blob near predicted position
-	  4. Apply two-tier acceptance gate
-	  5. If accepted: compute anisotropic correction, blend with prediction
-	  6. If vetoed or rejected: keep Hermite prediction
-
-	Tangent is always computed from the original (uncorrected) trajectory
-	snapshot. Seeds are never modified. Processes frames sequentially with
-	a sliding cache for efficiency. Forward-only processing assumed.
-
-	Three per-frame outcomes:
-	  - Accepted: blob passes both tiers, observation fused, state updated
-	  - Vetoed: blob found but ambiguous, observation weight = 0
-	  - Rejected: blob fails tier 1, chain break rules apply
+	For each non-seed frame: compute residual, find best blob, apply
+	two-tier gate, blend accepted observations with Hermite prediction.
+	Seeds are never modified. Tangent from original trajectory snapshot.
 
 	Args:
 		trajectory: List of state dicts from stitch_trajectories().
@@ -714,13 +915,11 @@ def refine_with_motion_cues(
 		print("  motion-cue fusion: skipped (reader does not support frame access)")
 		return trajectory
 
-	# build set of seed frame indices for protection
-	seed_frames = set()
-	for seed in seeds:
-		seed_frames.add(int(seed["frame_index"]))
+	# build sorted seed frame list for interval boundary detection
+	seed_frame_list = sorted(int(s["frame_index"]) for s in seeds
+		if s.get("status") in ("visible", "partial", "approximate"))
 
 	# snapshot original trajectory for tangent computation
-	# (tangent must never use corrected positions)
 	original_trajectory = []
 	for entry in trajectory:
 		if entry is None:
@@ -731,19 +930,19 @@ def refine_with_motion_cues(
 	# frame cache for sequential processing
 	cache = {}
 
-	# temporal continuity state
-	prev_accepted_blob = None
-	miss_count = 0
-
-	# statistics
+	# temporal continuity and statistics state
+	state = {
+		"prev_accepted_blob": None,
+		"miss_count": 0,
+		"current_chain_length": 0,
+		"chain_lengths": [],
+		"chain_break_count": 0,
+	}
 	frames_processed = 0
 	frames_accepted = 0
 	frames_vetoed = 0
 	frames_rejected = 0
 	alpha_sum = 0.0
-	chain_lengths = []
-	current_chain_length = 0
-	chain_break_count = 0
 
 	# find first and last valid frame indices
 	first_valid = None
@@ -756,169 +955,131 @@ def refine_with_motion_cues(
 	if first_valid is None:
 		return trajectory
 
-	# process each frame sequentially
-	for frame_index in range(first_valid, last_valid + 1):
-		entry = trajectory[frame_index]
-		if entry is None:
-			# no trajectory state at this frame
-			miss_count += 1
-			if miss_count > SHORT_MEMORY_FRAMES:
-				if current_chain_length > 0:
-					chain_lengths.append(current_chain_length)
-					current_chain_length = 0
-					chain_break_count += 1
-				prev_accepted_blob = None
-			continue
+	# interval tracking: find which interval each frame belongs to
+	# intervals are defined by consecutive seed pairs
+	current_interval_idx = 0
+	interval_start = seed_frame_list[0] if seed_frame_list else first_valid
+	interval_end = seed_frame_list[1] if len(seed_frame_list) > 1 else last_valid
+	iv_accepted = 0
+	iv_processed = 0
+	total_intervals = max(1, len(seed_frame_list) - 1)
 
-		# protect seed frames
-		if entry.get("source") == "seed":
-			continue
+	total_frames = last_valid - first_valid + 1
+	print(f"  motion-cue fusion: {total_frames} frames, "
+		f"{total_intervals} intervals, "
+		f"window={2 * half_window + 1} frames")
+	print(f"  starting interval 1/{total_intervals} "
+		f"(frames {interval_start}-{interval_end})")
+	progress = rich.progress.Progress(
+		rich.progress.TextColumn("  motion-cue fusion"),
+		rich.progress.BarColumn(),
+		rich.progress.TaskProgressColumn(),
+		rich.progress.TimeRemainingColumn(),
+		rich.progress.TimeElapsedColumn(),
+	)
+	with progress:
+		ptask = progress.add_task("fusion", total=total_frames)
+		for frame_index in range(first_valid, last_valid + 1):
+			progress.update(ptask, advance=1)
 
-		# skip frames near video boundaries
-		if frame_index < half_window or frame_index >= reader.frame_count - half_window:
-			continue
+			# detect interval boundary and print summary of previous interval
+			if (len(seed_frame_list) > 1
+				and current_interval_idx < total_intervals
+				and frame_index >= interval_end):
+				# print one-line summary for the completed interval
+				if iv_processed > 0:
+					iv_rate = iv_accepted / iv_processed
+					progress.console.print(
+						f"  interval {current_interval_idx + 1}/{total_intervals} "
+						f"(frames {interval_start}-{interval_end}): "
+						f"{iv_accepted}/{iv_processed} accepted ({iv_rate:.0%})"
+					)
+				# advance to next interval
+				current_interval_idx += 1
+				iv_accepted = 0
+				iv_processed = 0
+				interval_start = interval_end
+				if current_interval_idx < total_intervals:
+					interval_end = seed_frame_list[current_interval_idx + 1]
+				else:
+					interval_end = last_valid
+				# announce start of new interval
+				progress.console.print(
+					f"  starting interval {current_interval_idx + 1}/{total_intervals} "
+					f"(frames {interval_start}-{interval_end})"
+				)
 
-		frames_processed += 1
+			entry = trajectory[frame_index]
 
-		# get predicted position and size from trajectory
-		pred_cx = float(entry["cx"])
-		pred_cy = float(entry["cy"])
-		pred_w = float(entry["w"])
-		pred_h = float(entry["h"])
-		traj_conf = float(entry.get("conf", 0.0) or 0.0)
+			# skip empty frames
+			if entry is None:
+				_handle_miss(state)
+				continue
 
-		# compute tangent from ORIGINAL trajectory (never corrected)
-		tangent = compute_trajectory_tangent(original_trajectory, frame_index)
-		# if tangent is unstable, skip correction for this frame
-		tx, ty, nx, ny = tangent
-		tangent_mag = (tx**2 + ty**2)**0.5
-		if tangent_mag < 0.001:
-			miss_count += 1
-			if miss_count > SHORT_MEMORY_FRAMES:
-				if current_chain_length > 0:
-					chain_lengths.append(current_chain_length)
-					current_chain_length = 0
-					chain_break_count += 1
-				prev_accepted_blob = None
-			continue
+			# protect seed frames
+			if entry.get("source") == "seed":
+				continue
 
-		# compute residual for this frame
-		residual, validity_mask = compute_residual_for_frame(
-			reader, frame_index, scene_transform, half_window, cache,
-		)
-		if residual is None:
-			miss_count += 1
-			if miss_count > SHORT_MEMORY_FRAMES:
-				if current_chain_length > 0:
-					chain_lengths.append(current_chain_length)
-					current_chain_length = 0
-					chain_break_count += 1
-				prev_accepted_blob = None
-			continue
+			# skip frames near video boundaries
+			if frame_index < half_window or frame_index >= reader.frame_count - half_window:
+				continue
 
-		# extract blobs
-		blobs = extract_frame_blobs(residual, validity_mask, threshold)
-		if not blobs:
-			# no observation: keep Hermite, manage chain
-			miss_count += 1
-			if miss_count > SHORT_MEMORY_FRAMES:
-				if current_chain_length > 0:
-					chain_lengths.append(current_chain_length)
-					current_chain_length = 0
-					chain_break_count += 1
-				prev_accepted_blob = None
-			continue
+			frames_processed += 1
+			iv_processed += 1
 
-		# filter blobs to corridor
-		corridor_radius = max(1.5 * pred_w, 0.75 * pred_h)
-		corridor_blobs = filter_blobs_to_corridor(
-			blobs, pred_cx, pred_cy, tangent, corridor_radius,
-		)
-		if not corridor_blobs:
-			miss_count += 1
-			if miss_count > SHORT_MEMORY_FRAMES:
-				if current_chain_length > 0:
-					chain_lengths.append(current_chain_length)
-					current_chain_length = 0
-					chain_break_count += 1
-				prev_accepted_blob = None
-			continue
-
-		# score all corridor blobs
-		blob_scores = []
-		for blob in corridor_blobs:
-			score = compute_cue_confidence(
-				blob, pred_cx, pred_cy, pred_w, pred_h, tangent,
+			# process this frame
+			outcome, blob, alpha_used = _process_one_frame(
+				frame_index, entry, original_trajectory, reader,
+				scene_transform, state["prev_accepted_blob"],
+				half_window, threshold, cache,
 			)
-			blob_scores.append((blob, score))
-		# sort by score descending
-		blob_scores.sort(key=lambda x: x[1], reverse=True)
 
-		best_blob, best_confidence = blob_scores[0]
-		second_best_confidence = blob_scores[1][1] if len(blob_scores) > 1 else 0.0
+			if outcome == "accepted":
+				state["prev_accepted_blob"] = blob
+				state["miss_count"] = 0
+				state["current_chain_length"] += 1
+				frames_accepted += 1
+				iv_accepted += 1
+				alpha_sum += alpha_used
+			elif outcome == "vetoed":
+				# veto preserves temporal memory
+				frames_vetoed += 1
+			elif outcome == "rejected":
+				frames_rejected += 1
+				_handle_miss(state)
+			else:
+				# no_data or no_tangent
+				_handle_miss(state)
 
-		# tier-1 hard gate
-		passes_tier1 = _apply_tier1_gate(
-			best_blob, pred_cx, pred_cy, pred_w, pred_h,
-			best_confidence, prev_accepted_blob, tangent, corridor_radius,
-		)
+			# evict old cache entries (forward-only, +2 buffer)
+			evict_before = frame_index - half_window - 3
+			keys_to_evict = []
+			for k in cache:
+				# cache keys are either int (grayscale) or ("bgr", int)
+				if isinstance(k, int) and k < evict_before:
+					keys_to_evict.append(k)
+				elif isinstance(k, tuple) and k[1] < evict_before:
+					keys_to_evict.append(k)
+			for k in keys_to_evict:
+				del cache[k]
 
-		if not passes_tier1:
-			# rejected: chain break rules apply
-			frames_rejected += 1
-			miss_count += 1
-			if miss_count > SHORT_MEMORY_FRAMES:
-				if current_chain_length > 0:
-					chain_lengths.append(current_chain_length)
-					current_chain_length = 0
-					chain_break_count += 1
-				prev_accepted_blob = None
-			continue
-
-		# tier-2 soft penalties
-		effective_confidence = _apply_tier2_penalties(
-			best_blob, best_confidence, pred_cx, pred_cy, pred_w, pred_h,
-			tangent, prev_accepted_blob, second_best_confidence,
-		)
-
-		# ambiguity veto
-		if effective_confidence < VETO_CONFIDENCE_THRESHOLD:
-			# vetoed: preserve temporal memory, do NOT update state
-			frames_vetoed += 1
-			continue
-
-		# accepted: compute corrected position
-		new_cx, new_cy, alpha_used = _compute_corrected_position(
-			best_blob, pred_cx, pred_cy, pred_w, pred_h,
-			tangent, effective_confidence, traj_conf,
-		)
-
-		# update trajectory entry (position only, not size)
-		entry["cx"] = new_cx
-		entry["cy"] = new_cy
-
-		# update temporal state
-		prev_accepted_blob = best_blob
-		miss_count = 0
-		current_chain_length += 1
-		frames_accepted += 1
-		alpha_sum += alpha_used
-
-		# evict old cache entries (forward-only, +2 buffer)
-		evict_before = frame_index - half_window - 3
-		keys_to_evict = [k for k in cache if k < evict_before]
-		for k in keys_to_evict:
-			del cache[k]
+	# print final interval summary
+	if iv_processed > 0:
+		iv_rate = iv_accepted / iv_processed
+		print(f"  interval {current_interval_idx + 1}/{total_intervals} "
+			f"(frames {interval_start}-{interval_end}): "
+			f"{iv_accepted}/{iv_processed} accepted ({iv_rate:.0%})")
 
 	# close final chain
-	if current_chain_length > 0:
-		chain_lengths.append(current_chain_length)
+	if state["current_chain_length"] > 0:
+		state["chain_lengths"].append(state["current_chain_length"])
 
 	# print summary
-	non_seed_frames = frames_processed
-	if non_seed_frames > 0:
-		usage_rate = frames_accepted / non_seed_frames
-		veto_rate = frames_vetoed / non_seed_frames
+	chain_lengths = state["chain_lengths"]
+	chain_break_count = state["chain_break_count"]
+	if frames_processed > 0:
+		usage_rate = frames_accepted / frames_processed
+		veto_rate = frames_vetoed / frames_processed
 		mean_alpha = alpha_sum / frames_accepted if frames_accepted > 0 else 0.0
 		mean_chain = sum(chain_lengths) / len(chain_lengths) if chain_lengths else 0.0
 	else:
@@ -928,7 +1089,7 @@ def refine_with_motion_cues(
 		mean_chain = 0.0
 
 	print(f"  motion-cue fusion: {frames_processed} frames processed")
-	print(f"    observation usage: {frames_accepted}/{non_seed_frames} "
+	print(f"    observation usage: {frames_accepted}/{frames_processed} "
 		f"({usage_rate:.1%})")
 	print(f"    vetoed: {frames_vetoed} ({veto_rate:.1%}), "
 		f"rejected: {frames_rejected}")

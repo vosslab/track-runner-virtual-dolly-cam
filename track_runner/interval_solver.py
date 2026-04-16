@@ -1207,10 +1207,11 @@ def solve_all_intervals(
 			start_frame = int(seed_start["frame_index"])
 			end_frame = int(seed_end["frame_index"])
 
-			progress.console.print(
-				f"  solving interval {pair_idx + 1}/{total_intervals} "
-				f"(frames {start_frame}-{end_frame})"
-			)
+			if debug:
+				progress.console.print(
+					f"  solving interval {pair_idx + 1}/{total_intervals} "
+					f"(frames {start_frame}-{end_frame})"
+				)
 
 			result = solve_interval_analytical(
 				seed_start, seed_end, scene_transform,
@@ -1224,7 +1225,8 @@ def solve_all_intervals(
 				)
 				on_interval_solved(fingerprint, result)
 			interval_results.append(result)
-			_print_interval_result_rich(result, fps, progress)
+			if debug:
+				_print_interval_result_rich(result, fps, progress)
 			if on_interval_complete is not None:
 				on_interval_complete(result)
 			n_frames = result["end_frame"] - result["start_frame"]
