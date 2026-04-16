@@ -976,6 +976,7 @@ def refine_with_motion_cues(
 		rich.progress.TaskProgressColumn(),
 		rich.progress.TimeRemainingColumn(),
 		rich.progress.TimeElapsedColumn(),
+		refresh_per_second=1,
 	)
 	with progress:
 		ptask = progress.add_task("fusion", total=total_frames)

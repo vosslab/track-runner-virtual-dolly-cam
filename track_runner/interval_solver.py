@@ -21,6 +21,7 @@ import scoring
 import key_input
 import state_io
 import velocity_model
+import race_phases
 import residual_motion
 
 
@@ -1189,6 +1190,7 @@ def solve_all_intervals(
 		BlockBarColumn(),
 		rich.progress.TaskProgressColumn(),
 		rich.progress.TimeRemainingColumn(),
+		refresh_per_second=1,
 	) as progress:
 		task = progress.add_task(
 			"  solving intervals", total=total_intervals,
@@ -1249,6 +1251,8 @@ def solve_all_intervals(
 	trajectory = residual_motion.refine_with_motion_cues(
 		trajectory, reader, scene_transform, seeds,
 	)
+	# race phase detection (post-hoc interpretation, does not modify trajectory)
+	race_phase = race_phases.detect_race_start(trajectory, scene_transform, fps)
 	trajectory = anchor_to_seeds(trajectory, seeds)
 	trajectory = _stamp_seed_confidence(trajectory, seeds)
 	trajectory = _apply_trajectory_erasure(trajectory, seeds, fps)
@@ -1256,5 +1260,6 @@ def solve_all_intervals(
 	output = {
 		"intervals": interval_results,
 		"trajectory": trajectory,
+		"race_phase": race_phase,
 	}
 	return output

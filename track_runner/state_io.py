@@ -453,6 +453,17 @@ def write_solver_diagnostics(
 		"intervals": intervals_summary,
 		"cyclical_prior": cyclical_safe,
 	}
+	# preserve race phase detection if present
+	race_phase = diagnostics.get("race_phase")
+	if race_phase is not None:
+		diag_out["race_phase"] = {
+			"start_frame": race_phase.get("start_frame"),
+			"start_s": race_phase.get("start_s"),
+			"confidence": round(float(race_phase.get("confidence", 0.0)), 4),
+			"method": race_phase.get("method", ""),
+			"threshold_used": round(float(race_phase.get("threshold_used", 0.0)), 4),
+			"debounce_frames": int(race_phase.get("debounce_frames", 0)),
+		}
 	# preserve video_identity if provided in the input diagnostics
 	video_identity = diagnostics.get("video_identity")
 	if video_identity is not None:
