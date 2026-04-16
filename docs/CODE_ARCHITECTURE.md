@@ -11,6 +11,46 @@ for the original design philosophy and the plan at
 [docs/archive/TRACK_RUNNER_PLAN_07_ANALYTICAL_REFACTOR.md](archive/TRACK_RUNNER_PLAN_07_ANALYTICAL_REFACTOR.md)
 for the analytical rewrite rationale.
 
+## Design decisions
+
+### Cross-correlation over feature detection
+
+All camera motion estimation uses FFT-based phase correlation (`cv2.phaseCorrelate`),
+not feature detection (SIFT, ORB, etc.). This is a deliberate architectural choice.
+
+**Why cross-correlation wins for this problem:**
+
+- **Track video has few stable features.** A track surface is a large uniform region.
+  Feature detectors find corners and blobs, but a rubberized track has almost none.
+  Audience members, lane markings, and distant structures produce sparse, unreliable
+  keypoints that cluster in small image regions.
+- **Phase correlation uses the entire frame.** It computes a single global
+  translation (and scale) from the full image, treating every pixel as signal. This
+  makes it robust even when most of the frame is featureless track surface.
+- **Fewer failure modes.** Feature detection pipelines require: detection, description,
+  matching, outlier rejection (RANSAC), and homography estimation. Each stage can
+  fail silently. Phase correlation is a single FFT operation with a clear quality
+  metric (the correlation peak response).
+- **Predictable runtime.** Phase correlation cost depends only on frame resolution.
+  Feature detection cost depends on scene content (audience shots produce thousands
+  of keypoints; empty track produces nearly zero).
+- **Better sub-pixel accuracy.** The correlation peak is interpolated in frequency
+  domain, giving smooth sub-pixel shifts without the quantization noise of
+  keypoint localization.
+
+**Where this applies in the codebase:**
+
+- `camera_motion.py` -- all three estimators (`FixedZoomEstimator`,
+  `DiscreteZoomEstimator`, `ContinuousZoomEstimator`) use `cv2.phaseCorrelate`
+- `tools/diagnose_residual_motion.py` -- camera compensation for the motion
+  diagnostic uses the same phase-correlation motion estimates via `SceneTransform`
+- The legacy solver's Lucas-Kanade optical flow (`propagator.py`) is a sparse
+  feature tracker and is intentionally being replaced by the analytical path
+
+**Rule:** Do not introduce feature-detection-based camera motion estimation
+(SIFT, ORB, AKAZE, or similar) without first demonstrating it outperforms phase
+correlation on actual track video. The burden of proof is on the new method.
+
 ## Solver backends
 
 The tool supports two solver backends selected by `processing.solver_backend` in config:

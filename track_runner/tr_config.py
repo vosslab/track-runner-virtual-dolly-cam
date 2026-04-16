@@ -51,6 +51,8 @@ def _get_default_camera_config() -> dict:
 		"camera_height": "elevated",
 		"camera_position": "side",
 		"track_size": 400,
+		"venue_type": "outdoor",
+		"lighting": "daylight_sunny",
 	}
 
 #============================================

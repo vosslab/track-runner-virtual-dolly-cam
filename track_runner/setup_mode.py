@@ -124,26 +124,78 @@ def run_setup(config_path: str, config: dict) -> dict:
 
 	track_size = size_map[size_choice]
 
-	# 7. Store answers in config["camera"] section
+	# 7. Venue type selection (default inferred from track size)
+	print()
+	print("Venue type:")
+	print("  [1] Indoor")
+	print("  [2] Outdoor")
+	# infer default from track size
+	default_venue = "1" if track_size in (160, 200) else "2"
+	venue_choice = input(
+		f"Select venue type (1-2, default {default_venue}): "
+	).strip()
+	venue_choice = venue_choice or default_venue
+
+	venue_map = {
+		"1": "indoor",
+		"2": "outdoor",
+	}
+
+	if venue_choice not in venue_map:
+		print(f"  invalid choice: {venue_choice}, defaulting to outdoor")
+		venue_choice = "2"
+
+	venue_type = venue_map[venue_choice]
+
+	# 8. Lighting conditions (conditional on venue type)
+	if venue_type == "indoor":
+		# indoor always uses artificial lighting
+		lighting = "indoor_artificial"
+		print()
+		print(f"Lighting set to: {lighting}")
+	else:
+		print()
+		print("Lighting conditions:")
+		print("  [1] Daylight, sunny")
+		print("  [2] Daylight, overcast")
+		print("  [3] Stadium, night")
+		lighting_choice = input("Select lighting (1-3, default 1): ").strip()
+		lighting_choice = lighting_choice or "1"
+
+		lighting_map = {
+			"1": "daylight_sunny",
+			"2": "daylight_overcast",
+			"3": "stadium_night",
+		}
+
+		if lighting_choice not in lighting_map:
+			print(f"  invalid choice: {lighting_choice}, defaulting to sunny")
+			lighting_choice = "1"
+
+		lighting = lighting_map[lighting_choice]
+
+	# 9. Store answers in config["camera"] section
 	config.setdefault("camera", {})
 	config["camera"]["zoom_type"] = zoom_type
 	config["camera"]["zoom_levels"] = zoom_levels
 	config["camera"]["camera_height"] = camera_height
 	config["camera"]["camera_position"] = camera_position
 	config["camera"]["track_size"] = track_size
+	config["camera"]["venue_type"] = venue_type
+	config["camera"]["lighting"] = lighting
 
-	# Set motion estimator type for camera_motion precomputation
+	# 10. Set motion estimator type for camera_motion precomputation
 	config.setdefault("motion", {})
 	config.setdefault("motion", {}).setdefault("estimator", {})
 	config["motion"]["estimator"]["type"] = zoom_estimator
 
-	# 8. Write config to config_path
+	# 11. Write config to config_path
 	tr_config.write_config(config_path, config)
 
-	# 9. Print success message
+	# 12. Print success message
 	print()
 	print(f"Setup saved to {os.path.abspath(config_path)}")
 	print()
 
-	# 10. Return updated config
+	# 13. Return updated config
 	return config
