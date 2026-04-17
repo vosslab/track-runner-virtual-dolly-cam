@@ -1096,6 +1096,58 @@ def _prepare_usable_seed(seed: dict) -> dict:
 	return seed
 
 
+#============================================
+def filter_usable_seeds_sorted(seeds: list, verbose: bool = True) -> list:
+	"""Filter, sort, and deduplicate seeds to their interval-endpoint form.
+
+	This is the single source of truth for which seeds become interval
+	endpoints. `solve_all_intervals` and `cli._mode_refine` both call this
+	so they compute identical `state_io.interval_fingerprint` keys.
+
+	Args:
+		seeds: Raw seed list from the seeds file.
+		verbose: If True, print WARNING lines for duplicate frame_index.
+
+	Returns:
+		List of usable-seed dicts (post `_prepare_usable_seed`), sorted by
+		frame_index, deduplicated by frame_index (keeping the latest pass).
+		May be empty if fewer than 2 usable seeds remain.
+	"""
+	# accept visible/partial/approximate unconditionally; accept legacy
+	# obstructed only when a torso_box is present
+	usable_seeds = [
+		_prepare_usable_seed(s) for s in seeds
+		if s["status"] in ("visible", "partial", "approximate")
+		or (s["status"] == "obstructed" and s.get("torso_box") is not None)
+	]
+	if not usable_seeds:
+		return []
+	# sort by frame_index so consecutive pairs are adjacent
+	usable_sorted = sorted(usable_seeds, key=lambda s: int(s["frame_index"]))
+	# deduplicate: keep the seed from the latest pass when frames collide
+	seen_frames = {}
+	for seed in usable_sorted:
+		fi = int(seed["frame_index"])
+		if fi in seen_frames:
+			existing = seen_frames[fi]
+			if int(seed["pass"]) >= int(existing["pass"]):
+				if verbose:
+					print(f"  WARNING: duplicate seed at frame {fi}, "
+						f"keeping pass {seed['pass']} over pass {existing['pass']}")
+				seen_frames[fi] = seed
+			else:
+				if verbose:
+					print(f"  WARNING: duplicate seed at frame {fi}, "
+						f"keeping pass {existing['pass']} over pass {seed['pass']}")
+		else:
+			seen_frames[fi] = seed
+	if len(seen_frames) < len(usable_sorted):
+		dropped = len(usable_sorted) - len(seen_frames)
+		if verbose:
+			print(f"  deduplicated {dropped} seeds with duplicate frame_index values")
+		usable_sorted = sorted(seen_frames.values(), key=lambda s: int(s["frame_index"]))
+	return usable_sorted
+
 
 #============================================
 def solve_all_intervals(
@@ -1160,44 +1212,21 @@ def solve_all_intervals(
 		)
 		all_seeds_scene.append((frame_index, sx, sy, sw, sh))
 
-	# filter to usable seeds
-	usable_seeds = [
-		_prepare_usable_seed(s) for s in seeds
-		if s["status"] in ("visible", "partial", "approximate")
-		or (s["status"] == "obstructed" and s.get("torso_box") is not None)
-	]
-
-	if len(usable_seeds) < 2:
+	# filter, sort, and deduplicate seeds to interval-endpoint form.
+	# this MUST match cli._mode_refine's fingerprint computation so cached
+	# intervals are found on reuse.
+	usable_seeds_sorted = filter_usable_seeds_sorted(seeds)
+	if len(usable_seeds_sorted) < 2:
 		print("  interval_solver: need at least 2 usable seeds to solve intervals")
 		return {"intervals": [], "trajectory": []}
-
-	usable_seeds_sorted = sorted(usable_seeds, key=lambda s: int(s["frame_index"]))
 	total_intervals = len(usable_seeds_sorted) - 1
 	interval_results = []
 
-	# deduplicate seeds by frame_index
-	seen_frames = {}
-	for seed in usable_seeds_sorted:
-		fi = int(seed["frame_index"])
-		if fi in seen_frames:
-			existing = seen_frames[fi]
-			if int(seed["pass"]) >= int(existing["pass"]):
-				print(f"  WARNING: duplicate seed at frame {fi}, "
-					f"keeping pass {seed['pass']} over pass {existing['pass']}")
-				seen_frames[fi] = seed
-			else:
-				print(f"  WARNING: duplicate seed at frame {fi}, "
-					f"keeping pass {existing['pass']} over pass {seed['pass']}")
-		else:
-			seen_frames[fi] = seed
-	if len(seen_frames) < len(usable_seeds_sorted):
-		dropped = len(usable_seeds_sorted) - len(seen_frames)
-		print(f"  deduplicated {dropped} seeds with duplicate frame_index values")
-		usable_seeds_sorted = sorted(seen_frames.values(), key=lambda s: int(s["frame_index"]))
-		total_intervals = len(usable_seeds_sorted) - 1
-
 	print(f"  solving {total_intervals} intervals (analytical mode)...")
 	seq_frame_counter = [0]
+	# track cache reuse vs fresh solves for the post-loop summary
+	reused_count = 0
+	solved_count = 0
 	with rich.progress.Progress(
 		rich.progress.TextColumn("{task.description}"),
 		BlockBarColumn(),
@@ -1222,31 +1251,53 @@ def solve_all_intervals(
 			start_frame = int(seed_start["frame_index"])
 			end_frame = int(seed_end["frame_index"])
 
-			if debug:
-				progress.console.print(
-					f"  solving interval {pair_idx + 1}/{total_intervals} "
-					f"(frames {start_frame}-{end_frame})"
-				)
+			# compute fingerprint up front so we can check the cache before
+			# calling the analytical solver
+			fingerprint = state_io.interval_fingerprint(seed_start, seed_end)
 
-			result = solve_interval_analytical(
-				seed_start, seed_end, scene_transform,
-				all_seeds_scene, fps, debug=debug,
-				motion_track=motion_track,
-				all_seeds=seeds,
-			)
-			if on_interval_solved is not None:
-				fingerprint = state_io.interval_fingerprint(
-					seed_start, seed_end,
+			# cache hit: reuse prior result, skip solver and skip write-back
+			if prior_intervals is not None and fingerprint in prior_intervals:
+				result = prior_intervals[fingerprint]
+				reused_count += 1
+				if debug:
+					progress.console.print(
+						f"  reusing interval {pair_idx + 1}/{total_intervals} "
+						f"(frames {start_frame}-{end_frame}) from cache"
+					)
+			else:
+				if debug:
+					progress.console.print(
+						f"  solving interval {pair_idx + 1}/{total_intervals} "
+						f"(frames {start_frame}-{end_frame})"
+					)
+				result = solve_interval_analytical(
+					seed_start, seed_end, scene_transform,
+					all_seeds_scene, fps, debug=debug,
+					motion_track=motion_track,
+					all_seeds=seeds,
 				)
-				on_interval_solved(fingerprint, result)
+				solved_count += 1
+				if on_interval_solved is not None:
+					on_interval_solved(fingerprint, result)
+				if debug:
+					_print_interval_result_rich(result, fps, progress)
+
 			interval_results.append(result)
-			if debug:
-				_print_interval_result_rich(result, fps, progress)
 			if on_interval_complete is not None:
 				on_interval_complete(result)
 			n_frames = result["end_frame"] - result["start_frame"]
 			seq_frame_counter[0] += n_frames
 			progress.update(task, advance=1)
+
+	# post-loop summary: make cache behavior visible on stdout
+	print(f"  solver: reused {reused_count}, solved {solved_count} "
+		f"of {total_intervals}")
+	# visibility warning if we had a non-empty cache but matched nothing --
+	# likely a fingerprint drift from seed filter or rounding changes
+	if prior_intervals and reused_count == 0 and solved_count > 0:
+		print(f"  solver: WARNING 0 of {len(prior_intervals)} prior intervals "
+			f"reused -- possible fingerprint mismatch "
+			f"(check seed filter / rounding)")
 
 	if run_control is not None and run_control.quit_requested:
 		done = len([r for r in interval_results if r is not None])

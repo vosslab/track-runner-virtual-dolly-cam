@@ -1075,6 +1075,45 @@ def _mode_refine(
 		raise RuntimeError(
 			f"no solved intervals at {intervals_path}; run 'solve' first"
 		)
+
+	# fast-exit: if every current seed pair maps to a cached interval and
+	# the cache was written to completion, there is nothing to do. this
+	# avoids re-running motion-cue fusion, which alone takes ~2 hours on
+	# long videos. uses the same seed filter and fingerprint function as
+	# the solver, so the reuse keys match byte-for-byte.
+	intervals_file = state_io.load_intervals(intervals_path)
+	solved_intervals = intervals_file.get("solved_intervals", {})
+	solve_complete = intervals_file.get("solve_complete", False)
+	usable_sorted = interval_solver.filter_usable_seeds_sorted(
+		seeds, verbose=False,
+	)
+	expected_fingerprints = []
+	for pair_idx in range(len(usable_sorted) - 1):
+		fp = state_io.interval_fingerprint(
+			usable_sorted[pair_idx], usable_sorted[pair_idx + 1],
+		)
+		expected_fingerprints.append(fp)
+	total_expected = len(expected_fingerprints)
+	missing = [fp for fp in expected_fingerprints if fp not in solved_intervals]
+	need_solving = len(missing)
+	all_cached = (
+		solve_complete
+		and need_solving == 0
+		and len(solved_intervals) == total_expected
+	)
+	if all_cached:
+		print(f"  refine: all {total_expected} intervals already solved, "
+			f"nothing to do")
+		return
+	# otherwise fall through to the normal solve path, which will reuse
+	# cached intervals per-pair and only solve the missing ones
+	if need_solving == total_expected:
+		print(f"  refine: solving all {total_expected} intervals "
+			f"(no reusable cache entries)")
+	else:
+		print(f"  refine: {need_solving} of {total_expected} intervals "
+			f"need solving ({total_expected - need_solving} will be reused)")
+
 	num_workers = _resolve_workers(args)
 	_run_solve(
 		args, cfg, seeds, video_info,
