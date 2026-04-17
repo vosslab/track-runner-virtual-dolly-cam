@@ -127,9 +127,10 @@ _SHORT_INTERVAL_FRAMES = 10
 def classify_interval_severity(interval: dict, fps: float) -> str:
 	"""Classify an interval's weakness severity as high, medium, or low.
 
-	Uses interval_score from analytical or optical-flow solver. For analytical
-	mode, applies a three-band motion-cue gate. For optical-flow (legacy),
-	reconstructs from agreement and margin.
+	Uses interval_score from analytical or optical-flow solver. For
+	analytical mode, scores from agreement, confidence_tier, and
+	failure_reasons. For optical-flow (legacy), reconstructs from
+	agreement_score and margin.
 
 	Args:
 		interval: Interval dict with interval_score sub-dict, start_frame, end_frame.
@@ -145,37 +146,21 @@ def classify_interval_severity(interval: dict, fps: float) -> str:
 
 	# check if this is analytical mode (has confidence_tier) or optical-flow (has agreement_score)
 	if "confidence_tier" in score:
-		# analytical mode: three-band motion-cue gate
-		# hard-failure override: identity swap is always high.
-		# motion-cue fusion has no identity check, so it can never
-		# corroborate an identity failure.
+		# analytical mode: rule based on agreement + confidence_tier.
+		# identity swap always overrides to high, regardless of other
+		# signals.
 		failure_reasons = score.get("failure_reasons", [])
+		agreement = float(score.get("agreement", 0.0))
+		confidence_tier = score.get("confidence_tier", "low")
+
 		if "likely_identity_swap" in failure_reasons:
 			severity = "high"
+		elif agreement >= 0.40 and confidence_tier in ("good", "high"):
+			severity = "low"
+		elif agreement < 0.20 or confidence_tier == "low":
+			severity = "high"
 		else:
-			# three-band gate on motion-cue acceptance (primary
-			# prioritization signal)
-			motion_cue = float(score.get("motion_cue_acceptance", 0.0))
-			agreement = float(score.get("agreement", 0.0))
-			confidence_tier = score.get("confidence_tier", "low")
-
-			# strong corroboration: fusion accepted the majority of
-			# frames and FWD/BWD agreement is at least a weak sanity
-			# check. these intervals are working.
-			if motion_cue >= 0.70 and agreement >= 0.15:
-				severity = "low"
-			# moderate corroboration: fusion accepted a meaningful
-			# fraction of frames; severity is medium regardless of
-			# confidence.
-			elif motion_cue >= 0.40:
-				severity = "medium"
-			# below 40% acceptance: eligible for high, but ONLY when
-			# both confidence and agreement are catastrophic.
-			# asymmetric by design -- fair confidence is not enough.
-			elif confidence_tier == "low" and agreement < 0.30:
-				severity = "high"
-			else:
-				severity = "medium"
+			severity = "medium"
 
 	else:
 		# optical-flow mode (legacy): reconstruct from agreement and margin
@@ -215,20 +200,8 @@ def classify_interval_severity(interval: dict, fps: float) -> str:
 	return severity
 
 
-# lexicographic sort key for "worst interval first" ranking.
-# severity is the coarse filter; this key is the fine order
-# inside (or across) severity classes.
-#
-# 1. motion_cue_acceptance ascending (lower = tracker not
-#    following reality).
-# 2. agreement ascending (tiebreaker: FWD/BWD divergence).
-# 3. confidence_tier_rank ascending (final tiebreaker:
-#    low < fair < good < high).
-#
-# DO NOT add failure_reasons counts, occlusion_fraction,
-# velocity_consistency, or any weighted composite. Those
-# signals are already reflected in the severity classification
-# and in motion_cue_acceptance transitively.
+# Ascending sort: lower agreement sorts first, confidence tier
+# breaks ties.
 _CONFIDENCE_RANK = {"low": 0, "fair": 1, "good": 2, "high": 3}
 
 
@@ -236,24 +209,21 @@ _CONFIDENCE_RANK = {"low": 0, "fair": 1, "good": 2, "high": 3}
 def rank_key(interval: dict) -> tuple:
 	"""Lexicographic sort key for ordering intervals worst-first.
 
-	Sort ascending: the "worst" interval (lowest motion-cue
-	acceptance, lowest agreement, lowest confidence tier) sorts
-	first. Ties fall through in the order listed above.
+	Sort ascending: the interval with the lowest agreement sorts
+	first; confidence tier breaks ties (low < fair < good < high).
 
 	Args:
 		interval: Interval dict with 'interval_score' sub-dict
-			containing motion_cue_acceptance, agreement, and
-			confidence_tier.
+			containing agreement and confidence_tier.
 
 	Returns:
-		Tuple (motion, agreement, confidence_tier_rank) suitable
-		for passing to sorted(..., key=rank_key).
+		Tuple (agreement, confidence_tier_rank) suitable for
+		passing to sorted(..., key=rank_key).
 	"""
 	score = interval["interval_score"]
-	motion = float(score.get("motion_cue_acceptance", 0.0))
 	agreement = float(score.get("agreement", 0.0))
 	conf = score.get("confidence_tier", "low")
-	return (motion, agreement, _CONFIDENCE_RANK[conf])
+	return (agreement, _CONFIDENCE_RANK[conf])
 
 
 #============================================

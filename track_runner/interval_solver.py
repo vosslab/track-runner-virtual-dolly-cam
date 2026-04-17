@@ -22,7 +22,6 @@ import key_input
 import state_io
 import velocity_model
 import race_phases
-import residual_motion
 
 
 #============================================
@@ -1321,31 +1320,8 @@ def solve_all_intervals(
 
 	# stitch and finalize
 	trajectory = stitch_trajectories(interval_results)
-	# race phase detection runs BEFORE motion-cue fusion so the detected
-	# race start can gate motion-cue (pre-race frames have no valid motion
-	# signal). Operates on the stitched trajectory before any refinement.
+	# race_phase retained for diagnostics only; no downstream consumers
 	race_phase = race_phases.detect_race_start(trajectory, scene_transform, fps)
-	# only gate on strong detections; weak detections fall through and
-	# motion-cue runs on all frames as before.
-	gate_race_start = race_phase["race_start_frame"]
-	if race_phase["confidence"] < race_phases.GATE_MIN_CONFIDENCE:
-		gate_race_start = None
-	# per-frame motion-cue observation fusion (Hermite scaffold + blob center)
-	trajectory, per_interval_stats = residual_motion.refine_with_motion_cues(
-		trajectory, reader, scene_transform, seeds,
-		race_start_frame=gate_race_start,
-	)
-
-	# stamp motion_cue_acceptance into each interval_score
-	if len(per_interval_stats) != len(interval_results):
-		raise RuntimeError(
-			f"per_interval_stats length {len(per_interval_stats)} "
-			f"does not match interval_results length {len(interval_results)}"
-		)
-	for i, stats in enumerate(per_interval_stats):
-		interval_results[i]["interval_score"]["motion_cue_acceptance"] = float(
-			stats["acceptance_rate"]
-		)
 
 	trajectory = anchor_to_seeds(trajectory, seeds)
 	trajectory = _stamp_seed_confidence(trajectory, seeds)

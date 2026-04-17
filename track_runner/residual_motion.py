@@ -987,7 +987,7 @@ def refine_with_motion_cues(
 		f"{total_intervals} intervals, "
 		f"window={2 * half_window + 1} frames "
 		f"(global, not scoped)")
-	print(f"  starting interval 1/{total_intervals} "
+	print(f"  fusion: starting interval 1/{total_intervals} "
 		f"(frames {interval_start}-{interval_end})")
 	progress = rich.progress.Progress(
 		rich.progress.TextColumn("  motion-cue fusion"),
@@ -1010,7 +1010,7 @@ def refine_with_motion_cues(
 				if iv_processed > 0:
 					iv_rate = iv_accepted / iv_processed
 					progress.console.print(
-						f"  interval {current_interval_idx + 1}/{total_intervals} "
+						f"  fusion: interval {current_interval_idx + 1}/{total_intervals} "
 						f"(frames {interval_start}-{interval_end}): "
 						f"{iv_accepted}/{iv_processed} accepted ({iv_rate:.0%})"
 					)
@@ -1038,7 +1038,7 @@ def refine_with_motion_cues(
 					interval_end = last_valid
 				# announce start of new interval
 				progress.console.print(
-					f"  starting interval {current_interval_idx + 1}/{total_intervals} "
+					f"  fusion: starting interval {current_interval_idx + 1}/{total_intervals} "
 					f"(frames {interval_start}-{interval_end})"
 				)
 
@@ -1111,7 +1111,7 @@ def refine_with_motion_cues(
 	# print final interval summary and append final interval stats
 	if iv_processed > 0:
 		iv_rate = iv_accepted / iv_processed
-		print(f"  interval {current_interval_idx + 1}/{total_intervals} "
+		print(f"  fusion: interval {current_interval_idx + 1}/{total_intervals} "
 			f"(frames {interval_start}-{interval_end}): "
 			f"{iv_accepted}/{iv_processed} accepted ({iv_rate:.0%})")
 		# append stats for final interval
