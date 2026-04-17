@@ -1298,6 +1298,16 @@ def solve_all_intervals(
 		print(f"  solver: WARNING 0 of {len(prior_intervals)} prior intervals "
 			f"reused -- possible fingerprint mismatch "
 			f"(check seed filter / rounding)")
+	# refine-mode invariant: every pair iteration must land in exactly one
+	# branch (reuse or solve). guarded on the quit path because an
+	# interrupted loop legitimately has reused_count + solved_count <
+	# total_intervals.
+	if run_control is None or not run_control.quit_requested:
+		assert reused_count + solved_count == total_intervals, (
+			f"reuse/solve accounting drifted: "
+			f"reused={reused_count} solved={solved_count} "
+			f"total={total_intervals}"
+		)
 
 	if run_control is not None and run_control.quit_requested:
 		done = len([r for r in interval_results if r is not None])
@@ -1321,10 +1331,22 @@ def solve_all_intervals(
 	if race_phase["confidence"] < race_phases.GATE_MIN_CONFIDENCE:
 		gate_race_start = None
 	# per-frame motion-cue observation fusion (Hermite scaffold + blob center)
-	trajectory = residual_motion.refine_with_motion_cues(
+	trajectory, per_interval_stats = residual_motion.refine_with_motion_cues(
 		trajectory, reader, scene_transform, seeds,
 		race_start_frame=gate_race_start,
 	)
+
+	# stamp motion_cue_acceptance into each interval_score
+	if len(per_interval_stats) != len(interval_results):
+		raise RuntimeError(
+			f"per_interval_stats length {len(per_interval_stats)} "
+			f"does not match interval_results length {len(interval_results)}"
+		)
+	for i, stats in enumerate(per_interval_stats):
+		interval_results[i]["interval_score"]["motion_cue_acceptance"] = float(
+			stats["acceptance_rate"]
+		)
+
 	trajectory = anchor_to_seeds(trajectory, seeds)
 	trajectory = _stamp_seed_confidence(trajectory, seeds)
 	trajectory = _apply_trajectory_erasure(trajectory, seeds, fps)

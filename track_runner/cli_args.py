@@ -39,6 +39,19 @@ def _add_severity_arg(parser: argparse.ArgumentParser, help_text: str) -> None:
 
 
 #============================================
+def _add_top_arg(parser: argparse.ArgumentParser) -> None:
+	"""Register -t/--top on a subparser.
+
+	Args:
+		parser: Subparser to add the argument to.
+	"""
+	parser.add_argument(
+		"-t", "--top", dest="top_n", type=int, default=None,
+		help="limit output to the worst N intervals (sorted worst-first by rank_key).",
+	)
+
+
+#============================================
 def _add_encode_args(parser: argparse.ArgumentParser) -> None:
 	"""Register encoding-related arguments on a subparser.
 
@@ -134,6 +147,7 @@ def parse_args() -> argparse.Namespace:
 		"target", help="Add seeds at weak interval frames with FWD/BWD overlays.",
 	)
 	_add_severity_arg(target_parser, "Minimum severity of weak intervals to target.")
+	_add_top_arg(target_parser)
 	_add_seed_interval_arg(target_parser)
 	base_controller_module.BaseAnnotationController.add_argparse_args(target_parser)
 
@@ -172,4 +186,10 @@ def parse_args() -> argparse.Namespace:
 	if args.mode is None:
 		parser.print_help()
 		raise SystemExit(0)
+
+	# validate --top flag
+	top_n = getattr(args, "top_n", None)
+	if top_n is not None and top_n < 1:
+		parser.error("--top must be a positive integer")
+
 	return args

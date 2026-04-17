@@ -264,7 +264,7 @@ def _print_quality_summary(diagnostics: dict, fps: float) -> None:
 	# count by confidence tier
 	from collections import Counter
 	tier_counts = Counter(
-		iv["interval_score"].get("confidence", "low")
+		review.get_confidence_label(iv["interval_score"])
 		for iv in intervals
 	)
 	need_seed = tier_counts.get("low", 0) + tier_counts.get("fair", 0)
@@ -284,7 +284,7 @@ def _print_quality_summary(diagnostics: dict, fps: float) -> None:
 		low_count = 0
 		for iv in intervals:
 			score = iv["interval_score"]
-			if score.get("confidence", "low") in ("high", "good"):
+			if review.get_confidence_label(score) in ("high", "good"):
 				continue
 			sev = review.classify_interval_severity(iv, fps)
 			if sev == "high":
@@ -837,7 +837,7 @@ def _mode_edit(
 		weak_frames = set()
 		for iv in intervals:
 			score = iv["interval_score"]
-			confidence = score.get("confidence", "low")
+			confidence = review.get_confidence_label(score)
 			if confidence in ("high", "good"):
 				continue
 			sev = review.classify_interval_severity(iv, fps)
@@ -933,19 +933,67 @@ def _mode_target(
 	# generate refinement targets with optional severity filter
 	severity = getattr(args, "severity", None)
 	seed_interval = getattr(args, "seed_interval", 10.0)
+	top_n = getattr(args, "top_n", None)
+
+	# generate target frames
 	target_frames = review.generate_refinement_targets(
 		diag_data,
 		mode="suggested",
 		seed_interval=int(seed_interval * fps),
 		severity=severity,
 	)
+
+	# apply --top slicing if requested
+	if top_n is not None:
+		# extract intervals and filter by severity to match generate_refinement_targets logic
+		intervals = diag_data.get("intervals", [])
+		filtered_intervals = []
+		if severity is not None:
+			# only include intervals matching severity threshold
+			min_rank = review._SEVERITY_RANK.get(severity, 0)
+			for iv in intervals:
+				score = iv["interval_score"]
+				if review.get_confidence_label(score) in ("high", "good"):
+					continue
+				iv_severity = review.classify_interval_severity(iv, fps)
+				if review._SEVERITY_RANK.get(iv_severity, 0) >= min_rank:
+					filtered_intervals.append(iv)
+		else:
+			# no severity filter: include all intervals
+			for iv in intervals:
+				score = iv["interval_score"]
+				if review.get_confidence_label(score) not in ("high", "good"):
+					filtered_intervals.append(iv)
+
+		# sort worst-first and slice
+		filtered_intervals.sort(key=review.rank_key)
+		filtered_intervals = filtered_intervals[:top_n]
+
+		# re-generate target frames from the top-N intervals only
+		if filtered_intervals:
+			# build a minimal diagnostics dict with just the top intervals
+			top_diag = dict(diag_data)
+			top_diag["intervals"] = filtered_intervals
+			target_frames = review.generate_refinement_targets(
+				top_diag,
+				mode="suggested",
+				seed_interval=int(seed_interval * fps),
+				severity=severity,
+			)
+		else:
+			target_frames = []
+
+		if len(filtered_intervals) < top_n:
+			print(f"  hint: only {len(filtered_intervals)} intervals matched (--top={top_n} requested)")
+
 	if not target_frames:
 		sev_label = f" at {severity}+ severity" if severity else ""
 		print(f"  no weak intervals found{sev_label}")
 		return
 
 	sev_label = f" ({severity}+ severity)" if severity else ""
-	print(f"  {len(target_frames)} target frames from weak intervals{sev_label}")
+	top_label = f" (top {top_n})" if top_n is not None else ""
+	print(f"  {len(target_frames)} target frames from weak intervals{sev_label}{top_label}")
 
 	# build FWD/BWD predictions from diagnostics
 	predictions = _build_predictions_from_diagnostics(diag_data)
@@ -1076,43 +1124,65 @@ def _mode_refine(
 			f"no solved intervals at {intervals_path}; run 'solve' first"
 		)
 
-	# fast-exit: if every current seed pair maps to a cached interval and
-	# the cache was written to completion, there is nothing to do. this
-	# avoids re-running motion-cue fusion, which alone takes ~2 hours on
-	# long videos. uses the same seed filter and fingerprint function as
-	# the solver, so the reuse keys match byte-for-byte.
+	# refine-mode contract (see plan):
+	#  1. unchanged seeds -> no computation, no write.
+	#  2. add one seed -> solve exactly 2 intervals.
+	#  3. remove one seed -> solve exactly 1 interval.
+	# cache validity is set membership of fingerprints, not cardinality,
+	# and not the legacy global solve_complete flag. the same seed filter
+	# and fingerprint function used here is used inside solve_all_intervals,
+	# so reuse keys match byte-for-byte.
 	intervals_file = state_io.load_intervals(intervals_path)
 	solved_intervals = intervals_file.get("solved_intervals", {})
-	solve_complete = intervals_file.get("solve_complete", False)
 	usable_sorted = interval_solver.filter_usable_seeds_sorted(
 		seeds, verbose=False,
 	)
+	# compute the current expected fingerprint list from the live seeds
 	expected_fingerprints = []
 	for pair_idx in range(len(usable_sorted) - 1):
 		fp = state_io.interval_fingerprint(
 			usable_sorted[pair_idx], usable_sorted[pair_idx + 1],
 		)
 		expected_fingerprints.append(fp)
+	expected_set = set(expected_fingerprints)
 	total_expected = len(expected_fingerprints)
-	missing = [fp for fp in expected_fingerprints if fp not in solved_intervals]
-	need_solving = len(missing)
-	all_cached = (
-		solve_complete
-		and need_solving == 0
-		and len(solved_intervals) == total_expected
-	)
-	if all_cached:
+	# correctness signal: every current fingerprint present in the cache
+	all_present = expected_set.issubset(solved_intervals.keys())
+
+	# fast-exit (no write). enforces contract rule 1: unchanged seeds
+	# produce no computation AND no disk write.
+	if all_present:
+		# solve_complete is advisory, not a correctness gate. if membership
+		# is complete but the legacy completion flag is false, surface the
+		# discrepancy but trust the cache.
+		if intervals_file.get("solve_complete") is False:
+			print("  warning: solve_complete=false on disk, "
+				"cache membership complete; trusting cache")
 		print(f"  refine: all {total_expected} intervals already solved, "
 			f"nothing to do")
 		return
-	# otherwise fall through to the normal solve path, which will reuse
-	# cached intervals per-pair and only solve the missing ones
-	if need_solving == total_expected:
-		print(f"  refine: solving all {total_expected} intervals "
-			f"(no reusable cache entries)")
-	else:
-		print(f"  refine: {need_solving} of {total_expected} intervals "
-			f"need solving ({total_expected - need_solving} will be reused)")
+
+	# fall-through path: work is needed, so writes become allowed. prune
+	# orphan fingerprints (those that no longer correspond to any current
+	# seed pair) so the cache does not accumulate dead entries.
+	before = len(solved_intervals)
+	solved_intervals = {
+		fp: v for fp, v in solved_intervals.items() if fp in expected_set
+	}
+	intervals_file["solved_intervals"] = solved_intervals
+	# post-prune invariant: no orphan can leak past the comprehension
+	assert set(solved_intervals.keys()).issubset(expected_set), (
+		"orphan leaked past prune"
+	)
+	pruned_count = before - len(solved_intervals)
+	if pruned_count > 0:
+		state_io.write_intervals(intervals_path, intervals_file)
+		print(f"  cache: pruned {pruned_count} stale intervals "
+			f"({before} -> {len(solved_intervals)})")
+
+	need_solving = total_expected - len(solved_intervals)
+	print(f"  refine: {need_solving} of {total_expected} intervals "
+		f"need solving ({len(solved_intervals)} will be reused)")
 
 	num_workers = _resolve_workers(args)
 	_run_solve(

@@ -414,7 +414,6 @@ def write_solver_diagnostics(
 					float(score.get("occlusion_fraction", 0.0)), 4,
 				),
 				"confidence_tier": score.get("confidence_tier", "low"),
-				"severity": score.get("severity", "high"),
 				"failure_reasons": score.get("failure_reasons", []),
 				"warning_flags": score.get("warning_flags", []),
 			}

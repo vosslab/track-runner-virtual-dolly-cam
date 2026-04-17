@@ -616,18 +616,6 @@ def score_interval_analytical(
 	if len(support_seeds_left) + len(support_seeds_right) < 2:
 		failure_reasons.append("sparse_support")
 
-	# severity
-	if confidence_tier == "low" or failure_reasons:
-		severity = "high"
-	elif confidence_tier == "fair":
-		severity = "medium"
-	else:
-		severity = "low"
-
-	# short-interval demotion: intervals < 10 frames demote high -> medium
-	if interval_len < 10 and severity == "high":
-		severity = "medium"
-
 	# warning flags
 	warning_flags = []
 	if occlusion_fraction > 0.0:
@@ -644,7 +632,6 @@ def score_interval_analytical(
 		"motion_quality": motion_quality,
 		"occlusion_fraction": occlusion_fraction,
 		"confidence_tier": confidence_tier,
-		"severity": severity,
 		"failure_reasons": failure_reasons,
 		"warning_flags": warning_flags,
 	}

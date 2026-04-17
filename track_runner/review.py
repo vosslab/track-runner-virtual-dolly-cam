@@ -36,7 +36,7 @@ _REASON_EXPLANATIONS = {
 
 
 #============================================
-def _get_confidence(score: dict) -> str:
+def get_confidence_label(score: dict) -> str:
 	"""Extract confidence label from v2 or v3 interval score.
 
 	Args:
@@ -128,7 +128,7 @@ def classify_interval_severity(interval: dict, fps: float) -> str:
 	"""Classify an interval's weakness severity as high, medium, or low.
 
 	Uses interval_score from analytical or optical-flow solver. For analytical
-	mode, reads confidence_tier and severity directly. For optical-flow (legacy),
+	mode, applies a three-band motion-cue gate. For optical-flow (legacy),
 	reconstructs from agreement and margin.
 
 	Args:
@@ -139,37 +139,65 @@ def classify_interval_severity(interval: dict, fps: float) -> str:
 		"high", "medium", or "low" severity string.
 	"""
 	score = interval["interval_score"]
-
-	# check if this is analytical mode (has confidence_tier) or optical-flow (has agreement_score)
-	if "confidence_tier" in score:
-		# analytical mode: use severity field directly
-		return score.get("severity", "low")
-
-	# optical-flow mode (legacy): reconstruct from agreement and margin
-	agreement = float(score.get("agreement_score", 0.0))
-	margin = float(score.get("competitor_margin", 0.0))
-	failure_reasons = score.get("failure_reasons", [])
-
-	# score-based classification
-	# agreement < 0.2 means FWD/BWD strongly disagree -- high severity
-	# agreement ~0.5 is already pretty good alignment
-	if agreement < 0.2 or "likely_identity_swap" in failure_reasons:
-		severity = "high"
-	elif margin < 0.2 and agreement < 0.4:
-		# low margin combined with poor agreement -- high severity
-		severity = "high"
-	elif agreement < 0.4:
-		severity = "medium"
-	elif margin < 0.2:
-		# low margin but decent agreement (nearby competitor, tracking correct)
-		severity = "medium"
-	else:
-		severity = "low"
-
-	# extract frame range (needed by both demotion and promotion)
 	start_frame = int(interval["start_frame"])
 	end_frame = int(interval["end_frame"])
 	interval_frames = end_frame - start_frame
+
+	# check if this is analytical mode (has confidence_tier) or optical-flow (has agreement_score)
+	if "confidence_tier" in score:
+		# analytical mode: three-band motion-cue gate
+		# hard-failure override: identity swap is always high.
+		# motion-cue fusion has no identity check, so it can never
+		# corroborate an identity failure.
+		failure_reasons = score.get("failure_reasons", [])
+		if "likely_identity_swap" in failure_reasons:
+			severity = "high"
+		else:
+			# three-band gate on motion-cue acceptance (primary
+			# prioritization signal)
+			motion_cue = float(score.get("motion_cue_acceptance", 0.0))
+			agreement = float(score.get("agreement", 0.0))
+			confidence_tier = score.get("confidence_tier", "low")
+
+			# strong corroboration: fusion accepted the majority of
+			# frames and FWD/BWD agreement is at least a weak sanity
+			# check. these intervals are working.
+			if motion_cue >= 0.70 and agreement >= 0.15:
+				severity = "low"
+			# moderate corroboration: fusion accepted a meaningful
+			# fraction of frames; severity is medium regardless of
+			# confidence.
+			elif motion_cue >= 0.40:
+				severity = "medium"
+			# below 40% acceptance: eligible for high, but ONLY when
+			# both confidence and agreement are catastrophic.
+			# asymmetric by design -- fair confidence is not enough.
+			elif confidence_tier == "low" and agreement < 0.30:
+				severity = "high"
+			else:
+				severity = "medium"
+
+	else:
+		# optical-flow mode (legacy): reconstruct from agreement and margin
+		agreement = float(score.get("agreement_score", 0.0))
+		margin = float(score.get("competitor_margin", 0.0))
+		failure_reasons = score.get("failure_reasons", [])
+
+		# score-based classification
+		# agreement < 0.2 means FWD/BWD strongly disagree -- high severity
+		# agreement ~0.5 is already pretty good alignment
+		if agreement < 0.2 or "likely_identity_swap" in failure_reasons:
+			severity = "high"
+		elif margin < 0.2 and agreement < 0.4:
+			# low margin combined with poor agreement -- high severity
+			severity = "high"
+		elif agreement < 0.4:
+			severity = "medium"
+		elif margin < 0.2:
+			# low margin but decent agreement (nearby competitor, tracking correct)
+			severity = "medium"
+		else:
+			severity = "low"
 
 	# short-interval demotion: intervals under 10 frames are noisy,
 	# demote high -> medium unconditionally
@@ -185,6 +213,47 @@ def classify_interval_severity(interval: dict, fps: float) -> str:
 			severity = "high"
 
 	return severity
+
+
+# lexicographic sort key for "worst interval first" ranking.
+# severity is the coarse filter; this key is the fine order
+# inside (or across) severity classes.
+#
+# 1. motion_cue_acceptance ascending (lower = tracker not
+#    following reality).
+# 2. agreement ascending (tiebreaker: FWD/BWD divergence).
+# 3. confidence_tier_rank ascending (final tiebreaker:
+#    low < fair < good < high).
+#
+# DO NOT add failure_reasons counts, occlusion_fraction,
+# velocity_consistency, or any weighted composite. Those
+# signals are already reflected in the severity classification
+# and in motion_cue_acceptance transitively.
+_CONFIDENCE_RANK = {"low": 0, "fair": 1, "good": 2, "high": 3}
+
+
+#============================================
+def rank_key(interval: dict) -> tuple:
+	"""Lexicographic sort key for ordering intervals worst-first.
+
+	Sort ascending: the "worst" interval (lowest motion-cue
+	acceptance, lowest agreement, lowest confidence tier) sorts
+	first. Ties fall through in the order listed above.
+
+	Args:
+		interval: Interval dict with 'interval_score' sub-dict
+			containing motion_cue_acceptance, agreement, and
+			confidence_tier.
+
+	Returns:
+		Tuple (motion, agreement, confidence_tier_rank) suitable
+		for passing to sorted(..., key=rank_key).
+	"""
+	score = interval["interval_score"]
+	motion = float(score.get("motion_cue_acceptance", 0.0))
+	agreement = float(score.get("agreement", 0.0))
+	conf = score.get("confidence_tier", "low")
+	return (motion, agreement, _CONFIDENCE_RANK[conf])
 
 
 #============================================
@@ -241,7 +310,7 @@ def identify_weak_spans(diagnostics: dict) -> list:
 		start_frame = int(interval["start_frame"])
 		end_frame = int(interval["end_frame"])
 		score = interval["interval_score"]
-		confidence = _get_confidence(score)
+		confidence = get_confidence_label(score)
 		failure_reasons = list(score.get("failure_reasons", []))
 
 		# check for occlusion frames in the fused track
@@ -378,7 +447,7 @@ def generate_refinement_targets(
 	if severity is not None:
 		for idx, iv in enumerate(intervals):
 			score = iv["interval_score"]
-			if _get_confidence(score) in ("high", "good"):
+			if get_confidence_label(score) in ("high", "good"):
 				continue
 			iv_severity = classify_interval_severity(iv, fps)
 			if _SEVERITY_RANK.get(iv_severity, 0) < min_rank:
@@ -615,7 +684,7 @@ def format_review_summary(diagnostics: dict) -> str:
 	# count intervals by confidence tier
 	from collections import Counter
 	tier_counts = Counter(
-		_get_confidence(iv["interval_score"])
+		get_confidence_label(iv["interval_score"])
 		for iv in intervals
 	)
 	need_seed = tier_counts.get("low", 0) + tier_counts.get("fair", 0)
@@ -637,7 +706,7 @@ def format_review_summary(diagnostics: dict) -> str:
 		end_frame = int(iv["end_frame"])
 		duration_s = (end_frame - start_frame) / max(1.0, fps)
 		score = iv["interval_score"]
-		confidence = _get_confidence(score)
+		confidence = get_confidence_label(score)
 		reasons = score.get("failure_reasons", [])
 
 		# format verdict label
@@ -711,7 +780,7 @@ def needs_refinement(diagnostics: dict) -> bool:
 	intervals = diagnostics.get("intervals", [])
 	for iv in intervals:
 		score = iv["interval_score"]
-		confidence = _get_confidence(score)
+		confidence = get_confidence_label(score)
 		if confidence in ("low", "fair"):
 			return True
 	return False
