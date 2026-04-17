@@ -631,8 +631,9 @@ def _run_solve(
 		)
 	motion_track_data = motion_track
 	scene_transform = scene_coords.SceneTransform(motion_track)
-	# Analytical solver uses single-threaded execution
-	solve_kwargs["num_workers"] = 1
+	# pass the video path through so workers can reopen it in their own
+	# process; VideoReader instances cannot cross the process boundary.
+	solve_kwargs["video_path"] = args.input_file
 
 	# set up keyboard controls and signal handler
 	rc = key_input.RunControl()

@@ -115,6 +115,16 @@ Four distinct jobs, four distinct systems:
 These systems communicate through well-defined interfaces (trajectory arrays,
 crop rectangles, seed JSON) rather than sharing internal state.
 
+Within the tracker, the interval-solve execution layer splits along the same
+line. The solver driver in `interval_solver.solve_all_intervals` owns all I/O
+and control: cache lookup, dispatch, result aggregation, progress rendering,
+disk persistence, and keyboard quit/pause polling. Worker processes in
+`solver_workers` own the compute: each worker opens its own `VideoReader`,
+receives the run-invariant state (`scene_transform`, `motion_track`, seed
+lists) once via the pool initializer, and returns pure interval results. No
+worker writes to stdout or to disk, and no file handle crosses the process
+boundary.
+
 ## Annotation UI principles
 
 ### Fast-pick first

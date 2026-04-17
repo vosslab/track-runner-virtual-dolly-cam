@@ -8,6 +8,7 @@ stitches results into a full trajectory.
 # Standard Library
 import math
 import time
+import concurrent.futures
 
 # PIP3 modules
 import numpy
@@ -1288,6 +1289,7 @@ def solve_all_intervals(
 	key_reader: object = None,
 	scene_transform: object = None,
 	motion_track: object = None,
+	video_path: str = None,
 ) -> dict:
 	"""Solve all seed-to-seed intervals and stitch into a full trajectory.
 
@@ -1302,7 +1304,12 @@ def solve_all_intervals(
 			cx, cy, w, h, frame_index keys. Non-visible seeds are skipped.
 		detector: Person detector with a detect(frame) method (currently unused).
 		config: Project configuration dict (currently unused; reserved).
-		num_workers: Number of parallel workers for solving (currently unused).
+		num_workers: Number of parallel solver workers. 1 runs in-process.
+			>= 2 opens a ProcessPoolExecutor and dispatches cache-miss
+			intervals across workers; completions are aggregated into
+			seed order by the main process.
+		video_path: Path to the input video. Required when num_workers >= 2
+			so each worker can open its own VideoReader.
 		debug: If True, show per-frame debug output and progress bars.
 		on_interval_complete: Optional callback called with each interval result
 			dict as intervals finish. Used for interactive seed requesting.
@@ -1344,53 +1351,90 @@ def solve_all_intervals(
 		print("  interval_solver: need at least 2 usable seeds to solve intervals")
 		return {"intervals": [], "trajectory": []}
 	total_intervals = len(usable_seeds_sorted) - 1
-	interval_results = []
 
 	print(f"  solving {total_intervals} intervals (analytical mode)...")
 	seq_frame_counter = [0]
 	# track cache reuse vs fresh solves for the post-loop summary
 	reused_count = 0
 	solved_count = 0
+
+	# pre-allocate the results list and fingerprints so workers can fill
+	# by index while the main process preserves seed order.
+	interval_results = [None] * total_intervals
+	fingerprints = [None] * total_intervals
+	pending_pair_indices = []
+	for pair_idx in range(total_intervals):
+		seed_start = usable_seeds_sorted[pair_idx]
+		seed_end = usable_seeds_sorted[pair_idx + 1]
+		fingerprint = compute_interval_fingerprint(seed_start, seed_end)
+		fingerprints[pair_idx] = fingerprint
+		if prior_intervals is not None and fingerprint in prior_intervals:
+			cached = prior_intervals[fingerprint]
+			interval_results[pair_idx] = cached
+			reused_count += 1
+			# on_interval_complete must fire for cache hits too; the old
+			# serial loop called it uniformly after every append.
+			if on_interval_complete is not None:
+				on_interval_complete(cached)
+		else:
+			pending_pair_indices.append(pair_idx)
+
+	# decide execution mode. In-process when the user asked for one
+	# worker, or when there is very little work to amortize pool setup
+	# cost (spawn + imports + initializer payload copy).
+	use_pool = num_workers >= 2 and len(pending_pair_indices) >= 4
+
 	with rich.progress.Progress(
 		rich.progress.TextColumn("{task.description}"),
 		BlockBarColumn(),
+		rich.progress.MofNCompleteColumn(),
 		rich.progress.TaskProgressColumn(),
+		rich.progress.TimeElapsedColumn(),
 		rich.progress.TimeRemainingColumn(),
-		refresh_per_second=1,
+		refresh_per_second=2,
 	) as progress:
 		task = progress.add_task(
 			"  solving intervals", total=total_intervals,
 		)
-		for pair_idx in range(total_intervals):
-			if run_control is not None and run_control.quit_requested:
-				break
-			if key_reader is not None and run_control is not None:
-				ch = key_reader.poll()
-				key_input.handle_key(ch, run_control, key_reader, progress)
-			if run_control is not None and run_control.quit_requested:
-				break
+		# advance the bar for cache reuses up front so the visible
+		# progress reflects work already done before the solve loop.
+		if reused_count > 0:
+			progress.update(task, advance=reused_count)
 
-			seed_start = usable_seeds_sorted[pair_idx]
-			seed_end = usable_seeds_sorted[pair_idx + 1]
-			start_frame = int(seed_start["frame_index"])
-			end_frame = int(seed_end["frame_index"])
+		# main-process result-accept closure used by both execution paths.
+		def _accept(pair_idx: int, fingerprint: str, result: dict) -> None:
+			interval_results[pair_idx] = result
+			if on_interval_solved is not None:
+				on_interval_solved(fingerprint, result)
+			if debug:
+				_print_interval_result_rich(result, fps, progress)
+			# on_interval_complete is called here in completion order,
+			# not seed order. Consumers (interactive seed requesting)
+			# that need seed order should read from interval_results
+			# after the call returns.
+			if on_interval_complete is not None:
+				on_interval_complete(result)
+			n_frames = result["end_frame"] - result["start_frame"]
+			seq_frame_counter[0] += n_frames
+			progress.update(task, advance=1)
 
-			# compute fingerprint up front so we can check the cache before
-			# calling the analytical solver. includes SOLVER_FINGERPRINT_TAG
-			# so a solver upgrade triggers one full re-solve and subsequent
-			# refines fast-exit again.
-			fingerprint = compute_interval_fingerprint(seed_start, seed_end)
-
-			# cache hit: reuse prior result, skip solver and skip write-back
-			if prior_intervals is not None and fingerprint in prior_intervals:
-				result = prior_intervals[fingerprint]
-				reused_count += 1
-				if debug:
-					progress.console.print(
-						f"  reusing interval {pair_idx + 1}/{total_intervals} "
-						f"(frames {start_frame}-{end_frame}) from cache"
-					)
-			else:
+		if not use_pool:
+			# in-process path: identical to the pre-parallel loop. Used
+			# for num_workers == 1, for tiny runs, and for 100% cache-hit
+			# refines (pending_pair_indices is empty, so the loop is a
+			# no-op and we fall straight through to stitch).
+			for pair_idx in pending_pair_indices:
+				if run_control is not None and run_control.quit_requested:
+					break
+				if key_reader is not None and run_control is not None:
+					ch = key_reader.poll()
+					key_input.handle_key(ch, run_control, key_reader, progress)
+				if run_control is not None and run_control.quit_requested:
+					break
+				seed_start = usable_seeds_sorted[pair_idx]
+				seed_end = usable_seeds_sorted[pair_idx + 1]
+				start_frame = int(seed_start["frame_index"])
+				end_frame = int(seed_end["frame_index"])
 				if debug:
 					progress.console.print(
 						f"  solving interval {pair_idx + 1}/{total_intervals} "
@@ -1404,17 +1448,68 @@ def solve_all_intervals(
 					reader=reader,
 				)
 				solved_count += 1
-				if on_interval_solved is not None:
-					on_interval_solved(fingerprint, result)
-				if debug:
-					_print_interval_result_rich(result, fps, progress)
+				_accept(pair_idx, fingerprints[pair_idx], result)
+		else:
+			# pool path: dispatch cache-miss intervals to workers, poll
+			# the key reader between completions, aggregate results by
+			# pair_idx (completion order != seed order).
+			import solver_workers
+			print(f"  pool: dispatching {len(pending_pair_indices)} "
+				f"intervals across {num_workers} workers")
+			with solver_workers.make_pool(
+				num_workers=num_workers,
+				video_path=video_path,
+				scene_transform=scene_transform,
+				motion_track=motion_track,
+				all_seeds_scene=all_seeds_scene,
+				all_seeds=seeds,
+				fps=fps,
+				debug=debug,
+			) as pool:
+				future_to_idx = {}
+				for pair_idx in pending_pair_indices:
+					seed_start = usable_seeds_sorted[pair_idx]
+					seed_end = usable_seeds_sorted[pair_idx + 1]
+					fut = pool.submit(
+						solver_workers._solve_interval_worker,
+						(pair_idx, seed_start, seed_end),
+					)
+					future_to_idx[fut] = pair_idx
 
-			interval_results.append(result)
-			if on_interval_complete is not None:
-				on_interval_complete(result)
-			n_frames = result["end_frame"] - result["start_frame"]
-			seq_frame_counter[0] += n_frames
-			progress.update(task, advance=1)
+				pending_futures = set(future_to_idx.keys())
+				while pending_futures:
+					if run_control is not None and run_control.quit_requested:
+						break
+					if key_reader is not None and run_control is not None:
+						ch = key_reader.poll()
+						key_input.handle_key(
+							ch, run_control, key_reader, progress,
+						)
+					if run_control is not None and run_control.quit_requested:
+						break
+					# short wait lets us poll the key reader at ~4Hz
+					done, pending_futures = concurrent.futures.wait(
+						pending_futures,
+						timeout=0.25,
+						return_when=concurrent.futures.FIRST_COMPLETED,
+					)
+					for fut in done:
+						pair_idx, fingerprint, result = fut.result()
+						solved_count += 1
+						_accept(pair_idx, fingerprint, result)
+
+				# on quit, cancel anything not yet running and drain
+				# in-flight work so the main process still sees
+				# completions (and on_interval_solved fires).
+				if run_control is not None and run_control.quit_requested:
+					for fut in list(pending_futures):
+						fut.cancel()
+					for fut in concurrent.futures.as_completed(pending_futures):
+						if fut.cancelled():
+							continue
+						pair_idx, fingerprint, result = fut.result()
+						solved_count += 1
+						_accept(pair_idx, fingerprint, result)
 
 	# post-loop summary: make cache behavior visible on stdout
 	print(f"  solver: reused {reused_count}, solved {solved_count} "
@@ -1445,6 +1540,11 @@ def solve_all_intervals(
 		)
 		print(f"  quit requested: {done}/{total_intervals} intervals completed")
 		print("  hint: re-run 'solve' to resume")
+
+	# drop any None holes left by a quit so stitch gets only real results.
+	# in the normal-completion path the accounting assertion above already
+	# proved there are no holes; this is for the interrupted path.
+	interval_results = [r for r in interval_results if r is not None]
 
 	# stitch and finalize
 	trajectory = stitch_trajectories(interval_results)
