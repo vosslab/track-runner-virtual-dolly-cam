@@ -889,7 +889,7 @@ def refine_with_motion_cues(
 	half_window: int = DEFAULT_HALF_WINDOW,
 	threshold: float = DEFAULT_THRESHOLD,
 	race_start_frame: int = None,
-) -> tuple:
+) -> list:
 	"""Apply per-frame motion-cue observation fusion to a fused trajectory.
 
 	For each non-seed frame: compute residual, find best blob, apply
@@ -908,22 +908,16 @@ def refine_with_motion_cues(
 			so motion-cue has no valid signal and should not be fused.
 
 	Returns:
-		Tuple of (modified_trajectory, per_interval_stats) where
-		per_interval_stats is a list of dicts, one per interval, with keys:
-		{"processed": int, "accepted": int, "acceptance_rate": float}.
-		List index corresponds to zero-based interval index.
+		Modified trajectory list (same object, modified in place).
 	"""
 	num_frames = len(trajectory)
 	if num_frames == 0:
-		return trajectory, []
+		return trajectory
 
 	# guard: reader must support frame_count and read_frame
 	if not hasattr(reader, "frame_count") or not hasattr(reader, "read_frame"):
 		print("  motion-cue fusion: skipped (reader does not support frame access)")
-		# return zero-filled stats for all intervals
-		num_intervals = max(1, len(seeds) - 1) if seeds else 1
-		return trajectory, [{"processed": 0, "accepted": 0, "acceptance_rate": 0.0}
-			for _ in range(num_intervals)]
+		return trajectory
 
 	# build sorted seed frame list for interval boundary detection
 	seed_frame_list = sorted(int(s["frame_index"]) for s in seeds
@@ -977,7 +971,6 @@ def refine_with_motion_cues(
 	iv_accepted = 0
 	iv_processed = 0
 	total_intervals = max(1, len(seed_frame_list) - 1)
-	per_interval_stats = []
 
 	total_frames = last_valid - first_valid + 1
 	# "global, not scoped" advertises that fusion ignores the refine-mode
@@ -1014,19 +1007,6 @@ def refine_with_motion_cues(
 						f"(frames {interval_start}-{interval_end}): "
 						f"{iv_accepted}/{iv_processed} accepted ({iv_rate:.0%})"
 					)
-					# append stats for this interval
-					per_interval_stats.append({
-						"processed": iv_processed,
-						"accepted": iv_accepted,
-						"acceptance_rate": iv_rate,
-					})
-				else:
-					# zero-processed interval still gets a stats entry
-					per_interval_stats.append({
-						"processed": 0,
-						"accepted": 0,
-						"acceptance_rate": 0.0,
-					})
 				# advance to next interval
 				current_interval_idx += 1
 				iv_accepted = 0
@@ -1108,25 +1088,12 @@ def refine_with_motion_cues(
 			for k in keys_to_evict:
 				del cache[k]
 
-	# print final interval summary and append final interval stats
+	# print final interval summary
 	if iv_processed > 0:
 		iv_rate = iv_accepted / iv_processed
 		print(f"  fusion: interval {current_interval_idx + 1}/{total_intervals} "
 			f"(frames {interval_start}-{interval_end}): "
 			f"{iv_accepted}/{iv_processed} accepted ({iv_rate:.0%})")
-		# append stats for final interval
-		per_interval_stats.append({
-			"processed": iv_processed,
-			"accepted": iv_accepted,
-			"acceptance_rate": iv_rate,
-		})
-	else:
-		# zero-processed final interval still gets a stats entry
-		per_interval_stats.append({
-			"processed": 0,
-			"accepted": 0,
-			"acceptance_rate": 0.0,
-		})
 
 	# close final chain
 	if state["current_chain_length"] > 0:
@@ -1158,4 +1125,4 @@ def refine_with_motion_cues(
 		f"mean chain: {mean_chain:.1f}, "
 		f"chain breaks: {chain_break_count}")
 
-	return trajectory, per_interval_stats
+	return trajectory
