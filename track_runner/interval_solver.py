@@ -551,10 +551,18 @@ def _format_interval_result(result: dict, fps: float) -> str:
 		agree = score.get("agreement", 0.0)
 		vel_cons = score.get("velocity_consistency", 0.0)
 		size_cons = score.get("size_consistency", 0.0)
+		# blob-snap acceptance fractions (FWD/BWD). None means no candidate
+		# blobs were seen at all; format as n/a rather than 0% so the user
+		# can tell "nothing to accept" apart from "nothing was accepted".
+		fwd_cov = score.get("blob_coverage_fwd")
+		bwd_cov = score.get("blob_coverage_bwd")
+		fwd_str = f"{fwd_cov * 100:.0f}%" if fwd_cov is not None else "n/a"
+		bwd_str = f"{bwd_cov * 100:.0f}%" if bwd_cov is not None else "n/a"
 		metrics_str = (
 			f"agree={agree:.2f}  "
 			f"vel_cons={vel_cons:.2f}  "
-			f"size_cons={size_cons:.2f}"
+			f"size_cons={size_cons:.2f}  "
+			f"accept={fwd_str}/{bwd_str}"
 		)
 	else:
 		# v2 legacy format
@@ -1352,7 +1360,6 @@ def solve_all_intervals(
 		return {"intervals": [], "trajectory": []}
 	total_intervals = len(usable_seeds_sorted) - 1
 
-	print(f"  solving {total_intervals} intervals (analytical mode)...")
 	seq_frame_counter = [0]
 	# track cache reuse vs fresh solves for the post-loop summary
 	reused_count = 0
@@ -1383,133 +1390,148 @@ def solve_all_intervals(
 	# worker, or when there is very little work to amortize pool setup
 	# cost (spawn + imports + initializer payload copy).
 	use_pool = num_workers >= 2 and len(pending_pair_indices) >= 4
+	pending_total = len(pending_pair_indices)
 
-	with rich.progress.Progress(
-		rich.progress.TextColumn("{task.description}"),
-		BlockBarColumn(),
-		rich.progress.MofNCompleteColumn(),
-		rich.progress.TaskProgressColumn(),
-		rich.progress.TimeElapsedColumn(),
-		rich.progress.TimeRemainingColumn(),
-		refresh_per_second=2,
-	) as progress:
-		task = progress.add_task(
-			"  solving intervals", total=total_intervals,
-		)
-		# advance the bar for cache reuses up front so the visible
-		# progress reflects work already done before the solve loop.
-		if reused_count > 0:
-			progress.update(task, advance=reused_count)
+	# announce work scope after cache partition so the number reflects
+	# actual solves, not total intervals.
+	if pending_total == 0:
+		print(f"  all {total_intervals} intervals cached; nothing to solve "
+			f"(analytical mode)")
+	elif reused_count > 0:
+		print(f"  solving {pending_total} new intervals, "
+			f"{reused_count} cached (analytical mode)...")
+	else:
+		print(f"  solving {total_intervals} intervals (analytical mode)...")
 
-		# main-process result-accept closure used by both execution paths.
-		def _accept(pair_idx: int, fingerprint: str, result: dict) -> None:
-			interval_results[pair_idx] = result
-			if on_interval_solved is not None:
-				on_interval_solved(fingerprint, result)
-			if debug:
+	# pure cache-hit fast-exit: no bar, no pool. The post-loop summary
+	# print and stitch still run below.
+	if pending_total == 0:
+		pass
+	else:
+		with rich.progress.Progress(
+			rich.progress.TextColumn("{task.description}"),
+			BlockBarColumn(),
+			rich.progress.MofNCompleteColumn(),
+			rich.progress.TaskProgressColumn(),
+			rich.progress.TimeElapsedColumn(),
+			rich.progress.TimeRemainingColumn(),
+			refresh_per_second=2,
+		) as progress:
+			# bar is sized to cache-miss work only. the cache-hit count
+			# was already printed by cli (refine: N of M need solving).
+			if reused_count > 0:
+				desc = f"  solving {pending_total} new intervals"
+			else:
+				desc = "  solving intervals"
+			task = progress.add_task(desc, total=pending_total)
+
+			# main-process result-accept closure used by both paths.
+			def _accept(pair_idx: int, fingerprint: str, result: dict) -> None:
+				interval_results[pair_idx] = result
+				if on_interval_solved is not None:
+					on_interval_solved(fingerprint, result)
+				# always print per-completion summary so long runs have
+				# visible progress beyond the bar. goes through the rich
+				# console so bar rendering is preserved.
 				_print_interval_result_rich(result, fps, progress)
-			# on_interval_complete is called here in completion order,
-			# not seed order. Consumers (interactive seed requesting)
-			# that need seed order should read from interval_results
-			# after the call returns.
-			if on_interval_complete is not None:
-				on_interval_complete(result)
-			n_frames = result["end_frame"] - result["start_frame"]
-			seq_frame_counter[0] += n_frames
-			progress.update(task, advance=1)
+				# on_interval_complete fires in completion order, not
+				# seed order. Consumers needing seed order read from
+				# interval_results after the call returns.
+				if on_interval_complete is not None:
+					on_interval_complete(result)
+				n_frames = result["end_frame"] - result["start_frame"]
+				seq_frame_counter[0] += n_frames
+				progress.update(task, advance=1)
 
-		if not use_pool:
-			# in-process path: identical to the pre-parallel loop. Used
-			# for num_workers == 1, for tiny runs, and for 100% cache-hit
-			# refines (pending_pair_indices is empty, so the loop is a
-			# no-op and we fall straight through to stitch).
-			for pair_idx in pending_pair_indices:
-				if run_control is not None and run_control.quit_requested:
-					break
-				if key_reader is not None and run_control is not None:
-					ch = key_reader.poll()
-					key_input.handle_key(ch, run_control, key_reader, progress)
-				if run_control is not None and run_control.quit_requested:
-					break
-				seed_start = usable_seeds_sorted[pair_idx]
-				seed_end = usable_seeds_sorted[pair_idx + 1]
-				start_frame = int(seed_start["frame_index"])
-				end_frame = int(seed_end["frame_index"])
-				if debug:
-					progress.console.print(
-						f"  solving interval {pair_idx + 1}/{total_intervals} "
-						f"(frames {start_frame}-{end_frame})"
-					)
-				result = solve_interval_analytical(
-					seed_start, seed_end, scene_transform,
-					all_seeds_scene, fps, debug=debug,
-					motion_track=motion_track,
-					all_seeds=seeds,
-					reader=reader,
-				)
-				solved_count += 1
-				_accept(pair_idx, fingerprints[pair_idx], result)
-		else:
-			# pool path: dispatch cache-miss intervals to workers, poll
-			# the key reader between completions, aggregate results by
-			# pair_idx (completion order != seed order).
-			import solver_workers
-			print(f"  pool: dispatching {len(pending_pair_indices)} "
-				f"intervals across {num_workers} workers")
-			with solver_workers.make_pool(
-				num_workers=num_workers,
-				video_path=video_path,
-				scene_transform=scene_transform,
-				motion_track=motion_track,
-				all_seeds_scene=all_seeds_scene,
-				all_seeds=seeds,
-				fps=fps,
-				debug=debug,
-			) as pool:
-				future_to_idx = {}
+			if not use_pool:
+				# in-process path: identical to the pre-parallel loop.
+				# Used for num_workers == 1 or for tiny runs where pool
+				# setup would dominate.
 				for pair_idx in pending_pair_indices:
-					seed_start = usable_seeds_sorted[pair_idx]
-					seed_end = usable_seeds_sorted[pair_idx + 1]
-					fut = pool.submit(
-						solver_workers._solve_interval_worker,
-						(pair_idx, seed_start, seed_end),
-					)
-					future_to_idx[fut] = pair_idx
-
-				pending_futures = set(future_to_idx.keys())
-				while pending_futures:
 					if run_control is not None and run_control.quit_requested:
 						break
 					if key_reader is not None and run_control is not None:
 						ch = key_reader.poll()
-						key_input.handle_key(
-							ch, run_control, key_reader, progress,
-						)
+						key_input.handle_key(ch, run_control, key_reader, progress)
 					if run_control is not None and run_control.quit_requested:
 						break
-					# short wait lets us poll the key reader at ~4Hz
-					done, pending_futures = concurrent.futures.wait(
-						pending_futures,
-						timeout=0.25,
-						return_when=concurrent.futures.FIRST_COMPLETED,
+					seed_start = usable_seeds_sorted[pair_idx]
+					seed_end = usable_seeds_sorted[pair_idx + 1]
+					start_frame = int(seed_start["frame_index"])
+					end_frame = int(seed_end["frame_index"])
+					if debug:
+						progress.console.print(
+							f"  solving interval {pair_idx + 1}/{total_intervals} "
+							f"(frames {start_frame}-{end_frame})"
+						)
+					result = solve_interval_analytical(
+						seed_start, seed_end, scene_transform,
+						all_seeds_scene, fps, debug=debug,
+						motion_track=motion_track,
+						all_seeds=seeds,
+						reader=reader,
 					)
-					for fut in done:
-						pair_idx, fingerprint, result = fut.result()
-						solved_count += 1
-						_accept(pair_idx, fingerprint, result)
+					solved_count += 1
+					_accept(pair_idx, fingerprints[pair_idx], result)
+			else:
+				# pool path: dispatch cache-miss intervals to workers,
+				# poll the key reader between completions, aggregate
+				# results by pair_idx (completion order != seed order).
+				import solver_workers
+				with solver_workers.make_pool(
+					num_workers=num_workers,
+					video_path=video_path,
+					scene_transform=scene_transform,
+					motion_track=motion_track,
+					all_seeds_scene=all_seeds_scene,
+					all_seeds=seeds,
+					fps=fps,
+					debug=debug,
+				) as pool:
+					future_to_idx = {}
+					for pair_idx in pending_pair_indices:
+						seed_start = usable_seeds_sorted[pair_idx]
+						seed_end = usable_seeds_sorted[pair_idx + 1]
+						fut = pool.submit(
+							solver_workers._solve_interval_worker,
+							(pair_idx, seed_start, seed_end),
+						)
+						future_to_idx[fut] = pair_idx
 
-				# on quit, cancel anything not yet running and drain
-				# in-flight work so the main process still sees
-				# completions (and on_interval_solved fires).
-				if run_control is not None and run_control.quit_requested:
-					for fut in list(pending_futures):
-						fut.cancel()
-					for fut in concurrent.futures.as_completed(pending_futures):
-						if fut.cancelled():
-							continue
-						pair_idx, fingerprint, result = fut.result()
-						solved_count += 1
-						_accept(pair_idx, fingerprint, result)
+					pending_futures = set(future_to_idx.keys())
+					while pending_futures:
+						if run_control is not None and run_control.quit_requested:
+							break
+						if key_reader is not None and run_control is not None:
+							ch = key_reader.poll()
+							key_input.handle_key(
+								ch, run_control, key_reader, progress,
+							)
+						if run_control is not None and run_control.quit_requested:
+							break
+						# short wait lets us poll the key reader at ~4Hz
+						done, pending_futures = concurrent.futures.wait(
+							pending_futures,
+							timeout=0.25,
+							return_when=concurrent.futures.FIRST_COMPLETED,
+						)
+						for fut in done:
+							pair_idx, fingerprint, result = fut.result()
+							solved_count += 1
+							_accept(pair_idx, fingerprint, result)
+
+					# on quit, cancel anything not yet running and drain
+					# in-flight work so the main process still sees
+					# completions (and on_interval_solved fires).
+					if run_control is not None and run_control.quit_requested:
+						for fut in list(pending_futures):
+							fut.cancel()
+						for fut in concurrent.futures.as_completed(pending_futures):
+							if fut.cancelled():
+								continue
+							pair_idx, fingerprint, result = fut.result()
+							solved_count += 1
+							_accept(pair_idx, fingerprint, result)
 
 	# post-loop summary: make cache behavior visible on stdout
 	print(f"  solver: reused {reused_count}, solved {solved_count} "
