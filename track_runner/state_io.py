@@ -315,19 +315,32 @@ def write_intervals(path: str, intervals_data: dict) -> None:
 
 #============================================
 
-def interval_fingerprint(seed_start: dict, seed_end: dict) -> str:
+def interval_fingerprint(
+	seed_start: dict,
+	seed_end: dict,
+	solver_tag: str = "",
+) -> str:
 	"""Compute a deterministic lookup key from two seed endpoint states.
 
 	The fingerprint encodes frame_index and position (cx, cy, w, h rounded
 	to 2 decimal places) for both seeds. Any change in seed position or
 	frame index produces a different key, so stale results are never reused.
 
+	When `solver_tag` is non-empty, it is appended. This lets the interval
+	solver invalidate the cache when its own semantics change (new gates,
+	new blend rule, observer version bump) without requiring seed edits.
+	Both `solve_all_intervals` and `cli._mode_refine` MUST pass the same
+	solver_tag for cache hits to work.
+
 	Args:
 		seed_start: Seed state dict at the start of the interval.
 		seed_end: Seed state dict at the end of the interval.
+		solver_tag: Optional short string identifying the solver version and
+			its blob-snap configuration. When empty, no tag is appended
+			(legacy behavior).
 
 	Returns:
-		String fingerprint like "100|1731.50|629.50|39.00|59.00|450|1700.00|600.00|38.00|58.00".
+		String fingerprint. With solver_tag, the suffix is included.
 	"""
 	parts = []
 	for seed in (seed_start, seed_end):
@@ -338,6 +351,8 @@ def interval_fingerprint(seed_start: dict, seed_end: dict) -> str:
 		h = round(float(seed["h"]), 2)
 		parts.append(f"{fi}|{cx:.2f}|{cy:.2f}|{w:.2f}|{h:.2f}")
 	fingerprint = "|".join(parts)
+	if solver_tag:
+		fingerprint = fingerprint + "||" + solver_tag
 	return fingerprint
 
 

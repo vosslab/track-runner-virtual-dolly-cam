@@ -22,6 +22,110 @@ import key_input
 import state_io
 import velocity_model
 import race_phases
+import residual_motion
+
+
+#============================================
+# Solver fingerprint tag. Baked into every `state_io.interval_fingerprint`
+# call so the refine cache invalidates correctly when the analytical
+# propagator semantics change. Bump `residual_motion.BLOB_OBSERVER_VERSION`
+# when observer behavior changes. Bump the numeric-constants suffix (the
+# lowercase `a`, `b`, `vf`, `am`, `ms` fragments) when the blob-snap gate
+# or blend constants in velocity_model change.
+SOLVER_FINGERPRINT_TAG = (
+	f"blob_snap/{residual_motion.BLOB_OBSERVER_VERSION}"
+	f"/a{velocity_model.BLOB_SNAP_ALPHA:.3f}"
+	f"/slk{velocity_model.BLOB_SNAP_PATH_SLACK:.3f}"
+	f"/prp{velocity_model.BLOB_SNAP_PATH_PERP_FRACTION:.3f}"
+	f"/vf{velocity_model.BLOB_SNAP_VELOCITY_FLOOR:.3f}"
+	f"/am{velocity_model.BLOB_SNAP_ALPHA_MAX:.3f}"
+	f"/ms{velocity_model.BLOB_SNAP_MAX_SHIFT_FRACTION:.3f}"
+)
+
+
+#============================================
+def _coverage_from_track(track: list) -> dict:
+	"""Compute blob-snap coverage for one pass from its blob_gate stamps.
+
+	Returns a dict with `fraction` (float in [0, 1] or None),
+	`candidate_count`, and `propagated_count`. `skipped` frames
+	(endpoints, stationary, no reader) are excluded from both counts.
+	"""
+	accepted_count = 0
+	candidate_count = 0
+	propagated_count = 0
+	for state in track:
+		gate = state.get("blob_gate")
+		if gate == "accepted":
+			accepted_count += 1
+			candidate_count += 1
+			propagated_count += 1
+		elif gate == "rejected":
+			candidate_count += 1
+			propagated_count += 1
+		elif gate == "absent":
+			propagated_count += 1
+		# "skipped" excluded
+	if candidate_count == 0:
+		fraction = None
+	else:
+		fraction = accepted_count / candidate_count
+	result = {
+		"fraction": fraction,
+		"candidate_count": int(candidate_count),
+		"propagated_count": int(propagated_count),
+	}
+	return result
+
+
+#============================================
+def _stamp_blob_coverage(
+	interval_score: dict,
+	forward_track: list,
+	backward_track: list,
+) -> None:
+	"""Write per-pass blob-snap coverage fields into an interval_score dict.
+
+	FWD and BWD are reported separately to preserve diagnostic purity --
+	asymmetric coverage (one pass good, the other bad) is itself a
+	signal and must not be averaged away. Downstream consumers that
+	want a single number should take the min or the geometric mean at
+	the point of use.
+
+	Fields written to `interval_score`:
+	  - blob_coverage_fwd: float in [0, 1] or None.
+	  - blob_coverage_bwd: float in [0, 1] or None.
+	  - no_candidate_blobs: bool; True only when BOTH passes saw zero
+	    candidates. When one pass saw candidates and the other did not,
+	    the flag is False and the None-valued pass carries its None.
+	  - candidate_frame_count_fwd / _bwd: ints.
+	  - propagated_frame_count_fwd / _bwd: ints.
+	"""
+	fwd = _coverage_from_track(forward_track)
+	bwd = _coverage_from_track(backward_track)
+	interval_score["blob_coverage_fwd"] = fwd["fraction"]
+	interval_score["blob_coverage_bwd"] = bwd["fraction"]
+	interval_score["candidate_frame_count_fwd"] = fwd["candidate_count"]
+	interval_score["candidate_frame_count_bwd"] = bwd["candidate_count"]
+	interval_score["propagated_frame_count_fwd"] = fwd["propagated_count"]
+	interval_score["propagated_frame_count_bwd"] = bwd["propagated_count"]
+	interval_score["no_candidate_blobs"] = (
+		fwd["fraction"] is None and bwd["fraction"] is None
+	)
+
+
+#============================================
+def compute_interval_fingerprint(seed_start: dict, seed_end: dict) -> str:
+	"""Fingerprint wrapper that includes the solver tag.
+
+	Both `solve_all_intervals` and `cli._mode_refine` MUST call this
+	helper (or pass SOLVER_FINGERPRINT_TAG to state_io.interval_fingerprint
+	directly) so refine cache hits line up byte-for-byte.
+	"""
+	result = state_io.interval_fingerprint(
+		seed_start, seed_end, solver_tag=SOLVER_FINGERPRINT_TAG,
+	)
+	return result
 
 
 #============================================
@@ -264,6 +368,7 @@ def solve_interval_analytical(
 	debug: bool = False,
 	motion_track: object = None,
 	all_seeds: list = None,
+	reader: object = None,
 ) -> dict:
 	"""Solve one interval using analytical velocity model (no optical flow).
 
@@ -309,15 +414,27 @@ def solve_interval_analytical(
 	if debug:
 		print("    propagating forward/backward analytically...")
 
+	# per-interval residual cache, scoped to this call. Shared between
+	# FWD and BWD so raw residuals are computed once per frame, but holds
+	# image-derived data only (no accepted blobs, no gate decisions).
+	# Cleared at the end of this function.
+	residual_cache = {} if reader is not None else None
+
 	# propagate forward (backward-looking slopes)
 	forward_track_scene = velocity_model.propagate_forward_analytical(
 		interval_curves, scene_transform,
+		reader=reader, residual_cache=residual_cache,
 	)
 
 	# propagate backward (forward-looking slopes)
 	backward_track_scene = velocity_model.propagate_backward_analytical(
 		interval_curves, scene_transform,
+		reader=reader, residual_cache=residual_cache,
 	)
+
+	# drop the cache; it must not escape the interval scope
+	if residual_cache is not None:
+		residual_cache.clear()
 
 	# velocity model returns pixel coordinates directly (already converted)
 	forward_track = list(forward_track_scene)
@@ -342,6 +459,14 @@ def solve_interval_analytical(
 		fused_track=fused_track,
 		fps=fps,
 	)
+
+	# stamp blob-snap coverage diagnostic (additive; legacy diagnostics
+	# remain valid). coverage = accepted / frames_with_candidate_blob,
+	# excluding seed frames (blob_gate == "skipped"). endpoints carry
+	# "skipped" because propagators skip snap at index 0 and -1 of each
+	# pass. the denominator is candidate frames only, so heavily occluded
+	# intervals (mostly "absent") are not unfairly penalized.
+	_stamp_blob_coverage(interval_score, forward_track, backward_track)
 
 	result = {
 		"start_frame": start_frame,
@@ -1251,8 +1376,10 @@ def solve_all_intervals(
 			end_frame = int(seed_end["frame_index"])
 
 			# compute fingerprint up front so we can check the cache before
-			# calling the analytical solver
-			fingerprint = state_io.interval_fingerprint(seed_start, seed_end)
+			# calling the analytical solver. includes SOLVER_FINGERPRINT_TAG
+			# so a solver upgrade triggers one full re-solve and subsequent
+			# refines fast-exit again.
+			fingerprint = compute_interval_fingerprint(seed_start, seed_end)
 
 			# cache hit: reuse prior result, skip solver and skip write-back
 			if prior_intervals is not None and fingerprint in prior_intervals:
@@ -1274,6 +1401,7 @@ def solve_all_intervals(
 					all_seeds_scene, fps, debug=debug,
 					motion_track=motion_track,
 					all_seeds=seeds,
+					reader=reader,
 				)
 				solved_count += 1
 				if on_interval_solved is not None:

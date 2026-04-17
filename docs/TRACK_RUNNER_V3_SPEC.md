@@ -405,6 +405,25 @@ Additional failure reasons regardless of confidence:
 - `likely_identity_swap`: competitor margin < 0.2
 - `weak_appearance`: identity score < 0.4
 
+### Blob coverage (additive diagnostic)
+
+Each interval carries a `blob_coverage_fraction` field in
+`interval_score`, written by the analytical propagator's stateless
+per-frame blob snap. Value is in `[0.0, 1.0]` or `null`:
+
+- numerator: frames where the snap accepted a blob.
+- denominator: frames that had at least one candidate blob in the
+  corridor (not total propagated frames). Heavily occluded intervals
+  are not unfairly penalized.
+- seed frames are excluded from both numerator and denominator.
+- `null` with `no_candidate_blobs: true` means the interval had zero
+  candidate blobs (heavy occlusion, tiny runner, or degenerate ROI).
+
+Sibling fields `candidate_frame_count` and `propagated_frame_count`
+carry the raw counters for debugging.
+
+Schema is additive: old diagnostics files load unchanged.
+
 ### Interval-length-aware scoring
 
 For intervals of 5 frames or fewer, the confidence tier is promoted by one

@@ -1137,10 +1137,13 @@ def _mode_refine(
 	usable_sorted = interval_solver.filter_usable_seeds_sorted(
 		seeds, verbose=False,
 	)
-	# compute the current expected fingerprint list from the live seeds
+	# compute the current expected fingerprint list from the live seeds.
+	# MUST use interval_solver.compute_interval_fingerprint so the tag
+	# (observer version + blob-snap constants) is identical to the one
+	# solve_all_intervals writes; otherwise the cache never matches.
 	expected_fingerprints = []
 	for pair_idx in range(len(usable_sorted) - 1):
-		fp = state_io.interval_fingerprint(
+		fp = interval_solver.compute_interval_fingerprint(
 			usable_sorted[pair_idx], usable_sorted[pair_idx + 1],
 		)
 		expected_fingerprints.append(fp)

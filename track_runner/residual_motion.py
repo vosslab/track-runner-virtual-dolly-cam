@@ -1,29 +1,41 @@
-"""Per-frame observation fusion using temporal background subtraction.
+"""Per-frame blob observation from residual (camera-compensated) motion.
 
-Provides center-position observations from residual motion blobs inside the
-Hermite kinematic scaffold. The blob is a per-frame visual observation channel:
-fused continuously when unambiguous, vetoed aggressively when ambiguous.
+Provides a stateless API for extracting a single candidate blob observation
+at one frame, given a predicted position and local tangent. The returned
+observation is a raw measurement; all gating decisions (proximity, direction,
+temporal smoothness) live in the caller (the propagator).
 
-Hermite owns: path shape, velocity continuity, box size, aspect ratio, scale.
-Blob cue owns: local center observation only.
+No cross-frame state lives in this module. The chained/global motion-cue
+fusion that previously existed here was removed when the propagator took
+over per-frame correction directly.
 
-Integration point: called between stitch_trajectories() and anchor_to_seeds()
-in interval_solver.solve_all_intervals().
-
-Tunable constants are module-level ALL_CAPS variables.
-
-See docs/active_plans/MOTION_CUE_OBSERVATION_FUSION.md for design rationale.
+Public surface:
+  - observe_blob_at(...): primary API; returns BlobObservation or None.
+  - BlobObservation: dataclass carrying a single per-frame measurement.
+  - BLOB_OBSERVER_VERSION: semantic version tag for fingerprint bumping.
+  - compute_residual_for_frame(...): low-level residual + validity mask.
+  - extract_frame_blobs(...): connected-component extraction from a residual.
+  - filter_blobs_to_corridor(...): cross-track corridor filter.
+  - compute_trajectory_tangent(...): local tangent from a solved trajectory.
+  - compute_cue_confidence(...): scalar cue score per blob.
 """
 
 # Standard Library
 import warnings
+import dataclasses
 
 # PIP3 modules
 import cv2
 import numpy
-import rich.progress
 
 # === Tunable constants ===
+
+# Observer version tag. Bumped on every semantic change to the stateless
+# per-frame observer API (new gate, reordered scoring, changed corridor
+# geometry). Included in the interval-solver fingerprint so refine cache
+# invalidates correctly when observer semantics change, even if numeric
+# constants are unchanged.
+BLOB_OBSERVER_VERSION = "v1"
 
 # minimum blob area in pixels to suppress noise specks
 MIN_BLOB_AREA = 25
@@ -32,48 +44,20 @@ MIN_BLOB_AREA = 25
 DEFAULT_THRESHOLD = 10.0
 
 # half-window for background estimation (2 = 5-frame window)
-# diagnostic tool uses 4 (9-frame) for sparse sampling; pipeline uses 2
-# because it processes every frame sequentially, so temporal coverage is dense
 DEFAULT_HALF_WINDOW = 2
 
 # ROI multiplier: crop region is this many times the torso box height
-# matches the 8x used in tools/diagnose_residual_motion.py
 ROI_MULTIPLIER = 8.0
 
-# maximum blend weight toward blob observation
-ALPHA_MAX = 0.6
-
-# minimum cue confidence to pass tier-1 gate
-MIN_CUE_CONFIDENCE = 0.25
-
-# final veto threshold after tier-2 penalties
-VETO_CONFIDENCE_THRESHOLD = 0.15
-
-# temporal continuity: max distance from previous accepted blob
-# expressed as fraction of max(pred_w, pred_h)
-TEMPORAL_LINK_FRACTION = 0.75
-
-# distance gate: max distance from predicted center
-# expressed as fraction of max(pred_w, pred_h)
-DISTANCE_GATE_FRACTION = 0.75
-
-# along-track tier-2 penalty threshold (fraction of pred_h)
-ALONG_TRACK_PENALTY_FRACTION = 2.0
-
-# along-track scale factor (downweight relative to cross-track)
-ALONG_TRACK_WEIGHT = 0.5
-
-# cross-track clamp (fraction of pred_w)
-CROSS_TRACK_CLAMP_FRACTION = 0.5
-
-# along-track clamp (fraction of pred_h)
-ALONG_TRACK_CLAMP_FRACTION = 0.75
-
-# selection margin: best score must exceed second-best by this factor
-SELECTION_MARGIN = 1.5
-
-# short memory: keep prev_blob for this many missed frames
-SHORT_MEMORY_FRAMES = 3
+# ROI quantization step in pixels. The ROI bounds are snapped to a
+# multiple of this value so that tiny FWD/BWD pred_center differences
+# (a fraction of a pixel, a few pixels at most) resolve to the SAME ROI
+# tuple and share a cache entry. Only meaningful divergence -- tens of
+# pixels, which happens on tight curves and crowd scenes -- produces a
+# distinct cache key and triggers a separate residual computation.
+# 8 px is well below the typical ROI side length (240+ px at 60 px box)
+# so quantization does not meaningfully change which pixels are covered.
+ROI_QUANT = 8
 
 # tangent estimation: minimum half-window
 TANGENT_MIN_SPAN = 5
@@ -83,12 +67,6 @@ TANGENT_FALLBACK_SPAN = 10
 
 # tangent estimation: minimum confidence for primary window
 TANGENT_CONFIDENCE_THRESHOLD = 0.5
-
-# tier-2 penalty multipliers
-PENALTY_DIRECTION = 0.5
-PENALTY_MOTION_DIRECTION = 0.5
-PENALTY_LOW_MARGIN = 0.5
-PENALTY_ALONG_TRACK = 0.3
 
 
 #============================================
@@ -256,9 +234,6 @@ def _read_gray_frame(
 ) -> numpy.ndarray:
 	"""Read a frame as grayscale float32, using cache when available.
 
-	Forward-only assumption: frames are read in sequential order. Cache
-	entries older than the current window are evicted by the caller.
-
 	Args:
 		reader: VideoReader instance.
 		frame_index: Frame to read.
@@ -289,8 +264,12 @@ def _compute_roi(
 	"""Compute ROI bounds for residual computation around predicted position.
 
 	Uses ROI_MULTIPLIER * pred_h as the square crop side length.
-	Clamps to frame boundaries. If ROI would cover most of the frame,
-	returns the full frame bounds.
+	Clamps to frame boundaries. Bounds are snapped to multiples of
+	ROI_QUANT so that sub-quantum jitter in pred_cx / pred_cy (e.g.
+	the few-pixel FWD vs BWD disagreement common on symmetric motion)
+	produces IDENTICAL ROI tuples and therefore shares the cache
+	entry. Larger divergence (tight curves, crowds) yields distinct
+	ROIs and correctly triggers a per-pass residual computation.
 
 	Args:
 		pred_cx: Predicted center x in pixels.
@@ -300,16 +279,21 @@ def _compute_roi(
 		frame_h: Full frame height.
 
 	Returns:
-		Tuple of (x1, y1, x2, y2) pixel bounds, clamped to frame.
+		Tuple of (x1, y1, x2, y2) pixel bounds, quantized to
+		ROI_QUANT and clamped to frame.
 	"""
 	half_side = int(ROI_MULTIPLIER * pred_h / 2)
 	# minimum ROI size of 100px
 	half_side = max(half_side, 50)
 
-	x1 = max(0, int(pred_cx) - half_side)
-	y1 = max(0, int(pred_cy) - half_side)
-	x2 = min(frame_w, int(pred_cx) + half_side)
-	y2 = min(frame_h, int(pred_cy) + half_side)
+	# quantize the center so small jitter collapses to the same bucket
+	quant_cx = int(round(pred_cx / ROI_QUANT)) * ROI_QUANT
+	quant_cy = int(round(pred_cy / ROI_QUANT)) * ROI_QUANT
+
+	x1 = max(0, quant_cx - half_side)
+	y1 = max(0, quant_cy - half_side)
+	x2 = min(frame_w, quant_cx + half_side)
+	y2 = min(frame_h, quant_cy + half_side)
 	return (x1, y1, x2, y2)
 
 
@@ -337,15 +321,14 @@ def compute_residual_for_frame(
 		reader: VideoReader instance.
 		frame_index: Center frame index.
 		scene_transform: SceneTransform instance.
-		half_window: Frames on each side for background (default 4 = 9 frames).
+		half_window: Frames on each side for background (default 2 = 5 frames).
 		cache: Optional dict for frame caching. Modified in place.
 		roi: Optional (x1, y1, x2, y2) bounds to restrict computation.
-			Blob centroids are returned in full-frame coordinates.
+			Blob centroids are returned in ROI coordinates; caller must
+			add roi offsets to restore full-frame coordinates.
 
 	Returns:
 		Tuple of (residual_mag, validity_mask) or (None, None).
-		When roi is used, these are cropped to the ROI with blob
-		centroids adjusted by roi offset.
 	"""
 	if cache is None:
 		cache = {}
@@ -438,7 +421,7 @@ def compute_trajectory_tangent(
 	trajectory: list,
 	frame_index: int,
 ) -> tuple:
-	"""Compute tangent direction from the original trajectory at a frame.
+	"""Compute tangent direction from a solved trajectory at a frame.
 
 	Uses minimum +/-TANGENT_MIN_SPAN frames. Falls back to wider window
 	(+/-TANGENT_FALLBACK_SPAN) if confidence is low in the primary range.
@@ -446,7 +429,7 @@ def compute_trajectory_tangent(
 	anisotropic decomposition for that frame).
 
 	Args:
-		trajectory: List of state dicts (original, uncorrected).
+		trajectory: List of state dicts.
 		frame_index: Frame to compute tangent at.
 
 	Returns:
@@ -506,9 +489,6 @@ def compute_cue_confidence(
 ) -> float:
 	"""Compute confidence of a motion blob as a tracking cue.
 
-	Scores in Hermite-relative coordinates (along-track and cross-track
-	decomposed before scoring).
-
 	Factors:
 	  - integrated_mag normalized (blob strength) -- weight 0.3
 	  - area relative to predicted box area (size plausibility) -- weight 0.3
@@ -520,7 +500,7 @@ def compute_cue_confidence(
 		pred_cy: Predicted center y.
 		pred_w: Predicted box width.
 		pred_h: Predicted box height.
-		tangent: (tx, ty, nx, ny) unit vectors.
+		tangent: (tx, ty, nx, ny) unit vectors. Kept for API symmetry.
 
 	Returns:
 		Float in [0, 1]. Higher = more trustworthy blob.
@@ -535,7 +515,7 @@ def compute_cue_confidence(
 	size_score = 1.0 - abs(area_ratio - 0.5) * 2.0
 	size_score = max(0.0, size_score)
 
-	# proximity: decompose into along-track and cross-track
+	# proximity: isotropic distance normalized by box diagonal
 	dx = blob["centroid_x"] - pred_cx
 	dy = blob["centroid_y"] - pred_cy
 	dist = (dx**2 + dy**2)**0.5
@@ -548,581 +528,164 @@ def compute_cue_confidence(
 
 
 #============================================
-def _apply_tier1_gate(
-	blob: dict,
-	pred_cx: float,
-	pred_cy: float,
-	pred_w: float,
-	pred_h: float,
-	cue_confidence: float,
-	prev_accepted_blob: dict,
-	tangent: tuple,
-	corridor_radius: float,
-) -> bool:
-	"""Apply tier-1 hard rejection gate. All four must pass.
+@dataclasses.dataclass
+class BlobObservation:
+	"""A single per-frame blob measurement. Stateless, carries no history.
 
-	1. Corridor containment
-	2. Distance constraint
-	3. Minimum confidence
-	4. Temporal continuity (primary identity gate)
+	Returned by observe_blob_at when a candidate blob exists in the
+	corridor around a predicted position. Gating decisions live in the
+	caller, not in this dataclass.
 
-	Args:
-		blob: Blob dict with centroid_x, centroid_y, cross_track, along_track.
-		pred_cx: Predicted center x.
-		pred_cy: Predicted center y.
-		pred_w: Predicted box width.
-		pred_h: Predicted box height.
-		cue_confidence: Confidence score from compute_cue_confidence.
-		prev_accepted_blob: Previous accepted blob dict, or None.
-		tangent: (tx, ty, nx, ny) unit vectors.
-		corridor_radius: Half-width of corridor.
-
-	Returns:
-		True if blob passes all tier-1 gates.
+	Attributes:
+		center_pixel: (cx, cy) in full-frame pixel coordinates.
+		cross_track: Signed cross-track distance from the predicted
+			center, in pixels. Positive along normal, negative opposite.
+		along_track: Signed along-track distance from the predicted
+			center, in pixels.
+		confidence: Cue confidence in [0, 1] from compute_cue_confidence.
 	"""
-	# gate 1: corridor containment (already filtered, but verify)
-	cross = blob.get("cross_track")
-	if cross is not None and abs(cross) > corridor_radius:
-		return False
-
-	# gate 2: distance constraint
-	dx = blob["centroid_x"] - pred_cx
-	dy = blob["centroid_y"] - pred_cy
-	dist = (dx**2 + dy**2)**0.5
-	max_dist = DISTANCE_GATE_FRACTION * max(pred_w, pred_h)
-	if dist > max_dist:
-		return False
-
-	# gate 3: minimum confidence
-	if cue_confidence < MIN_CUE_CONFIDENCE:
-		return False
-
-	# gate 4: temporal continuity (primary identity gate)
-	if prev_accepted_blob is not None:
-		prev_dx = blob["centroid_x"] - prev_accepted_blob["centroid_x"]
-		prev_dy = blob["centroid_y"] - prev_accepted_blob["centroid_y"]
-		jump = (prev_dx**2 + prev_dy**2)**0.5
-		max_link = TEMPORAL_LINK_FRACTION * max(pred_w, pred_h)
-		if jump > max_link:
-			return False
-
-	return True
+	center_pixel: tuple
+	cross_track: float
+	along_track: float
+	confidence: float
 
 
 #============================================
-def _apply_tier2_penalties(
-	blob: dict,
-	cue_confidence: float,
-	pred_cx: float,
-	pred_cy: float,
-	pred_w: float,
-	pred_h: float,
-	tangent: tuple,
-	prev_accepted_blob: dict,
-	second_best_confidence: float,
-) -> float:
-	"""Apply tier-2 soft confidence penalties.
-
-	Reduces effective confidence without hard rejection.
-
-	Args:
-		blob: Blob dict with centroid_x, centroid_y.
-		cue_confidence: Base confidence from compute_cue_confidence.
-		pred_cx: Predicted center x.
-		pred_cy: Predicted center y.
-		pred_w: Predicted box width.
-		pred_h: Predicted box height.
-		tangent: (tx, ty, nx, ny) unit vectors.
-		prev_accepted_blob: Previous accepted blob, or None.
-		second_best_confidence: Confidence of second-best blob, or 0.0.
-
-	Returns:
-		Effective confidence after penalties.
-	"""
-	effective = cue_confidence
-	tx, ty, nx, ny = tangent
-
-	# penalty: direction disagreement (blob displacement opposes tangent)
-	dx = blob["centroid_x"] - pred_cx
-	dy = blob["centroid_y"] - pred_cy
-	dot = dx * tx + dy * ty
-	if dot < 0:
-		effective *= PENALTY_DIRECTION
-
-	# penalty: motion direction inconsistency (blob velocity opposes tangent)
-	if prev_accepted_blob is not None:
-		vx = blob["centroid_x"] - prev_accepted_blob["centroid_x"]
-		vy = blob["centroid_y"] - prev_accepted_blob["centroid_y"]
-		motion_dot = vx * tx + vy * ty
-		if motion_dot < 0:
-			effective *= PENALTY_MOTION_DIRECTION
-
-	# penalty: low selection margin
-	if second_best_confidence > 0.0:
-		if cue_confidence < SELECTION_MARGIN * second_best_confidence:
-			effective *= PENALTY_LOW_MARGIN
-
-	# penalty: large along-track magnitude (secondary guard)
-	along = blob.get("along_track")
-	if along is not None and abs(along) > ALONG_TRACK_PENALTY_FRACTION * pred_h:
-		effective *= PENALTY_ALONG_TRACK
-
-	return effective
-
-
-#============================================
-def _compute_corrected_position(
-	blob: dict,
-	pred_cx: float,
-	pred_cy: float,
-	pred_w: float,
-	pred_h: float,
-	tangent: tuple,
-	effective_confidence: float,
-	traj_conf: float,
-) -> tuple:
-	"""Compute corrected center position using Hermite-frame projection.
-
-	Decomposes blob offset into along-track and cross-track, applies
-	anisotropic clamping and weighting, then blends with prediction.
-
-	Cross-track: tighter clamp, full weight (runners stay in lane).
-	Along-track: looser clamp, downweighted (timing imprecision).
-
-	Args:
-		blob: Blob dict with centroid_x, centroid_y.
-		pred_cx: Predicted center x.
-		pred_cy: Predicted center y.
-		pred_w: Predicted box width.
-		pred_h: Predicted box height.
-		tangent: (tx, ty, nx, ny) unit vectors.
-		effective_confidence: Confidence after tier-2 penalties.
-		traj_conf: Trajectory confidence at this frame.
-
-	Returns:
-		Tuple of (new_cx, new_cy, alpha_used).
-	"""
-	tx, ty, nx, ny = tangent
-
-	# compute raw offset from prediction to blob
-	dx = blob["centroid_x"] - pred_cx
-	dy = blob["centroid_y"] - pred_cy
-
-	# decompose into along-track and cross-track (raw, for gating)
-	along_raw = dx * tx + dy * ty
-	cross_raw = dx * nx + dy * ny
-
-	# clamp: cross-track tighter (more reliable signal)
-	cross_clamp = CROSS_TRACK_CLAMP_FRACTION * pred_w
-	cross = max(-cross_clamp, min(cross_clamp, cross_raw))
-
-	# clamp: along-track looser (timing imprecision)
-	along_clamp = ALONG_TRACK_CLAMP_FRACTION * pred_h
-	along = max(-along_clamp, min(along_clamp, along_raw))
-
-	# downweight along-track
-	along *= ALONG_TRACK_WEIGHT
-
-	# reconstruct corrected position in pixel space
-	corrected_x = pred_cx + along * tx + cross * nx
-	corrected_y = pred_cy + along * ty + cross * ny
-
-	# compute blend alpha
-	alpha = ALPHA_MAX * effective_confidence * (1.0 - traj_conf)
-
-	# blend prediction and corrected observation
-	new_cx = (1.0 - alpha) * pred_cx + alpha * corrected_x
-	new_cy = (1.0 - alpha) * pred_cy + alpha * corrected_y
-
-	return (new_cx, new_cy, alpha)
-
-
-#============================================
-def _process_one_frame(
+def observe_blob_at(
 	frame_index: int,
-	entry: dict,
-	original_trajectory: list,
-	reader: object,
+	pred_center: tuple,
+	pred_box: tuple,
+	local_tangent: tuple,
 	scene_transform: object,
-	prev_accepted_blob: dict,
-	half_window: int,
-	threshold: float,
-	cache: dict,
-) -> tuple:
-	"""Process a single frame for motion-cue observation fusion.
+	reader: object,
+	residual_cache: dict,
+	threshold: float = DEFAULT_THRESHOLD,
+	half_window: int = DEFAULT_HALF_WINDOW,
+) -> BlobObservation:
+	"""Return the best blob observation at one frame, or None.
 
-	Computes residual, extracts blobs, applies two-tier gate, and
-	returns the correction result.
+	Stateless. Reads raw image evidence and returns a single optional
+	measurement. The caller owns all gating logic (proximity, direction,
+	temporal smoothness). This function owns image extraction and
+	corridor selection only.
+
+	Cache content boundary (strict). residual_cache may hold raw image
+	data only:
+	  - extracted raw-blob lists (pre-gate)
+	  - a sub-dict of cached frame reads (grayscale and BGR)
+	It MUST NOT hold any per-frame decision: accepted blobs, filtered
+	or chained blob lists, gate outcomes, or any value derived from a
+	gating decision. Anything decision-shaped in the cache is back-door
+	state and fails review.
+
+	The cache is scoped to a single interval by the caller and cleared
+	at interval end. FWD and BWD within the same interval legitimately
+	share raw residuals and raw blobs; they each apply independent gates
+	in the propagator, so sharing image data does not leak decisions.
+
+	Cache key is `(frame_index, roi)`. FWD and BWD at the same frame
+	usually produce near-identical ROIs (both pass's raw_pred converges
+	at endpoints and differs only by Hermite slope asymmetry in between);
+	when they DO produce identical ROIs the second caller reuses the
+	first caller's raw blobs. When they produce DIFFERENT ROIs (tight
+	curves, occlusion edges, crowd scenes) each pass computes its own
+	residual against its own ROI. This preserves FWD/BWD independence
+	in exactly the regimes where divergence matters most, at the cost
+	of up to 2x residual computation on intervals where the two passes
+	disagree. Raw frame reads (the nested `_frames` sub-cache) are keyed
+	by `frame_index` alone and stay shared -- they don't depend on ROI.
 
 	Args:
-		frame_index: Current frame index.
-		entry: Trajectory state dict for this frame.
-		original_trajectory: Snapshot of uncorrected trajectory (for tangent).
-		reader: VideoReader instance.
-		scene_transform: SceneTransform instance.
-		prev_accepted_blob: Previous accepted blob dict, or None.
-		half_window: Background subtraction window.
-		threshold: Motion threshold.
-		cache: Frame cache dict, modified in place.
+		frame_index: Frame to observe.
+		pred_center: (cx, cy) raw kinematic prediction in pixels. Used
+			only to seed the ROI and to decompose blob displacement into
+			along-track / cross-track; never written into the cache.
+		pred_box: (w, h) predicted box size in pixels. Used for ROI
+			size, corridor radius, and confidence scoring.
+		local_tangent: (tx, ty, nx, ny) unit vectors describing the
+			pass's local motion direction. Pass (1, 0, 0, 1) to fall
+			back to axis-aligned decomposition.
+		scene_transform: SceneTransform instance used by
+			compute_residual_for_frame to align neighbor frames.
+		reader: Video reader providing width, height, frame_count, and
+			read_frame(index).
+		residual_cache: Mutable dict keyed by frame_index. The caller
+			creates this empty per interval and drops it after both
+			passes complete.
+		threshold: Motion intensity threshold for blob extraction.
+		half_window: Half-window count for background subtraction.
 
 	Returns:
-		Tuple of (outcome, blob, alpha_used) where outcome is one of:
-		  "accepted" - blob passed, alpha_used > 0, entry updated
-		  "vetoed" - blob found but ambiguous
-		  "rejected" - blob failed tier-1
-		  "no_data" - no residual or no blobs found
-		  "no_tangent" - tangent unstable, skipped
+		BlobObservation for the best in-corridor candidate, or None
+		when no residual was computable, no blobs were extracted, or
+		no extracted blob fell inside the corridor.
 	"""
-	# get predicted position and size
-	pred_cx = float(entry["cx"])
-	pred_cy = float(entry["cy"])
-	pred_w = float(entry["w"])
-	pred_h = float(entry["h"])
-	traj_conf = float(entry.get("conf", 0.0) or 0.0)
+	pred_cx, pred_cy = pred_center
+	pred_w, pred_h = pred_box
 
-	# compute tangent from ORIGINAL trajectory (never corrected)
-	tangent = compute_trajectory_tangent(original_trajectory, frame_index)
-	tx, ty, nx, ny = tangent
-	tangent_mag = (tx**2 + ty**2)**0.5
-	if tangent_mag < 0.001:
-		return ("no_tangent", None, 0.0)
-
-	# compute ROI around predicted position (8x torso box)
-	frame_w = reader.width if hasattr(reader, "width") else 1920
-	frame_h = reader.height if hasattr(reader, "height") else 1080
+	# compute ROI from caller's prediction and use it as part of the
+	# cache key so FWD and BWD with divergent raw_pred each get their
+	# own residual. _compute_roi returns a 4-tuple, which is hashable.
+	frame_w = getattr(reader, "width", 1920)
+	frame_h = getattr(reader, "height", 1080)
 	roi = _compute_roi(pred_cx, pred_cy, pred_h, frame_w, frame_h)
-	roi_x1, roi_y1 = roi[0], roi[1]
+	cache_key = (frame_index, roi)
 
-	# compute residual within ROI only
-	residual, validity_mask = compute_residual_for_frame(
-		reader, frame_index, scene_transform, half_window, cache, roi,
-	)
-	if residual is None:
-		return ("no_data", None, 0.0)
+	# fetch or compute cached frame data (raw image-derived only)
+	cached = residual_cache.get(cache_key)
+	if cached is None:
+		# nested cache for raw frame reads (keyed by frame_index alone;
+		# frame bytes are ROI-independent).
+		frame_read_cache = residual_cache.setdefault("_frames", {})
+		residual, validity_mask = compute_residual_for_frame(
+			reader, frame_index, scene_transform,
+			half_window, frame_read_cache, roi,
+		)
+		if residual is None:
+			# negative-result entry avoids re-attempts; holds no decisions
+			residual_cache[cache_key] = {"raw_blobs": []}
+			return None
+		raw_blobs = extract_frame_blobs(residual, validity_mask, threshold)
+		# restore full-frame coords so downstream math is in pixel space
+		roi_x1 = roi[0]
+		roi_y1 = roi[1]
+		for blob in raw_blobs:
+			blob["centroid_x"] += roi_x1
+			blob["centroid_y"] += roi_y1
+		residual_cache[cache_key] = {"raw_blobs": raw_blobs}
+		cached = residual_cache[cache_key]
 
-	# extract blobs (centroids are in ROI coordinates)
-	blobs = extract_frame_blobs(residual, validity_mask, threshold)
-	# convert blob centroids from ROI to full-frame coordinates
-	for blob in blobs:
-		blob["centroid_x"] += roi_x1
-		blob["centroid_y"] += roi_y1
-	if not blobs:
-		return ("no_data", None, 0.0)
+	raw_blobs = cached["raw_blobs"]
+	if not raw_blobs:
+		return None
 
-	# filter blobs to corridor
+	# apply corridor filter (uses caller's tangent; NOT stored in cache)
+	tangent = local_tangent if local_tangent is not None else (1.0, 0.0, 0.0, 1.0)
 	corridor_radius = max(1.5 * pred_w, 0.75 * pred_h)
 	corridor_blobs = filter_blobs_to_corridor(
-		blobs, pred_cx, pred_cy, tangent, corridor_radius,
+		raw_blobs, pred_cx, pred_cy, tangent, corridor_radius,
 	)
 	if not corridor_blobs:
-		return ("no_data", None, 0.0)
+		return None
 
-	# score all corridor blobs
-	blob_scores = []
+	# pick the highest-confidence blob in the corridor
+	best_blob = None
+	best_score = -1.0
 	for blob in corridor_blobs:
 		score = compute_cue_confidence(
 			blob, pred_cx, pred_cy, pred_w, pred_h, tangent,
 		)
-		blob_scores.append((blob, score))
-	blob_scores.sort(key=lambda x: x[1], reverse=True)
+		if score > best_score:
+			best_score = score
+			best_blob = blob
 
-	best_blob, best_confidence = blob_scores[0]
-	second_best_confidence = blob_scores[1][1] if len(blob_scores) > 1 else 0.0
+	if best_blob is None:
+		return None
 
-	# tier-1 hard gate
-	passes_tier1 = _apply_tier1_gate(
-		best_blob, pred_cx, pred_cy, pred_w, pred_h,
-		best_confidence, prev_accepted_blob, tangent, corridor_radius,
+	observation = BlobObservation(
+		center_pixel=(float(best_blob["centroid_x"]), float(best_blob["centroid_y"])),
+		cross_track=float(best_blob.get("cross_track", 0.0)),
+		along_track=float(best_blob.get("along_track", 0.0)),
+		confidence=float(best_score),
 	)
-	if not passes_tier1:
-		return ("rejected", None, 0.0)
-
-	# tier-2 soft penalties
-	effective_confidence = _apply_tier2_penalties(
-		best_blob, best_confidence, pred_cx, pred_cy, pred_w, pred_h,
-		tangent, prev_accepted_blob, second_best_confidence,
-	)
-
-	# ambiguity veto
-	if effective_confidence < VETO_CONFIDENCE_THRESHOLD:
-		return ("vetoed", None, 0.0)
-
-	# accepted: compute corrected position
-	new_cx, new_cy, alpha_used = _compute_corrected_position(
-		best_blob, pred_cx, pred_cy, pred_w, pred_h,
-		tangent, effective_confidence, traj_conf,
-	)
-
-	# update trajectory entry (position only, not size)
-	entry["cx"] = new_cx
-	entry["cy"] = new_cy
-
-	return ("accepted", best_blob, alpha_used)
-
-
-#============================================
-def _handle_miss(state: dict) -> None:
-	"""Update temporal state after a missed frame (no blob, rejected, no data).
-
-	Increments miss_count. If miss_count exceeds SHORT_MEMORY_FRAMES,
-	breaks the chain and clears prev_accepted_blob.
-
-	Args:
-		state: Mutable dict with prev_accepted_blob, miss_count,
-			current_chain_length, chain_lengths, chain_break_count.
-	"""
-	state["miss_count"] += 1
-	if state["miss_count"] > SHORT_MEMORY_FRAMES:
-		if state["current_chain_length"] > 0:
-			state["chain_lengths"].append(state["current_chain_length"])
-			state["current_chain_length"] = 0
-			state["chain_break_count"] += 1
-		state["prev_accepted_blob"] = None
-
-
-#============================================
-def refine_with_motion_cues(
-	trajectory: list,
-	reader: object,
-	scene_transform: object,
-	seeds: list,
-	half_window: int = DEFAULT_HALF_WINDOW,
-	threshold: float = DEFAULT_THRESHOLD,
-	race_start_frame: int = None,
-) -> list:
-	"""Apply per-frame motion-cue observation fusion to a fused trajectory.
-
-	For each non-seed frame: compute residual, find best blob, apply
-	two-tier gate, blend accepted observations with Hermite prediction.
-	Seeds are never modified. Tangent from original trajectory snapshot.
-
-	Args:
-		trajectory: List of state dicts from stitch_trajectories().
-		reader: VideoReader instance.
-		scene_transform: SceneTransform instance.
-		seeds: All seed dicts (for seed-frame protection).
-		half_window: Background subtraction window (default 4 = 9 frames).
-		threshold: Motion intensity threshold.
-		race_start_frame: If not None, frames before this index are
-			skipped entirely (pre-race veto). The runner is stationary,
-			so motion-cue has no valid signal and should not be fused.
-
-	Returns:
-		Modified trajectory list (same object, modified in place).
-	"""
-	num_frames = len(trajectory)
-	if num_frames == 0:
-		return trajectory
-
-	# guard: reader must support frame_count and read_frame
-	if not hasattr(reader, "frame_count") or not hasattr(reader, "read_frame"):
-		print("  motion-cue fusion: skipped (reader does not support frame access)")
-		return trajectory
-
-	# build sorted seed frame list for interval boundary detection
-	seed_frame_list = sorted(int(s["frame_index"]) for s in seeds
-		if s.get("status") in ("visible", "partial", "approximate"))
-
-	# snapshot original trajectory for tangent computation
-	original_trajectory = []
-	for entry in trajectory:
-		if entry is None:
-			original_trajectory.append(None)
-		else:
-			original_trajectory.append(dict(entry))
-
-	# frame cache for sequential processing
-	cache = {}
-
-	# temporal continuity and statistics state
-	state = {
-		"prev_accepted_blob": None,
-		"miss_count": 0,
-		"current_chain_length": 0,
-		"chain_lengths": [],
-		"chain_break_count": 0,
-	}
-	frames_processed = 0
-	frames_accepted = 0
-	frames_vetoed = 0
-	frames_rejected = 0
-	frames_pre_race = 0
-	alpha_sum = 0.0
-
-	# find first and last valid frame indices
-	first_valid = None
-	last_valid = None
-	for i in range(num_frames):
-		if trajectory[i] is not None:
-			if first_valid is None:
-				first_valid = i
-			last_valid = i
-	if first_valid is None:
-		# return zero-filled stats for all intervals
-		num_intervals = max(1, len(seed_frame_list) - 1) if seed_frame_list else 1
-		return trajectory, [{"processed": 0, "accepted": 0, "acceptance_rate": 0.0}
-			for _ in range(num_intervals)]
-
-	# interval tracking: find which interval each frame belongs to
-	# intervals are defined by consecutive seed pairs
-	current_interval_idx = 0
-	interval_start = seed_frame_list[0] if seed_frame_list else first_valid
-	interval_end = seed_frame_list[1] if len(seed_frame_list) > 1 else last_valid
-	iv_accepted = 0
-	iv_processed = 0
-	total_intervals = max(1, len(seed_frame_list) - 1)
-
-	total_frames = last_valid - first_valid + 1
-	# "global, not scoped" advertises that fusion ignores the refine-mode
-	# locality invariant: the entire trajectory is fused regardless of how
-	# many intervals actually changed. see plan "Deferred: fusion scoping".
-	print(f"  motion-cue fusion: {total_frames} frames, "
-		f"{total_intervals} intervals, "
-		f"window={2 * half_window + 1} frames "
-		f"(global, not scoped)")
-	print(f"  fusion: starting interval 1/{total_intervals} "
-		f"(frames {interval_start}-{interval_end})")
-	progress = rich.progress.Progress(
-		rich.progress.TextColumn("  motion-cue fusion"),
-		rich.progress.BarColumn(),
-		rich.progress.TaskProgressColumn(),
-		rich.progress.TimeRemainingColumn(),
-		rich.progress.TimeElapsedColumn(),
-		refresh_per_second=1,
-	)
-	with progress:
-		ptask = progress.add_task("fusion", total=total_frames)
-		for frame_index in range(first_valid, last_valid + 1):
-			progress.update(ptask, advance=1)
-
-			# detect interval boundary and print summary of previous interval
-			if (len(seed_frame_list) > 1
-				and current_interval_idx < total_intervals
-				and frame_index >= interval_end):
-				# print one-line summary for the completed interval
-				if iv_processed > 0:
-					iv_rate = iv_accepted / iv_processed
-					progress.console.print(
-						f"  fusion: interval {current_interval_idx + 1}/{total_intervals} "
-						f"(frames {interval_start}-{interval_end}): "
-						f"{iv_accepted}/{iv_processed} accepted ({iv_rate:.0%})"
-					)
-				# advance to next interval
-				current_interval_idx += 1
-				iv_accepted = 0
-				iv_processed = 0
-				interval_start = interval_end
-				if current_interval_idx < total_intervals:
-					interval_end = seed_frame_list[current_interval_idx + 1]
-				else:
-					interval_end = last_valid
-				# announce start of new interval
-				progress.console.print(
-					f"  fusion: starting interval {current_interval_idx + 1}/{total_intervals} "
-					f"(frames {interval_start}-{interval_end})"
-				)
-
-			entry = trajectory[frame_index]
-
-			# pre-race veto: runner is stationary, motion-cue has no valid
-			# signal here. break the temporal chain so stale pre-race blob
-			# state cannot bleed across the race-start boundary.
-			if race_start_frame is not None and frame_index < race_start_frame:
-				state["prev_accepted_blob"] = None
-				state["miss_count"] = 0
-				if state["current_chain_length"] > 0:
-					state["chain_lengths"].append(state["current_chain_length"])
-					state["current_chain_length"] = 0
-				frames_pre_race += 1
-				continue
-
-			# skip empty frames
-			if entry is None:
-				_handle_miss(state)
-				continue
-
-			# protect seed frames
-			if entry.get("source") == "seed":
-				continue
-
-			# skip frames near video boundaries
-			if frame_index < half_window or frame_index >= reader.frame_count - half_window:
-				continue
-
-			frames_processed += 1
-			iv_processed += 1
-
-			# process this frame
-			outcome, blob, alpha_used = _process_one_frame(
-				frame_index, entry, original_trajectory, reader,
-				scene_transform, state["prev_accepted_blob"],
-				half_window, threshold, cache,
-			)
-
-			if outcome == "accepted":
-				state["prev_accepted_blob"] = blob
-				state["miss_count"] = 0
-				state["current_chain_length"] += 1
-				frames_accepted += 1
-				iv_accepted += 1
-				alpha_sum += alpha_used
-			elif outcome == "vetoed":
-				# veto preserves temporal memory
-				frames_vetoed += 1
-			elif outcome == "rejected":
-				frames_rejected += 1
-				_handle_miss(state)
-			else:
-				# no_data or no_tangent
-				_handle_miss(state)
-
-			# evict old cache entries (forward-only, +2 buffer)
-			evict_before = frame_index - half_window - 3
-			keys_to_evict = []
-			for k in cache:
-				# cache keys are either int (grayscale) or ("bgr", int)
-				if isinstance(k, int) and k < evict_before:
-					keys_to_evict.append(k)
-				elif isinstance(k, tuple) and k[1] < evict_before:
-					keys_to_evict.append(k)
-			for k in keys_to_evict:
-				del cache[k]
-
-	# print final interval summary
-	if iv_processed > 0:
-		iv_rate = iv_accepted / iv_processed
-		print(f"  fusion: interval {current_interval_idx + 1}/{total_intervals} "
-			f"(frames {interval_start}-{interval_end}): "
-			f"{iv_accepted}/{iv_processed} accepted ({iv_rate:.0%})")
-
-	# close final chain
-	if state["current_chain_length"] > 0:
-		state["chain_lengths"].append(state["current_chain_length"])
-
-	# print summary
-	chain_lengths = state["chain_lengths"]
-	chain_break_count = state["chain_break_count"]
-	if frames_processed > 0:
-		usage_rate = frames_accepted / frames_processed
-		veto_rate = frames_vetoed / frames_processed
-		mean_alpha = alpha_sum / frames_accepted if frames_accepted > 0 else 0.0
-		mean_chain = sum(chain_lengths) / len(chain_lengths) if chain_lengths else 0.0
-	else:
-		usage_rate = 0.0
-		veto_rate = 0.0
-		mean_alpha = 0.0
-		mean_chain = 0.0
-
-	print(f"  motion-cue fusion: {frames_processed} frames processed")
-	if frames_pre_race > 0:
-		print(f"    pre-race skipped: {frames_pre_race} "
-			f"(race_start_frame={race_start_frame})")
-	print(f"    observation usage: {frames_accepted}/{frames_processed} "
-		f"({usage_rate:.1%})")
-	print(f"    vetoed: {frames_vetoed} ({veto_rate:.1%}), "
-		f"rejected: {frames_rejected}")
-	print(f"    mean alpha: {mean_alpha:.3f}, "
-		f"mean chain: {mean_chain:.1f}, "
-		f"chain breaks: {chain_break_count}")
-
-	return trajectory
+	return observation

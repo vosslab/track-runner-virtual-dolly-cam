@@ -3,6 +3,16 @@
 For each seed-to-seed interval, fits cubic Hermite splines with separate
 forward and backward curves. Endpoints are hard-anchored at seeds, but slopes
 differ by direction (backward-looking vs forward-looking regression).
+
+Propagation runs in two stages per pass:
+  Stage 1: compute `raw_pred[t]` for every frame from Hermite curves only.
+  Stage 2: optionally consult a stateless blob observer at each non-endpoint
+  frame, apply three gates (proximity, direction, temporal smoothness) that
+  read only `raw_pred`, and blend with a displacement clamp when accepted.
+
+Gates MUST NOT read any prior post-blob output. Blob influence at frame t-1
+leaking into the gating decision at frame t re-creates the cross-frame state
+the design forbids (see plan happy-forging-valiant.md).
 """
 
 # Standard Library
@@ -10,6 +20,9 @@ import math
 
 # PIP3 modules
 import numpy
+
+# local repo modules
+import residual_motion
 
 
 #============================================
@@ -338,21 +351,16 @@ def fit_interval_curves(
 
 
 #============================================
-# NOTE: analytical propagation initializes disp_history as empty.
-# The analytical path uses stationary_lock directly for stationarity.
-def propagate_forward_analytical(
+def _compute_raw_pred_forward(
 	interval_curves: dict,
 	scene_transform: object,
 ) -> list:
-	"""Propagate forward using FWD Hermite curve (backward-looking slopes).
+	"""Stage 1 of the forward pass: pure Hermite prediction per frame.
 
-	Args:
-		interval_curves: Dict from fit_interval_curves().
-		scene_transform: SceneTransform instance.
-
-	Returns:
-		List of tracking state dicts, one per frame from start_frame to
-		end_frame inclusive. Index 0 is at start_frame (the left seed).
+	Returns a list of `(frame_index, cx, cy, w, h, conf, is_stationary)`
+	tuples in pixel coordinates, one per frame from start_frame to
+	end_frame inclusive. This array is FROZEN -- the gating code MUST
+	read from it only, never from any post-blob output.
 	"""
 	start_frame = interval_curves["start_frame"]
 	end_frame = interval_curves["end_frame"]
@@ -366,13 +374,9 @@ def propagate_forward_analytical(
 	fwd_slope_x, fwd_slope_y = interval_curves["fwd_slopes"]
 	fwd_size_slope_w, fwd_size_slope_h = interval_curves["fwd_size_slopes"]
 
-	# compute tangent slopes at both endpoints
-	# For the FWD curve: m0 (left slope) is from backward-looking regression
 	m0_x = fwd_slope_x
 	m0_y = fwd_slope_y
 
-	# At the right endpoint, use a simple finite difference
-	# (since FWD doesn't have forward-looking info)
 	interval_length = float(end_frame - start_frame)
 	if interval_length > 0:
 		m1_x = (right_sx - left_sx) / interval_length
@@ -381,7 +385,6 @@ def propagate_forward_analytical(
 		m1_x = 0.0
 		m1_y = 0.0
 
-	# same for size slopes
 	m0_w = fwd_size_slope_w
 	m0_h = fwd_size_slope_h
 	if interval_length > 0:
@@ -391,84 +394,65 @@ def propagate_forward_analytical(
 		m1_w = 0.0
 		m1_h = 0.0
 
-	states = []
+	raw = []
 	conf_decay_per_frame = 0.97
 	conf_floor = 0.1
 	start_conf = 1.0
 
 	for frame_index in range(start_frame, end_frame + 1):
-		# parametric distance along interval
 		if interval_length > 0:
 			t = (frame_index - start_frame) / interval_length
 		else:
 			t = 0.0 if frame_index == start_frame else 1.0
-
-		# clamp t to [0, 1]
 		t = max(0.0, min(1.0, t))
 
 		if is_stationary:
-			# hold position constant
 			scene_cx = left_sx
 			scene_cy = left_sy
 			scene_w = left_sw
 			scene_h = left_sh
 		else:
-			# interpolate using Hermite curve
-			# scale slopes by interval length for Hermite tangents
 			scene_cx = hermite_interpolate(t, left_sx, right_sx, m0_x * interval_length, m1_x * interval_length)
 			scene_cy = hermite_interpolate(t, left_sy, right_sy, m0_y * interval_length, m1_y * interval_length)
-
-			# size in log space
 			log_left_w = math.log(left_sw) if left_sw > 1e-6 else 0.0
 			log_right_w = math.log(right_sw) if right_sw > 1e-6 else 0.0
 			log_left_h = math.log(left_sh) if left_sh > 1e-6 else 0.0
 			log_right_h = math.log(right_sh) if right_sh > 1e-6 else 0.0
-
 			log_w = hermite_interpolate(t, log_left_w, log_right_w, m0_w * interval_length, m1_w * interval_length)
 			log_h = hermite_interpolate(t, log_left_h, log_right_h, m0_h * interval_length, m1_h * interval_length)
-
-			# convert back from log space
 			scene_w = math.exp(log_w) if log_w < 100 else left_sw
 			scene_h = math.exp(log_h) if log_h < 100 else left_sh
 
-		# convert scene coords back to pixel coords
 		pixel_cx, pixel_cy, pixel_w, pixel_h = (
 			scene_transform.scene_box_to_pixel(frame_index, scene_cx, scene_cy, scene_w, scene_h)
 		)
 
-		# compute confidence: decay from start
 		frames_from_start = frame_index - start_frame
 		confidence = max(conf_floor, start_conf * (conf_decay_per_frame ** frames_from_start))
 
-		state = {
-			"cx": float(pixel_cx),
-			"cy": float(pixel_cy),
-			"w": float(pixel_w),
-			"h": float(pixel_h),
-			"conf": float(confidence),
-			"source": "propagated",
-			"stationary_lock": is_stationary,
-			"disp_history": [],
-		}
-		states.append(state)
+		raw.append((
+			int(frame_index),
+			float(pixel_cx),
+			float(pixel_cy),
+			float(pixel_w),
+			float(pixel_h),
+			float(confidence),
+			bool(is_stationary),
+		))
 
-	return states
+	return raw
 
 
 #============================================
-def propagate_backward_analytical(
+def _compute_raw_pred_backward(
 	interval_curves: dict,
 	scene_transform: object,
 ) -> list:
-	"""Propagate backward using BWD Hermite curve (forward-looking slopes).
+	"""Stage 1 of the backward pass: pure Hermite prediction per frame.
 
-	Args:
-		interval_curves: Dict from fit_interval_curves().
-		scene_transform: SceneTransform instance.
-
-	Returns:
-		List of tracking state dicts from end_frame to start_frame (reverse order).
-		Index 0 is at end_frame (the right seed).
+	Returns the same shape as _compute_raw_pred_forward but with BWD
+	Hermite slopes and reverse-order iteration. Confidence decays from
+	the end seed.
 	"""
 	start_frame = interval_curves["start_frame"]
 	end_frame = interval_curves["end_frame"]
@@ -482,8 +466,6 @@ def propagate_backward_analytical(
 	bwd_slope_x, bwd_slope_y = interval_curves["bwd_slopes"]
 	bwd_size_slope_w, bwd_size_slope_h = interval_curves["bwd_size_slopes"]
 
-	# compute tangent slopes at both endpoints
-	# At the left endpoint, use simple finite difference
 	interval_length = float(end_frame - start_frame)
 	if interval_length > 0:
 		m0_x = (right_sx - left_sx) / interval_length
@@ -492,11 +474,9 @@ def propagate_backward_analytical(
 		m0_x = 0.0
 		m0_y = 0.0
 
-	# For the BWD curve: m1 (right slope) is from forward-looking regression
 	m1_x = bwd_slope_x
 	m1_y = bwd_slope_y
 
-	# same for size slopes
 	if interval_length > 0:
 		m0_w = (math.log(right_sw) - math.log(left_sw)) / interval_length if left_sw > 1e-6 and right_sw > 1e-6 else 0.0
 		m0_h = (math.log(right_sh) - math.log(left_sh)) / interval_length if left_sh > 1e-6 and right_sh > 1e-6 else 0.0
@@ -507,64 +487,408 @@ def propagate_backward_analytical(
 	m1_w = bwd_size_slope_w
 	m1_h = bwd_size_slope_h
 
-	states = []
+	raw = []
 	conf_decay_per_frame = 0.97
 	conf_floor = 0.1
 	start_conf = 1.0
 
+	# iterate reverse-order: frame_index from end_frame down to start_frame.
+	# Index 0 of the returned list is at end_frame.
 	for frame_index in range(end_frame, start_frame - 1, -1):
-		# parametric distance along interval (still measured from start)
 		if interval_length > 0:
 			t = (frame_index - start_frame) / interval_length
 		else:
 			t = 1.0 if frame_index == end_frame else 0.0
-
-		# clamp t to [0, 1]
 		t = max(0.0, min(1.0, t))
 
 		if is_stationary:
-			# hold position constant
 			scene_cx = right_sx
 			scene_cy = right_sy
 			scene_w = right_sw
 			scene_h = right_sh
 		else:
-			# interpolate using Hermite curve
 			scene_cx = hermite_interpolate(t, left_sx, right_sx, m0_x * interval_length, m1_x * interval_length)
 			scene_cy = hermite_interpolate(t, left_sy, right_sy, m0_y * interval_length, m1_y * interval_length)
-
-			# size in log space
 			log_left_w = math.log(left_sw) if left_sw > 1e-6 else 0.0
 			log_right_w = math.log(right_sw) if right_sw > 1e-6 else 0.0
 			log_left_h = math.log(left_sh) if left_sh > 1e-6 else 0.0
 			log_right_h = math.log(right_sh) if right_sh > 1e-6 else 0.0
-
 			log_w = hermite_interpolate(t, log_left_w, log_right_w, m0_w * interval_length, m1_w * interval_length)
 			log_h = hermite_interpolate(t, log_left_h, log_right_h, m0_h * interval_length, m1_h * interval_length)
-
-			# convert back from log space
 			scene_w = math.exp(log_w) if log_w < 100 else right_sw
 			scene_h = math.exp(log_h) if log_h < 100 else right_sh
 
-		# convert scene coords back to pixel coords
 		pixel_cx, pixel_cy, pixel_w, pixel_h = (
 			scene_transform.scene_box_to_pixel(frame_index, scene_cx, scene_cy, scene_w, scene_h)
 		)
 
-		# compute confidence: decay from end
 		frames_from_end = end_frame - frame_index
 		confidence = max(conf_floor, start_conf * (conf_decay_per_frame ** frames_from_end))
 
-		state = {
-			"cx": float(pixel_cx),
-			"cy": float(pixel_cy),
-			"w": float(pixel_w),
-			"h": float(pixel_h),
-			"conf": float(confidence),
-			"source": "propagated",
-			"stationary_lock": is_stationary,
-			"disp_history": [],
-		}
-		states.append(state)
+		raw.append((
+			int(frame_index),
+			float(pixel_cx),
+			float(pixel_cy),
+			float(pixel_w),
+			float(pixel_h),
+			float(confidence),
+			bool(is_stationary),
+		))
 
+	return raw
+
+
+#============================================
+# Blob-snap configuration. These constants are baked into the solver
+# fingerprint in interval_solver.SOLVER_FINGERPRINT_TAG; any numeric
+# change invalidates the refine cache automatically.
+BLOB_SNAP_ALPHA = 0.6
+"""Proximity gate: accept blob only if `dist <= ALPHA * raw_pred_box_height`."""
+BLOB_SNAP_PATH_SLACK = 0.5
+"""Motion-path gate: how far past |v| along the motion direction counts as
+"on path". `proj` must lie in `[0, |v| * (1 + PATH_SLACK)]`."""
+BLOB_SNAP_PATH_PERP_FRACTION = 0.75
+"""Motion-path gate: perpendicular-distance cap as a fraction of `|v|`.
+Together with PATH_SLACK this defines a thin capsule around the motion
+segment `[raw[i-1], raw[i] + PATH_SLACK * v_prev]`."""
+BLOB_SNAP_VELOCITY_FLOOR = 1.5
+"""Velocity magnitude below which direction and motion-path gates are
+skipped entirely (pixels per frame). Proximity gate still applies."""
+BLOB_SNAP_ALPHA_MAX = 0.5
+"""Upper bound on the per-frame blend weight toward blob observation.
+Effective alpha is `min(blob.confidence, ALPHA_MAX)`."""
+BLOB_SNAP_MAX_SHIFT_FRACTION = 0.5
+"""Per-frame displacement clamp. The blended center can shift by at most
+`ALPHA_MAX * MAX_SHIFT_FRACTION * raw_pred_box_height` relative to raw_pred,
+preventing visible jitter when blob confidence fluctuates frame-to-frame."""
+
+
+#============================================
+def _motion_path_ok(
+	anchor: tuple,
+	motion_vec: tuple,
+	blob_center: tuple,
+	slack: float,
+	perp_fraction: float,
+	velocity_floor: float,
+) -> object:
+	"""Check that a blob lies along the motion segment anchored at `anchor`.
+
+	Decomposes (blob - anchor) into a component along `motion_vec` and a
+	perpendicular component. Accepts when the along-track projection is
+	inside `[0, |motion_vec| * (1 + slack)]` AND the perpendicular
+	distance is at most `perp_fraction * |motion_vec|`.
+
+	This is a true motion-path check -- NOT a velocity-scaled proximity
+	check. A blob at the right distance from raw[t] but off to the side
+	of the motion line fails here even though a pure-distance check would
+	pass it.
+
+	Args:
+		anchor: (x, y) neighbor position (raw_pred only).
+		motion_vec: (dx, dy) local motion vector from anchor toward
+			raw[t]. Caller computes from raw_pred exclusively.
+		blob_center: (bx, by) candidate blob position.
+		slack: Forward-extension fraction past `|motion_vec|`.
+		perp_fraction: Perpendicular cap as fraction of `|motion_vec|`.
+		velocity_floor: Below this magnitude the check is vacuous
+			(returns None). Caller decides what to do with None.
+
+	Returns:
+		True if the blob lies on the motion path.
+		False if it does not.
+		None if motion magnitude is below the floor (check skipped).
+	"""
+	mag_sq = motion_vec[0] * motion_vec[0] + motion_vec[1] * motion_vec[1]
+	if mag_sq <= velocity_floor * velocity_floor:
+		return None
+	mag = mag_sq ** 0.5
+	dx = blob_center[0] - anchor[0]
+	dy = blob_center[1] - anchor[1]
+	# projection along motion direction, in pixel units (not normalized)
+	proj = (dx * motion_vec[0] + dy * motion_vec[1]) / mag
+	# perpendicular vector and distance
+	# perp = d - proj * (motion / mag) = d - (proj / mag) * motion
+	scale = proj / mag
+	perp_x = dx - scale * motion_vec[0]
+	perp_y = dy - scale * motion_vec[1]
+	perp = (perp_x * perp_x + perp_y * perp_y) ** 0.5
+	forward_ok = 0.0 <= proj <= mag * (1.0 + slack)
+	lateral_ok = perp <= perp_fraction * mag
+	result = forward_ok and lateral_ok
+	return result
+
+
+#============================================
+def _apply_blob_snap(
+	raw: list,
+	reader: object,
+	scene_transform: object,
+	residual_cache: dict,
+) -> list:
+	"""Stage 2: produce snap_pred from a frozen raw_pred, reading raw only.
+
+	STRICT separation of raw and snap:
+	  - `raw` is the frozen kinematic trajectory. Never mutated by this
+	    function (tuple elements are immutable; the list is not written).
+	  - `snap_pred` is the returned list of state dicts. Each entry's
+	    `cx` / `cy` is either raw[i]'s center (fall-through) or
+	    raw[i] + alpha_eff * delta (accepted). It is an OUTPUT LAYER,
+	    not a running trajectory state.
+	  - Gating code destructures raw[i-1], raw[i], raw[i+1] into
+	    locally-named `raw_*` variables. The accepted-blob branch writes
+	    to separate `snap_cx` / `snap_cy` locals so nothing in the read
+	    path can accidentally pick up a post-blob value.
+
+	For each non-endpoint, non-stationary frame three gates must all
+	pass for a blob to be accepted:
+	  1. Proximity: `dist(blob, raw[t]) <= ALPHA * h`.
+	  2. Direction: `dot(blob - raw[t], v_pred) >= 0` (skipped when
+	     `|v_pred| <= VELOCITY_FLOOR`).
+	  3. Motion path: the blob lies inside a thin capsule along the
+	     motion segment from each neighbor, i.e. the along-track
+	     projection is within the segment extent and the perpendicular
+	     off-axis distance is small relative to the local motion
+	     magnitude. This is a TRUE motion-path check, not a velocity-
+	     scaled proximity check: a blob at the right distance from
+	     raw[t] but off to the side of the motion line is rejected.
+	     Checked independently against raw[i-1] and raw[i+1]; both must
+	     pass when their motion magnitudes exceed the floor. If neither
+	     neighbor has sufficient motion, the gate is vacuous and only
+	     proximity/direction apply.
+
+	Accepted blobs blend with a displacement clamp:
+	  `delta = blob - raw[t]; |delta| <= max_shift; snap = raw[t] + alpha_eff * delta`.
+
+	Args:
+		raw: Frozen per-frame raw_pred list from _compute_raw_pred_forward
+			or _compute_raw_pred_backward.
+		reader: Video reader supplied by the solver. When None (or
+			missing required attributes) the function falls through to
+			pure Hermite for every frame.
+		scene_transform: SceneTransform for the observer's residual
+			alignment.
+		residual_cache: Per-interval cache dict; contains image-derived
+			raw data only (no accepted blobs, no gate outcomes).
+
+	Returns:
+		snap_pred as a list of state dicts, one per entry in `raw`, in
+		the same order. This list is a fresh output; the caller owns it.
+	"""
+	snap_pred = []
+	num = len(raw)
+
+	# guard: treat an incomplete reader (no read_frame / frame_count) as if
+	# the caller passed None. This keeps the stationary tests and other
+	# synthetic fixtures working on minimal reader stubs without forcing
+	# them to stub the entire video-reader API.
+	reader_ok = (
+		reader is not None
+		and hasattr(reader, "read_frame")
+		and hasattr(reader, "frame_count")
+	)
+	effective_reader = reader if reader_ok else None
+
+	for i in range(num):
+		frame_index, raw_cx, raw_cy, w, h, conf, is_stat = raw[i]
+		is_endpoint = (i == 0) or (i == num - 1)
+
+		# default output: pure raw_pred values. Every branch writes
+		# snap_cx / snap_cy before building the state dict.
+		snap_cx = raw_cx
+		snap_cy = raw_cy
+		snap_applied = False
+		gate = "skipped"
+
+		# endpoints and stationary-lock intervals: no snap
+		if effective_reader is None or is_endpoint or is_stat:
+			snap_pred.append({
+				"cx": float(snap_cx),
+				"cy": float(snap_cy),
+				"w": float(w),
+				"h": float(h),
+				"conf": float(conf),
+				"source": "propagated",
+				"stationary_lock": is_stat,
+				"disp_history": [],
+				"blob_gate": gate,
+			})
+			continue
+
+		# Destructure neighbors from raw ONLY. No reference to snap_pred.
+		_, raw_prev_cx, raw_prev_cy, _, _, _, _ = raw[i - 1]
+		_, raw_next_cx, raw_next_cy, _, _, _, _ = raw[i + 1]
+		# local motion vectors in iteration order
+		v_prev = (raw_cx - raw_prev_cx, raw_cy - raw_prev_cy)
+		v_next = (raw_next_cx - raw_cx, raw_next_cy - raw_cy)
+		v_pred = (0.5 * (v_prev[0] + v_next[0]), 0.5 * (v_prev[1] + v_next[1]))
+		v_pred_mag = (v_pred[0] ** 2 + v_pred[1] ** 2) ** 0.5
+
+		# local tangent for the observer (unit-vector frame)
+		if v_pred_mag > 1e-6:
+			t_x = v_pred[0] / v_pred_mag
+			t_y = v_pred[1] / v_pred_mag
+			local_tangent = (t_x, t_y, -t_y, t_x)
+		else:
+			local_tangent = (1.0, 0.0, 0.0, 1.0)
+
+		observation = residual_motion.observe_blob_at(
+			frame_index,
+			(raw_cx, raw_cy),
+			(w, h),
+			local_tangent,
+			scene_transform,
+			effective_reader,
+			residual_cache,
+		)
+
+		if observation is None:
+			gate = "absent"
+		else:
+			bx, by = observation.center_pixel
+			dx = bx - raw_cx
+			dy = by - raw_cy
+			dist = (dx * dx + dy * dy) ** 0.5
+
+			# Gate 1: proximity (against raw[t] only)
+			proximity_ok = dist <= BLOB_SNAP_ALPHA * h
+
+			# Gate 2: direction. Skipped on near-stationary raw_pred.
+			# Note: when both v_prev and v_next are below the floor
+			# (genuinely near-stationary interior frame), both this gate
+			# AND gate 3 (motion path) become vacuous and only proximity
+			# applies. Full stationary-lock intervals are handled earlier
+			# by is_stat; this covers partial-motion frames with weak
+			# local velocity. Proximity alone is adequate because near-
+			# stationary motion makes directional constraints ambiguous.
+			if v_pred_mag > BLOB_SNAP_VELOCITY_FLOOR:
+				direction_ok = (dx * v_pred[0] + dy * v_pred[1]) >= 0.0
+			else:
+				direction_ok = True
+
+			# Gate 3: motion-path consistency. Asymmetric check.
+			# Prev anchor (raw[i-1]) is, in iteration order, the frame
+			# closer to the pass's starting seed -- it has accumulated
+			# fewer Hermite-propagation steps and is the more
+			# trustworthy local reference. The rule is:
+			#   accept if prev does not actively fail
+			#   AND next does not actively fail (None permitted)
+			#   ... but if prev passes and next fails, STILL accept.
+			# Rationale: real footage often has t+1-side noise from
+			# upcoming occlusions, tight curvature, or camera-warp
+			# error. Requiring both anchors to pass rejects valid
+			# blobs in exactly the regimes this feature cares about.
+			# Prev-side noise is rarer because the pass has just come
+			# from a seed anchor, so a prev-fail is strong evidence
+			# the blob is off-path.
+			path_ok_prev = _motion_path_ok(
+				(raw_prev_cx, raw_prev_cy), v_prev, (bx, by),
+				BLOB_SNAP_PATH_SLACK, BLOB_SNAP_PATH_PERP_FRACTION,
+				BLOB_SNAP_VELOCITY_FLOOR,
+			)
+			# Note: path_ok_next is intentionally not computed. Keeping
+			# it absent (not just unused) makes the asymmetry explicit
+			# in the code: future-side disagreement is tolerated by
+			# construction, not by a silent "OR True" combining step
+			# that a future reader could misread as accidental.
+			path_ok = path_ok_prev is not False
+
+			if proximity_ok and direction_ok and path_ok:
+				# accept: blend with displacement clamp
+				max_shift = BLOB_SNAP_MAX_SHIFT_FRACTION * h
+				delta_x = dx
+				delta_y = dy
+				if dist > max_shift and dist > 1e-9:
+					scale = max_shift / dist
+					delta_x = delta_x * scale
+					delta_y = delta_y * scale
+				alpha_eff = min(observation.confidence, BLOB_SNAP_ALPHA_MAX)
+				# write to snap_* so the raw_* locals remain unchanged
+				snap_cx = raw_cx + alpha_eff * delta_x
+				snap_cy = raw_cy + alpha_eff * delta_y
+				snap_applied = True
+				gate = "accepted"
+			else:
+				gate = "rejected"
+
+		snap_pred.append({
+			"cx": float(snap_cx),
+			"cy": float(snap_cy),
+			"w": float(w),
+			"h": float(h),
+			"conf": float(conf),
+			"source": "propagated_with_blob_snap" if snap_applied else "propagated",
+			"stationary_lock": is_stat,
+			"disp_history": [],
+			"blob_gate": gate,
+		})
+
+	return snap_pred
+
+
+#============================================
+def propagate_forward_analytical(
+	interval_curves: dict,
+	scene_transform: object,
+	reader: object = None,
+	residual_cache: dict = None,
+) -> list:
+	"""Propagate forward using FWD Hermite curve plus optional blob snap.
+
+	Stage 1 computes raw_pred[t] from Hermite only. Stage 2 optionally
+	consults a stateless blob observer at each non-endpoint frame,
+	reading from raw_pred exclusively.
+
+	Args:
+		interval_curves: Dict from fit_interval_curves().
+		scene_transform: SceneTransform instance.
+		reader: Optional video reader. When None, blob snap is skipped
+			and propagation reduces to pure Hermite (delete-test mode).
+		residual_cache: Optional per-interval cache. When reader is
+			provided, the solver supplies a shared cache for FWD and BWD.
+
+	Returns:
+		List of tracking state dicts, one per frame from start_frame to
+		end_frame inclusive. Index 0 is at start_frame.
+	"""
+	raw = _compute_raw_pred_forward(interval_curves, scene_transform)
+	if reader is None or residual_cache is None:
+		# pure Hermite path. Delete-test: behavior equals the pre-patch
+		# propagator exactly on inputs with no observer call.
+		states = _apply_blob_snap(raw, None, scene_transform, {})
+		return states
+	states = _apply_blob_snap(raw, reader, scene_transform, residual_cache)
+	return states
+
+
+#============================================
+def propagate_backward_analytical(
+	interval_curves: dict,
+	scene_transform: object,
+	reader: object = None,
+	residual_cache: dict = None,
+) -> list:
+	"""Propagate backward using BWD Hermite curve plus optional blob snap.
+
+	Output order matches the pre-patch contract: index 0 is at end_frame,
+	index -1 is at start_frame (reverse iteration).
+
+	Args:
+		interval_curves: Dict from fit_interval_curves().
+		scene_transform: SceneTransform instance.
+		reader: Optional video reader.
+		residual_cache: Optional per-interval cache shared with the FWD
+			pass. Legitimately holds raw residuals and raw blobs only;
+			no per-frame decisions (see residual_motion.observe_blob_at
+			docstring for the cache content boundary).
+
+	Returns:
+		List of tracking state dicts from end_frame to start_frame
+		(reverse order). Index 0 is at end_frame.
+	"""
+	raw = _compute_raw_pred_backward(interval_curves, scene_transform)
+	if reader is None or residual_cache is None:
+		states = _apply_blob_snap(raw, None, scene_transform, {})
+		return states
+	states = _apply_blob_snap(raw, reader, scene_transform, residual_cache)
 	return states

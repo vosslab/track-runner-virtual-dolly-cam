@@ -162,6 +162,13 @@ def classify_interval_severity(interval: dict, fps: float) -> str:
 		else:
 			severity = "medium"
 
+		# Blob coverage is recorded on interval_score as `blob_coverage_fwd`
+		# and `blob_coverage_bwd` (per pass). It is a diagnostic for human
+		# review only and does NOT feed severity. The base rule above
+		# already handles agreement-weakness and tier-weakness; coverage
+		# as an automatic severity bump has no non-redundant regime and
+		# was removed after an audit showed it was dead code.
+
 	else:
 		# optical-flow mode (legacy): reconstruct from agreement and margin
 		agreement = float(score.get("agreement_score", 0.0))

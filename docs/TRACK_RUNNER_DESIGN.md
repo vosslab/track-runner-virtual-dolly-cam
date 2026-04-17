@@ -49,6 +49,38 @@ Jersey color is size-gated:
 After 1-2 laps on a track, cyclical priors become available. The runner
 returns to roughly the same image-plane positions every lap period.
 
+Residual-motion blobs are an optional per-frame measurement. The analytical
+FWD/BWD propagator in [track_runner/velocity_model.py](../track_runner/velocity_model.py)
+consults `residual_motion.observe_blob_at` at each non-endpoint frame and
+blends the blob into the predicted center when three local gates all pass:
+proximity, direction, and temporal smoothness. Gates read the frozen
+`raw_pred` (Hermite-only) array, never any post-blob output, so blob
+influence cannot leak between frames. Blob snap is optional and local: on
+frames with no corridor blob the propagator falls through to pure Hermite
+unchanged. See [docs/CHANGELOG.md](CHANGELOG.md) entries for 2026-04-17
+and the design plan `~/.claude/plans/happy-forging-valiant.md`.
+
+### Anti-pattern: chained blob state
+
+Blob evidence must not accumulate across frames. No variable named
+`last_blob`, `prev_accepted_blob`, `miss_count`, or any `*_chain_*` belongs
+in production code. The previous motion-cue fusion carried a
+three-frame memory of accepted blobs plus a chain-break counter; the
+accumulated state re-introduced exactly the drift the blob pipeline was
+meant to fix, and turned refine into an O(total frames) post-process. Code
+reviews reject any reintroduction of cross-frame blob state.
+
+Rules:
+
+- Gates read only `raw_pred[t-1]`, `raw_pred[t]`, `raw_pred[t+1]` at frame
+  `t`. If a gate reads `snap_pred[k]`, the design has re-created state
+  one level deeper and fails review.
+- The per-interval residual cache holds image-derived raw data only
+  (residual maps, validity masks, raw extracted blobs). Never accepted
+  blobs, filtered-blob lists, gate outcomes, or `snap_pred` values.
+- The propagator has no `last_blob` variable. Missing blobs fall through
+  to the raw Hermite prediction, not a memorized earlier blob.
+
 ## Dual scoring philosophy
 
 The first-pass FWD/BWD propagation is intentionally independent. The
