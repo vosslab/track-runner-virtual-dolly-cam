@@ -1178,6 +1178,72 @@ def _mode_refine(
 
 
 #============================================
+def _parse_resolution(value: str) -> list:
+	"""Parse a 'WxH' string into a [width, height] integer list.
+
+	Args:
+		value: Resolution string like '1920x1080'.
+
+	Returns:
+		[width, height] with both values as ints.
+
+	Raises:
+		RuntimeError: If the string is not in WxH form or either dim
+			is not a positive integer.
+	"""
+	# split on the literal 'x' separator; anything else is an error
+	parts = value.lower().split("x")
+	if len(parts) != 2 or not parts[0] or not parts[1]:
+		raise RuntimeError(
+			f"invalid --output-resolution '{value}', expected WxH "
+			"(e.g. '1920x1080')"
+		)
+	width = int(parts[0])
+	height = int(parts[1])
+	if width <= 0 or height <= 0:
+		raise RuntimeError(
+			f"invalid --output-resolution '{value}', width and height "
+			"must be positive"
+		)
+	return [width, height]
+
+
+#============================================
+def _apply_encode_overrides(args: argparse.Namespace, cfg: dict) -> None:
+	"""Merge CLI encode-override flags into cfg['processing'] in place.
+
+	Handles --aspect plus the phase-4 flags (--torso-multiple,
+	-r/--output-resolution, --crf, --video-codec). Each flag is applied
+	only when the user set it; unset flags leave the config untouched.
+
+	Args:
+		args: Parsed argparse namespace.
+		cfg: Configuration dict, mutated in place.
+	"""
+	cfg.setdefault("processing", {})
+	processing = cfg["processing"]
+	# aspect is the legacy override flag; still honored here
+	if getattr(args, "aspect", None) is not None:
+		processing["crop_aspect"] = args.aspect
+	# torso_height_multiple: crop zoom knob
+	multiple = getattr(args, "torso_multiple", None)
+	if multiple is not None:
+		processing["torso_height_multiple"] = float(multiple)
+	# explicit output resolution, parsed as WxH
+	resolution_str = getattr(args, "output_resolution", None)
+	if resolution_str is not None:
+		processing["output_resolution"] = _parse_resolution(resolution_str)
+	# CRF quality
+	crf_override = getattr(args, "crf", None)
+	if crf_override is not None:
+		processing["crf"] = int(crf_override)
+	# ffmpeg video codec
+	codec_override = getattr(args, "video_codec", None)
+	if codec_override is not None:
+		processing["video_codec"] = codec_override
+
+
+#============================================
 def _resolve_encode_filters(args: argparse.Namespace, proc_cfg: dict) -> list:
 	"""Resolve the encode filter list from CLI and tr_config.
 
@@ -1362,10 +1428,8 @@ def _mode_encode(
 		intervals_path: Path to solved-intervals JSON file.
 			If None, derived from input_file.
 	"""
-	# apply aspect override
-	if getattr(args, "aspect", None) is not None:
-		cfg.setdefault("processing", {})
-		cfg["processing"]["crop_aspect"] = args.aspect
+	# apply CLI overrides (aspect + phase-4 encode-only flags)
+	_apply_encode_overrides(args, cfg)
 
 	# load diagnostics (for fps and interval metadata)
 	if not os.path.isfile(diag_path):

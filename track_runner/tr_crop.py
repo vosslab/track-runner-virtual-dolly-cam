@@ -327,8 +327,10 @@ def create_crop_controller(
 	aspect_str = processing["crop_aspect"]
 	aspect_ratio = parse_aspect_ratio(aspect_str)
 
-	# crop_fill_ratio is in the default config schema, require it
-	target_fill_ratio = float(processing["crop_fill_ratio"])
+	# torso_height_multiple is the user-facing crop-zoom knob
+	# (crop_height = multiple * tracked torso height); the internal
+	# formula uses its reciprocal, fill_ratio = torso_h / crop_h
+	target_fill_ratio = 1.0 / float(processing["torso_height_multiple"])
 	# tuning parameters with sensible defaults
 	smoothing_attack = float(processing.get("crop_smoothing_attack", 0.15))
 	smoothing_release = float(processing.get("crop_smoothing_release", 0.05))
@@ -386,8 +388,10 @@ def direct_center_crop_trajectory(
 	# parse aspect ratio
 	aspect_str = processing.get("crop_aspect", "1:1")
 	aspect_ratio = parse_aspect_ratio(aspect_str)
-	# fill ratio: subject height / crop height
-	fill_ratio = float(processing.get("crop_fill_ratio", 0.30))
+	# torso_height_multiple: crop_height = multiple * tracked torso height
+	# internal fill_ratio = torso_h / crop_h is the reciprocal
+	torso_multiple = float(processing.get("torso_height_multiple", 3.33))
+	fill_ratio = 1.0 / torso_multiple
 	# minimum crop dimension from config
 	min_crop_size = int(processing.get("crop_min_size", 200))
 	# smoothing alphas (0 = disabled)

@@ -717,7 +717,7 @@ detection:
   confidence_threshold: 0.25
 processing:
   crop_aspect: "1:1"
-  crop_fill_ratio: 0.30
+  torso_height_multiple: 3.33
   video_codec: "libx264"
   crf: 18
   encode_filters: []

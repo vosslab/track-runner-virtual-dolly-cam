@@ -105,7 +105,7 @@ VARIANTS = {
 		"overrides": {
 			"crop_mode": "direct_center",
 			"crop_aspect": "16:9",
-			"crop_fill_ratio": 0.30,
+			"torso_height_multiple": 3.33,
 			"crop_torso_anchor": 0.50,
 			"crop_zoom_stabilization": False,
 			"video_codec": "libx264",
@@ -118,7 +118,7 @@ VARIANTS = {
 		"overrides": {
 			"crop_mode": "direct_center",
 			"crop_aspect": "16:9",
-			"crop_fill_ratio": 0.30,
+			"torso_height_multiple": 3.33,
 			"crop_torso_anchor": 0.38,
 			"crop_zoom_stabilization": False,
 			"video_codec": "libx264",
@@ -131,7 +131,7 @@ VARIANTS = {
 		"overrides": {
 			"crop_mode": "direct_center",
 			"crop_aspect": "16:9",
-			"crop_fill_ratio": 0.30,
+			"torso_height_multiple": 3.33,
 			"crop_torso_anchor": 0.50,
 			"crop_zoom_stabilization": True,
 			"video_codec": "libx264",
@@ -144,7 +144,7 @@ VARIANTS = {
 		"overrides": {
 			"crop_mode": "direct_center",
 			"crop_aspect": "16:9",
-			"crop_fill_ratio": 0.30,
+			"torso_height_multiple": 3.33,
 			"crop_torso_anchor": 0.38,
 			"crop_zoom_stabilization": True,
 			"video_codec": "libx264",

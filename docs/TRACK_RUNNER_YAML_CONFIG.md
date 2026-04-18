@@ -7,13 +7,13 @@ for the crop-and-follow pipeline. It is auto-created at
 ## Minimal example
 
 ```yaml
-track_runner: 2
+track_runner: 3
 detection:
   model: yolov8n
   confidence_threshold: 0.25
 processing:
   crop_aspect: '16:9'
-  crop_fill_ratio: 0.1
+  torso_height_multiple: 8
   video_codec: libx264
   crf: 18
   encode_filters:
@@ -26,7 +26,7 @@ processing:
 
 | Key | Required | Description |
 | --- | --- | --- |
-| `track_runner` | yes | Schema version, must be `2` |
+| `track_runner` | yes | Schema version, must be `3` (v2 auto-migrates at load) |
 | `detection` | yes | Object detection model settings |
 | `processing` | yes | Crop, codec, and filter settings |
 
@@ -44,7 +44,7 @@ processing:
 | Key | Default | Description |
 | --- | --- | --- |
 | `crop_aspect` | `16:9` | Output aspect ratio as `W:H` string |
-| `crop_fill_ratio` | `0.1` | Target fraction of crop height the subject fills |
+| `torso_height_multiple` | `8` | Crop height as a multiple of the tracked torso-box height. Larger = more surroundings. Must be >= 1. |
 | `video_codec` | `libx264` | FFmpeg video codec name |
 | `crf` | `18` | Constant rate factor (lower = higher quality) |
 | `encode_filters` | `[bilateral, auto_levels, hqdn3d]` | Ordered filter pipeline for encode |
@@ -67,8 +67,8 @@ better than `smooth` mode. Recommended for handheld or shaky camera footage.
 
 **`smart`**: Experimental regime-switching crop controller. Classifies trajectory
 spans into regimes (clear, uncertain, distance) and applies different crop targets
-per regime. Uses `direct_center`-style offline processing with per-frame fill_ratio
-and zoom rate from the regime policy. Includes vertical asymmetry and torso
+per regime. Uses `direct_center`-style offline processing with per-frame torso
+multiple and zoom rate from the regime policy. Includes vertical asymmetry and torso
 protection composition rules. Thresholds are provisional.
 
 ### Smooth mode tuning
@@ -82,7 +82,7 @@ These keys only apply when `crop_mode: smooth`.
 | `crop_max_velocity` | `30.0` | Hard cap on crop center movement per frame (pixels) |
 | `crop_velocity_scale` | `2.0` | Adaptive velocity multiplier based on subject speed |
 | `crop_displacement_alpha` | `0.1` | EMA alpha for tracking subject displacement |
-| `crop_min_size` | `200` | Minimum crop height in pixels |
+| `crop_min_size` | `480` | Minimum crop height in pixels. Raising this lets `torso_height_multiple` control zoom instead of silently clamping. |
 
 #### Post-smoothing (optional, applied after smooth mode)
 
@@ -105,7 +105,7 @@ algorithm reuses `crop_post_smooth_*` keys for its smoothing pass.
 | `crop_post_smooth_strength` | `0.0` | Position smoothing alpha (0 = no smoothing) |
 | `crop_post_smooth_size_strength` | `0.0` | Size smoothing alpha (0 = defaults to half of position) |
 | `crop_post_smooth_max_velocity` | `0.0` | Velocity cap on center per frame (0 = no cap) |
-| `crop_min_size` | `200` | Minimum crop height in pixels |
+| `crop_min_size` | `480` | Minimum crop height in pixels. Raising this lets `torso_height_multiple` control zoom instead of silently clamping. |
 
 ### Encode filters
 
@@ -138,7 +138,18 @@ active, the resizing interpolation upgrades from bilinear to Lanczos.
 
 | Key | Default | Description |
 | --- | --- | --- |
-| `output_resolution` | auto | Explicit `[width, height]` for output. If omitted, uses the median of all crop rectangles. |
+| `output_resolution` | `[1920, 1080]` | Explicit `[width, height]` for output. Must match `crop_aspect`. If omitted, uses the median of all crop rectangles. |
+
+## Migrating from v2
+
+Schema v2 used `crop_fill_ratio`, the inverted reciprocal of the new
+`torso_height_multiple`. v2 configs load unchanged; the loader converts
+`crop_fill_ratio` to `torso_height_multiple = 1 / crop_fill_ratio` in
+memory and prints a one-line deprecation notice. To silence the notice,
+update your per-video YAML to use the new key.
+
+Examples: `crop_fill_ratio: 0.30` becomes `torso_height_multiple: 3.33`;
+`crop_fill_ratio: 0.1` becomes `torso_height_multiple: 10`.
 
 ## CLI flags that override config
 
@@ -148,6 +159,10 @@ active, the resizing interpolation upgrades from bilinear to Lanczos.
 | `-o OUTPUT` | Output video path (default: next to input with `_tracked` suffix) |
 | `--aspect W:H` | `crop_aspect` for this encode only |
 | `-F filters` | `encode_filters` as comma-separated list for this encode only |
+| `--torso-multiple N` | `torso_height_multiple` for this encode only |
+| `-r WxH` | `output_resolution` for this encode only (e.g. `1920x1080`) |
+| `--crf N` | `crf` quality for this encode only |
+| `--video-codec NAME` | `video_codec` for this encode only |
 
 ## Recommended presets
 
@@ -157,7 +172,7 @@ active, the resizing interpolation upgrades from bilinear to Lanczos.
 processing:
   crop_mode: direct_center
   crop_aspect: '16:9'
-  crop_fill_ratio: 0.1
+  torso_height_multiple: 8
   crop_post_smooth_strength: 0.03
   crop_post_smooth_max_velocity: 15.0
   video_codec: libx264
@@ -174,7 +189,7 @@ processing:
 processing:
   crop_mode: smooth
   crop_aspect: '16:9'
-  crop_fill_ratio: 0.1
+  torso_height_multiple: 8
   video_codec: libx264
   crf: 18
   encode_filters:
@@ -188,7 +203,7 @@ processing:
 processing:
   crop_mode: direct_center
   crop_aspect: '16:9'
-  crop_fill_ratio: 0.1
+  torso_height_multiple: 8
   crop_post_smooth_strength: 0.02
   crop_post_smooth_max_velocity: 10.0
   video_codec: libx264

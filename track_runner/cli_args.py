@@ -78,6 +78,32 @@ def _add_encode_args(parser: argparse.ArgumentParser) -> None:
 			"(overrides config). Example: bilateral,hqdn3d"
 		),
 	)
+	# torso_height_multiple override: no short flag on purpose.
+	# "z" reads as "zoom," which the config naming intentionally moved
+	# away from; no other single letter is unambiguous here.
+	parser.add_argument(
+		"--torso-multiple", dest="torso_multiple", type=float, default=None,
+		help=(
+			"Override torso_height_multiple for this encode only. "
+			"Crop height = this x tracked torso height; larger = wider view."
+		),
+	)
+	parser.add_argument(
+		"-r", "--output-resolution", dest="output_resolution", type=str,
+		default=None,
+		help=(
+			"Override output_resolution as WxH (e.g. '1920x1080'). "
+			"Must match --aspect."
+		),
+	)
+	parser.add_argument(
+		"--crf", dest="crf", type=int, default=None,
+		help="Override CRF quality for this encode only (lower = higher quality).",
+	)
+	parser.add_argument(
+		"--video-codec", dest="video_codec", type=str, default=None,
+		help="Override FFmpeg video codec (e.g. 'libx264', 'libx265').",
+	)
 
 
 #============================================

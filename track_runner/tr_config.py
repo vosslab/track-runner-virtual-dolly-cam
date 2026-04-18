@@ -15,7 +15,9 @@ import yaml
 #============================================
 
 TOOL_CONFIG_HEADER_KEY = "track_runner"
-TOOL_CONFIG_HEADER_VALUE = 2
+TOOL_CONFIG_HEADER_VALUE = 3
+# v2 is still accepted for auto-migration at load time
+TOOL_CONFIG_HEADER_ALLOWED = (2, 3)
 
 #============================================
 
@@ -57,6 +59,76 @@ def _get_default_camera_config() -> dict:
 
 #============================================
 
+def _migrate_crop_fill_ratio(config: dict) -> None:
+	"""Migrate legacy crop_fill_ratio to torso_height_multiple in place.
+
+	Semantic inversion: torso_height_multiple = 1 / crop_fill_ratio.
+	Bigger number means wider crop. Prints a one-line notice when the
+	migration fires. No-op when the new key is already present.
+
+	Args:
+		config: Configuration dictionary, mutated in place.
+	"""
+	processing = config.get("processing")
+	if not isinstance(processing, dict):
+		return
+	# new key already present wins; legacy key is discarded silently
+	if "torso_height_multiple" in processing:
+		processing.pop("crop_fill_ratio", None)
+		return
+	if "crop_fill_ratio" not in processing:
+		return
+	old_value = float(processing["crop_fill_ratio"])
+	if old_value <= 0.0:
+		raise RuntimeError(
+			f"legacy crop_fill_ratio must be > 0, got {old_value}"
+		)
+	new_value = 1.0 / old_value
+	processing["torso_height_multiple"] = new_value
+	del processing["crop_fill_ratio"]
+	print(
+		f"  [config migration] crop_fill_ratio={old_value} -> "
+		f"torso_height_multiple={new_value:.3f} "
+		"(deprecated; update your config)"
+	)
+
+
+#============================================
+
+def _validate_processing(config: dict) -> None:
+	"""Validate keys inside the processing section.
+
+	Enforces the torso_height_multiple contract (>= 1).
+	Other processing keys are read defensively by the code and do not
+	need schema-level validation here.
+
+	Args:
+		config: Full configuration dictionary.
+
+	Raises:
+		RuntimeError: If a processing key violates the contract.
+	"""
+	processing = config["processing"]
+	# torso_height_multiple is required on v3 configs after migration
+	if "torso_height_multiple" not in processing:
+		raise RuntimeError(
+			"config missing processing.torso_height_multiple "
+			"(set crop height as a multiple of tracked torso height, "
+			"e.g. 8)"
+		)
+	multiple = float(processing["torso_height_multiple"])
+	# contract: bigger number = wider view; must be at least 1 so the
+	# crop never shrinks below the torso box
+	if multiple < 1.0:
+		raise RuntimeError(
+			f"torso_height_multiple must be >= 1 (got {multiple}). "
+			"Crop height = this * tracked torso height; values < 1 would "
+			"crop smaller than the torso itself."
+		)
+
+
+#============================================
+
 def validate_config(config: dict) -> None:
 	"""
 	Validate that required keys are present in the config.
@@ -73,10 +145,12 @@ def validate_config(config: dict) -> None:
 			f"config missing required header key: {TOOL_CONFIG_HEADER_KEY}"
 		)
 	header_value = config[TOOL_CONFIG_HEADER_KEY]
-	if header_value != TOOL_CONFIG_HEADER_VALUE:
+	# accept current (v3) and legacy (v2) schema values; v2 is migrated
+	# in place at load time by _migrate_crop_fill_ratio
+	if header_value not in TOOL_CONFIG_HEADER_ALLOWED:
 		raise RuntimeError(
-			f"config header value mismatch: expected "
-			f"{TOOL_CONFIG_HEADER_VALUE}, got {header_value}"
+			f"config header value mismatch: expected one of "
+			f"{TOOL_CONFIG_HEADER_ALLOWED}, got {header_value}"
 		)
 	# check required top-level sections
 	required_sections = ["detection", "processing"]
@@ -86,6 +160,8 @@ def validate_config(config: dict) -> None:
 	# camera section is optional; fill with defaults if missing
 	if "camera" not in config:
 		config["camera"] = _get_default_camera_config()
+	# validate processing keys (torso_height_multiple contract)
+	_validate_processing(config)
 
 #============================================
 
@@ -114,6 +190,9 @@ def load_config(path: str) -> dict:
 			f"config missing required header key: "
 			f"{TOOL_CONFIG_HEADER_KEY} in {path}"
 		)
+	# auto-migrate v2 keys (crop_fill_ratio -> torso_height_multiple)
+	# before returning so every caller sees the v3-shaped dict
+	_migrate_crop_fill_ratio(config)
 	return config
 
 #============================================

@@ -94,7 +94,7 @@ VARIANTS = {
 		"description": "direct_center with tight framing + constraints (Exp5 winner)",
 		"overrides": {
 			"crop_mode": "direct_center",
-			"crop_fill_ratio": 0.3,
+			"torso_height_multiple": 3.33,
 			"crop_containment_radius": 0.20,
 			"crop_max_height_change": 0.005,
 			"crop_post_smooth_strength": 0.03,
@@ -106,7 +106,7 @@ VARIANTS = {
 		"description": "smart mode: regime-switching controller with composition rules",
 		"overrides": {
 			"crop_mode": "smart",
-			"crop_fill_ratio": 0.3,
+			"torso_height_multiple": 3.33,
 			"crop_containment_radius": 0.20,
 			"crop_max_height_change": 0.005,
 			"crop_post_smooth_strength": 0.03,

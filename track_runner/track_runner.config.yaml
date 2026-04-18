@@ -1,11 +1,20 @@
-track_runner: 2
+track_runner: 3
 detection:
   model: yolov8n
   confidence_threshold: 0.25
 processing:
   crop_mode: direct_center
   crop_aspect: '16:9'
-  crop_fill_ratio: 0.30
+  # crop height = torso_height_multiple x tracked torso height
+  # larger number = more surroundings. 8 is a wide, forgiving default
+  torso_height_multiple: 8
+  # minimum crop height in pixels; prevents tiny crops when the runner
+  # is far from camera. 480 leaves headroom before torso_height_multiple
+  # gets clamped
+  crop_min_size: 480
+  # explicit output pixel resolution; must match crop_aspect.
+  # omit to use the median of all crop rectangles (auto)
+  output_resolution: [1920, 1080]
   video_codec: libx264
   crf: 18
   encode_filters:
