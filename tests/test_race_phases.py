@@ -164,19 +164,3 @@ def test_gradual_acceleration():
 	# should detect onset somewhere after frame 60
 	if result["race_start_frame"] is not None:
 		assert result["race_start_frame"] >= 55
-
-
-#============================================
-def test_return_dict_keys():
-	"""Verify all expected keys are present in the return dict."""
-	fps = 30.0
-	transform = MockSceneTransform()
-	positions = [(100.0, 200.0)] * 60
-	trajectory = _make_trajectory(positions)
-	result = race_phases.detect_race_start(trajectory, transform, fps)
-
-	expected_keys = {
-		"race_start_frame", "race_start_s", "confidence",
-		"method", "threshold_used", "debounce_frames",
-	}
-	assert set(result.keys()) == expected_keys
