@@ -154,6 +154,51 @@ class AnnotationWindow(AppShell):
 			self._overlay_toolbar.addAction(action)
 			self._overlay_actions[key] = action
 
+		# Motion heat-map overlay. Default OFF (expensive compute).
+		# Toggled via this action or the H keyboard shortcut. Owned by
+		# the active controller; see BaseAnnotationController.
+		heat_action = QAction("Heat", self)
+		heat_action.setCheckable(True)
+		heat_action.setChecked(False)
+		heat_action.setToolTip("Toggle motion heat-map overlay (H)")
+		# swatch picks a deep magenta not used by any prediction,
+		# severity, or tracking-source palette entry so the toolbar
+		# icon cannot be misread as another overlay class.
+		heat_action.setIcon(self._make_swatch_icon("#A21CAF"))
+		heat_action.setData("heat")
+		heat_action.toggled.connect(self._on_overlay_toggled)
+		self._overlay_toolbar.addAction(heat_action)
+		self._overlay_actions["heat"] = heat_action
+
+		# Make the heat toolbar button visibly latched when checked:
+		# saturated magenta background with bold white text, distinct
+		# from all prediction/severity/tracking-source palette colors.
+		# Magenta is used (not red) so the active state is not read as
+		# an error condition. The stylesheet applies to the specific
+		# QToolButton rather than the whole toolbar so other overlay
+		# toggles keep their default Qt checked style.
+		heat_tool_button = self._overlay_toolbar.widgetForAction(heat_action)
+		if heat_tool_button is not None:
+			heat_tool_button.setStyleSheet(
+				"QToolButton:checked { "
+				"background-color: #A21CAF; color: white; "
+				"font-weight: bold; border: 2px solid #D946EF; "
+				"padding: 2px 6px; border-radius: 3px; }"
+			)
+
+		# Status label for heat-map overlay feedback ("computing...",
+		# "ROI shown at frame N", "no prediction for this frame", etc.)
+		self._heat_status_label = QLabel("")
+		self._heat_status_label.setStyleSheet(
+			"QLabel { color: #94A3B8; padding: 0 8px; font-size: 11px; }"
+		)
+		self._overlay_toolbar.addWidget(self._heat_status_label)
+
+		# H keyboard shortcut toggles the heat action. Keeping a
+		# reference prevents garbage collection of the QShortcut.
+		self._heat_shortcut = QShortcut(QKeySequence("H"), self)
+		self._heat_shortcut.activated.connect(heat_action.toggle)
+
 		# Add zoom controls to the status bar
 		self._zoom_controls = ZoomControls()
 		self.statusBar().addPermanentWidget(self._zoom_controls)
@@ -268,9 +313,16 @@ class AnnotationWindow(AppShell):
 		self._progress_bar.setValue(0)
 		self._progress_bar.setMaximum(0)
 
-		# Reset overlay toggles to all-visible on mode switch
-		for action in self._overlay_actions.values():
-			action.setChecked(True)
+		# Reset overlay toggles on mode switch. Prediction overlays
+		# return to their default-visible state; the heat overlay
+		# defaults to OFF so it does not fire compute unprompted after
+		# a mode swap.
+		for key, action in self._overlay_actions.items():
+			default_checked = (key != "heat")
+			action.setChecked(default_checked)
+		# clear any stale heat status from the previous controller
+		if hasattr(self, "_heat_status_label") and self._heat_status_label is not None:
+			self._heat_status_label.setText("")
 
 		# Remove previous controller widget from toolbar (keep mode_label and filter_button)
 		if self._controller_widget_action is not None:
@@ -323,6 +375,22 @@ class AnnotationWindow(AppShell):
 		if self._active_controller is not None:
 			if hasattr(self._active_controller, "set_overlay_enabled"):
 				self._active_controller.set_overlay_enabled(key, checked)
+
+	#============================================
+
+	def set_heat_status(self, text: str) -> None:
+		"""Set the motion heat-map overlay status label text.
+
+		Called by BaseAnnotationController when the HeatMapOverlay emits
+		statusChanged. Empty string clears the label.
+
+		Args:
+			text: Status string to display next to the heat toolbar
+				action (e.g. "computing...", "ROI shown at frame 1247",
+				"no prediction for this frame").
+		"""
+		if hasattr(self, "_heat_status_label") and self._heat_status_label is not None:
+			self._heat_status_label.setText(text)
 
 	#============================================
 

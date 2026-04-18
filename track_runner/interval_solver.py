@@ -8,7 +8,6 @@ stitches results into a full trajectory.
 # Standard Library
 import math
 import time
-import concurrent.futures
 
 # PIP3 modules
 import numpy
@@ -19,29 +18,17 @@ import rich.measure
 
 # local repo modules
 import scoring
-import key_input
-import state_io
 import velocity_model
 import race_phases
-import residual_motion
+import solve_queue
+import interval_fingerprint
 
-
-#============================================
-# Solver fingerprint tag. Baked into every `state_io.interval_fingerprint`
-# call so the refine cache invalidates correctly when the analytical
-# propagator semantics change. Bump `residual_motion.BLOB_OBSERVER_VERSION`
-# when observer behavior changes. Bump the numeric-constants suffix (the
-# lowercase `a`, `b`, `vf`, `am`, `ms` fragments) when the blob-snap gate
-# or blend constants in velocity_model change.
-SOLVER_FINGERPRINT_TAG = (
-	f"blob_snap/{residual_motion.BLOB_OBSERVER_VERSION}"
-	f"/a{velocity_model.BLOB_SNAP_ALPHA:.3f}"
-	f"/slk{velocity_model.BLOB_SNAP_PATH_SLACK:.3f}"
-	f"/prp{velocity_model.BLOB_SNAP_PATH_PERP_FRACTION:.3f}"
-	f"/vf{velocity_model.BLOB_SNAP_VELOCITY_FLOOR:.3f}"
-	f"/am{velocity_model.BLOB_SNAP_ALPHA_MAX:.3f}"
-	f"/ms{velocity_model.BLOB_SNAP_MAX_SHIFT_FRACTION:.3f}"
-)
+# re-export fingerprint helpers so existing `interval_solver.foo` call
+# sites keep working after the extraction. The canonical home is
+# `interval_fingerprint.py`; new code should import from there directly.
+SOLVER_FINGERPRINT_TAG = interval_fingerprint.SOLVER_FINGERPRINT_TAG
+compute_interval_fingerprint = interval_fingerprint.compute_interval_fingerprint
+filter_usable_seeds_sorted = interval_fingerprint.filter_usable_seeds_sorted
 
 
 #============================================
@@ -113,20 +100,6 @@ def _stamp_blob_coverage(
 	interval_score["no_candidate_blobs"] = (
 		fwd["fraction"] is None and bwd["fraction"] is None
 	)
-
-
-#============================================
-def compute_interval_fingerprint(seed_start: dict, seed_end: dict) -> str:
-	"""Fingerprint wrapper that includes the solver tag.
-
-	Both `solve_all_intervals` and `cli._mode_refine` MUST call this
-	helper (or pass SOLVER_FINGERPRINT_TAG to state_io.interval_fingerprint
-	directly) so refine cache hits line up byte-for-byte.
-	"""
-	result = state_io.interval_fingerprint(
-		seed_start, seed_end, solver_tag=SOLVER_FINGERPRINT_TAG,
-	)
-	return result
 
 
 #============================================
@@ -526,101 +499,6 @@ def stitch_trajectories(
 
 	return trajectory
 
-
-
-#============================================
-def _format_interval_result(result: dict, fps: float) -> str:
-	"""Format a single interval result as a summary string.
-
-	Args:
-		result: Interval result dict from solve_interval_analytical().
-		fps: Video frame rate for duration calculation.
-
-	Returns:
-		Formatted string with interval metrics.
-	"""
-	start_frame = result["start_frame"]
-	end_frame = result["end_frame"]
-	duration_s = (end_frame - start_frame) / fps
-	score = result["interval_score"]
-	reasons = score.get("failure_reasons", [])
-	# detect v3 analytical vs v2 legacy format
-	if "confidence_tier" in score:
-		# v3 analytical format
-		confidence = score["confidence_tier"]
-		agree = score.get("agreement", 0.0)
-		vel_cons = score.get("velocity_consistency", 0.0)
-		size_cons = score.get("size_consistency", 0.0)
-		# blob-snap acceptance fractions (FWD/BWD). None means no candidate
-		# blobs were seen at all; format as n/a rather than 0% so the user
-		# can tell "nothing to accept" apart from "nothing was accepted".
-		fwd_cov = score.get("blob_coverage_fwd")
-		bwd_cov = score.get("blob_coverage_bwd")
-		fwd_str = f"{fwd_cov * 100:.0f}%" if fwd_cov is not None else "n/a"
-		bwd_str = f"{bwd_cov * 100:.0f}%" if bwd_cov is not None else "n/a"
-		metrics_str = (
-			f"agree={agree:.2f}  "
-			f"vel_cons={vel_cons:.2f}  "
-			f"size_cons={size_cons:.2f}  "
-			f"accept={fwd_str}/{bwd_str}"
-		)
-	else:
-		# v2 legacy format
-		confidence = score.get("confidence", "low")
-		agree = score.get("agreement_score", 0.0)
-		margin = score.get("competitor_margin", 0.0)
-		identity = score.get("identity_score", 0.0)
-		metrics_str = (
-			f"agree={agree:.2f}  "
-			f"margin={margin:.2f}  "
-			f"identity={identity:.2f}"
-		)
-	# format label by confidence tier
-	_confidence_labels = {
-		"high": "TRUST", "good": "GOOD", "fair": "FAIR", "low": "WEAK",
-	}
-	tag = _confidence_labels.get(confidence, "WEAK")
-	if confidence in ("high", "good"):
-		label = f"[{tag}]"
-	else:
-		reason_str = ", ".join(reasons) if reasons else "low_confidence"
-		label = f"[{tag}: {reason_str}]"
-	line = (
-		f"  interval {start_frame:5d}-{end_frame:5d} "
-		f"({duration_s:.1f}s)  "
-		f"{metrics_str}  {label}"
-	)
-	return line
-
-
-#============================================
-def _print_interval_result(result: dict, fps: float) -> None:
-	"""Print a single interval result summary line.
-
-	Args:
-		result: Interval result dict from solve_interval_analytical().
-		fps: Video frame rate for duration calculation.
-	"""
-	print(_format_interval_result(result, fps))
-
-
-#============================================
-def _print_interval_result_rich(
-	result: dict,
-	fps: float,
-	progress: rich.progress.Progress,
-) -> None:
-	"""Print an interval result line through rich console.
-
-	Uses progress.console.print() so the output does not conflict
-	with the live progress bar display.
-
-	Args:
-		result: Interval result dict from solve_interval_analytical().
-		fps: Video frame rate for duration calculation.
-		progress: Active rich Progress instance.
-	"""
-	progress.console.print(_format_interval_result(result, fps))
 
 
 #============================================
@@ -1206,83 +1084,6 @@ def anchor_to_seeds(
 
 
 #============================================
-def _prepare_usable_seed(seed: dict) -> dict:
-	"""Copy seed and set default conf=0.3 for approx seeds.
-
-	When a runner is fully hidden, the user draws a larger approx area
-	indicating the general region. This guides the solver through the
-	gap but confidence is low because the exact position is unknown.
-
-	Args:
-		seed: Seed dict, possibly with status "approximate" or legacy
-			"obstructed".
-
-	Returns:
-		Original seed if not approx, or a copy with conf=0.3 if
-		approx and conf was not already set.
-	"""
-	if seed["status"] in ("approximate", "obstructed") and seed.get("conf") is None:
-		prepared = dict(seed)
-		# approx area, uncertain position -- lower confidence
-		prepared["conf"] = 0.3
-		return prepared
-	return seed
-
-
-#============================================
-def filter_usable_seeds_sorted(seeds: list, verbose: bool = True) -> list:
-	"""Filter, sort, and deduplicate seeds to their interval-endpoint form.
-
-	This is the single source of truth for which seeds become interval
-	endpoints. `solve_all_intervals` and `cli._mode_refine` both call this
-	so they compute identical `state_io.interval_fingerprint` keys.
-
-	Args:
-		seeds: Raw seed list from the seeds file.
-		verbose: If True, print WARNING lines for duplicate frame_index.
-
-	Returns:
-		List of usable-seed dicts (post `_prepare_usable_seed`), sorted by
-		frame_index, deduplicated by frame_index (keeping the latest pass).
-		May be empty if fewer than 2 usable seeds remain.
-	"""
-	# accept visible/partial/approximate unconditionally; accept legacy
-	# obstructed only when a torso_box is present
-	usable_seeds = [
-		_prepare_usable_seed(s) for s in seeds
-		if s["status"] in ("visible", "partial", "approximate")
-		or (s["status"] == "obstructed" and s.get("torso_box") is not None)
-	]
-	if not usable_seeds:
-		return []
-	# sort by frame_index so consecutive pairs are adjacent
-	usable_sorted = sorted(usable_seeds, key=lambda s: int(s["frame_index"]))
-	# deduplicate: keep the seed from the latest pass when frames collide
-	seen_frames = {}
-	for seed in usable_sorted:
-		fi = int(seed["frame_index"])
-		if fi in seen_frames:
-			existing = seen_frames[fi]
-			if int(seed["pass"]) >= int(existing["pass"]):
-				if verbose:
-					print(f"  WARNING: duplicate seed at frame {fi}, "
-						f"keeping pass {seed['pass']} over pass {existing['pass']}")
-				seen_frames[fi] = seed
-			else:
-				if verbose:
-					print(f"  WARNING: duplicate seed at frame {fi}, "
-						f"keeping pass {existing['pass']} over pass {seed['pass']}")
-		else:
-			seen_frames[fi] = seed
-	if len(seen_frames) < len(usable_sorted):
-		dropped = len(usable_sorted) - len(seen_frames)
-		if verbose:
-			print(f"  deduplicated {dropped} seeds with duplicate frame_index values")
-		usable_sorted = sorted(seen_frames.values(), key=lambda s: int(s["frame_index"]))
-	return usable_sorted
-
-
-#============================================
 def solve_all_intervals(
 	reader: object,
 	seeds: list,
@@ -1338,7 +1139,9 @@ def solve_all_intervals(
 	info = reader.get_info()
 	fps = float(info.get("fps", 30.0))
 
-	# convert all seeds to scene coordinates
+	# convert all seeds to scene coordinates up front so both the in-process
+	# solve path and the pool-worker initializer see identical precomputed
+	# scene boxes.
 	all_seeds_scene = []
 	for seed in seeds:
 		frame_index = int(seed["frame_index"])
@@ -1351,222 +1154,36 @@ def solve_all_intervals(
 		)
 		all_seeds_scene.append((frame_index, sx, sy, sw, sh))
 
-	# filter, sort, and deduplicate seeds to interval-endpoint form.
-	# this MUST match cli._mode_refine's fingerprint computation so cached
-	# intervals are found on reuse.
-	usable_seeds_sorted = filter_usable_seeds_sorted(seeds)
-	if len(usable_seeds_sorted) < 2:
+	# plan_interval_work is the single source of truth for seed filter +
+	# fingerprint computation + cache partition. refine mode also calls
+	# it, so solve and refine agree on every cache key byte-for-byte.
+	plan = solve_queue.plan_interval_work(seeds, prior_intervals)
+	if plan.total_intervals == 0:
 		print("  interval_solver: need at least 2 usable seeds to solve intervals")
 		return {"intervals": [], "trajectory": []}
-	total_intervals = len(usable_seeds_sorted) - 1
 
-	seq_frame_counter = [0]
-	# track cache reuse vs fresh solves for the post-loop summary
-	reused_count = 0
-	solved_count = 0
-
-	# pre-allocate the results list and fingerprints so workers can fill
-	# by index while the main process preserves seed order.
-	interval_results = [None] * total_intervals
-	fingerprints = [None] * total_intervals
-	pending_pair_indices = []
-	for pair_idx in range(total_intervals):
-		seed_start = usable_seeds_sorted[pair_idx]
-		seed_end = usable_seeds_sorted[pair_idx + 1]
-		fingerprint = compute_interval_fingerprint(seed_start, seed_end)
-		fingerprints[pair_idx] = fingerprint
-		if prior_intervals is not None and fingerprint in prior_intervals:
-			cached = prior_intervals[fingerprint]
-			interval_results[pair_idx] = cached
-			reused_count += 1
-			# on_interval_complete must fire for cache hits too; the old
-			# serial loop called it uniformly after every append.
-			if on_interval_complete is not None:
-				on_interval_complete(cached)
-		else:
-			pending_pair_indices.append(pair_idx)
-
-	# decide execution mode. In-process when the user asked for one
-	# worker, or when there is very little work to amortize pool setup
-	# cost (spawn + imports + initializer payload copy).
-	use_pool = num_workers >= 2 and len(pending_pair_indices) >= 4
-	pending_total = len(pending_pair_indices)
-
-	# announce work scope after cache partition so the number reflects
-	# actual solves, not total intervals.
-	if pending_total == 0:
-		print(f"  all {total_intervals} intervals cached; nothing to solve "
-			f"(analytical mode)")
-	elif reused_count > 0:
-		print(f"  solving {pending_total} new intervals, "
-			f"{reused_count} cached (analytical mode)...")
-	else:
-		print(f"  solving {total_intervals} intervals (analytical mode)...")
-
-	# pure cache-hit fast-exit: no bar, no pool. The post-loop summary
-	# print and stitch still run below.
-	if pending_total == 0:
-		pass
-	else:
-		with rich.progress.Progress(
-			rich.progress.TextColumn("{task.description}"),
-			BlockBarColumn(),
-			rich.progress.MofNCompleteColumn(),
-			rich.progress.TaskProgressColumn(),
-			rich.progress.TimeElapsedColumn(),
-			rich.progress.TimeRemainingColumn(),
-			refresh_per_second=2,
-		) as progress:
-			# bar is sized to cache-miss work only. the cache-hit count
-			# was already printed by cli (refine: N of M need solving).
-			if reused_count > 0:
-				desc = f"  solving {pending_total} new intervals"
-			else:
-				desc = "  solving intervals"
-			task = progress.add_task(desc, total=pending_total)
-
-			# main-process result-accept closure used by both paths.
-			def _accept(pair_idx: int, fingerprint: str, result: dict) -> None:
-				interval_results[pair_idx] = result
-				if on_interval_solved is not None:
-					on_interval_solved(fingerprint, result)
-				# always print per-completion summary so long runs have
-				# visible progress beyond the bar. goes through the rich
-				# console so bar rendering is preserved.
-				_print_interval_result_rich(result, fps, progress)
-				# on_interval_complete fires in completion order, not
-				# seed order. Consumers needing seed order read from
-				# interval_results after the call returns.
-				if on_interval_complete is not None:
-					on_interval_complete(result)
-				n_frames = result["end_frame"] - result["start_frame"]
-				seq_frame_counter[0] += n_frames
-				progress.update(task, advance=1)
-
-			if not use_pool:
-				# in-process path: identical to the pre-parallel loop.
-				# Used for num_workers == 1 or for tiny runs where pool
-				# setup would dominate.
-				for pair_idx in pending_pair_indices:
-					if run_control is not None and run_control.quit_requested:
-						break
-					if key_reader is not None and run_control is not None:
-						ch = key_reader.poll()
-						key_input.handle_key(ch, run_control, key_reader, progress)
-					if run_control is not None and run_control.quit_requested:
-						break
-					seed_start = usable_seeds_sorted[pair_idx]
-					seed_end = usable_seeds_sorted[pair_idx + 1]
-					start_frame = int(seed_start["frame_index"])
-					end_frame = int(seed_end["frame_index"])
-					if debug:
-						progress.console.print(
-							f"  solving interval {pair_idx + 1}/{total_intervals} "
-							f"(frames {start_frame}-{end_frame})"
-						)
-					result = solve_interval_analytical(
-						seed_start, seed_end, scene_transform,
-						all_seeds_scene, fps, debug=debug,
-						motion_track=motion_track,
-						all_seeds=seeds,
-						reader=reader,
-					)
-					solved_count += 1
-					_accept(pair_idx, fingerprints[pair_idx], result)
-			else:
-				# pool path: dispatch cache-miss intervals to workers,
-				# poll the key reader between completions, aggregate
-				# results by pair_idx (completion order != seed order).
-				import solver_workers
-				with solver_workers.make_pool(
-					num_workers=num_workers,
-					video_path=video_path,
-					scene_transform=scene_transform,
-					motion_track=motion_track,
-					all_seeds_scene=all_seeds_scene,
-					all_seeds=seeds,
-					fps=fps,
-					debug=debug,
-				) as pool:
-					future_to_idx = {}
-					for pair_idx in pending_pair_indices:
-						seed_start = usable_seeds_sorted[pair_idx]
-						seed_end = usable_seeds_sorted[pair_idx + 1]
-						fut = pool.submit(
-							solver_workers._solve_interval_worker,
-							(pair_idx, seed_start, seed_end),
-						)
-						future_to_idx[fut] = pair_idx
-
-					pending_futures = set(future_to_idx.keys())
-					while pending_futures:
-						if run_control is not None and run_control.quit_requested:
-							break
-						if key_reader is not None and run_control is not None:
-							ch = key_reader.poll()
-							key_input.handle_key(
-								ch, run_control, key_reader, progress,
-							)
-						if run_control is not None and run_control.quit_requested:
-							break
-						# short wait lets us poll the key reader at ~4Hz
-						done, pending_futures = concurrent.futures.wait(
-							pending_futures,
-							timeout=0.25,
-							return_when=concurrent.futures.FIRST_COMPLETED,
-						)
-						for fut in done:
-							pair_idx, fingerprint, result = fut.result()
-							solved_count += 1
-							_accept(pair_idx, fingerprint, result)
-
-					# on quit, cancel anything not yet running and drain
-					# in-flight work so the main process still sees
-					# completions (and on_interval_solved fires).
-					if run_control is not None and run_control.quit_requested:
-						for fut in list(pending_futures):
-							fut.cancel()
-						for fut in concurrent.futures.as_completed(pending_futures):
-							if fut.cancelled():
-								continue
-							pair_idx, fingerprint, result = fut.result()
-							solved_count += 1
-							_accept(pair_idx, fingerprint, result)
-
-	# post-loop summary: make cache behavior visible on stdout
-	print(f"  solver: reused {reused_count}, solved {solved_count} "
-		f"of {total_intervals}")
-	# visibility warning if we had a non-empty cache but matched nothing --
-	# likely a fingerprint drift from seed filter or rounding changes
-	if prior_intervals and reused_count == 0 and solved_count > 0:
-		print(f"  solver: WARNING 0 of {len(prior_intervals)} prior intervals "
-			f"reused -- possible fingerprint mismatch "
-			f"(check seed filter / rounding)")
-	# refine-mode invariant: every pair iteration must land in exactly one
-	# branch (reuse or solve). guarded on the quit path because an
-	# interrupted loop legitimately has reused_count + solved_count <
-	# total_intervals.
-	if run_control is None or not run_control.quit_requested:
-		assert reused_count + solved_count == total_intervals, (
-			f"reuse/solve accounting drifted: "
-			f"reused={reused_count} solved={solved_count} "
-			f"total={total_intervals}"
-		)
-
-	if run_control is not None and run_control.quit_requested:
-		done = len([r for r in interval_results if r is not None])
-		key_input._quit_trace(
-			"FUNCTION_RETURN", context="solve_all_intervals_analytical",
-			quit_requested=True, intervals_done=done,
-			intervals_total=total_intervals,
-		)
-		print(f"  quit requested: {done}/{total_intervals} intervals completed")
-		print("  hint: re-run 'solve' to resume")
-
-	# drop any None holes left by a quit so stitch gets only real results.
-	# in the normal-completion path the accounting assertion above already
-	# proved there are no holes; this is for the interrupted path.
-	interval_results = [r for r in interval_results if r is not None]
+	# execute_interval_work owns the in-process-vs-pool decision, the
+	# progress bar, the per-completion callback fire-order, and the
+	# quit/drain path. It returns a seed-ordered list with quit holes
+	# already dropped on the interrupted path.
+	context = solve_queue.ExecutionContext(
+		reader=reader,
+		scene_transform=scene_transform,
+		motion_track=motion_track,
+		all_seeds=seeds,
+		all_seeds_scene=all_seeds_scene,
+		fps=fps,
+		num_workers=num_workers,
+		video_path=video_path,
+		debug=debug,
+	)
+	interval_results = solve_queue.execute_interval_work(
+		plan, context,
+		on_interval_complete=on_interval_complete,
+		on_interval_solved=on_interval_solved,
+		run_control=run_control,
+		key_reader=key_reader,
+	)
 
 	# stitch and finalize
 	trajectory = stitch_trajectories(interval_results)

@@ -99,6 +99,37 @@ def _validate_palette(palette: dict) -> None:
 		if not (0.0 <= float(val) <= 1.0):
 			raise ValueError(f"encoder_overlay.{key} out of range: {val}")
 
+	# validate heat_map block (GUI motion heat-map overlay)
+	hm = palette.get("heat_map", {})
+	if hm:
+		# blend_alpha in [0, 1]
+		alpha = hm.get("blend_alpha", 0.0)
+		if not (0.0 <= float(alpha) <= 1.0):
+			raise ValueError(f"heat_map.blend_alpha out of range: {alpha}")
+		# fixed_max must be positive (JET maps 0 to cold, >= fixed_max to hot)
+		fixed_max = float(hm.get("fixed_max", 0.0))
+		if fixed_max <= 0.0:
+			raise ValueError(f"heat_map.fixed_max must be positive: {fixed_max}")
+		# half_window must be non-negative integer
+		hw = int(hm.get("half_window", 0))
+		if hw < 0:
+			raise ValueError(f"heat_map.half_window must be >= 0: {hw}")
+		# threshold must be non-negative float
+		thr = float(hm.get("threshold", 0.0))
+		if thr < 0.0:
+			raise ValueError(f"heat_map.threshold must be >= 0: {thr}")
+		# outline_rgb is a 3-element list of 0-255 ints
+		outline = hm.get("outline_rgb", [])
+		if (not isinstance(outline, list)) or len(outline) != 3:
+			raise ValueError(
+				f"heat_map.outline_rgb must be a 3-element list: {outline}"
+			)
+		for comp in outline:
+			if not (0 <= int(comp) <= 255):
+				raise ValueError(
+					f"heat_map.outline_rgb component out of range: {comp}"
+				)
+
 	# validate defaults
 	defaults = palette.get("defaults", {})
 	ls = defaults.get("line_style")
@@ -519,5 +550,46 @@ def get_severity_style(level: str) -> dict:
 	style = {
 		"color": entry.get("color", "#FFFFFF"),
 		"label": entry.get("label", level.upper()),
+	}
+	return style
+
+
+#============================================
+def get_heat_map_style() -> dict:
+	"""Get the motion heat-map overlay style block.
+
+	Returns a dict with keys:
+	  colormap (str), fixed_max (float), blend_alpha (float),
+	  half_window (int), threshold (float), outline_rgb (tuple of 3 ints),
+	  legend_text (str), missing_transform_note (str).
+
+	All values are validated in _validate_palette. Defaults are applied
+	only when the heat_map block is absent (allows older palette files
+	to load).
+
+	Returns:
+		Dict of heat-map style values.
+	"""
+	palette = load_palette()
+	entry = palette.get("heat_map", {})
+	# provide reasonable defaults if the block is absent (legacy YAML)
+	outline_raw = entry.get("outline_rgb", [160, 160, 160])
+	outline_rgb = (
+		int(outline_raw[0]), int(outline_raw[1]), int(outline_raw[2]),
+	)
+	style = {
+		"colormap": str(entry.get("colormap", "jet")),
+		"fixed_max": float(entry.get("fixed_max", 30.0)),
+		"blend_alpha": float(entry.get("blend_alpha", 0.40)),
+		"half_window": int(entry.get("half_window", 4)),
+		"threshold": float(entry.get("threshold", 10.0)),
+		"outline_rgb": outline_rgb,
+		"legend_text": str(entry.get(
+			"legend_text",
+			"motion low -> high: blue -> cyan -> yellow -> red",
+		)),
+		"missing_transform_note": str(entry.get(
+			"missing_transform_note", "camera motion not compensated",
+		)),
 	}
 	return style

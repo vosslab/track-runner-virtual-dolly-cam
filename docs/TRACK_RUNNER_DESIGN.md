@@ -123,7 +123,11 @@ disk persistence, and keyboard quit/pause polling. Worker processes in
 receives the run-invariant state (`scene_transform`, `motion_track`, seed
 lists) once via the pool initializer, and returns pure interval results. No
 worker writes to stdout or to disk, and no file handle crosses the process
-boundary.
+boundary. The driver-side queueing concern -- seed filtering, fingerprint
+walk, cache-hit partition, pool dispatch, and result aggregation -- lives in
+its own module, `solve_queue.py`, which both solve mode and refine mode
+consume so the two call sites cannot drift on fingerprint semantics;
+`solver_workers.py` continues to own only the per-process worker state.
 
 ## Annotation UI principles
 

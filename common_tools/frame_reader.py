@@ -72,11 +72,47 @@ class FrameReader:
 		self._cap = cv2.VideoCapture(video_path)
 		if not self._cap.isOpened():
 			raise RuntimeError(f"cannot open video: {video_path}")
+		# capture per-video geometry once. width/height are exposed as
+		# public properties so consumers shared with VideoReader (e.g.
+		# residual_motion.compute_residual_for_frame) can use either
+		# reader class interchangeably.
+		self._width = int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+		self._height = int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 		# dedicated sequential capture used only by strategy 4
 		# lazily opened on first sequential read to avoid wasting resources
 		self._seq_cap = None
 		# sequential position tracker (-1 means not initialized)
 		self._seq_pos = -1
+
+	#============================================
+	@property
+	def video_path(self) -> str:
+		"""Path to the input video file (public; matches VideoReader)."""
+		return self._video_path
+
+	#============================================
+	@property
+	def frame_count(self) -> int:
+		"""Total number of frames in the video (public; matches VideoReader)."""
+		return self._total_frames
+
+	#============================================
+	@property
+	def fps(self) -> float:
+		"""Video frame rate (public; matches VideoReader)."""
+		return self._fps
+
+	#============================================
+	@property
+	def width(self) -> int:
+		"""Frame width in pixels (public; matches VideoReader)."""
+		return self._width
+
+	#============================================
+	@property
+	def height(self) -> int:
+		"""Frame height in pixels (public; matches VideoReader)."""
+		return self._height
 
 	#============================================
 	def read_frame(self, frame_index: int) -> numpy.ndarray | None:

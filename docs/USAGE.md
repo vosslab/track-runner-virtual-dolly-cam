@@ -103,6 +103,52 @@ Options: `--aspect` overrides the crop aspect ratio.
 5. **Refine** (optional) -- incrementally re-solve after adding seeds.
 6. **Encode** -- produce the final cropped output video.
 
+## Motion heat-map overlay
+
+The annotation GUI (`seed`, `edit`, `target`) can show a residual-motion heat
+map as a diagnostic overlay to help you see where real motion is happening
+on the current frame.
+
+- Toggle with the `H` key or the **Heat** button in the overlay toolbar.
+- Sticky mode: the overlay stays ON across frame advances and recomputes
+  automatically for each new frame. Press `H` again to turn it off.
+- During a frame advance the previous heat is hidden immediately and the
+  status label next to the toolbar action shows `computing...` until the
+  new frame's heat is ready.
+- If the current frame has no prediction (pre-race, unsolved intervals),
+  the overlay stays hidden and the label reads
+  `no prediction for this frame`. The toggle remains ON so heat will
+  resume automatically on the next frame with a prediction.
+- The heat map is scoped to the solver's 8x torso-height ROI around the
+  predicted center, not the entire frame. Compute is expected to be
+  interactive on typical review frames, though actual latency depends on
+  the video's resolution and codec.
+- The overlay is a full composite, not a translucent wash. Below-
+  threshold pixels render as grayscale of the source frame (luminance
+  preserved, color removed so irrelevant areas are visibly
+  de-emphasized). Above-threshold pixels render as the JET-colorized
+  residual mixed with the original color frame. The final pixmap is
+  opaque.
+- The JET colormap carries known accessibility caveats (non-monotonic
+  luminance, red/green confusion). The `blend_alpha` value in
+  [track_runner/overlay_styles.yaml](../track_runner/overlay_styles.yaml)
+  under the `heat_map:` block (default `0.40`) controls the JET-over-
+  color mix in above-threshold pixels, not overlay transparency. Lower
+  values make the color frame show through more under the heat tint;
+  higher values make the JET dominate.
+- A `camera motion not compensated` badge appears beneath the ROI whenever
+  the overlay is shown. The GUI uses an identity scene transform in this
+  release, so the overlay will ghost on panning footage. A future patch
+  will load the solver's motion-track artifact.
+- The overlay is strictly read-only. Enabling it does not alter
+  trajectories, `intervals.json`, `diagnostics.json`, or any solver
+  artifact. `SOLVER_FINGERPRINT_TAG` is unchanged.
+- The overlay renders a display-oriented view: residual magnitudes below
+  the configured `threshold` (default `10.0`) are suppressed so sensor
+  noise does not fog the frame. This is an intentional divergence from
+  `tools/diagnose_residual_motion.py`, which shows the full residual
+  field including the noise floor.
+
 ## Configuration
 
 The default config file is [track_runner/track_runner.config.yaml](track_runner/track_runner.config.yaml). Override with `-c`/`--config`. Settings include detection confidence threshold, crop aspect ratio, fill ratio, video codec, CRF, and encode filter pipeline.

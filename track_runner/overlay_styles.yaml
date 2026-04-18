@@ -108,3 +108,22 @@ severity:
 encoder_overlay:
   box_opacity: 0.55
   text_opacity: 0.70
+
+# -- Motion heat-map overlay (GUI diagnostic view aid) --
+# Sticky-mode ROI overlay rendered by track_runner/ui/heat_map_overlay.py,
+# composed by track_runner/residual_heat_map.py. Below-threshold pixels
+# render as grayscale of the source frame (luminance preserved, color
+# removed). Above-threshold pixels render as JET-colorized residual
+# blended with the original color frame at blend_alpha. The final
+# pixmap is opaque: blend_alpha is an INTERNAL mix weight for the JET
+# layer over the color frame in above-threshold pixels, NOT a Qt-level
+# opacity.
+heat_map:
+  colormap: jet
+  fixed_max: 30.0
+  blend_alpha: 0.40
+  half_window: 4
+  threshold: 10.0
+  outline_rgb: [160, 160, 160]
+  legend_text: "motion low -> high: blue -> cyan -> yellow -> red"
+  missing_transform_note: "camera motion not compensated"

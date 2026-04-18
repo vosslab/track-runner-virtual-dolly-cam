@@ -35,6 +35,7 @@ import scoring
 import seed_editor
 import setup_mode
 import interval_solver
+import solve_queue
 import review
 import tr_crop
 import key_input
@@ -1130,35 +1131,23 @@ def _mode_refine(
 	#  2. add one seed -> solve exactly 2 intervals.
 	#  3. remove one seed -> solve exactly 1 interval.
 	# cache validity is set membership of fingerprints, not cardinality,
-	# and not the legacy global solve_complete flag. the same seed filter
-	# and fingerprint function used here is used inside solve_all_intervals,
-	# so reuse keys match byte-for-byte.
+	# and not the legacy global solve_complete flag. the queue module's
+	# plan_interval_work is the single source of truth for the seed
+	# filter, fingerprint walk, and orphan prune -- solve mode and
+	# refine mode both call it so cache keys match byte-for-byte.
 	intervals_file = state_io.load_intervals(intervals_path)
 	solved_intervals = intervals_file.get("solved_intervals", {})
-	usable_sorted = interval_solver.filter_usable_seeds_sorted(
-		seeds, verbose=False,
-	)
-	# compute the current expected fingerprint list from the live seeds.
-	# MUST use interval_solver.compute_interval_fingerprint so the tag
-	# (observer version + blob-snap constants) is identical to the one
-	# solve_all_intervals writes; otherwise the cache never matches.
-	expected_fingerprints = []
-	for pair_idx in range(len(usable_sorted) - 1):
-		fp = interval_solver.compute_interval_fingerprint(
-			usable_sorted[pair_idx], usable_sorted[pair_idx + 1],
-		)
-		expected_fingerprints.append(fp)
-	expected_set = set(expected_fingerprints)
-	total_expected = len(expected_fingerprints)
-	# correctness signal: every current fingerprint present in the cache
-	all_present = expected_set.issubset(solved_intervals.keys())
+	plan = solve_queue.plan_interval_work(seeds, solved_intervals)
+	total_expected = plan.total_intervals
 
 	# fast-exit (no write). enforces contract rule 1: unchanged seeds
-	# produce no computation AND no disk write.
-	if all_present:
-		# solve_complete is advisory, not a correctness gate. if membership
-		# is complete but the legacy completion flag is false, surface the
-		# discrepancy but trust the cache.
+	# produce no computation AND no disk write. pending_count == 0 is
+	# the membership-complete signal; solve_complete on disk is advisory
+	# only.
+	if plan.pending_count == 0:
+		# solve_complete is advisory, not a correctness gate. if
+		# membership is complete but the legacy completion flag is
+		# false, surface the discrepancy but trust the cache.
 		if intervals_file.get("solve_complete") is False:
 			print("  warning: solve_complete=false on disk, "
 				"cache membership complete; trusting cache")
@@ -1166,27 +1155,20 @@ def _mode_refine(
 			f"nothing to do")
 		return
 
-	# fall-through path: work is needed, so writes become allowed. prune
-	# orphan fingerprints (those that no longer correspond to any current
-	# seed pair) so the cache does not accumulate dead entries.
+	# fall-through path: work is needed, so writes become allowed. the
+	# plan's pruned_prior already has orphan fingerprints filtered out,
+	# so persisting it is the prune operation. only write when the
+	# prune actually changed the dict, per the zero-write contract rule.
 	before = len(solved_intervals)
-	solved_intervals = {
-		fp: v for fp, v in solved_intervals.items() if fp in expected_set
-	}
-	intervals_file["solved_intervals"] = solved_intervals
-	# post-prune invariant: no orphan can leak past the comprehension
-	assert set(solved_intervals.keys()).issubset(expected_set), (
-		"orphan leaked past prune"
-	)
-	pruned_count = before - len(solved_intervals)
+	pruned_count = before - len(plan.pruned_prior)
 	if pruned_count > 0:
+		intervals_file["solved_intervals"] = dict(plan.pruned_prior)
 		state_io.write_intervals(intervals_path, intervals_file)
 		print(f"  cache: pruned {pruned_count} stale intervals "
-			f"({before} -> {len(solved_intervals)})")
+			f"({before} -> {len(plan.pruned_prior)})")
 
-	need_solving = total_expected - len(solved_intervals)
-	print(f"  refine: {need_solving} of {total_expected} intervals "
-		f"need solving ({len(solved_intervals)} will be reused)")
+	print(f"  refine: {plan.pending_count} of {total_expected} intervals "
+		f"need solving ({plan.reused_count} will be reused)")
 
 	num_workers = _resolve_workers(args)
 	_run_solve(

@@ -6,6 +6,8 @@ scale bar, and activation lifecycle.
 """
 
 # Standard Library
+import glob
+import os
 import time
 
 # PIP3 modules
@@ -14,13 +16,18 @@ from PySide6.QtWidgets import QWidget, QPushButton
 import numpy
 
 # local repo modules
+import camera_motion
 import overlay_config
+import scene_coords
+import tr_paths
+import ui.heat_map_overlay as heat_map_overlay_module
 import ui.overlay_items as overlay_items_module
 
 PreviewBoxItem = overlay_items_module.PreviewBoxItem
 RectItem = overlay_items_module.RectItem
 ScaleBarItem = overlay_items_module.ScaleBarItem
 PredictionLegendItem = overlay_items_module.PredictionLegendItem
+HeatMapOverlay = heat_map_overlay_module.HeatMapOverlay
 
 #============================================
 
@@ -104,11 +111,17 @@ class BaseAnnotationController(QObject):
 		# Quit double-press confirmation state
 		self._quit_pending_time: float = 0.0
 
-		# Per-overlay persistent visibility toggles
+		# Per-overlay persistent visibility toggles. "heat" defaults to
+		# False because the motion heat-map overlay is an expensive
+		# compute-on-show diagnostic, not a zero-cost visual; see
+		# track_runner/ui/heat_map_overlay.py. Mode-switch reset in
+		# AnnotationWindow must respect this default explicitly.
 		self._overlay_visibility: dict = {
 			"fwd": True, "bwd": True, "fused": True,
-			"consensus": True, "legend": True,
+			"consensus": True, "legend": True, "heat": False,
 		}
+		# Heat-map overlay (created in activate() when the scene exists)
+		self._heat_map_overlay: HeatMapOverlay | None = None
 
 		# Toolbar widgets
 		self._toolbar_widget: QWidget | None = None
@@ -160,6 +173,25 @@ class BaseAnnotationController(QObject):
 			scene.addItem(self._legend_item)
 			self._overlay_items.append(self._legend_item)
 
+		# Build motion heat-map overlay (hidden; enabled via toolbar/H).
+		# Loads the solver's cached motion_track if it exists on disk so
+		# the residual compensates for camera pan correctly. If no cache
+		# matches (fresh video, never solved), falls back to identity and
+		# the "camera motion not compensated" badge appears under the
+		# ROI so the user knows the residual may ghost on pan.
+		heat_style = overlay_config.get_heat_map_style()
+		scene_transform, transform_ok = self._load_scene_transform_for_gui()
+		self._heat_map_overlay = HeatMapOverlay(
+			reader=self._reader,
+			scene_transform=scene_transform,
+			scene=scene,
+			style=heat_style,
+			get_pred_fn=self._get_heat_prediction,
+			scene_transform_available=transform_ok,
+			is_drawing_fn=self._is_drawing,
+		)
+		self._heat_map_overlay.statusChanged.connect(self._on_heat_status)
+
 		# Populate the persistent hint bar below the frame view.
 		# Previously this was an in-scene QGraphicsItem whose font scaled
 		# with the frame and became unreadable on high-res video.
@@ -199,6 +231,12 @@ class BaseAnnotationController(QObject):
 		self._consensus_item = None
 		self._scale_bar_item = None
 		self._legend_item = None
+		# tear down heat-map overlay and reset visibility so the next
+		# controller starts with heat OFF (matches the default).
+		if self._heat_map_overlay is not None:
+			self._heat_map_overlay.clear()
+			self._heat_map_overlay = None
+		self._overlay_visibility["heat"] = False
 		# clear the persistent hint bar too
 		if self._window is not None and hasattr(self._window, "clear_hints"):
 			self._window.clear_hints()
@@ -316,6 +354,16 @@ class BaseAnnotationController(QObject):
 			scene.removeItem(self._preview_item)
 			self._preview_item = None
 
+		# User interaction has priority over diagnostic rendering: if
+		# heat is ON, cancel any pending compute and hide the overlay
+		# so the residual computation cannot block the Qt event loop
+		# mid-drag. The controller re-arms heat in handle_mouse_release
+		# once drawing is done. The "Heatmap: paused while drawing"
+		# status keeps the toggle's ON state visible.
+		if self._overlay_visibility.get("heat", False):
+			if self._heat_map_overlay is not None:
+				self._heat_map_overlay.pause_for_drawing()
+
 	#============================================
 
 	def handle_mouse_move(self, scene_x: float, scene_y: float) -> None:
@@ -358,6 +406,17 @@ class BaseAnnotationController(QObject):
 			return
 
 		self._drawing = False
+
+		# Re-arm the heat-map overlay only if the user did not toggle
+		# it off during the drag. Going through request_show() hits
+		# the existing 150 ms debounce, so any follow-up frame refresh
+		# that may fire from the box-commit path collapses into one
+		# compute rather than stacking. Runs before the drag_start
+		# sanity check so heat resumes even if the drag produced no
+		# valid box (min-area reject, ESC, etc.).
+		if self._overlay_visibility.get("heat", False):
+			if self._heat_map_overlay is not None:
+				self._heat_map_overlay.request_show(int(self._current_frame))
 
 		if self._drag_start is None:
 			return
@@ -604,6 +663,11 @@ class BaseAnnotationController(QObject):
 		# apply per-overlay visibility (respects user toggles and peek suppression)
 		self._apply_overlay_visibility()
 
+		# drive the heat-map overlay from the same refresh hook: hide
+		# previous frame's heat immediately, and if the toggle is ON,
+		# arm a debounced compute for the current frame.
+		self._apply_heat_overlay()
+
 	#============================================
 
 	def _update_scale_bar(self) -> None:
@@ -732,12 +796,150 @@ class BaseAnnotationController(QObject):
 		"""Set persistent visibility for a specific overlay type.
 
 		Args:
-			key: Overlay key ("fwd", "bwd", "fused", "consensus", "legend").
+			key: Overlay key ("fwd", "bwd", "fused", "consensus",
+				"legend", "heat").
 			enabled: Whether the overlay should be visible.
 		"""
 		if key in self._overlay_visibility:
 			self._overlay_visibility[key] = enabled
 			self._apply_overlay_visibility()
+			# the heat overlay is not governed by prediction-box
+			# visibility plumbing; drive it separately so a toolbar
+			# click takes effect immediately for the current frame.
+			if key == "heat":
+				self._apply_heat_overlay()
+
+	#============================================
+
+	def _apply_heat_overlay(self) -> None:
+		"""Route the current heat visibility flag to the heat overlay.
+
+		Called from _update_fwd_bwd_overlays on every frame refresh and
+		from set_overlay_enabled on toolbar toggle. When the flag is ON
+		this hides the previous frame's heat and arms a debounced
+		compute for the current frame via HeatMapOverlay.request_show.
+		When the flag is OFF this hides the overlay and cancels any
+		pending compute.
+
+		When the user is actively drawing a torso box this method is a
+		no-op: annotation input has priority over diagnostic rendering,
+		and the heat overlay will be re-armed from handle_mouse_release
+		once the drag ends. The paused state is communicated via the
+		STATUS_DRAWING_PAUSE status emitted by pause_for_drawing().
+		"""
+		if self._heat_map_overlay is None:
+			return
+		if self._drawing:
+			return
+		if self._overlay_visibility.get("heat", False):
+			self._heat_map_overlay.request_show(int(self._current_frame))
+		else:
+			self._heat_map_overlay.hide()
+
+	#============================================
+
+	def _is_drawing(self) -> bool:
+		"""Callable injected into HeatMapOverlay for its stale-result guard.
+
+		The overlay invokes this in _compute_and_display right before
+		applying the pixmap. A True return discards the compute output
+		so a late-arriving residual cannot overwrite the frozen view
+		mid-drag.
+
+		Returns:
+			True while a torso-box drag is in progress, else False.
+		"""
+		return bool(self._drawing)
+
+	#============================================
+
+	def _get_heat_prediction(self, frame_index: int) -> tuple | None:
+		"""Return ((cx, cy), (w, h)) for the heat ROI, or None.
+
+		Chooses the most trustworthy available prediction: fused over
+		consensus over forward. Returns None when no prediction is
+		available (pre-race, unsolved intervals, edge frames).
+
+		Args:
+			frame_index: Frame to look up a prediction for.
+
+		Returns:
+			Tuple ((cx, cy), (w, h)) in full-frame pixels, or None.
+		"""
+		if self._predictions is None:
+			return None
+		preds = self._predictions.get(frame_index)
+		if preds is None:
+			return None
+		# priority order: fused > consensus > forward. Use explicit
+		# None checks so a legitimately falsy dict (e.g. an empty one)
+		# does not silently fall through to a less-preferred source.
+		pick = None
+		if preds.get("fused") is not None:
+			pick = preds["fused"]
+		elif preds.get("consensus") is not None:
+			pick = preds["consensus"]
+		elif preds.get("forward") is not None:
+			pick = preds["forward"]
+		if pick is None:
+			return None
+		cx = float(pick["cx"])
+		cy = float(pick["cy"])
+		w = float(pick["w"])
+		h = float(pick["h"])
+		pred = ((cx, cy), (w, h))
+		return pred
+
+	#============================================
+
+	def _on_heat_status(self, text: str) -> None:
+		"""Relay heat-map status strings to the window's status label.
+
+		Args:
+			text: Status string emitted by HeatMapOverlay.statusChanged.
+		"""
+		if self._window is not None and hasattr(self._window, "set_heat_status"):
+			self._window.set_heat_status(text)
+
+	#============================================
+
+	def _load_scene_transform_for_gui(self) -> tuple:
+		"""Find and load the solver's cached motion track for the heat map.
+
+		Mirrors the glob-based lookup in tools/diagnose_residual_motion.py:
+		cache files are named {basename}_*.npz under tr_paths.DATA_DIR.
+		If any cache file loads successfully it becomes the basis for a
+		real SceneTransform; otherwise we return an identity transform so
+		the GUI still opens on fresh videos.
+
+		Returns:
+			Tuple (scene_transform, available: bool). available is True
+			only when a real cache was loaded; False means identity and
+			triggers the "camera motion not compensated" disclosure badge.
+		"""
+		n_frames = max(int(self._reader.frame_count), 1)
+		motion_track = None
+		video_path = getattr(self._reader, "video_path", None)
+		if video_path is not None:
+			basename = os.path.basename(video_path)
+			cache_pattern = os.path.join(tr_paths.DATA_DIR, f"{basename}_*.npz")
+			for candidate in sorted(glob.glob(cache_pattern)):
+				motion_track = camera_motion.load_motion_cache(candidate)
+				if motion_track is not None:
+					break
+		if motion_track is not None:
+			transform = scene_coords.SceneTransform(motion_track)
+			return (transform, True)
+		# identity fallback
+		identity_motion = camera_motion.MotionTrack(
+			dx=numpy.zeros(n_frames, dtype=numpy.float32),
+			dy=numpy.zeros(n_frames, dtype=numpy.float32),
+			scale=numpy.ones(n_frames, dtype=numpy.float32),
+			quality=numpy.ones(n_frames, dtype=numpy.float32),
+			event_flags=numpy.zeros(n_frames, dtype=numpy.int32),
+		)
+		transform = scene_coords.SceneTransform(identity_motion)
+		return (transform, False)
 
 	#============================================
 

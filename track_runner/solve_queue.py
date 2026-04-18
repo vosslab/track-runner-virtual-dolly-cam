@@ -1,0 +1,520 @@
+"""Driver-side queue for interval solve work.
+
+Owns the main-process orchestration that decides WHICH intervals get
+queued and HOW completions are collected:
+
+- `WorkPlan`: pure-data partition of seeds into cache-hits and pending
+  intervals. Same shape whether consumed by solve mode or refine mode.
+- `ExecutionContext`: immutable run configuration (reader, transforms,
+  paths, worker count, debug). Keeps `execute_interval_work` callable
+  with a small kwarg surface.
+- `plan_interval_work`: pure function, no I/O, no printing. Consumed by
+  `cli._mode_refine` for fast-exit / orphan prune and by
+  `interval_solver.solve_all_intervals` for the dispatch loop.
+- `execute_interval_work`: runs the in-process-vs-pool decision, the
+  rich progress bar, the cache-hit fast-exit, the quit/drain path, and
+  the result aggregation. Callbacks stay explicit kwargs; mutable state
+  is contained in the local closure.
+
+Import direction rule (see docs/TRACK_RUNNER_DESIGN.md and the approved
+plan at ~/.claude/plans/snoopy-questing-neumann.md): this module does
+NOT import `interval_solver` at module load. The only `interval_solver`
+symbols the queue needs (`BlockBarColumn`, `solve_interval_analytical`)
+are pulled in inside the function body of `execute_interval_work`. This
+is an intentional tactical compromise; do not propagate it to new
+symbols.
+"""
+
+# Standard Library
+import dataclasses
+import concurrent.futures
+
+# PIP3 modules
+import rich.progress
+
+# local repo modules
+import key_input
+import solver_workers
+import interval_fingerprint
+
+
+#============================================
+@dataclasses.dataclass(frozen=True)
+class WorkPlan:
+	"""Pure-data partition of seeds into cache-hits and pending intervals.
+
+	Built by `plan_interval_work(seeds, prior_intervals)`. Immutable.
+
+	Fields:
+		usable_seeds_sorted: Seeds after filter + sort + dedup, the same
+			list both solve and refine should iterate over.
+		expected_fingerprints: Fingerprint for every interval in seed
+			order. Length equals total_intervals.
+		cached_results_by_idx: Per-pair_idx dict of cached result dicts
+			for intervals whose fingerprint was found in prior_intervals.
+			Keys are pair_idx integers; values are the result payload.
+		pending_pair_indices: pair_idx values whose fingerprint was NOT
+			in prior_intervals; these intervals need fresh solves.
+		pruned_prior: Input prior_intervals filtered to only the keys
+			present in expected_fingerprints. Callers in refine mode
+			write this back to disk as the "orphan prune" operation.
+			Empty input yields empty dict.
+		total_intervals: len(expected_fingerprints); number of adjacent
+			usable-seed pairs.
+		reused_count: len(cached_results_by_idx).
+		pending_count: len(pending_pair_indices).
+	"""
+	usable_seeds_sorted: list
+	expected_fingerprints: list
+	cached_results_by_idx: dict
+	pending_pair_indices: list
+	pruned_prior: dict
+	total_intervals: int
+	reused_count: int
+	pending_count: int
+
+
+#============================================
+@dataclasses.dataclass(frozen=True)
+class ExecutionContext:
+	"""Immutable run configuration for `execute_interval_work`.
+
+	Groups the run-invariant state so the execute signature stays small.
+	No callbacks, no mutable accumulators, no progress-bar handles --
+	those go through explicit kwargs or stay local to the call.
+
+	Fields:
+		reader: VideoReader open on the input video. In-process path
+			uses this reader directly; pool path hands it to worker-side
+			reopen.
+		scene_transform: SceneTransform instance for pixel<->scene coord
+			conversion.
+		motion_track: Camera motion track used for scoring (may be None).
+		all_seeds: Original seed list in pixel coords.
+		all_seeds_scene: Precomputed scene-coord tuples
+			(frame_index, sx, sy, sw, sh), one per seed.
+		fps: Video frame rate.
+		num_workers: Requested worker count. Runtime may still fall back
+			to in-process if pending_count is tiny.
+		video_path: Input video path; workers use it to reopen their own
+			readers across the process boundary.
+		debug: Debug flag; gates per-interval debug lines.
+	"""
+	reader: object
+	scene_transform: object
+	motion_track: object
+	all_seeds: list
+	all_seeds_scene: list
+	fps: float
+	num_workers: int
+	video_path: str
+	debug: bool
+
+
+#============================================
+def plan_interval_work(
+	seeds: list,
+	prior_intervals: dict = None,
+) -> WorkPlan:
+	"""Compute the WorkPlan for a seed list + optional cache.
+
+	Pure function: no I/O, no printing, no side-effects. Called by both
+	`interval_solver.solve_all_intervals` and `cli._mode_refine` so solve
+	mode and refine mode see the same partition.
+
+	Args:
+		seeds: Raw seed list from the seeds file.
+		prior_intervals: Optional fingerprint->result dict (the
+			solved_intervals cache). None or empty means every interval
+			is pending.
+
+	Returns:
+		A frozen `WorkPlan`. When fewer than 2 usable seeds exist, all
+		counts are zero and every list/dict is empty.
+	"""
+	# quiet seed filter -- refine mode relies on plan_interval_work
+	# staying silent so the fast-exit path produces no stdout. Solver
+	# mode prints its own banners at the call site.
+	usable_sorted = interval_fingerprint.filter_usable_seeds_sorted(
+		seeds, verbose=False,
+	)
+	# degenerate case: fewer than 2 usable seeds -> no intervals at all.
+	if len(usable_sorted) < 2:
+		empty_plan = WorkPlan(
+			usable_seeds_sorted=usable_sorted,
+			expected_fingerprints=[],
+			cached_results_by_idx={},
+			pending_pair_indices=[],
+			pruned_prior={},
+			total_intervals=0,
+			reused_count=0,
+			pending_count=0,
+		)
+		return empty_plan
+	# one fingerprint walk: feeds the cache partition AND the orphan
+	# prune in one pass so refine and solve stay in lock-step.
+	total_intervals = len(usable_sorted) - 1
+	expected_fingerprints = []
+	cached_results_by_idx = {}
+	pending_pair_indices = []
+	for pair_idx in range(total_intervals):
+		fingerprint = interval_fingerprint.compute_interval_fingerprint(
+			usable_sorted[pair_idx], usable_sorted[pair_idx + 1],
+		)
+		expected_fingerprints.append(fingerprint)
+		# cache-hit branch: remember the cached payload so execute can
+		# replay callbacks for it without touching the pool.
+		if prior_intervals is not None and fingerprint in prior_intervals:
+			cached_results_by_idx[pair_idx] = prior_intervals[fingerprint]
+		else:
+			pending_pair_indices.append(pair_idx)
+	# orphan prune: keep only keys that match a current fingerprint.
+	# Empty input produces empty output; we never fabricate keys.
+	if prior_intervals:
+		expected_set = set(expected_fingerprints)
+		pruned_prior = {
+			fp: v for fp, v in prior_intervals.items() if fp in expected_set
+		}
+	else:
+		pruned_prior = {}
+	plan = WorkPlan(
+		usable_seeds_sorted=usable_sorted,
+		expected_fingerprints=expected_fingerprints,
+		cached_results_by_idx=cached_results_by_idx,
+		pending_pair_indices=pending_pair_indices,
+		pruned_prior=pruned_prior,
+		total_intervals=total_intervals,
+		reused_count=len(cached_results_by_idx),
+		pending_count=len(pending_pair_indices),
+	)
+	return plan
+
+
+#============================================
+def _format_interval_result(result: dict, fps: float) -> str:
+	"""Format a single interval result as a summary line.
+
+	Private to the queue's per-completion output. Historical-location
+	note: this helper used to live in interval_solver.py. Moved here in
+	the 2026-04-17 solve_queue refactor because it is queue-dispatch
+	output.
+
+	Args:
+		result: Interval result dict from `solve_interval_analytical`.
+		fps: Video frame rate for duration calculation.
+
+	Returns:
+		One-line summary string.
+	"""
+	start_frame = result["start_frame"]
+	end_frame = result["end_frame"]
+	duration_s = (end_frame - start_frame) / fps
+	score = result["interval_score"]
+	reasons = score.get("failure_reasons", [])
+	# detect v3 analytical vs v2 legacy format
+	if "confidence_tier" in score:
+		# v3 analytical format
+		confidence = score["confidence_tier"]
+		agree = score.get("agreement", 0.0)
+		vel_cons = score.get("velocity_consistency", 0.0)
+		size_cons = score.get("size_consistency", 0.0)
+		# blob-snap acceptance fractions (FWD/BWD). None means no
+		# candidate blobs were seen at all; format as n/a rather than 0%
+		# so the user can tell "nothing to accept" apart from "nothing
+		# was accepted".
+		fwd_cov = score.get("blob_coverage_fwd")
+		bwd_cov = score.get("blob_coverage_bwd")
+		fwd_str = f"{fwd_cov * 100:.0f}%" if fwd_cov is not None else "n/a"
+		bwd_str = f"{bwd_cov * 100:.0f}%" if bwd_cov is not None else "n/a"
+		metrics_str = (
+			f"agree={agree:.2f}  "
+			f"vel_cons={vel_cons:.2f}  "
+			f"size_cons={size_cons:.2f}  "
+			f"accept={fwd_str}/{bwd_str}"
+		)
+	else:
+		# v2 legacy format
+		confidence = score.get("confidence", "low")
+		agree = score.get("agreement_score", 0.0)
+		margin = score.get("competitor_margin", 0.0)
+		identity = score.get("identity_score", 0.0)
+		metrics_str = (
+			f"agree={agree:.2f}  "
+			f"margin={margin:.2f}  "
+			f"identity={identity:.2f}"
+		)
+	_confidence_labels = {
+		"high": "TRUST", "good": "GOOD", "fair": "FAIR", "low": "WEAK",
+	}
+	tag = _confidence_labels.get(confidence, "WEAK")
+	if confidence in ("high", "good"):
+		label = f"[{tag}]"
+	else:
+		reason_str = ", ".join(reasons) if reasons else "low_confidence"
+		label = f"[{tag}: {reason_str}]"
+	line = (
+		f"  interval {start_frame:5d}-{end_frame:5d} "
+		f"({duration_s:.1f}s)  "
+		f"{metrics_str}  {label}"
+	)
+	return line
+
+
+#============================================
+def _print_interval_result_rich(
+	result: dict,
+	fps: float,
+	progress: rich.progress.Progress,
+) -> None:
+	"""Print an interval result line through a rich.progress console.
+
+	Going through `progress.console.print` keeps the output from
+	clobbering the live progress bar.
+	"""
+	progress.console.print(_format_interval_result(result, fps))
+
+
+#============================================
+def execute_interval_work(
+	plan: WorkPlan,
+	context: ExecutionContext,
+	*,
+	on_interval_complete: object = None,
+	on_interval_solved: object = None,
+	run_control: object = None,
+	key_reader: object = None,
+) -> list:
+	"""Execute the plan: replay cache hits, dispatch pending intervals.
+
+	Runs either in-process or through `solver_workers.make_pool` based
+	on worker count and pending interval count. Fires
+	`on_interval_complete` for every interval (cached + solved);
+	`on_interval_solved` only for fresh solves. Returns the seed-ordered
+	result list even when the pool delivers completions out of order.
+
+	Args:
+		plan: WorkPlan from `plan_interval_work`.
+		context: ExecutionContext with run-invariant state.
+		on_interval_complete: Optional callback(result) fired for every
+			interval, in completion order for solves and in seed order
+			for cache hits.
+		on_interval_solved: Optional callback(fingerprint, result) fired
+			exactly once per fresh solve. Never fires for cache hits.
+		run_control: Optional run control object for quit handling.
+		key_reader: Optional key reader for interactive quit input.
+
+	Returns:
+		List of interval result dicts in seed order. Length equals
+		plan.total_intervals on the normal-completion path; may be
+		shorter (gaps dropped) when the user quit mid-solve.
+	"""
+	# function-level import: tactical compromise to keep this module
+	# free of a load-time dependency on interval_solver. BlockBarColumn
+	# and solve_interval_analytical live there and cannot move in this
+	# refactor. See design-philosophy scope-lock in
+	# ~/.claude/plans/snoopy-questing-neumann.md.
+	import interval_solver
+
+	total_intervals = plan.total_intervals
+	usable_seeds_sorted = plan.usable_seeds_sorted
+	expected_fingerprints = plan.expected_fingerprints
+	pending_pair_indices = plan.pending_pair_indices
+	reused_count = plan.reused_count
+	pending_total = plan.pending_count
+
+	# pre-allocate so workers fill by index while the main process
+	# preserves seed order.
+	interval_results = [None] * total_intervals
+	seq_frame_counter = [0]
+	solved_count = 0
+
+	# replay cache hits: the pre-parallel serial loop fired
+	# on_interval_complete uniformly after every append, and
+	# test_on_interval_complete_fires_for_every_interval locks that.
+	for pair_idx, cached in plan.cached_results_by_idx.items():
+		interval_results[pair_idx] = cached
+		if on_interval_complete is not None:
+			on_interval_complete(cached)
+
+	# decide execution mode. in-process when the user asked for one
+	# worker, or when there is very little work to amortize pool setup
+	# cost (spawn + imports + initializer payload copy).
+	use_pool = context.num_workers >= 2 and pending_total >= 4
+
+	# announce work scope after cache partition so the number reflects
+	# actual solves, not total intervals.
+	if pending_total == 0:
+		print(f"  all {total_intervals} intervals cached; nothing to solve "
+			f"(analytical mode)")
+	elif reused_count > 0:
+		print(f"  solving {pending_total} new intervals, "
+			f"{reused_count} cached (analytical mode)...")
+	else:
+		print(f"  solving {total_intervals} intervals (analytical mode)...")
+
+	# pure cache-hit fast-exit: no bar, no pool. Post-loop summary and
+	# accounting assertion still run below.
+	if pending_total > 0:
+		with rich.progress.Progress(
+			rich.progress.TextColumn("{task.description}"),
+			interval_solver.BlockBarColumn(),
+			rich.progress.MofNCompleteColumn(),
+			rich.progress.TaskProgressColumn(),
+			rich.progress.TimeElapsedColumn(),
+			rich.progress.TimeRemainingColumn(),
+			refresh_per_second=2,
+		) as progress:
+			# bar is sized to cache-miss work only. the cache-hit count
+			# was already printed by cli (refine: N of M need solving).
+			if reused_count > 0:
+				desc = f"  solving {pending_total} new intervals"
+			else:
+				desc = "  solving intervals"
+			task = progress.add_task(desc, total=pending_total)
+
+			# main-process result-accept closure shared by both paths.
+			# captures interval_results and counters so the pool path
+			# and in-process path converge on identical bookkeeping.
+			def _accept(pair_idx: int, fingerprint: str, result: dict) -> None:
+				nonlocal solved_count
+				interval_results[pair_idx] = result
+				solved_count += 1
+				if on_interval_solved is not None:
+					on_interval_solved(fingerprint, result)
+				# always print per-completion summary so long runs have
+				# visible progress beyond the bar. goes through the
+				# rich console so the bar rendering is preserved.
+				_print_interval_result_rich(result, context.fps, progress)
+				# on_interval_complete fires in completion order, not
+				# seed order. Consumers needing seed order read from
+				# interval_results after the call returns.
+				if on_interval_complete is not None:
+					on_interval_complete(result)
+				n_frames = result["end_frame"] - result["start_frame"]
+				seq_frame_counter[0] += n_frames
+				progress.update(task, advance=1)
+
+			if not use_pool:
+				# in-process path: identical to the pre-parallel loop.
+				# Used for num_workers == 1 or for tiny runs where pool
+				# setup would dominate.
+				for pair_idx in pending_pair_indices:
+					if run_control is not None and run_control.quit_requested:
+						break
+					if key_reader is not None and run_control is not None:
+						ch = key_reader.poll()
+						key_input.handle_key(ch, run_control, key_reader, progress)
+					if run_control is not None and run_control.quit_requested:
+						break
+					seed_start = usable_seeds_sorted[pair_idx]
+					seed_end = usable_seeds_sorted[pair_idx + 1]
+					start_frame = int(seed_start["frame_index"])
+					end_frame = int(seed_end["frame_index"])
+					if context.debug:
+						progress.console.print(
+							f"  solving interval {pair_idx + 1}/{total_intervals} "
+							f"(frames {start_frame}-{end_frame})"
+						)
+					result = interval_solver.solve_interval_analytical(
+						seed_start, seed_end, context.scene_transform,
+						context.all_seeds_scene, context.fps,
+						debug=context.debug,
+						motion_track=context.motion_track,
+						all_seeds=context.all_seeds,
+						reader=context.reader,
+					)
+					_accept(pair_idx, expected_fingerprints[pair_idx], result)
+			else:
+				# pool path: dispatch cache-miss intervals to workers,
+				# poll the key reader between completions, aggregate
+				# results by pair_idx (completion order != seed order).
+				with solver_workers.make_pool(
+					num_workers=context.num_workers,
+					video_path=context.video_path,
+					scene_transform=context.scene_transform,
+					motion_track=context.motion_track,
+					all_seeds_scene=context.all_seeds_scene,
+					all_seeds=context.all_seeds,
+					fps=context.fps,
+					debug=context.debug,
+				) as pool:
+					future_to_idx = {}
+					for pair_idx in pending_pair_indices:
+						seed_start = usable_seeds_sorted[pair_idx]
+						seed_end = usable_seeds_sorted[pair_idx + 1]
+						fut = pool.submit(
+							solver_workers._solve_interval_worker,
+							(pair_idx, seed_start, seed_end),
+						)
+						future_to_idx[fut] = pair_idx
+
+					pending_futures = set(future_to_idx.keys())
+					while pending_futures:
+						if run_control is not None and run_control.quit_requested:
+							break
+						if key_reader is not None and run_control is not None:
+							ch = key_reader.poll()
+							key_input.handle_key(
+								ch, run_control, key_reader, progress,
+							)
+						if run_control is not None and run_control.quit_requested:
+							break
+						# short wait lets us poll the key reader at ~4Hz
+						done, pending_futures = concurrent.futures.wait(
+							pending_futures,
+							timeout=0.25,
+							return_when=concurrent.futures.FIRST_COMPLETED,
+						)
+						for fut in done:
+							pair_idx, fingerprint, result = fut.result()
+							_accept(pair_idx, fingerprint, result)
+
+					# on quit, cancel anything not yet running and drain
+					# in-flight work so the main process still sees
+					# completions (and on_interval_solved fires).
+					if run_control is not None and run_control.quit_requested:
+						for fut in list(pending_futures):
+							fut.cancel()
+						for fut in concurrent.futures.as_completed(pending_futures):
+							if fut.cancelled():
+								continue
+							pair_idx, fingerprint, result = fut.result()
+							_accept(pair_idx, fingerprint, result)
+
+	# post-loop summary: make cache behavior visible on stdout
+	print(f"  solver: reused {reused_count}, solved {solved_count} "
+		f"of {total_intervals}")
+	# visibility warning if we had a non-empty cache but matched
+	# nothing -- likely a fingerprint drift from seed filter or
+	# rounding changes. Only surfaces when pruned_prior is non-empty
+	# (we actually had something to reuse) yet nothing was reused.
+	if plan.pruned_prior and reused_count == 0 and solved_count > 0:
+		print(f"  solver: WARNING 0 of {len(plan.pruned_prior)} prior intervals "
+			f"reused -- possible fingerprint mismatch "
+			f"(check seed filter / rounding)")
+	# refine-mode invariant: every pair iteration must land in exactly
+	# one branch (reuse or solve). Guarded on the quit path because an
+	# interrupted loop legitimately has reused_count + solved_count <
+	# total_intervals.
+	if run_control is None or not run_control.quit_requested:
+		assert reused_count + solved_count == total_intervals, (
+			f"reuse/solve accounting drifted: "
+			f"reused={reused_count} solved={solved_count} "
+			f"total={total_intervals}"
+		)
+
+	if run_control is not None and run_control.quit_requested:
+		done = len([r for r in interval_results if r is not None])
+		key_input._quit_trace(
+			"FUNCTION_RETURN", context="solve_all_intervals_analytical",
+			quit_requested=True, intervals_done=done,
+			intervals_total=total_intervals,
+		)
+		print(f"  quit requested: {done}/{total_intervals} intervals completed")
+		print("  hint: re-run 'solve' to resume")
+
+	# drop any None holes left by a quit so the downstream stitcher
+	# gets only real results. in the normal-completion path the
+	# accounting assertion above already proved there are no holes.
+	filled_results = [r for r in interval_results if r is not None]
+	return filled_results
