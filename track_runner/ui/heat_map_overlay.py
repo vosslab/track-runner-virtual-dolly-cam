@@ -34,16 +34,30 @@ from PySide6.QtWidgets import (
 import residual_heat_map
 
 
-# Z-values placed between the frame pixmap (conventionally at 0) and
-# prediction overlays (drawn later with higher z). Kept as module
-# constants so future overlays can pick adjacent slots without collision.
-Z_HEAT_PIXMAP = 50.0
-Z_HEAT_OUTLINE = 51.0
-Z_HEAT_LEGEND = 52.0
+# Z-values chosen to interleave cleanly with every other overlay item
+# in the scene. Heat composite sits BELOW every box layer so torso /
+# prediction / seed rectangles always remain visible on top of the
+# heat tint. Legend and disclosure badge sit ABOVE all boxes so the
+# user can always read the colormap and the missing-transform warning.
+# Explicit constants, not creation order, govern stacking.
+#
+#    0.0  frame pixmap           (implicit, set by FrameView)
+#    0.5  heat composite pixmap  (below every overlay)
+#    0.6  heat ROI outline       (below every overlay)
+#    1.0  seed rectangle         (edit_controller)
+#    3.0  consensus box          (base_controller)
+#    4.0  fused box              (base_controller)
+#    5.0  fwd / bwd boxes        (base_controller)
+#   20.0  heat legend text       (above every box; small corner text)
+#   20.5  heat badge background  (backs the warning label)
+#   21.0  heat disclosure badge  (most critical warning; always on top)
+Z_HEAT_PIXMAP = 0.5
+Z_HEAT_OUTLINE = 0.6
+Z_HEAT_LEGEND = 20.0
 # badge has its own background rect one slot below the text so the
 # warning stays legible against any frame content.
-Z_HEAT_BADGE_BG = 52.5
-Z_HEAT_BADGE = 53.0
+Z_HEAT_BADGE_BG = 20.5
+Z_HEAT_BADGE = 21.0
 
 # debounce window for rapid frame-scrubbing
 DEBOUNCE_MS = 150

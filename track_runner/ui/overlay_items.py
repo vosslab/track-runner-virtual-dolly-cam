@@ -168,6 +168,13 @@ class PreviewBoxItem(QGraphicsRectItem):
 		outline_pen.setCosmetic(True)
 		self._outline_pen = outline_pen
 
+		# active drag feedback must sit above every diagnostic overlay
+		# (heat composite, prediction boxes, seed rect) so the user
+		# always sees the box they are currently drawing. Kept above
+		# the heat legend/badge (z=21) with headroom; the HUD legend
+		# at z=100 remains on top.
+		self.setZValue(50)
+
 	#============================================
 
 	def paint(

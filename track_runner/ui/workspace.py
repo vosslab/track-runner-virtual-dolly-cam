@@ -22,6 +22,7 @@ import common_tools.frame_filters as frame_filters_module
 import ui.frame_view as frame_view_module
 import ui.app_shell as app_shell_module
 import ui.zoom_controls as zoom_controls_module
+import ui.heat_map_overlay as heat_map_overlay_module
 
 FrameView = frame_view_module.FrameView
 AppShell = app_shell_module.AppShell
@@ -199,6 +200,13 @@ class AnnotationWindow(AppShell):
 		self._heat_shortcut = QShortcut(QKeySequence("H"), self)
 		self._heat_shortcut.activated.connect(heat_action.toggle)
 
+		# Lazy-built "Loading heatmap..." dialog. Shown while the heat
+		# compute is running (STATUS_COMPUTING) and hidden the moment any
+		# other status arrives. The frame view is disabled in parallel
+		# so the user cannot click into a half-ready scene to start
+		# drawing a torso box. Constructed on first use in _set_heat_busy.
+		self._heat_busy_dialog: QDialog | None = None
+
 		# Add zoom controls to the status bar
 		self._zoom_controls = ZoomControls()
 		self.statusBar().addPermanentWidget(self._zoom_controls)
@@ -320,9 +328,13 @@ class AnnotationWindow(AppShell):
 		for key, action in self._overlay_actions.items():
 			default_checked = (key != "heat")
 			action.setChecked(default_checked)
-		# clear any stale heat status from the previous controller
+		# clear any stale heat status from the previous controller and
+		# force-hide the busy popup in case a mode switch interrupts an
+		# in-flight compute (the frame view must not stay disabled).
 		if hasattr(self, "_heat_status_label") and self._heat_status_label is not None:
 			self._heat_status_label.setText("")
+		if hasattr(self, "_heat_busy_dialog"):
+			self._set_heat_busy(False)
 
 		# Remove previous controller widget from toolbar (keep mode_label and filter_button)
 		if self._controller_widget_action is not None:
@@ -382,7 +394,11 @@ class AnnotationWindow(AppShell):
 		"""Set the motion heat-map overlay status label text.
 
 		Called by BaseAnnotationController when the HeatMapOverlay emits
-		statusChanged. Empty string clears the label.
+		statusChanged. Empty string clears the label. Also drives the
+		modal "Loading heatmap..." popup: the popup appears on exactly
+		the STATUS_COMPUTING status and closes on every other status so
+		the user cannot click into the scene while a compute is in
+		flight.
 
 		Args:
 			text: Status string to display next to the heat toolbar
@@ -391,6 +407,105 @@ class AnnotationWindow(AppShell):
 		"""
 		if hasattr(self, "_heat_status_label") and self._heat_status_label is not None:
 			self._heat_status_label.setText(text)
+		# drive busy popup: exactly one status opens it; every other
+		# status closes it. The drawing-pause path emits a non-computing
+		# status so the popup is never shown over an active drag.
+		is_busy = text == heat_map_overlay_module.STATUS_COMPUTING
+		self._set_heat_busy(is_busy)
+
+	#============================================
+
+	def _set_heat_busy(self, busy: bool) -> None:
+		"""Show or hide the heat-map loading popup and gate scene clicks.
+
+		When `busy` is True, builds the popup on first use, shows it
+		centered over the frame view, and disables the frame view so
+		mouse events cannot reach the QGraphicsScene. When False,
+		hides the popup and re-enables the view. Idempotent: safe to
+		call repeatedly in the same state.
+
+		Args:
+			busy: True while a heat-map compute is in flight.
+		"""
+		if busy:
+			# build on first use; keep one persistent instance so
+			# repeated shows do not churn widget construction
+			if self._heat_busy_dialog is None:
+				self._heat_busy_dialog = self._build_heat_busy_dialog()
+			# center the popup over the frame view before showing
+			self._center_heat_busy_dialog()
+			self._heat_busy_dialog.show()
+			self._heat_busy_dialog.raise_()
+			# disabling the view blocks mouse press / move / release into
+			# the scene; keyboard shortcuts (H, arrows) still fire on the
+			# window so the user can toggle off or navigate
+			self._frame_view.setEnabled(False)
+		else:
+			if self._heat_busy_dialog is not None:
+				self._heat_busy_dialog.hide()
+			self._frame_view.setEnabled(True)
+
+	#============================================
+
+	def _build_heat_busy_dialog(self) -> QDialog:
+		"""Build the "Loading heatmap..." popup dialog.
+
+		Frameless, non-modal, styled to match the dark toolbar. Kept as
+		a persistent child of the window so show/hide is cheap. Not
+		modal in the Qt sense -- the view-disable path does the
+		click-blocking work, while the dialog stays non-modal so the
+		H shortcut and arrow-key navigation continue to fire on the
+		parent window.
+
+		Returns:
+			A ready-to-show QDialog.
+		"""
+		dlg = QDialog(self)
+		dlg.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog)
+		dlg.setAttribute(Qt.WA_StyledBackground, True)
+		dlg.setStyleSheet(
+			"QDialog { background-color: #1A1A2E; "
+			"border: 2px solid #A21CAF; border-radius: 6px; }"
+			"QLabel { color: #F8FAFC; }"
+		)
+		layout = QVBoxLayout(dlg)
+		layout.setContentsMargins(24, 18, 24, 18)
+		layout.setSpacing(4)
+		title_label = QLabel("Loading heatmap...")
+		title_font = title_label.font()
+		title_font.setPointSize(14)
+		title_font.setBold(True)
+		title_label.setFont(title_font)
+		title_label.setAlignment(Qt.AlignCenter)
+		sub_label = QLabel("Please wait")
+		sub_font = sub_label.font()
+		sub_font.setPointSize(10)
+		sub_label.setFont(sub_font)
+		sub_label.setAlignment(Qt.AlignCenter)
+		sub_label.setStyleSheet("QLabel { color: #94A3B8; }")
+		layout.addWidget(title_label)
+		layout.addWidget(sub_label)
+		dlg.setLayout(layout)
+		dlg.adjustSize()
+		return dlg
+
+	#============================================
+
+	def _center_heat_busy_dialog(self) -> None:
+		"""Center the busy popup over the frame view before show()."""
+		if self._heat_busy_dialog is None:
+			return
+		view_rect = self._frame_view.geometry()
+		# map the frame view's top-left to global coords so the dialog
+		# can be placed in the correct screen region regardless of
+		# window / toolbar layout
+		top_left_global = self._frame_view.mapToGlobal(view_rect.topLeft())
+		view_cx = top_left_global.x() + view_rect.width() // 2
+		view_cy = top_left_global.y() + view_rect.height() // 2
+		dlg_size = self._heat_busy_dialog.sizeHint()
+		dlg_x = view_cx - dlg_size.width() // 2
+		dlg_y = view_cy - dlg_size.height() // 2
+		self._heat_busy_dialog.move(dlg_x, dlg_y)
 
 	#============================================
 
