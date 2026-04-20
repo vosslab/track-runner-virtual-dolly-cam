@@ -1,5 +1,9 @@
 # Track runner v3 specification
 
+This document is subordinate to
+[TRACK_RUNNER_CONTRACT.md](TRACK_RUNNER_CONTRACT.md). On conflict, the
+contract wins and this document is corrected.
+
 Status: v3, reflects implemented modules as of 2026-03-13
 
 This document describes the architecture of track_runner v3, a seed-driven
@@ -37,10 +41,10 @@ for evolution from v1 and v2.
 | `cli.py` | ~1200 | Argument parsing, multi-pass orchestration, quality report |
 | `config.py` | ~350 | Config YAML loading, defaults, schema validation |
 | `state_io.py` | ~200 | JSON read/write for seeds, diagnostics, and intervals |
-| `detection.py` | ~300 | YOLOv8n ONNX person detection |
-| `propagator.py` | ~400 | Frame-to-frame optical flow + patch correlation tracking |
-| `hypothesis.py` | ~250 | Competing path generation for ambiguous intervals |
-| `scoring.py` | ~250 | Interval confidence: agreement, identity, competitor margin |
+| `detection.py` | ~300 | YOLOv8n ONNX person detection (optional seeding assistance, not active tracking evidence) |
+| `propagator.py` | ~400 | Frame-to-frame geometry propagation |
+| `hypothesis.py` | ~250 | Competing path generation for ambiguous intervals (competitor-based scoring removed as a normative pillar per C6) |
+| `scoring.py` | ~250 | Interval confidence scoring (geometry-based terms) |
 | `interval_solver.py` | ~1400 | Per-interval bounded solving, fusion, refinement, anchoring |
 | `review.py` | ~200 | Weak span identification and seed target generation |
 | `seeding.py` | ~620 | Interactive seed UI, jersey color/histogram extraction |
@@ -133,7 +137,7 @@ Pass 1: seeds
 
 Pass 2: interval solve
   interval_solver: forward + backward propagation per interval
-  scoring: agreement, identity, competitor margin per interval
+  scoring: agreement and related geometry-based terms per interval
   -> solved trajectory + interval diagnostics
 
 Pass 3: review
@@ -162,11 +166,12 @@ The user annotates each seed frame using one of four drawing modes.
 ### The four drawing modes
 
 - **Visible**: the runner is fully visible. The user draws a precise torso box.
-  Exact torso position and jersey color are known. Full tracking confidence.
+  Exact torso position is known. Full tracking confidence. (Jersey color is
+  not used as identity evidence per contract C6; it may be stored in seeds
+  for display or legacy purposes only.)
 - **Partial**: the runner is partially hidden (another runner crossing, a pole,
   etc.) but the torso position is identifiable. Precise torso box drawn.
-  Jersey hue is unreliable. Used as an interval endpoint but excluded from the
-  appearance model.
+  Used as an interval endpoint.
 - **Approximate** (`a` key): the runner is fully hidden behind an obstruction
   and the exact torso position cannot be determined. The user draws a larger
   area indicating the general region. Stored as `status: "approximate"` with
@@ -194,7 +199,6 @@ area gives the solver a directional hint; `not_in_frame` has no location at all.
 | Has `jersey_hsv` | YES | unreliable | NO | NO |
 | Runner in frame | YES | YES | YES (hidden) | NO (off-screen) |
 | Interval endpoint | YES | YES | YES (weak, conf=0.3) | NO |
-| Appearance model | YES | NO | NO | NO |
 | Trajectory erasure | NO | NO | YES (0.5 s) | YES (1.0 s) |
 | Default confidence | 1.0 | 1.0 | 0.3 | n/a |
 
@@ -223,28 +227,19 @@ seed), then fuses the two tracks into a scored result.
 
 ### Forward and backward propagation
 
-`propagator.py` advances a bounding box one frame at a time using two
-complementary signals:
+`propagator.py` advances a bounding box one frame at a time. Machine
+evidence uses interval geometry propagation plus per-frame residual-
+motion observations (see
+[MOTION_CUE_HEAT_MAP.md](MOTION_CUE_HEAT_MAP.md) for the heat-map and
+blob-pipeline mechanism). Appearance-based blending is banned per
+contract C6. If local patch matching is present, it is a geometry-only
+propagation aid and not identity evidence.
 
-1. **Lucas-Kanade optical flow**: Shi-Tomasi features (up to 50 corners,
-   quality 0.01, min distance 5, block size 5) tracked with LK pyramidal
-   flow (window 15x15, 3 pyramid levels, 30 iterations, epsilon 0.01).
-   Requires at least 4 valid flow vectors.
-
-2. **Patch correlation**: Template matching of the previous torso crop
-   against a search region (20 px margin around predicted position).
-
-The two estimates are blended using scale-gated weights:
-
-| Runner height | Flow weight | Correlation weight | Rationale |
-| --- | --- | --- | --- |
-| > 60 px (large) | 0.4 | 0.6 | Appearance reliable |
-| 30-60 px (medium) | 0.6 | 0.4 | Balanced |
-| < 30 px (small) | 1.0 | 0.0 | Appearance is noise |
-
-**Stationary lock**: When 5 consecutive frames show near-zero displacement
-(< 3% of box dimension), the propagator locks position to prevent drift
-from camera jitter.
+Lucas-Kanade optical flow (Shi-Tomasi features with LK pyramidal flow)
+is the flow primitive used for short-horizon geometry propagation.
+Image-kernel parameters (pyramid levels, window size, iteration count)
+are about the raster, not about the runner, and are allowed raw-pixel
+quantities under contract clause C1.
 
 **Confidence decay**: Each propagated frame decays confidence by 0.97.
 Floor is 0.1. Seeds start at 1.0 (visible/partial) or 0.3 (approximate).
@@ -288,8 +283,9 @@ Pipeline order:
 5. Stamp confidence + erasure
 6. Crop
 
-The refinement pass is always on. It does not affect identity scoring or
-seed recommendation, which use the first-pass diagnostic signal.
+The refinement pass is always on. It does not affect the first-pass
+diagnostic signal, which drives confidence scoring and seed
+recommendation.
 
 Prior weight formula:
 
@@ -349,22 +345,21 @@ area wins.
 
 ### Hypothesis generation
 
-For intervals where propagator confidence drops below thresholds,
-`hypothesis.py` generates competing path candidates. Up to 3 competitor
-tracks are maintained. Competitors are YOLO detections that overlap the
-target by IoU >= 0.3, with minimum height 20 px. Each competitor is matched
-across frames by IoU >= 0.2.
+Competitor-based hypothesis generation was a prior-design mechanism
+and is **removed as a normative scoring pillar** in the current
+design. In observed footage it produced many more false-positive
+competitors than true ones, and the identity-scoring it fed into
+relied on HSV / appearance cues that are now banned per contract C6.
 
-**Competitor identity scoring** is scale-gated:
+Code in `hypothesis.py` may still generate competitor candidates for
+debugging or future research, but its output must not be treated as a
+trusted scoring pillar. Any competitor-min-height constant in code is
+a raw-pixel threshold that does not satisfy C1; the target value,
+expressed in torso units, is a TODO and must come from current code
+or a follow-up decision rather than a guess in this document.
 
-| Runner height | Method |
-| --- | --- |
-| < 30 px | return 0.5 (uninformative) |
-| 30-60 px | HSV comparison only |
-| >= 60 px | 60% HSV + 40% template correlation |
-
-**Competitor margin**: `0.7 * position_distance + 0.3 * appearance_distance`.
-A margin < 0.2 flags `likely_identity_swap`.
+Appearance-based competitor identity scoring (HSV, template
+correlation, jersey color) is banned as identity evidence per C6.
 
 ### Trajectory erasure
 
@@ -400,10 +395,11 @@ can inform seed placement and gap analysis.
 | > 0.2 | > 0.1 | `fair` | Borderline |
 | else | | `low` | Needs seed |
 
-Additional failure reasons regardless of confidence:
-
-- `likely_identity_swap`: competitor margin < 0.2
-- `weak_appearance`: identity score < 0.4
+Legacy failure reasons (`likely_identity_swap`, `weak_appearance`)
+were driven by competitor-margin and appearance-based identity scoring.
+Those scoring pillars are removed under C6, so these codes no longer
+fire in the active path. They may still appear in historical
+diagnostics files.
 
 ### Blob coverage (additive diagnostic)
 
@@ -432,12 +428,18 @@ compensates for inherent noise in FWD/BWD agreement on very short intervals.
 
 ### Interval severity classification
 
-`review.py` classifies intervals for refinement prioritization:
+`review.py` classifies intervals for refinement prioritization.
+Severity is driven by FWD/BWD agreement. Legacy severity rules that
+referenced `likely_identity_swap` or competitor-margin were driven by
+scoring pillars that are removed under C6; current severity uses
+geometry-based agreement terms only.
 
-- **high**: agreement < 0.2, or `likely_identity_swap`, or (margin < 0.2 and
-  agreement < 0.4)
-- **medium**: agreement < 0.4, or margin < 0.2 with good agreement
+- **high**: very low agreement
+- **medium**: low agreement
 - **low**: everything else
+
+Exact thresholds come from code; do not treat the numeric values that
+previously appeared in this section as normative.
 
 Short-interval demotion: intervals under 10 frames are unconditionally
 demoted from high to medium.
@@ -451,9 +453,8 @@ The `--refine` flag controls which intervals trigger a new seeding round.
 
 ### suggested
 
-Default mode. `review.py` identifies the worst intervals by confidence and
-failure reason. Seed targets are placed at midpoints of low-confidence
-intervals. `likely_identity_swap` intervals get targets at `start + len // 3`.
+Default mode. `review.py` identifies the worst intervals by confidence.
+Seed targets are placed at midpoints of low-confidence intervals.
 
 ### interval
 
@@ -624,7 +625,6 @@ via `overlay_config`. Semantic roles:
 - **Accepted box**: solid, colored by tracking source (seed status on seed frames)
 - **Forward track**: dashed, prediction color
 - **Backward track**: dashed, prediction color
-- **Competitor**: solid, competitor color
 - **Lost/no data**: lost color for status text
 
 All elements scale with output resolution and box size. Transparency values
@@ -839,18 +839,10 @@ which intervals have changed.
 | Propagator | Confidence decay/frame | 0.97 |
 | Propagator | Confidence floor | 0.1 |
 | Propagator | Prior weight scale | 0.3 |
-| Propagator | Stationary streak threshold | 5 frames |
-| Propagator | Stationary displacement fraction | 0.03 |
-| Propagator | Patch search margin | 20 px |
 | Propagator | Min flow features | 4 |
 | Interval solver | Dice agreement threshold | 0.3 |
 | Scoring | Agreement threshold (high) | > 0.5 |
-| Scoring | Margin threshold (high) | > 0.5 |
 | Scoring | Short interval promotion | <= 5 frames |
-| Hypothesis | Min competitor height | 20 px |
-| Hypothesis | Max competitors | 3 |
-| Hypothesis | Target overlap IoU | 0.3 |
-| Hypothesis | Competitor match IoU | 0.2 |
 | Crop | Target fill ratio | 0.30 |
 | Crop | Smoothing attack | 0.15 |
 | Crop | Smoothing release | 0.05 |

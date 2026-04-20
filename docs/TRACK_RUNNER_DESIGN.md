@@ -1,9 +1,18 @@
 # Track runner design philosophy
 
+This document is subordinate to
+[TRACK_RUNNER_CONTRACT.md](TRACK_RUNNER_CONTRACT.md). On conflict, the
+contract wins and this document is corrected.
+
 This document explains the principles behind the track runner architecture.
 For the technical specification, see
-[docs/TRACK_RUNNER_V3_SPEC.md](docs/TRACK_RUNNER_V3_SPEC.md). For evolution
-history, see [docs/TRACK_RUNNER_HISTORY.md](docs/TRACK_RUNNER_HISTORY.md).
+[TRACK_RUNNER_V3_SPEC.md](TRACK_RUNNER_V3_SPEC.md). For the motion-cue heat map and per-frame
+blob pipeline, see
+[MOTION_CUE_HEAT_MAP.md](MOTION_CUE_HEAT_MAP.md) (mechanism-level
+technical doc). The short consumer-facing summary is
+[RESIDUAL_MOTION_OBSERVATIONS.md](RESIDUAL_MOTION_OBSERVATIONS.md). For
+evolution history, see
+[TRACK_RUNNER_HISTORY.md](TRACK_RUNNER_HISTORY.md).
 
 ## Core principle
 
@@ -33,18 +42,29 @@ Benefits of this design:
 
 ## Signal hierarchy
 
-Person detection (YOLO) is the hero signal. It provides the most reliable
-position estimate when a detection exists.
+This section is subordinate to
+[TRACK_RUNNER_CONTRACT.md](TRACK_RUNNER_CONTRACT.md); on conflict, the
+contract wins.
 
-When detection is absent, the propagator bridges the gap using optical flow
-and patch correlation, with confidence decaying per frame.
+Active machine evidence is interval geometry propagation coupled with
+per-frame residual-motion observations. Neither leg is adequate on its
+own; the coupling is the point. See
+[FWD_BWD_MODEL_METHODOLOGY.md](FWD_BWD_MODEL_METHODOLOGY.md) for the
+mechanics of the coupled model, and
+[RESIDUAL_MOTION_OBSERVATIONS.md](RESIDUAL_MOTION_OBSERVATIONS.md) for
+the per-frame measurement pipeline (residual-motion cue map, blob
+extraction, corridor filter, per-frame observation).
 
-Jersey color is size-gated:
+Appearance cues -- jersey color, HSV matching, color histograms, and
+runner-appearance template matching -- are banned as identity or
+classification evidence per contract clause C6. Prior versions blended
+these cues at scale-gated weights and the results were unreliable; see
+[TRACK_RUNNER_HISTORY.md](TRACK_RUNNER_HISTORY.md) and the archived
+findings under `archive/` for context.
 
-- **> 60 px** (runner height): color is rock-solid (hue std < 6). Appearance
-  gets 60% weight in the blend.
-- **30-60 px**: color is unreliable. Balanced 40% weight.
-- **< 30 px**: color is pure noise. Appearance is suppressed entirely.
+Person detection (YOLO) is not an active tracking signal in the current
+design. It may be referenced as optional seeding assistance, not as
+normative active tracking evidence.
 
 After 1-2 laps on a track, cyclical priors become available. The runner
 returns to roughly the same image-plane positions every lap period.
@@ -87,7 +107,7 @@ The first-pass FWD/BWD propagation is intentionally independent. The
 disagreement between directions is the honest uncertainty probe. This raw
 diagnostic signal drives:
 
-- Interval confidence scoring (agreement, identity, competitor margin)
+- Interval confidence scoring (agreement and related geometry-based terms)
 - Seed recommendation (which intervals need more seeds)
 - Severity classification (how urgently an interval needs attention)
 
@@ -174,7 +194,8 @@ divergence between what the solver computed and what the encoder renders.
   The tool does not search for interesting subjects.
 - **Not a template matcher.** Runner appearance changes with pose, distance,
   lighting, and occlusion. Pure template matching fails on these changes.
-  The tool uses detection + motion + gated appearance instead.
+  The tool uses geometry propagation coupled with motion-cue
+  observations instead. Appearance is banned per contract C6.
 
 ## Visual encoding principles
 

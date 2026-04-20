@@ -1,7 +1,27 @@
 # FWD/BWD model methodology
 
-Rules for preserving the dual-pass independence invariant in the track-runner
-interval solver.
+This document is subordinate to
+[TRACK_RUNNER_CONTRACT.md](TRACK_RUNNER_CONTRACT.md). On conflict, the
+contract wins and this document is corrected.
+
+Source of truth for dual-pass independence and consumption
+constraints.
+
+Owns: what each pass may read, how the returned observation is
+consumed, the normative raw-cache boundary, and the forbidden
+coupling patterns.
+
+Does not own: how the motion-cue field is computed, ROI geometry,
+blob extraction, cue-confidence scoring, or the concrete cache
+schema. Those live in
+[MOTION_CUE_HEAT_MAP.md](MOTION_CUE_HEAT_MAP.md).
+
+Rules for preserving the dual-pass independence invariant in the
+track-runner interval solver. For the motion-cue field, blob
+extraction pipeline, ROI geometry, and `observe_blob_at` measurement
+model, see [MOTION_CUE_HEAT_MAP.md](MOTION_CUE_HEAT_MAP.md). For the
+shorter consumer-facing summary of the observation API, see
+[RESIDUAL_MOTION_OBSERVATIONS.md](RESIDUAL_MOTION_OBSERVATIONS.md).
 
 ## Overview
 
@@ -41,15 +61,16 @@ regression.
   [tests/test_blob_snap.py](../tests/test_blob_snap.py). Rationale: any
   gate that reads `snap_pred[i-1]` re-introduces cross-frame state.
 - **No cross-pass blob decisions are stored anywhere.** The residual
-  cache stores raw blobs only (see the cache content boundary docstring
-  in [residual_motion.py](../track_runner/residual_motion.py)
-  `observe_blob_at`). Locked by
+  cache stores raw blobs only. For the concrete cache schema and the
+  ROI-key mechanics see
+  [MOTION_CUE_HEAT_MAP.md](MOTION_CUE_HEAT_MAP.md); this doc owns only
+  the normative "no decisions in the cache" rule. Locked by
   `test_blob_accepted_at_frame_t_does_not_influence_frame_t_plus_one`.
-- **Residual cache holds image-derived data only.** Keyed by
-  `(frame_index, roi)` where `roi` is quantized to `ROI_QUANT = 8` px.
-  Identical ROIs share raw blobs (image data); different ROIs trigger
-  an independent residual computation. Rationale: sharing IMAGES is
-  not sharing DECISIONS. Locked by
+- **Residual cache holds image-derived data only.** Sharing IMAGES is
+  not sharing DECISIONS. ROI quantization collapses sub-quantum FWD
+  vs BWD jitter to one cache entry and leaves meaningful divergence
+  with distinct entries; the concrete `ROI_QUANT` mechanics live in
+  [MOTION_CUE_HEAT_MAP.md](MOTION_CUE_HEAT_MAP.md). Locked by
   `test_roi_quantization_collapses_subpixel_jitter`.
 - **Seeds are hard anchors in both passes.** Endpoints are never moved
   by blob snap: `_apply_blob_snap` short-circuits on `i == 0` and
@@ -120,7 +141,11 @@ Agreement lives on the LEFT branch (raw tracks). Everything downstream of
 Per-frame blob observation is a LOCAL measurement channel. At every
 non-endpoint, non-stationary frame the propagator queries
 `residual_motion.observe_blob_at` and applies three independent gates
-against its own `raw_pred`:
+against its own `raw_pred`. This doc covers only pass-local
+consumption and gating; the measurement pipeline,
+cue-confidence scoring, and blob extraction live in
+[MOTION_CUE_HEAT_MAP.md](MOTION_CUE_HEAT_MAP.md). The three gates
+are:
 
 - proximity: `dist(blob, raw[t]) <= ALPHA * h`
 - direction: `dot(blob - raw[t], v_pred) >= 0` (skipped below velocity
@@ -133,14 +158,12 @@ with displacement clamp), `rejected` (fall through to raw), `absent` (no
 observation). Design details live in
 `~/.claude/plans/happy-forging-valiant.md`.
 
-**ROI coupling.** Each pass's call to `observe_blob_at` quantizes its
-ROI center to multiples of `ROI_QUANT = 8` px. On the typical case
-(straight motion, sub-quantum FWD/BWD divergence) both passes land in
-the same ROI bucket and reuse the same raw blob list. On the interesting
-case (tight curvature, crowd scenes, occlusion edges) the ROIs differ
-and each pass computes its own residual. The quantization buys cache
-reuse on easy intervals without contaminating hard intervals where
-independence matters most.
+**ROI coupling.** FWD and BWD share the same `residual_cache` and
+may share raw blobs when their ROIs coincide; they compute
+independently when the ROIs diverge. The detailed ROI-key mechanics
+live in [MOTION_CUE_HEAT_MAP.md](MOTION_CUE_HEAT_MAP.md). The rule
+this doc owns is simpler: sharing IMAGES is allowed, sharing
+DECISIONS is not.
 
 ## What breaks the invariant
 
@@ -199,10 +222,18 @@ decisions depend only on its own `raw_pred`.
 
 ## Related docs
 
+- [docs/TRACK_RUNNER_CONTRACT.md](TRACK_RUNNER_CONTRACT.md) -- primary
+  truth document; non-negotiable rules.
+- [docs/MOTION_CUE_HEAT_MAP.md](MOTION_CUE_HEAT_MAP.md) --
+  mechanism-level technical doc: heat-map construction, ROI
+  geometry, blob extraction, corridor filter, cue-confidence scoring,
+  concrete cache schema.
 - [docs/TRACK_RUNNER_DESIGN.md](TRACK_RUNNER_DESIGN.md) -- signal
   hierarchy, dual scoring philosophy, separation of concerns.
 - [docs/TRACK_RUNNER_V3_SPEC.md](TRACK_RUNNER_V3_SPEC.md) -- interval
   scoring schema, severity rules, blob coverage fields.
+- [docs/RESIDUAL_MOTION_OBSERVATIONS.md](RESIDUAL_MOTION_OBSERVATIONS.md)
+  -- thin consumer-facing summary of the observation API.
 - [docs/CHANGELOG.md](CHANGELOG.md) -- 2026-04-17 motion-cue removal
   and blob-snap landing entries.
 - `~/.claude/plans/happy-forging-valiant.md` -- design plan for the
