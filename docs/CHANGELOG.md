@@ -1,3 +1,14 @@
+## 2026-04-20
+
+### Additions and New Features
+
+- New [docs/TRACK_RUNNER_CONTRACT.md](TRACK_RUNNER_CONTRACT.md) -- a short, permanent list of non-negotiable invariants for the track runner. Sits above [docs/TRACK_RUNNER_DESIGN.md](TRACK_RUNNER_DESIGN.md) (philosophy) and [docs/TRACK_RUNNER_V3_SPEC.md](TRACK_RUNNER_V3_SPEC.md) (technical spec); on conflict, contract wins. Six clauses: C1 torso box is the unit of scale for runner-relative decisions (with an explicit "not allowed as raw pixels" vs "allowed as raw pixels" split -- encoder output sizing, detector input size, UI line widths stay in pixels; search radii, gating distances, velocity caps, size thresholds, competitor acceptance must be torso-relative), C2 pre-race frames define a fixed reference (torso-box dims averaged over `[0, race_start_frame)`, center anchored to scene coordinates), C3 intervals are independent across intervals (solve and refine per-interval and parallel; refine may reuse cache-invalidation bookkeeping but not prior trajectory state), C4 seeds are truth for solve but seed quality is ranked for the user (solver must not silently override seeds; a separate scoring step flags likely-bad seeds for user edit), C5 no temporal memory inside a pass beyond raw image-derived caches (allowed: residual maps, validity masks, raw pre-gate blobs; forbidden: accepted blobs, `snap_pred` history, gate decisions, `last_*`, `*_chain_*`, miss counters), C6 jersey color and runner-appearance template matching are banned as identity or classification evidence (local patch correlation used for non-identity purposes like short-horizon propagation flow is out of scope for this clause). Plan: `~/.claude/plans/i-want-to-create-twinkly-pizza.md`.
+- [CLAUDE.md](../CLAUDE.md): added `@docs/TRACK_RUNNER_CONTRACT.md` to the import list (above DESIGN) so agents always load the contract.
+
+### Decisions and Failures
+
+- Intentional temporary inconsistency: C1 and C6 are normative and may conflict with wording in the current [docs/TRACK_RUNNER_V3_SPEC.md](TRACK_RUNNER_V3_SPEC.md), [docs/TRACK_RUNNER_DESIGN.md](TRACK_RUNNER_DESIGN.md), and [docs/TRACK_RUNNER_HISTORY.md](TRACK_RUNNER_HISTORY.md) (which still document jersey-color scoring, HSV seed fields, and raw-pixel thresholds like patch search margin, minimum competitor height, and crop velocity caps). Reconciling those docs with the contract is deferred follow-up work, done only after verifying against current code whether appearance cues and the named pixel constants are still live. The contract does not claim those cues were already removed; it only forbids relying on them going forward.
+
 ## 2026-04-18
 
 ### Additions and New Features
