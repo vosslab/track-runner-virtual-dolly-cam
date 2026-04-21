@@ -59,25 +59,32 @@ def _get_default_camera_config() -> dict:
 
 #============================================
 
-def _migrate_crop_fill_ratio(config: dict) -> None:
+def _migrate_crop_fill_ratio(config: dict) -> bool:
 	"""Migrate legacy crop_fill_ratio to torso_height_multiple in place.
 
 	Semantic inversion: torso_height_multiple = 1 / crop_fill_ratio.
-	Bigger number means wider crop. Prints a one-line notice when the
-	migration fires. No-op when the new key is already present.
+	Bigger number means wider crop. No-op when the new key is already
+	present.
 
 	Args:
 		config: Configuration dictionary, mutated in place.
+
+	Returns:
+		True if the migration fired (config was modified), False
+		otherwise. Callers that own the source file use this to decide
+		whether to write the migrated config back to disk.
 	"""
 	processing = config.get("processing")
 	if not isinstance(processing, dict):
-		return
+		return False
 	# new key already present wins; legacy key is discarded silently
 	if "torso_height_multiple" in processing:
-		processing.pop("crop_fill_ratio", None)
-		return
+		if "crop_fill_ratio" in processing:
+			processing.pop("crop_fill_ratio", None)
+			return True
+		return False
 	if "crop_fill_ratio" not in processing:
-		return
+		return False
 	old_value = float(processing["crop_fill_ratio"])
 	if old_value <= 0.0:
 		raise RuntimeError(
@@ -86,11 +93,7 @@ def _migrate_crop_fill_ratio(config: dict) -> None:
 	new_value = 1.0 / old_value
 	processing["torso_height_multiple"] = new_value
 	del processing["crop_fill_ratio"]
-	print(
-		f"  [config migration] crop_fill_ratio={old_value} -> "
-		f"torso_height_multiple={new_value:.3f} "
-		"(deprecated; update your config)"
-	)
+	return True
 
 
 #============================================
@@ -165,12 +168,17 @@ def validate_config(config: dict) -> None:
 
 #============================================
 
-def load_config(path: str) -> dict:
+def load_config(path: str, auto_save_migration: bool = False) -> dict:
 	"""
 	Read a YAML config file and validate the header.
 
 	Args:
 		path: Path to the YAML config file.
+		auto_save_migration: When True, any legacy-key migration that
+			fires during load is written back to `path` so future
+			runs see the canonical shape. Off by default; callers
+			that load the read-only built-in default (via
+			`read_default_config`) must not auto-write.
 
 	Returns:
 		dict: Parsed and validated configuration.
@@ -192,7 +200,16 @@ def load_config(path: str) -> dict:
 		)
 	# auto-migrate v2 keys (crop_fill_ratio -> torso_height_multiple)
 	# before returning so every caller sees the v3-shaped dict
-	_migrate_crop_fill_ratio(config)
+	migrated = _migrate_crop_fill_ratio(config)
+	if migrated and auto_save_migration:
+		# persist the v3 shape so the deprecation notice never
+		# reappears for this user on this config
+		write_config(path, config)
+		multiple = config["processing"].get("torso_height_multiple")
+		print(
+			f"  [config auto-migrated] {path}: "
+			f"crop_fill_ratio -> torso_height_multiple={multiple:.3f}"
+		)
 	return config
 
 #============================================

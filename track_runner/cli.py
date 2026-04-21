@@ -125,21 +125,27 @@ def _probe_video(input_file: str) -> dict:
 def _check_identity_mismatch(label: str, path: str) -> None:
 	"""Check a data file for video identity mismatch and print warnings.
 
-	Loads the file as JSON (if it exists), extracts the stored
-	video_identity block, and compares it against VIDEO_IDENTITY.
-	Mismatches produce warning messages but do not raise errors.
+	Reads the stored `video_identity` block from the file (JSON or
+	NPZ) and compares it against VIDEO_IDENTITY. Mismatches produce
+	warning messages but do not raise errors.
 
 	Args:
 		label: Human-readable name for the data file (e.g. "seeds").
-		path: Path to the JSON data file.
+		path: Path to the data file (`.json` or `.npz`).
 	"""
 	if VIDEO_IDENTITY is None:
 		return
 	if not os.path.isfile(path):
 		return
-	with open(path, "r") as fh:
-		data = json.load(fh)
-	stored = data.get("video_identity")
+	# NPZ files (geometry_cache.npz) carry video_identity as
+	# JSON-encoded bytes; JSON files carry it as a top-level key.
+	if path.endswith(".npz"):
+		cache_data = state_io.load_geometry_cache(path)
+		stored = cache_data.get("video_identity")
+	else:
+		with open(path, "r") as fh:
+			data = json.load(fh)
+		stored = data.get("video_identity")
 	if stored is None:
 		return
 	mismatches = tr_video_identity.compare_video_identity(stored, VIDEO_IDENTITY)
@@ -1789,7 +1795,9 @@ def main() -> None:
 	# modes that need `setup` to have been run first (solve/refine/target).
 	had_config_file = os.path.isfile(config_path)
 	if had_config_file:
-		cfg = tr_config.load_config(config_path)
+		# per-video config: auto-save legacy-key migrations so the
+		# deprecation notice fires exactly once per file
+		cfg = tr_config.load_config(config_path, auto_save_migration=True)
 	else:
 		cfg = tr_config.read_default_config()
 	tr_config.validate_config(cfg)

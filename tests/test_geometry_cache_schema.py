@@ -278,6 +278,28 @@ def test_debug_tracks_loader_missing_file_returns_empty(tmp_path):
 #============================================
 
 
+def test_video_identity_readable_from_npz_without_json_load(tmp_path):
+	"""The identity-mismatch check treats the geometry cache as NPZ,
+	not JSON. Regression guard: an earlier version tried `json.load`
+	on the cache file and crashed with UnicodeDecodeError on the
+	NPZ magic bytes."""
+	path = str(tmp_path / "cache.npz")
+	state_io.write_geometry_cache(path, {
+		"solved_intervals": {"fp_a": _make_interval_entry(0, 2)},
+		"video_identity": {"basename": "clip.mkv", "frame_count": 100},
+	})
+	# raw bytes start with PK (zip) or \x93NUMPY, never valid JSON
+	with open(path, "rb") as fh:
+		head = fh.read(4)
+	assert head[:2] in (b"PK", b"\x93N")
+	# but load_geometry_cache returns the identity dict cleanly
+	loaded = state_io.load_geometry_cache(path)
+	assert loaded["video_identity"]["basename"] == "clip.mkv"
+
+
+#============================================
+
+
 def test_debug_tracks_dtype_is_float32(tmp_path):
 	"""Debug sidecar arrays are float32."""
 	path = str(tmp_path / "debug.npz")

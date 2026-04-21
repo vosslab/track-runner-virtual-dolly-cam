@@ -26,6 +26,41 @@ def test_migration_is_reciprocal_round_trip():
 
 
 #============================================
+def test_load_config_auto_save_persists_migration(tmp_path):
+	"""auto_save_migration=True rewrites the YAML so the deprecation
+	notice never fires twice on the same file."""
+	path = tmp_path / "config.yaml"
+	path.write_text(
+		"track_runner: 2\n"
+		"detection:\n  model: yolov8n\n  confidence_threshold: 0.25\n"
+		"processing:\n  crop_fill_ratio: 0.25\n"
+	)
+	tr_config.load_config(str(path), auto_save_migration=True)
+	# on-disk: the v2 key is gone and the v3 key is present
+	rewritten = path.read_text()
+	assert "crop_fill_ratio" not in rewritten
+	assert "torso_height_multiple" in rewritten
+
+
+#============================================
+def test_load_config_default_does_not_rewrite_on_disk(tmp_path):
+	"""Without auto_save_migration, the on-disk file is left alone
+	even when the in-memory config is migrated."""
+	path = tmp_path / "config.yaml"
+	original = (
+		"track_runner: 2\n"
+		"detection:\n  model: yolov8n\n  confidence_threshold: 0.25\n"
+		"processing:\n  crop_fill_ratio: 0.25\n"
+	)
+	path.write_text(original)
+	cfg = tr_config.load_config(str(path))
+	# in-memory: migrated
+	assert "torso_height_multiple" in cfg["processing"]
+	# on-disk: unchanged
+	assert path.read_text() == original
+
+
+#============================================
 def test_validator_rejects_multiple_below_one():
 	# contract: torso_height_multiple must be >= 1
 	cfg = {
