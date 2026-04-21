@@ -546,39 +546,39 @@ def print_console_summary(
 
 
 #============================================
-def write_csv(results: list, csv_path: str) -> None:
-	"""Write per-seed metrics as CSV."""
-	columns = [
-		"frame_index", "pass", "status",
-		"seed_cx", "seed_cy", "seed_w", "seed_h",
-		"roi_x1", "roi_y1", "roi_x2", "roi_y2",
-		"residual_available", "raw_blob_count", "nearest_blob_exists",
-		"best_blob_x", "best_blob_y", "best_blob_area",
-		"best_blob_integrated_mag", "second_best_integrated_mag",
-		"best_to_second_best_mag_ratio", "best_blob_distance_px",
-		"best_blob_distance_torso_h", "blob_center_inside_seed_box",
-		"any_blob_within_0p25h", "any_blob_within_0p5h",
-		"any_blob_within_0p1h",
-	]
-	with open(csv_path, "w", newline="") as fh:
-		writer = csv.writer(fh)
-		writer.writerow(columns)
-		for r in results:
-			row = []
-			for col in columns:
-				val = r.get(col)
-				# write empty cells (not 0 / -1 / None literal) for
-				# undefined numeric metrics, keeping downstream filters
-				# able to distinguish "no data" from "zero"
-				if val is None:
-					row.append("")
-				elif isinstance(val, bool):
-					row.append("1" if val else "0")
-				elif isinstance(val, float):
-					row.append(f"{val:.4f}")
-				else:
-					row.append(val)
-			writer.writerow(row)
+CSV_COLUMNS = (
+	"frame_index", "pass", "status",
+	"seed_cx", "seed_cy", "seed_w", "seed_h",
+	"roi_x1", "roi_y1", "roi_x2", "roi_y2",
+	"residual_available", "raw_blob_count", "nearest_blob_exists",
+	"best_blob_x", "best_blob_y", "best_blob_area",
+	"best_blob_integrated_mag", "second_best_integrated_mag",
+	"best_to_second_best_mag_ratio", "best_blob_distance_px",
+	"best_blob_distance_torso_h", "blob_center_inside_seed_box",
+	"any_blob_within_0p25h", "any_blob_within_0p5h",
+	"any_blob_within_0p1h",
+)
+
+
+#============================================
+def _csv_row_from_result(per_seed: dict) -> list:
+	"""Format one CSV row from a per-seed result dict.
+
+	Undefined numeric metrics are written as empty cells (not 0 / -1 /
+	"None") so downstream filters can distinguish "no data" from "zero".
+	"""
+	row = []
+	for col in CSV_COLUMNS:
+		val = per_seed.get(col)
+		if val is None:
+			row.append("")
+		elif isinstance(val, bool):
+			row.append("1" if val else "0")
+		elif isinstance(val, float):
+			row.append(f"{val:.4f}")
+		else:
+			row.append(val)
+	return row
 
 
 #============================================
@@ -654,49 +654,74 @@ def main() -> None:
 			f"(--max-seeds={args.max_seeds}, --random-seed={args.random_seed})"
 		)
 
-	# prepare images dir
+	# prepare images dir. Auto-append the ROI tag to the user-provided
+	# path so runs at different --roi-multiple values land in separate
+	# directories without the user having to remember to vary the path.
+	# Example: `-O /tmp/seed_blob_png -R 8.0` -> /tmp/seed_blob_png_roi8p0/
+	images_dir = None
 	if args.images_dir is not None:
-		os.makedirs(args.images_dir, exist_ok=True)
-		print(f"saving annotated PNGs to {args.images_dir}")
+		roi_tag = f"roi{args.roi_multiple:.1f}".replace(".", "p")
+		images_dir = f"{args.images_dir.rstrip('/')}_{roi_tag}"
+		os.makedirs(images_dir, exist_ok=True)
+		print(f"saving annotated PNGs to {images_dir}")
 
 	# shared frame-reads cache for compute_residual_for_frame. Opaque to
 	# this tool; scoped to the full run so overlapping temporal windows
 	# across seeds reuse frame decodes. Decision-free by construction.
 	frame_cache = {}
 
+	# open CSV once and stream rows as each seed finishes so partial
+	# results survive interrupts and `tail -f <csv>` gives live progress.
+	csv_fh = None
+	csv_writer = None
+	if args.csv_path is not None:
+		csv_fh = open(args.csv_path, "w", newline="")
+		csv_writer = csv.writer(csv_fh)
+		csv_writer.writerow(list(CSV_COLUMNS))
+		csv_fh.flush()
+
 	# run pipeline
 	results = []
-	for idx, seed in enumerate(filtered):
-		per_seed = analyze_seed(
-			seed, reader, transform, frame_cache, args.roi_multiple,
-		)
-		results.append(per_seed)
-		# one-line per-seed progress so long runs show life. kept terse;
-		# the console summary below is the real deliverable.
-		if per_seed["residual_available"]:
-			if per_seed["nearest_blob_exists"]:
-				dist_h = per_seed["best_blob_distance_torso_h"]
-				tag = (
-					f"blobs={per_seed['raw_blob_count']} "
-					f"best={dist_h:.2f}h "
-					f"inside={'Y' if per_seed['blob_center_inside_seed_box'] else 'N'}"
-				)
+	try:
+		for idx, seed in enumerate(filtered):
+			per_seed = analyze_seed(
+				seed, reader, transform, frame_cache, args.roi_multiple,
+			)
+			results.append(per_seed)
+			# one-line per-seed progress so long runs show life. flush
+			# explicitly because this tool is commonly piped through
+			# `tee` / `tail` / redirected, which can leave the stdout
+			# buffer block-buffered even with PYTHONUNBUFFERED set.
+			if per_seed["residual_available"]:
+				if per_seed["nearest_blob_exists"]:
+					dist_h = per_seed["best_blob_distance_torso_h"]
+					tag = (
+						f"blobs={per_seed['raw_blob_count']} "
+						f"best={dist_h:.2f}h "
+						f"inside={'Y' if per_seed['blob_center_inside_seed_box'] else 'N'}"
+					)
+				else:
+					tag = "blobs=0"
 			else:
-				tag = "blobs=0"
-		else:
-			tag = "no residual"
-		print(
-			f"  [{idx + 1}/{len(filtered)}] "
-			f"f{per_seed['frame_index']:>6d} "
-			f"status={per_seed['status']:<11} {tag}"
-		)
-		if args.images_dir is not None:
-			save_annotated_png(per_seed, reader, args.images_dir)
+				tag = "no residual"
+			print(
+				f"  [{idx + 1}/{len(filtered)}] "
+				f"f{per_seed['frame_index']:>6d} "
+				f"status={per_seed['status']:<11} {tag}",
+				flush=True,
+			)
+			if csv_writer is not None:
+				csv_writer.writerow(_csv_row_from_result(per_seed))
+				csv_fh.flush()
+			if images_dir is not None:
+				save_annotated_png(per_seed, reader, images_dir)
+	finally:
+		if csv_fh is not None:
+			csv_fh.close()
 
 	# summary + outputs
 	print_console_summary(results, total_seeds_in_file, args.roi_multiple)
 	if args.csv_path is not None:
-		write_csv(results, args.csv_path)
 		print("")
 		print(f"  CSV written to {args.csv_path}")
 
