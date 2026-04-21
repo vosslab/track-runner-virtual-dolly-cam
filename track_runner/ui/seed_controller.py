@@ -553,15 +553,11 @@ class SeedController(BaseAnnotationController):
 		torso_box = candidate["torso_box"]
 		import seed_color
 
+		# jersey_hsv is stored on disk as a legacy schema field; it is
+		# NOT used as identity evidence at solve time (contract C6).
 		jersey_hsv = seed_color.extract_jersey_color(
 			self._current_bgr, torso_box
 		)
-		# use candidate's histogram if available, or extract new one
-		hist = candidate.get("histogram")
-		if hist is None:
-			hist = seed_color.extract_color_histogram(
-				self._current_bgr, torso_box
-			)
 
 		# build seed dict
 		seed = seed_color._build_seed_dict(
@@ -571,7 +567,6 @@ class SeedController(BaseAnnotationController):
 			jersey_hsv,
 			self._pass_number,
 			self._mode_str,
-			histogram=hist,
 		)
 		self._commit_seed(seed)
 		self._advance()
@@ -636,9 +631,6 @@ class SeedController(BaseAnnotationController):
 			jersey_hsv = seed_color.extract_jersey_color(
 				self._current_bgr, norm_box
 			)
-			hist = seed_color.extract_color_histogram(
-				self._current_bgr, norm_box
-			)
 			seed = seed_color._build_seed_dict(
 				self._current_frame,
 				self._current_frame / self._fps,
@@ -646,7 +638,6 @@ class SeedController(BaseAnnotationController):
 				jersey_hsv,
 				self._pass_number,
 				self._mode_str,
-				histogram=hist,
 			)
 			seed["status"] = "partial"
 			self._commit_seed(seed)
@@ -656,9 +647,6 @@ class SeedController(BaseAnnotationController):
 			jersey_hsv = seed_color.extract_jersey_color(
 				self._current_bgr, norm_box
 			)
-			hist = seed_color.extract_color_histogram(
-				self._current_bgr, norm_box
-			)
 			seed = seed_color._build_seed_dict(
 				self._current_frame,
 				self._current_frame / self._fps,
@@ -666,7 +654,6 @@ class SeedController(BaseAnnotationController):
 				jersey_hsv,
 				self._pass_number,
 				self._mode_str,
-				histogram=hist,
 			)
 			self._commit_seed(seed)
 			self._advance()

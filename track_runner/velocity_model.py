@@ -702,6 +702,9 @@ def _apply_blob_snap(
 
 		# endpoints and stationary-lock intervals: no snap
 		if effective_reader is None or is_endpoint or is_stat:
+			# blob_gate is OUTPUT metadata, not a gate input. It is read by
+			# interval_solver._coverage_from_track() for diagnostics only; the
+			# propagator gates themselves read only raw_pred, per contract C5.
 			snap_pred.append({
 				"cx": float(snap_cx),
 				"cy": float(snap_cy),
@@ -710,7 +713,6 @@ def _apply_blob_snap(
 				"conf": float(conf),
 				"source": "propagated",
 				"stationary_lock": is_stat,
-				"disp_history": [],
 				"blob_gate": gate,
 			})
 			continue
@@ -819,7 +821,6 @@ def _apply_blob_snap(
 			"conf": float(conf),
 			"source": "propagated_with_blob_snap" if snap_applied else "propagated",
 			"stationary_lock": is_stat,
-			"disp_history": [],
 			"blob_gate": gate,
 		})
 

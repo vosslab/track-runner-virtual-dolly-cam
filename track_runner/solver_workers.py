@@ -8,15 +8,15 @@ concurrently in worker processes.
 
 This module owns the execution side:
 
-- `_WORKER_STATE`: per-process cache populated once by `_worker_init`.
-  Heavy immutable objects (scene_transform, motion_track, full seed
-  lists, VideoReader) are shipped via the pool initializer instead of
-  pickled per task, so per-task payload stays tiny.
+- `WorkerContext`: a frozen dataclass holding the run-invariant objects
+  (scene_transform, motion_track, full seed lists, VideoReader). One
+  instance is built per worker process by `_worker_init` and reused for
+  every interval that worker handles. The context is assigned once per
+  process and treated as read-only thereafter, so no mutable state
+  accumulates across interval solves (contract C3 conformance margin).
 - `_solve_interval_worker`: the function `ProcessPoolExecutor` calls.
   Takes a tiny task tuple, returns (pair_idx, fingerprint, result).
-- `run_solve_parallel` / `run_solve_inprocess`: the two execution modes.
-  The driver in `interval_solver.solve_all_intervals` picks one based on
-  worker count and interval count.
+- `make_pool`: builds a ProcessPoolExecutor with `_worker_init` wired up.
 
 Architecture boundary: workers own their VideoReader and compute; the
 main process owns cache lookup, dispatch, result aggregation, progress,
@@ -25,6 +25,7 @@ persistence, and quit handling. No worker writes to stdout or disk.
 
 # Standard Library
 import atexit
+import dataclasses
 import concurrent.futures
 
 # local repo modules
@@ -33,10 +34,29 @@ import interval_solver
 
 
 #============================================
-# Per-worker state cache. Populated once per child process by
-# `_worker_init`, reused across every `_solve_interval_worker` call in
-# that process.
-_WORKER_STATE: dict = {}
+@dataclasses.dataclass(frozen=True)
+class WorkerContext:
+	"""Run-invariant state for a single worker process.
+
+	Constructed once per worker by `_worker_init` and thereafter treated
+	as read-only. Frozen so accidental field mutation raises rather than
+	silently accumulating across interval solves.
+	"""
+	reader: object
+	scene_transform: object
+	motion_track: object
+	all_seeds_scene: list
+	all_seeds: list
+	fps: float
+	debug: bool
+
+
+#============================================
+# Holds the current worker's WorkerContext once `_worker_init` runs. A
+# worker writes this exactly once at process startup and reads it on
+# every subsequent task; the object itself is frozen, so interval solves
+# cannot mutate it.
+_WORKER_CONTEXT: WorkerContext | None = None
 
 
 #============================================
@@ -53,7 +73,7 @@ def _worker_init(
 
 	Runs exactly once per child process when the ProcessPoolExecutor
 	starts the worker. Opens a dedicated VideoReader on the video path
-	and caches the run-invariant objects in module-level state.
+	and builds the frozen WorkerContext consumed by every task.
 
 	Args:
 		video_path: Path to the video file (reopened in this process).
@@ -64,17 +84,20 @@ def _worker_init(
 		fps: Video frame rate.
 		debug: Debug flag; constant across all tasks in this run.
 	"""
+	global _WORKER_CONTEXT
 	# reopen the video in this process; the main process's reader cannot
 	# cross the fork/spawn boundary.
 	reader = video_io.VideoReader(video_path)
 	reader.__enter__()
-	_WORKER_STATE["reader"] = reader
-	_WORKER_STATE["scene_transform"] = scene_transform
-	_WORKER_STATE["motion_track"] = motion_track
-	_WORKER_STATE["all_seeds_scene"] = all_seeds_scene
-	_WORKER_STATE["all_seeds"] = all_seeds
-	_WORKER_STATE["fps"] = fps
-	_WORKER_STATE["debug"] = debug
+	_WORKER_CONTEXT = WorkerContext(
+		reader=reader,
+		scene_transform=scene_transform,
+		motion_track=motion_track,
+		all_seeds_scene=all_seeds_scene,
+		all_seeds=all_seeds,
+		fps=fps,
+		debug=debug,
+	)
 	# close the reader when the worker shuts down so file handles do not
 	# leak on the normal path. ProcessPoolExecutor also terminates
 	# workers at pool shutdown.
@@ -84,10 +107,11 @@ def _worker_init(
 #============================================
 def _worker_atexit() -> None:
 	"""Close the worker's VideoReader on process exit."""
-	reader = _WORKER_STATE.get("reader")
-	if reader is not None:
-		reader.__exit__(None, None, None)
-		_WORKER_STATE["reader"] = None
+	global _WORKER_CONTEXT
+	ctx = _WORKER_CONTEXT
+	if ctx is not None and ctx.reader is not None:
+		ctx.reader.__exit__(None, None, None)
+		_WORKER_CONTEXT = None
 
 
 #============================================
@@ -95,8 +119,8 @@ def _solve_interval_worker(task: tuple) -> tuple:
 	"""Solve one interval inside a pool worker.
 
 	Takes a tiny pickleable task tuple and returns the fingerprint plus
-	result dict. All heavy inputs come from `_WORKER_STATE`, populated
-	by `_worker_init` once per process.
+	result dict. All heavy inputs come from the frozen WorkerContext
+	built once per process by `_worker_init`.
 
 	Args:
 		task: Tuple of (pair_idx, seed_start, seed_end).
@@ -105,18 +129,19 @@ def _solve_interval_worker(task: tuple) -> tuple:
 		Tuple of (pair_idx, fingerprint, result_dict).
 	"""
 	pair_idx, seed_start, seed_end = task
+	ctx = _WORKER_CONTEXT
 	fingerprint = interval_solver.compute_interval_fingerprint(
 		seed_start, seed_end,
 	)
 	result = interval_solver.solve_interval_analytical(
 		seed_start, seed_end,
-		_WORKER_STATE["scene_transform"],
-		_WORKER_STATE["all_seeds_scene"],
-		_WORKER_STATE["fps"],
-		debug=_WORKER_STATE["debug"],
-		motion_track=_WORKER_STATE["motion_track"],
-		all_seeds=_WORKER_STATE["all_seeds"],
-		reader=_WORKER_STATE["reader"],
+		ctx.scene_transform,
+		ctx.all_seeds_scene,
+		ctx.fps,
+		debug=ctx.debug,
+		motion_track=ctx.motion_track,
+		all_seeds=ctx.all_seeds,
+		reader=ctx.reader,
 	)
 	return (pair_idx, fingerprint, result)
 
