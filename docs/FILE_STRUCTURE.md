@@ -91,6 +91,7 @@ track-runner-virtual-dolly-cam/
 |   |-- INSTALL.md             setup and dependencies
 |   |-- USAGE.md               subcommand reference and workflow
 |   |-- CODE_ARCHITECTURE.md   pipeline and module overview
+|   |-- TR_CONFIG_FILES.md     tr_config/ per-video state file reference
 |   |-- FILE_STRUCTURE.md      this file
 |   |-- PYTHON_STYLE.md        Python style conventions
 |   |-- REPO_STYLE.md          repository conventions

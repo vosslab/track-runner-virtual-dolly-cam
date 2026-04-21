@@ -1,3 +1,13 @@
+## 2026-04-21
+
+### Fixes and Maintenance
+
+- [docs/FILE_STRUCTURE.md](FILE_STRUCTURE.md): added a `TR_CONFIG_FILES.md` row to the `docs/` block. Minimal targeted edit; the broader staleness in this file (DESIGN/V3_SPEC shown under `archive/` when they are live at `docs/`; no rows for CONTRACT, MOTION_CUE_HEAT_MAP, FWD_BWD_MODEL_METHODOLOGY, RESIDUAL_MOTION_OBSERVATIONS, no `tr_config/` top-level entry) is left for a dedicated refresh pass.
+
+### Additions and New Features
+
+- New [docs/TR_CONFIG_FILES.md](TR_CONFIG_FILES.md) -- reference doc for every file the track runner persists under `tr_config/`. Covers the per-video config YAML (layering, top-level keys, `crop_fill_ratio` -> `torso_height_multiple` migration), seeds JSON (top-level keys including `video_identity`, per-seed schema table, `VALID_SEED_MODES`, load-time obstructed-seed migration, atomic write), intervals JSON (fingerprint format verified against a real file: `<fi>|<cx:.2f>|<cy:.2f>|<w:.2f>|<h:.2f>|...||<solver_tag>`, per-interval and per-frame track schema with `fuse_flag`/`occlusion_risk` on fused tracks and `stationary_lock`/`blob_gate` on forward/backward tracks per current `velocity_model.py` lines 715/823), the camera-motion NPZ (five arrays `dx`/`dy`/`scale`/`quality`/`event_flags`, cache-key recipe `basename_framecount_estimator_hash8`, estimator aliases fixed/discrete/iphone_discrete/continuous), diagnostics JSON (v2/v3 schema with auto-migration in `load_diagnostics`), the optional agreement-debug sidecar, and `tr_config/archive/`. Includes an FAQ that explicitly answers "why is my seeds.json 20 MB" (legacy per-seed `(30, 32)` float64 `histogram` fields from before 2026-04-20; ~11 KB JSON per seed; stripping leaves ~240 B per seed) and "where is the global camera-motion track stored" (the `.npz` files). Decision D-1: re-saving seeds.json does NOT strip legacy `histogram` or `jersey_hsv` -- `state_io.load_seeds` / `write_seeds` preserve unknown fields, so cleanup requires a migration script (documented as a future task, not a safe no-op). Decision D-2: `stationary_lock` is still emitted by the current writer (verified in `velocity_model.py`), not a legacy artifact, so it is documented as part of the live schema. Plan: `~/.claude/plans/greedy-knitting-pixel.md`.
+
 ## 2026-04-20
 
 ### Behavior or Interface Changes
