@@ -290,10 +290,13 @@ def _compute_roi(
 	quant_cx = int(round(pred_cx / ROI_QUANT)) * ROI_QUANT
 	quant_cy = int(round(pred_cy / ROI_QUANT)) * ROI_QUANT
 
-	x1 = max(0, quant_cx - half_side)
-	y1 = max(0, quant_cy - half_side)
-	x2 = min(frame_w, quant_cx + half_side)
-	y2 = min(frame_h, quant_cy + half_side)
+	# clamp BOTH bounds to frame extents; without an upper clamp on x1/y1,
+	# an off-frame prediction (pred_cx > frame_w) produced x1 > x2 and a
+	# zero-width slice that downstream code mis-handled.
+	x1 = max(0, min(frame_w, quant_cx - half_side))
+	y1 = max(0, min(frame_h, quant_cy - half_side))
+	x2 = max(x1, min(frame_w, quant_cx + half_side))
+	y2 = max(y1, min(frame_h, quant_cy + half_side))
 	return (x1, y1, x2, y2)
 
 
@@ -349,6 +352,14 @@ def compute_residual_for_frame(
 		center_float = center_full
 		roi_h, roi_w = h_frame, w_frame
 		rx1, ry1 = 0, 0
+
+	# degenerate ROI (prediction off-frame, or clamp produced zero area):
+	# downstream cv2.warpAffine calls with a zero-size dsize can yield
+	# an unexpected full-frame-shaped result in this code path, which
+	# then mis-broadcasts against the empty center_float slice. Treat
+	# as "no residual available" for this frame and return.
+	if roi_h <= 0 or roi_w <= 0:
+		return (None, None)
 
 	scale_factor = 1.0
 

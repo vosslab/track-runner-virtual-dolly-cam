@@ -25,6 +25,7 @@ import numpy
 import camera_motion
 import overlay_config
 import residual_heat_map
+import residual_motion
 import scene_coords
 
 
@@ -89,3 +90,43 @@ def test_facade_output_is_roi_scoped_not_full_frame():
 	bgr, _origin = result
 	# ROI crop must be strictly smaller than the full frame on both axes
 	assert bgr.shape[0] < height and bgr.shape[1] < width
+
+
+#============================================
+def test_compute_roi_off_frame_prediction_never_inverts_bounds():
+	"""_compute_roi must never return x1 > x2 or y1 > y2 even when the
+	prediction is off-frame. Zero-area ROIs (x1 == x2 on a clamped
+	edge) are acceptable and handled downstream; inverted bounds
+	(x1 > x2) produced the broadcast error in the prior behavior."""
+	# prediction far to the right of the 1280-wide frame
+	x1, y1, x2, y2 = residual_motion._compute_roi(
+		pred_cx=5000.0, pred_cy=360.0, pred_h=100.0,
+		frame_w=1280, frame_h=720,
+	)
+	assert x2 >= x1
+	assert y2 >= y1
+
+
+#============================================
+def test_compute_residual_bails_on_degenerate_roi():
+	"""compute_residual_for_frame returns (None, None) for a zero-area
+	ROI instead of mis-broadcasting the full-frame median against an
+	empty slice."""
+	width, height = 1280, 720
+	frame = numpy.full((height, width, 3), 120, dtype=numpy.uint8)
+	reader = _FakeReader([frame.copy() for _ in range(5)])
+	motion = camera_motion.MotionTrack(
+		dx=numpy.zeros(5, dtype=numpy.float32),
+		dy=numpy.zeros(5, dtype=numpy.float32),
+		scale=numpy.ones(5, dtype=numpy.float32),
+		quality=numpy.ones(5, dtype=numpy.float32),
+	)
+	transform = scene_coords.SceneTransform(motion)
+	# degenerate ROI: x1 == x2
+	degenerate_roi = (500, 100, 500, 500)
+	residual, mask = residual_motion.compute_residual_for_frame(
+		reader, frame_index=2, scene_transform=transform,
+		roi=degenerate_roi,
+	)
+	assert residual is None
+	assert mask is None
