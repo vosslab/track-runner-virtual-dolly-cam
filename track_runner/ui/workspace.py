@@ -13,7 +13,8 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import QSettings, Qt
 from PySide6.QtGui import (
-	QAction, QActionGroup, QIcon, QPixmap, QColor, QKeySequence, QShortcut,
+	QAction, QActionGroup, QFontDatabase, QIcon, QPixmap, QColor,
+	QKeySequence, QShortcut,
 )
 
 # local repo modules
@@ -51,12 +52,18 @@ class AnnotationWindow(AppShell):
 
 		# Create frame view and wrap it with a persistent hint bar below
 		self._frame_view = FrameView()
-		# hint bar: monospace QLabel that shows current-mode shortcuts
+		# hint bar: monospace QLabel that shows current-mode shortcuts.
+		# Font family comes from QFontDatabase so the OS picks its own
+		# fixed-width face (Menlo on macOS, Consolas on Windows, DejaVu
+		# Sans Mono on most Linux) without a QSS alias-resolution pass.
 		self._hint_bar = QLabel("")
 		self._hint_bar.setTextFormat(Qt.TextFormat.RichText)
+		hint_font = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
+		hint_font.setPointSize(11)
+		self._hint_bar.setFont(hint_font)
 		self._hint_bar.setStyleSheet(
 			"QLabel { background: #111111; color: #C0C0C0; "
-			"padding: 4px 8px; font-family: monospace; font-size: 11px; }"
+			"padding: 4px 8px; }"
 		)
 		self._hint_bar.setMinimumHeight(22)
 		# central widget wraps frame view + hint bar

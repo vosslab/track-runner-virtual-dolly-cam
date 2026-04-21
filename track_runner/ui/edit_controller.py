@@ -9,6 +9,7 @@ of existing seeds. Handles keyboard shortcuts and mouse drawing.
 
 # PIP3 modules
 from PySide6.QtCore import Qt, QThread
+from PySide6.QtGui import QFontDatabase
 from PySide6.QtWidgets import QLabel, QWidget, QHBoxLayout, QPushButton
 
 # local repo modules
@@ -190,10 +191,14 @@ class EditController(BaseAnnotationController):
 		toolbar_widget = self._status_presenter.get_widget()
 		self._window.statusBar().addWidget(toolbar_widget)
 
-		# Add keybinding hints as a permanent label in the status bar
+		# Add keybinding hints as a permanent label in the status bar.
+		# Font family comes from QFontDatabase so the OS picks its own
+		# fixed-width face; the stylesheet only controls color and padding.
 		self._keybindings_label = QLabel(self._get_default_status_text())
+		kb_font = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
+		kb_font.setPointSize(10)
+		self._keybindings_label.setFont(kb_font)
 		self._keybindings_label.setStyleSheet(
-			"font-family: monospace; font-size: 10px; "
 			"color: #888888; padding: 2px 8px;"
 		)
 		self._window.statusBar().addPermanentWidget(self._keybindings_label)

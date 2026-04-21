@@ -1084,6 +1084,38 @@ def anchor_to_seeds(
 
 
 #============================================
+def _print_race_phase_summary(race_phase: dict) -> None:
+	"""Print a one-line race-start detection summary.
+
+	Race-start is the boundary that anchors the pre-race reference frames
+	per contract C2. Users should see the detected frame and its
+	confidence so they can spot mis-detections (noisy pre-race footage,
+	stationary warmups, zoom shifts) without digging into diagnostics
+	files.
+
+	Args:
+		race_phase: Dict from race_phases.detect_race_start with
+			race_start_frame, race_start_s, confidence, method,
+			threshold_used.
+	"""
+	start_frame = race_phase.get("race_start_frame")
+	if start_frame is None:
+		# detection failed -- most commonly the runner never becomes
+		# non-stationary in the clip, or the method hit no valid window
+		print(f"  race start: not detected "
+			f"(method={race_phase.get('method')}, "
+			f"confidence={race_phase.get('confidence', 0.0):.2f})")
+		return
+	start_s = race_phase.get("race_start_s")
+	confidence = race_phase.get("confidence", 0.0)
+	method = race_phase.get("method", "unknown")
+	threshold = race_phase.get("threshold_used")
+	thr_str = f"  T_min={threshold:.3f}" if threshold is not None else ""
+	print(f"  race start: frame {start_frame} ({start_s:.2f}s)  "
+		f"confidence={confidence:.2f}  method={method}{thr_str}")
+
+
+#============================================
 def solve_all_intervals(
 	reader: object,
 	seeds: list,
@@ -1195,6 +1227,9 @@ def solve_all_intervals(
 	trajectory = stitch_trajectories(interval_results)
 	# race_phase retained for diagnostics only; no downstream consumers
 	race_phase = race_phases.detect_race_start(trajectory, scene_transform, fps)
+	# surface race-start detection so the user can sanity-check the
+	# pre-race reference (contract C2) without opening diagnostics files
+	_print_race_phase_summary(race_phase)
 
 	trajectory = anchor_to_seeds(trajectory, seeds)
 	trajectory = _stamp_seed_confidence(trajectory, seeds)

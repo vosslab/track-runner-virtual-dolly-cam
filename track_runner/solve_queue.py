@@ -226,11 +226,15 @@ def _format_interval_result(result: dict, fps: float) -> str:
 		bwd_cov = score.get("blob_coverage_bwd")
 		fwd_str = f"{fwd_cov * 100:.0f}%" if fwd_cov is not None else "n/a"
 		bwd_str = f"{bwd_cov * 100:.0f}%" if bwd_cov is not None else "n/a"
+		# display labels chosen to read honestly: overlap is a between-pass
+		# metric (FWD vs BWD Dice), vel_smooth and size_smooth are
+		# within-track smoothness metrics (not between passes), and
+		# blob_accept clearly says this is blob-snap acceptance.
 		metrics_str = (
-			f"agree={agree:.2f}  "
-			f"vel_cons={vel_cons:.2f}  "
-			f"size_cons={size_cons:.2f}  "
-			f"accept={fwd_str}/{bwd_str}"
+			f"overlap={agree:.2f}  "
+			f"vel_smooth={vel_cons:.2f}  "
+			f"size_smooth={size_cons:.2f}  "
+			f"blob_accept={fwd_str}/{bwd_str}"
 		)
 	else:
 		# v2 legacy format
@@ -351,6 +355,18 @@ def execute_interval_work(
 			f"{reused_count} cached (analytical mode)...")
 	else:
 		print(f"  solving {total_intervals} intervals (analytical mode)...")
+
+	# per-interval column legend: printed once per solve so the shorthand
+	# in each subsequent result line is self-explanatory. Distinguishes
+	# between-pass metrics (overlap) from within-track smoothness metrics
+	# (vel_smooth, size_smooth), which the shorter labels cannot convey
+	# on their own.
+	if pending_total > 0:
+		print("  columns (all in [0,1], higher=better):")
+		print("    overlap      = FWD/BWD Dice overlap (agreement between passes)")
+		print("    vel_smooth   = within-track velocity smoothness")
+		print("    size_smooth  = within-track box-size smoothness")
+		print("    blob_accept  = fraction of frames with accepted blob snap (FWD/BWD)")
 
 	# pure cache-hit fast-exit: no bar, no pool. Post-loop summary and
 	# accounting assertion still run below.

@@ -381,6 +381,58 @@ def _build_predictions_from_diagnostics(diagnostics: dict) -> dict:
 
 
 #============================================
+def _predictions_from_geometry_cache(
+	input_file: str,
+	intervals_path: str,
+	diag_path: str,
+	fps: float,
+) -> dict:
+	"""Build predictions from the geometry cache with scores merged in.
+
+	Geometry cache stores no scoring fields (interval_score lives in the
+	interval-scores JSON since WP-C2). This helper loads the cache, merges
+	the interval_score sub-dict from interval_scores.json by
+	(start_frame, end_frame), and hands the result to
+	_build_predictions_from_diagnostics so review.classify_interval_severity
+	can read interval_score without a KeyError. Missing score entries get
+	an empty dict; downstream code uses dict.get() for individual fields.
+
+	Args:
+		input_file: Video input path; used to locate the debug-tracks sidecar.
+		intervals_path: Path to the geometry_cache.npz file.
+		diag_path: Path to the interval_scores.json file (may be absent).
+		fps: Video frame rate.
+
+	Returns:
+		Frame-indexed prediction dict, or empty dict when no intervals.
+	"""
+	intervals_file = state_io.load_geometry_cache(intervals_path)
+	solved_intervals = intervals_file.get("solved_intervals", {})
+	_merge_debug_tracks(
+		solved_intervals,
+		tr_paths.default_debug_tracks_path(input_file),
+	)
+	if not solved_intervals:
+		return {}
+	intervals_list = list(solved_intervals.values())
+	# build (start_frame, end_frame) -> interval_score map from scores file
+	scored_by_key = {}
+	if os.path.isfile(diag_path):
+		score_data = state_io.load_diagnostics(diag_path)
+		for scored_iv in score_data.get("intervals", []):
+			key = (int(scored_iv["start_frame"]),
+				int(scored_iv["end_frame"]))
+			scored_by_key[key] = scored_iv.get("interval_score", {})
+	# merge interval_score into every geometry interval, defaulting to {}
+	for iv in intervals_list:
+		key = (int(iv["start_frame"]), int(iv["end_frame"]))
+		iv["interval_score"] = scored_by_key.get(key, {})
+	return _build_predictions_from_diagnostics(
+		{"intervals": intervals_list, "fps": float(fps)}
+	)
+
+
+#============================================
 # tracks whether we already warned the user about a missing debug
 # sidecar in the current process; keeps the log output quiet across
 # multiple debug-overlay consumers in the same invocation
@@ -930,36 +982,11 @@ def _mode_edit(
 
 	# fallback: load predictions from solved intervals (has per-frame tracks)
 	if not predictions and os.path.isfile(intervals_path):
-		intervals_file = state_io.load_geometry_cache(intervals_path)
-		solved_intervals = intervals_file.get("solved_intervals", {})
-		_merge_debug_tracks(
-			solved_intervals,
-			tr_paths.default_debug_tracks_path(args.input_file),
+		predictions = _predictions_from_geometry_cache(
+			args.input_file, intervals_path, diag_path, video_info["fps"],
 		)
-		if solved_intervals:
-			intervals_list = list(solved_intervals.values())
-			# geometry cache stores no scoring fields (interval_score lives
-			# in the interval-scores JSON since WP-C2). Merge scores back
-			# onto the interval dicts by (start_frame, end_frame) so that
-			# review.classify_interval_severity can read interval_score.
-			# Missing entries get an empty dict rather than KeyError; the
-			# downstream code uses dict.get() for individual score fields.
-			fps = float(video_info["fps"])
-			scored_by_key = {}
-			if os.path.isfile(diag_path):
-				score_data = state_io.load_diagnostics(diag_path)
-				for scored_iv in score_data.get("intervals", []):
-					key = (int(scored_iv["start_frame"]),
-						int(scored_iv["end_frame"]))
-					scored_by_key[key] = scored_iv.get("interval_score", {})
-			for iv in intervals_list:
-				key = (int(iv["start_frame"]), int(iv["end_frame"]))
-				iv["interval_score"] = scored_by_key.get(key, {})
-			predictions = _build_predictions_from_diagnostics(
-				{"intervals": intervals_list, "fps": fps}
-			)
-			if predictions:
-				print(f"  loaded predictions for {len(predictions)} frames (from solved intervals)")
+		if predictions:
+			print(f"  loaded predictions for {len(predictions)} frames (from solved intervals)")
 
 	# optionally filter by severity (show only seeds near weak intervals)
 	frame_filter = None
@@ -1134,17 +1161,9 @@ def _mode_target(
 	predictions = _build_predictions_from_diagnostics(diag_data)
 	# fallback to solved intervals if diagnostics lack per-frame tracks
 	if not predictions and os.path.isfile(intervals_path):
-		intervals_file = state_io.load_geometry_cache(intervals_path)
-		solved_intervals = intervals_file.get("solved_intervals", {})
-		_merge_debug_tracks(
-			solved_intervals,
-			tr_paths.default_debug_tracks_path(args.input_file),
+		predictions = _predictions_from_geometry_cache(
+			args.input_file, intervals_path, diag_path, fps,
 		)
-		if solved_intervals:
-			intervals_list = list(solved_intervals.values())
-			predictions = _build_predictions_from_diagnostics(
-				{"intervals": intervals_list}
-			)
 	if predictions:
 		print(f"  loaded predictions for {len(predictions)} frames")
 
