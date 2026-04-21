@@ -511,27 +511,38 @@ def _format_one_interval_line(
 		f"({duration_s:.1f}s)  blob_accept={fwd_str}/{bwd_str}  "
 		f"tier={tier}"
 	)
-	fwd_line = (
-		f"  FWD: eligible={fwd_funnel['eligible']} "
-		f"residual={fwd_funnel['residual_ok']} "
-		f"raw={fwd_funnel['raw_blob']} "
-		f"corridor={fwd_funnel['corridor']} "
-		f"proximity={fwd_funnel['proximity_pass']} "
-		f"direction={fwd_funnel['direction_pass']} "
-		f"path={fwd_funnel['path_pass']} "
-		f"accepted={fwd_funnel['accepted']}"
-	)
-	bwd_line = (
-		f"  BWD: eligible={bwd_funnel['eligible']} "
-		f"residual={bwd_funnel['residual_ok']} "
-		f"raw={bwd_funnel['raw_blob']} "
-		f"corridor={bwd_funnel['corridor']} "
-		f"proximity={bwd_funnel['proximity_pass']} "
-		f"direction={bwd_funnel['direction_pass']} "
-		f"path={bwd_funnel['path_pass']} "
-		f"accepted={bwd_funnel['accepted']}"
-	)
-	return f"{header}\n{fwd_line}\n{bwd_line}"
+	def _fmt_pass(label: str, funnel: dict) -> str:
+		counter_line = (
+			f"  {label}: eligible={funnel['eligible']} "
+			f"residual={funnel['residual_ok']} "
+			f"raw={funnel['raw_blob']} "
+			f"corridor={funnel['corridor']} "
+			f"proximity={funnel['proximity_pass']} "
+			f"direction={funnel['direction_pass']} "
+			f"path={funnel['path_pass']} "
+			f"accepted={funnel['accepted']}"
+		)
+		dist = _summarize_samples(funnel["blob_dist_h_samples"])
+		perp = _summarize_samples(funnel["path_perp_h_samples"])
+		# gate-margin medians expressed in torso heights so values
+		# compare across zoom. Proximity fails when dist > 0.60 (= the
+		# imported BLOB_SNAP_ALPHA). path fails when perp > slack line
+		# (roughly 0.75 * motion_vec magnitude).
+		if dist["median"] is None:
+			margin_line = f"       blob_dist_h: n/a (no corridor survivors)"
+		else:
+			margin_line = (
+				f"       blob_dist_h median={dist['median']:.2f} "
+				f"p90={dist['p90']:.2f} max={dist['max']:.2f}"
+			)
+			if perp["median"] is not None:
+				margin_line += (
+					f"  path_perp_h median={perp['median']:.2f} "
+					f"p90={perp['p90']:.2f} max={perp['max']:.2f}"
+				)
+		return f"{counter_line}\n{margin_line}"
+
+	return f"{header}\n{_fmt_pass('FWD', fwd_funnel)}\n{_fmt_pass('BWD', bwd_funnel)}"
 
 
 #============================================
@@ -576,6 +587,8 @@ CSV_COLUMNS = (
 	"eligible", "residual_ok", "raw_blob", "corridor",
 	"proximity_pass", "direction_pass", "path_pass", "accepted",
 	"accepted_fraction_replay",
+	"median_blob_dist_h", "p90_blob_dist_h", "max_blob_dist_h",
+	"median_path_perp_h", "p90_path_perp_h", "max_path_perp_h",
 )
 
 
@@ -636,6 +649,8 @@ def _csv_row(
 			return f"{val:.4f}"
 		return val
 
+	dist_summary = _summarize_samples(funnel["blob_dist_h_samples"])
+	perp_summary = _summarize_samples(funnel["path_perp_h_samples"])
 	row = [
 		idx, start_frame, end_frame, f"{duration_s:.4f}", pass_name,
 		tier, _cell(cov_existing),
@@ -643,8 +658,31 @@ def _csv_row(
 		funnel["corridor"], funnel["proximity_pass"],
 		funnel["direction_pass"], funnel["path_pass"], funnel["accepted"],
 		_cell(accepted_frac),
+		_cell(dist_summary["median"]), _cell(dist_summary["p90"]),
+		_cell(dist_summary["max"]),
+		_cell(perp_summary["median"]), _cell(perp_summary["p90"]),
+		_cell(perp_summary["max"]),
 	]
 	return row
+
+
+#============================================
+def _sanitize_funnel_for_json(funnel: dict) -> dict:
+	"""Replace raw sample lists with median/p90/max summaries.
+
+	The per-frame float lists bloat the sidecar quickly on dense runs;
+	keep the information by writing summaries instead. Counter fields
+	pass through unchanged.
+	"""
+	out = {}
+	for key, value in funnel.items():
+		if key == "blob_dist_h_samples":
+			out["blob_dist_h"] = _summarize_samples(value)
+		elif key == "path_perp_h_samples":
+			out["path_perp_h"] = _summarize_samples(value)
+		else:
+			out[key] = value
+	return out
 
 
 #============================================
@@ -655,8 +693,16 @@ def _write_json_sidecar(
 ) -> None:
 	"""Write the JSON sidecar with self-describing gate constants.
 
-	`per_interval` is a list of dicts built in main().
+	`per_interval` is a list of dicts built in main(). Raw per-frame
+	sample lists are collapsed to summaries to keep the file small.
 	"""
+	sanitized = []
+	for item in per_interval:
+		sanitized.append({
+			**{k: v for k, v in item.items() if k not in ("fwd", "bwd")},
+			"fwd": _sanitize_funnel_for_json(item["fwd"]),
+			"bwd": _sanitize_funnel_for_json(item["bwd"]),
+		})
 	payload = {
 		"header": "blob_funnel_v1",
 		"video_basename": video_basename,
@@ -672,24 +718,29 @@ def _write_json_sidecar(
 			"DEFAULT_HALF_WINDOW": residual_motion.DEFAULT_HALF_WINDOW,
 			"ROI_MULTIPLIER": residual_motion.ROI_MULTIPLIER,
 		},
-		"intervals": per_interval,
+		"intervals": sanitized,
 	}
 	with open(path, "w") as fh:
 		json.dump(payload, fh, indent=2)
 
 
 #============================================
-def _print_summary(per_interval: list) -> None:
-	"""Aggregate stats across processed intervals."""
+def _print_summary(per_interval: list, fps: float) -> None:
+	"""Aggregate counters and duration-bucketed accept rates."""
 	n = len(per_interval)
 	if n == 0:
 		print("\n  no intervals processed")
 		return
-	# build per-bucket totals for a one-shot diagnostic print
-	totals_fwd = _empty_funnel()
-	totals_bwd = _empty_funnel()
+	# per-stage totals: only sum the int counter fields, not the sample
+	# lists (those get aggregated by the duration buckets below).
+	counter_keys = (
+		"eligible", "residual_ok", "raw_blob", "corridor",
+		"proximity_pass", "direction_pass", "path_pass", "accepted",
+	)
+	totals_fwd = {k: 0 for k in counter_keys}
+	totals_bwd = {k: 0 for k in counter_keys}
 	for item in per_interval:
-		for key in totals_fwd:
+		for key in counter_keys:
 			totals_fwd[key] += item["fwd"][key]
 			totals_bwd[key] += item["bwd"][key]
 	print("")
@@ -706,6 +757,53 @@ def _print_summary(per_interval: list) -> None:
 			f"path={totals['path_pass']} "
 			f"accepted={totals['accepted']}"
 		)
+
+	# duration buckets: answers "does the failure concentrate on short
+	# intervals?" which drives the short-interval policy question. A
+	# bucket's accept-rate is (sum accepted)/(sum corridor) across all
+	# intervals whose duration falls in that bucket. Corridor rather
+	# than eligible as the denominator because we already know every
+	# eligible frame has a corridor survivor on this data.
+	buckets = (
+		(0.0, 0.2, "0.0-0.2s"),
+		(0.2, 0.5, "0.2-0.5s"),
+		(0.5, 1.0, "0.5-1.0s"),
+		(1.0, float("inf"), "1.0s+"),
+	)
+	print("")
+	print("  by interval duration (FWD+BWD combined):")
+	for lo, hi, label in buckets:
+		bucket_items = [
+			item for item in per_interval
+			if lo <= (item["end_frame"] - item["start_frame"]) / fps < hi
+		]
+		if not bucket_items:
+			print(f"    {label:<9} (n=  0): (empty)")
+			continue
+		corridor_sum = sum(
+			item[p]["corridor"] for item in bucket_items for p in ("fwd", "bwd")
+		)
+		prox_sum = sum(
+			item[p]["proximity_pass"] for item in bucket_items
+			for p in ("fwd", "bwd")
+		)
+		path_sum = sum(
+			item[p]["path_pass"] for item in bucket_items
+			for p in ("fwd", "bwd")
+		)
+		accepted_sum = sum(
+			item[p]["accepted"] for item in bucket_items
+			for p in ("fwd", "bwd")
+		)
+		if corridor_sum == 0:
+			rates = "(no corridor survivors)"
+		else:
+			rates = (
+				f"proximity={prox_sum / corridor_sum:.0%} "
+				f"path={path_sum / corridor_sum:.0%} "
+				f"accepted={accepted_sum / corridor_sum:.0%}"
+			)
+		print(f"    {label:<9} (n={len(bucket_items):3d}): {rates}")
 
 
 #============================================
@@ -898,7 +996,7 @@ def main() -> None:
 		if csv_fh is not None:
 			csv_fh.close()
 
-	_print_summary(per_interval_results)
+	_print_summary(per_interval_results, fps)
 
 	if args.json_path is not None:
 		_write_json_sidecar(
