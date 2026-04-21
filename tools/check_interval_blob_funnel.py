@@ -111,6 +111,16 @@ def parse_args() -> argparse.Namespace:
 	)
 	parser.set_defaults(print_per_interval=True)
 	parser.add_argument(
+		"-F", "--save-frames", dest="frames_dir", default=None,
+		help=(
+			"Save one side-by-side PNG per eligible frame of each "
+			"processed interval (left: real frame ROI; right: motion-"
+			"cue heat map). Minimal overlays: predicted center, chosen "
+			"blob centroid, interpolated torso box. Use --limit to cap "
+			"the number of intervals first."
+		)
+	)
+	parser.add_argument(
 		"-N", "--limit", dest="limit", type=int, default=None,
 		help=(
 			"Cap on number of intervals processed after filtering. "
@@ -421,11 +431,229 @@ def _funnel_add_frame(funnel: dict, stamp: dict) -> None:
 
 
 #============================================
+def _render_side_by_side(
+	frame_bgr: "numpy.ndarray",
+	residual_mag: "numpy.ndarray",
+	validity_mask: "numpy.ndarray",
+	roi: tuple,
+	raw_cx: float,
+	raw_cy: float,
+	pred_w: float,
+	pred_h: float,
+	best_blob_xy: tuple,
+	title: str,
+	footer: str,
+) -> "numpy.ndarray":
+	"""Build a side-by-side PNG: real ROI crop | colorized heat map.
+
+	Overlays are drawn identically on both panels so the viewer can
+	match position between image and motion cue. Coordinates are all in
+	full-frame pixels; the function subtracts the ROI origin internally.
+
+	Args:
+		frame_bgr: Full-frame BGR read via VideoReader.read_frame.
+		residual_mag: ROI-sized magnitude array from
+			compute_residual_for_frame.
+		validity_mask: ROI-sized validity mask (255 valid).
+		roi: (x1, y1, x2, y2) ROI bounds in full-frame pixels.
+		raw_cx, raw_cy: Predicted center (full frame).
+		pred_w, pred_h: Hermite-interpolated torso box size.
+		best_blob_xy: (bx, by) chosen corridor blob centroid, or None
+			when no blob was picked for this frame.
+		title, footer: single-line strings drawn above / below.
+
+	Returns:
+		BGR image with both panels stacked horizontally.
+	"""
+	x1, y1, x2, y2 = roi
+	real_crop = frame_bgr[y1:y2, x1:x2].copy()
+
+	# colorize residual magnitude. clip to 255 to avoid overflow when
+	# the solver's threshold (~10) is at the low end of typical magnitudes.
+	mag_u8 = numpy.clip(residual_mag, 0, 255).astype(numpy.uint8)
+	heat = cv2.applyColorMap(mag_u8, cv2.COLORMAP_JET)
+	# darken invalid pixels so visually clipped regions are obvious
+	if validity_mask is not None:
+		invalid = validity_mask == 0
+		heat[invalid] = heat[invalid] // 3
+
+	# pad panels to the same height (compute_residual may return a
+	# slightly smaller mask than the frame crop due to ROI quantization)
+	h_panel = max(real_crop.shape[0], heat.shape[0])
+	w_real = real_crop.shape[1]
+	w_heat = heat.shape[1]
+
+	def _pad(img: "numpy.ndarray", h_target: int, w_target: int
+		) -> "numpy.ndarray":
+		if img.shape[0] == h_target and img.shape[1] == w_target:
+			return img
+		padded = numpy.zeros((h_target, w_target, 3), dtype=numpy.uint8)
+		padded[:img.shape[0], :img.shape[1]] = img
+		return padded
+
+	real_padded = _pad(real_crop, h_panel, w_real)
+	heat_padded = _pad(heat, h_panel, w_heat)
+
+	# draw overlays on both panels. ROI-local coords: subtract roi origin.
+	def _draw_overlays(img: "numpy.ndarray") -> None:
+		# Hermite-interpolated torso box (green, thin)
+		tx = int(round(raw_cx - pred_w / 2.0)) - x1
+		ty = int(round(raw_cy - pred_h / 2.0)) - y1
+		tw = int(round(pred_w))
+		th = int(round(pred_h))
+		cv2.rectangle(
+			img, (tx, ty), (tx + tw, ty + th), (0, 255, 0), thickness=1,
+		)
+		# predicted center (red crosshair)
+		pcx = int(round(raw_cx)) - x1
+		pcy = int(round(raw_cy)) - y1
+		cv2.drawMarker(
+			img, (pcx, pcy), (0, 0, 255),
+			markerType=cv2.MARKER_CROSS, markerSize=12, thickness=1,
+		)
+		# chosen blob centroid (yellow dot)
+		if best_blob_xy is not None:
+			bx, by = best_blob_xy
+			bcx = int(round(bx)) - x1
+			bcy = int(round(by)) - y1
+			cv2.circle(img, (bcx, bcy), 6, (0, 255, 255), thickness=2)
+
+	_draw_overlays(real_padded)
+	_draw_overlays(heat_padded)
+
+	# stack side by side with a thin separator
+	separator = numpy.zeros((h_panel, 4, 3), dtype=numpy.uint8)
+	combined = numpy.hstack([real_padded, separator, heat_padded])
+
+	# title bar on top, footer on bottom
+	bar_h = 18
+	title_bar = numpy.zeros((bar_h, combined.shape[1], 3), dtype=numpy.uint8)
+	footer_bar = numpy.zeros((bar_h, combined.shape[1], 3), dtype=numpy.uint8)
+	cv2.putText(
+		title_bar, title, (6, 13),
+		cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1, cv2.LINE_AA,
+	)
+	cv2.putText(
+		footer_bar, footer, (6, 13),
+		cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1, cv2.LINE_AA,
+	)
+	return numpy.vstack([title_bar, combined, footer_bar])
+
+
+#============================================
+def _save_frame_png(
+	out_dir: str,
+	idx: int,
+	frame_index: int,
+	pass_name: str,
+	raw_curr: tuple,
+	raw_prev: tuple,
+	raw_next: tuple,
+	reader: object,
+	scene_transform: object,
+	stamp: dict,
+) -> None:
+	"""Re-compute residual and write a side-by-side PNG for one frame.
+
+	The replay loop clears image data per frame after extraction, so the
+	render path recomputes residual here. Duplicate work is acceptable
+	for diagnostic renders, which are bounded by the user's --limit.
+	"""
+	_fi, raw_cx, raw_cy, pred_w, pred_h, _conf, _is_stat = raw_curr
+	frame_w = getattr(reader, "width", 1920)
+	frame_h = getattr(reader, "height", 1080)
+	roi = residual_motion._compute_roi(
+		raw_cx, raw_cy, pred_h, frame_w, frame_h,
+	)
+	frame_bgr = reader.read_frame(frame_index)
+	if frame_bgr is None:
+		return
+	residual, validity_mask = residual_motion.compute_residual_for_frame(
+		reader, frame_index, scene_transform,
+		residual_motion.DEFAULT_HALF_WINDOW,
+		None, roi,
+	)
+	if residual is None:
+		return
+
+	# best blob centroid: duplicate the corridor pick so the overlay
+	# matches the gated frame's decision exactly
+	best_blob_xy = None
+	raw_blobs = residual_motion.extract_frame_blobs(
+		residual, validity_mask, residual_motion.DEFAULT_THRESHOLD,
+	)
+	for blob in raw_blobs:
+		blob["centroid_x"] += roi[0]
+		blob["centroid_y"] += roi[1]
+	if raw_blobs:
+		v_prev = (raw_curr[1] - raw_prev[1], raw_curr[2] - raw_prev[2])
+		v_next = (raw_next[1] - raw_curr[1], raw_next[2] - raw_curr[2])
+		v_pred = (
+			0.5 * (v_prev[0] + v_next[0]),
+			0.5 * (v_prev[1] + v_next[1]),
+		)
+		v_pred_mag = math.sqrt(
+			v_pred[0] * v_pred[0] + v_pred[1] * v_pred[1]
+		)
+		if v_pred_mag > 1e-6:
+			t_x = v_pred[0] / v_pred_mag
+			t_y = v_pred[1] / v_pred_mag
+			tangent = (t_x, t_y, -t_y, t_x)
+		else:
+			tangent = (1.0, 0.0, 0.0, 1.0)
+		corridor_radius = max(1.5 * pred_w, 0.75 * pred_h)
+		corridor_blobs = residual_motion.filter_blobs_to_corridor(
+			raw_blobs, raw_cx, raw_cy, tangent, corridor_radius,
+		)
+		best_score = -1.0
+		best_blob = None
+		for blob in corridor_blobs:
+			score = residual_motion.compute_cue_confidence(
+				blob, raw_cx, raw_cy, pred_w, pred_h, tangent,
+			)
+			if score > best_score:
+				best_score = score
+				best_blob = blob
+		if best_blob is not None:
+			best_blob_xy = (best_blob["centroid_x"], best_blob["centroid_y"])
+
+	outcome = stamp.get("gate_outcome", "absent")
+	dist_h = stamp.get("blob_dist_h")
+	perp_h = stamp.get("path_perp_h")
+	title = (
+		f"iv[{idx}] frame {frame_index}  pass={pass_name}  {outcome}"
+	)
+	footer_parts = []
+	if dist_h is not None:
+		footer_parts.append(f"pred_to_blob={dist_h:.2f}h")
+	if perp_h is not None:
+		footer_parts.append(f"path_perp={perp_h:.2f}h")
+	footer_parts.append(
+		f"proximity={'Y' if stamp.get('proximity_ok') else 'N'}"
+	)
+	footer_parts.append(
+		f"path={'Y' if stamp.get('path_ok') else 'N'}"
+	)
+	footer = "  ".join(footer_parts)
+
+	out_name = (
+		f"iv{idx:03d}_f{frame_index:06d}_{pass_name.lower()}_{outcome}.png"
+	)
+	out_path = os.path.join(out_dir, out_name)
+	img = _render_side_by_side(
+		frame_bgr, residual, validity_mask, roi,
+		raw_cx, raw_cy, pred_w, pred_h, best_blob_xy, title, footer,
+	)
+	cv2.imwrite(out_path, img)
+
+
+#============================================
 def replay_pass(
 	raw_pred: list,
 	reader: object,
 	scene_transform: object,
 	residual_cache: dict,
+	on_frame: object = None,
 ) -> dict:
 	"""Replay one pass (FWD or BWD) and return its funnel counts.
 
@@ -433,6 +661,9 @@ def replay_pass(
 		raw_pred: List of raw_pred tuples from
 			_compute_raw_pred_forward/_backward.
 		reader, scene_transform, residual_cache: solver-style args.
+		on_frame: Optional callback(i, raw_prev, raw_curr, raw_next,
+			stamp) fired once per eligible frame. Used by the
+			--save-frames renderer; None disables.
 
 	Returns:
 		Funnel dict with per-stage counts. Stationary intervals and
@@ -454,6 +685,8 @@ def replay_pass(
 			reader, scene_transform, residual_cache,
 		)
 		_funnel_add_frame(funnel, stamp)
+		if on_frame is not None:
+			on_frame(i, raw_pred[i - 1], raw_pred[i], raw_pred[i + 1], stamp)
 	return funnel
 
 
@@ -533,7 +766,7 @@ def _format_one_interval_line(
 		# imported BLOB_SNAP_ALPHA). path fails when perp > slack line
 		# (roughly 0.75 * motion_vec magnitude).
 		if dist["median"] is None:
-			margin_line = f"       blob_dist_h: n/a (no corridor survivors)"
+			margin_line = "       blob_dist_h: n/a (no corridor survivors)"
 		else:
 			margin_line = (
 				f"       blob_dist_h median={dist['median']:.2f} "
@@ -903,6 +1136,11 @@ def main() -> None:
 		csv_writer.writerow(list(CSV_COLUMNS))
 		csv_fh.flush()
 
+	frames_dir = args.frames_dir
+	if frames_dir is not None:
+		os.makedirs(frames_dir, exist_ok=True)
+		print(f"  saving annotated frame PNGs to {frames_dir}")
+
 	# first pass: enumerate every interval and apply filters (range /
 	# index-list / race-start cutoff). Collect surviving (idx, left,
 	# right, start, end) tuples so --shuffle and --limit can be applied
@@ -953,11 +1191,29 @@ def main() -> None:
 			# per-interval residual cache, scoped and dropped per interval
 			# so no cross-interval state survives (contract C3)
 			residual_cache = {}
+
+			def _make_saver(pass_label: str):
+				# closure captures idx + pass_label; frames_dir None -> no-op
+				if frames_dir is None:
+					return None
+
+				def _save(i, raw_prev, raw_curr, raw_next, stamp):
+					frame_index = int(raw_curr[0])
+					_save_frame_png(
+						frames_dir, idx, frame_index, pass_label,
+						raw_curr, raw_prev, raw_next,
+						reader, transform, stamp,
+					)
+
+				return _save
+
 			fwd_funnel = replay_pass(
 				raw_pred_fwd, reader, transform, residual_cache,
+				on_frame=_make_saver("FWD"),
 			)
 			bwd_funnel = replay_pass(
 				raw_pred_bwd, reader, transform, residual_cache,
+				on_frame=_make_saver("BWD"),
 			)
 			residual_cache.clear()
 
