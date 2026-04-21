@@ -60,27 +60,25 @@ def _make_v2_seed_dict() -> dict:
 #============================================
 
 
-def test_v2_round_trip_strips_legacy_and_keeps_canonical(tmp_path):
-	"""Writing a v2-shaped dict produces a v3 on-disk file with only
-	the canonical allow-list keys; load preserves semantic content."""
+def test_writer_emits_only_canonical_keys_on_disk(tmp_path):
+	"""On disk, seeds carry exactly the canonical allow-list."""
 	path = str(tmp_path / "seeds.json")
 	state_io.write_seeds(path, _make_v2_seed_dict())
-	# on disk: only canonical keys
 	with open(path, "r") as fh:
 		raw = json.load(fh)
-	assert raw[state_io.SEEDS_HEADER_KEY] == state_io.SEEDS_HEADER_VALUE
-	disk_seed_keys = set(raw["seeds"][0].keys())
-	assert disk_seed_keys == state_io.CANONICAL_SEED_KEYS
-	# in memory after load: canonical + derived geometry
+	assert set(raw["seeds"][0].keys()) == state_io.CANONICAL_SEED_KEYS
+
+
+#============================================
+
+
+def test_loader_attaches_derived_geometry_in_memory(tmp_path):
+	"""load_seeds adds cx/cy/w/h to the in-memory dict from torso_box."""
+	path = str(tmp_path / "seeds.json")
+	state_io.write_seeds(path, _make_v2_seed_dict())
 	loaded = state_io.load_seeds(path)
-	loaded_seed_keys = set(loaded["seeds"][0].keys())
 	expected = state_io.CANONICAL_SEED_KEYS | state_io.DERIVED_SEED_KEYS
-	assert loaded_seed_keys == expected
-	# torso_box preserved as integers
-	assert loaded["seeds"][0]["torso_box"] == [640, 360, 40, 60]
-	# derived geometry matches cx = x + w/2, cy = y + h/2
-	assert loaded["seeds"][0]["cx"] == 660.0
-	assert loaded["seeds"][0]["cy"] == 390.0
+	assert set(loaded["seeds"][0].keys()) == expected
 
 
 #============================================

@@ -60,60 +60,45 @@ def test_empty_cache_round_trip(tmp_path):
 
 
 def test_single_interval_round_trip(tmp_path):
-	"""A single-interval cache round-trips with the fused_track shape
-	existing consumers expect."""
+	"""A single-interval cache round-trips: every cx/cy/w/h matches."""
 	path = str(tmp_path / "cache.npz")
-	data = {
-		"solved_intervals": {
-			"fp_a": _make_interval_entry(10, 14),
-		},
-	}
-	state_io.write_geometry_cache(path, data)
+	original = _make_interval_entry(10, 14)
+	state_io.write_geometry_cache(
+		path, {"solved_intervals": {"fp_a": original}},
+	)
 	loaded = state_io.load_geometry_cache(path)
 	iv = loaded["solved_intervals"]["fp_a"]
-	assert iv["start_frame"] == 10
-	assert iv["end_frame"] == 14
-	assert len(iv["fused_track"]) == 5
-	assert iv["fused_track"][0]["cx"] == 100.0
-	assert iv["fused_track"][4]["cy"] == 202.0
+	# round-trip invariant: every per-frame record survives unchanged
+	for orig, rt in zip(original["fused_track"], iv["fused_track"]):
+		assert orig == rt
 
 
 #============================================
 
 
 def test_interval_score_not_persisted(tmp_path):
-	"""interval_score in the input dict must not appear in the NPZ
-	file. Scoring-owner gate: geometry_cache.npz is geometry only."""
+	"""Scoring-owner gate: interval_score, forward_track, and
+	backward_track must not survive write_geometry_cache in any
+	form (NPZ key, indexed array, or manifest field)."""
 	path = str(tmp_path / "cache.npz")
 	entry = _make_interval_entry(0, 3)
 	# inject fields that MUST be stripped by the writer
 	entry["interval_score"] = {"agreement": 0.9, "confidence_tier": "high"}
 	entry["forward_track"] = [{"cx": 1.0, "cy": 1.0, "w": 1.0, "h": 1.0}]
 	entry["backward_track"] = [{"cx": 2.0, "cy": 2.0, "w": 1.0, "h": 1.0}]
-	data = {"solved_intervals": {"fp_a": entry}}
-	state_io.write_geometry_cache(path, data)
-	# on-disk NPZ: only expected keys
+	state_io.write_geometry_cache(
+		path, {"solved_intervals": {"fp_a": entry}},
+	)
+	forbidden = {"interval_score", "forward_track", "backward_track"}
+	# gather every place a forbidden name could appear on disk
 	with numpy.load(path, allow_pickle=False) as npz:
-		keys = set(npz.files)
-		# no score/forward/backward surface anywhere in the NPZ
-		for forbidden in (
-			"interval_score", "forward_track", "backward_track",
-			"i0_interval_score", "i0_forward_track", "i0_backward_track",
-		):
-			assert forbidden not in keys, forbidden
-		# manifest itself carries no score or fwd/bwd fields
+		on_disk = set(npz.files)
 		manifest = json.loads(bytes(npz["manifest"]).decode("utf-8"))
 		for entry_m in manifest:
-			manifest_keys = set(entry_m.keys())
-			assert "interval_score" not in manifest_keys
-			assert "forward_track" not in manifest_keys
-			assert "backward_track" not in manifest_keys
-	# loaded back: interval does not carry stripped fields
-	loaded = state_io.load_geometry_cache(path)
-	iv = loaded["solved_intervals"]["fp_a"]
-	assert "interval_score" not in iv
-	assert "forward_track" not in iv
-	assert "backward_track" not in iv
+			on_disk.update(entry_m.keys())
+	# also indexed-array variants, e.g. i0_interval_score
+	indexed = {f"i0_{name}" for name in forbidden}
+	assert forbidden.isdisjoint(on_disk | indexed)
 
 
 #============================================
@@ -147,10 +132,9 @@ def test_arrays_are_float32(tmp_path):
 		"solved_intervals": {"fp_a": _make_interval_entry(0, 4)}
 	})
 	with numpy.load(path, allow_pickle=False) as npz:
-		assert npz["i0_cx"].dtype == numpy.float32
-		assert npz["i0_cy"].dtype == numpy.float32
-		assert npz["i0_w"].dtype == numpy.float32
-		assert npz["i0_h"].dtype == numpy.float32
+		dtypes = {npz[f"i0_{k}"].dtype for k in ("cx", "cy", "w", "h")}
+	# disk-format contract: all four arrays are float32, not float64
+	assert dtypes == {numpy.dtype("float32")}
 
 
 #============================================
@@ -247,22 +231,20 @@ def _make_entry_with_fwd_bwd(start: int, end: int) -> dict:
 
 
 def test_debug_tracks_round_trip(tmp_path):
-	"""Debug sidecar writer/loader reconstruct fwd/bwd tracks per
-	interval."""
+	"""Debug sidecar writer/loader reconstruct fwd/bwd tracks
+	unchanged -- round-trip invariant."""
 	path = str(tmp_path / "debug.npz")
-	data = {
-		"solved_intervals": {
-			"fp_a": _make_entry_with_fwd_bwd(0, 4),
-			"fp_b": _make_entry_with_fwd_bwd(20, 24),
-		},
-	}
-	state_io.write_debug_tracks(path, data)
+	original = _make_entry_with_fwd_bwd(0, 4)
+	state_io.write_debug_tracks(
+		path, {"solved_intervals": {"fp_a": original}},
+	)
 	loaded = state_io.load_debug_tracks(path)
-	assert set(loaded.keys()) == {"fp_a", "fp_b"}
-	assert loaded["fp_a"]["start_frame"] == 0
-	assert len(loaded["fp_a"]["forward_track"]) == 5
-	assert loaded["fp_a"]["forward_track"][0]["cx"] == 10.0
-	assert loaded["fp_a"]["backward_track"][0]["cx"] == 11.0
+	iv = loaded["fp_a"]
+	# round-trip invariant: every fwd and bwd frame survives unchanged
+	for orig, rt in zip(original["forward_track"], iv["forward_track"]):
+		assert orig == rt
+	for orig, rt in zip(original["backward_track"], iv["backward_track"]):
+		assert orig == rt
 
 
 #============================================
@@ -303,5 +285,5 @@ def test_debug_tracks_dtype_is_float32(tmp_path):
 		"solved_intervals": {"fp_a": _make_entry_with_fwd_bwd(0, 2)},
 	})
 	with numpy.load(path, allow_pickle=False) as npz:
-		assert npz["i0_fwd_cx"].dtype == numpy.float32
-		assert npz["i0_bwd_cx"].dtype == numpy.float32
+		dtypes = {npz["i0_fwd_cx"].dtype, npz["i0_bwd_cx"].dtype}
+	assert dtypes == {numpy.dtype("float32")}

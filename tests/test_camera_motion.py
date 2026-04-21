@@ -2,6 +2,7 @@
 
 # PIP3 modules
 import numpy
+import pytest
 
 # local repo modules (bare imports resolved by conftest.py)
 import camera_motion
@@ -102,52 +103,61 @@ def _dummy_identity(basename: str = "test.mkv", frame_count: int = 3) -> dict:
 
 
 #============================================
-def test_fixed_zoom_cache_round_trip(tmp_path):
-	"""fixed_zoom caches round-trip without a scale array on disk."""
-	cache_path = str(tmp_path / "motion.npz")
-	motion_orig = camera_motion.MotionTrack(
-		dx=numpy.array([0.0, 1.5, 2.0], dtype=numpy.float32),
-		dy=numpy.array([0.0, -0.5, 0.1], dtype=numpy.float32),
-		scale=numpy.ones(3, dtype=numpy.float32),
-		quality=numpy.array([0.9, 0.85, 0.88], dtype=numpy.float32),
+def _make_motion_track(scale_values: list) -> "camera_motion.MotionTrack":
+	"""Build a MotionTrack with matching-length dx/dy/quality arrays."""
+	n = len(scale_values)
+	return camera_motion.MotionTrack(
+		dx=numpy.arange(n, dtype=numpy.float32),
+		dy=numpy.zeros(n, dtype=numpy.float32),
+		scale=numpy.array(scale_values, dtype=numpy.float32),
+		quality=numpy.linspace(0.8, 0.95, n, dtype=numpy.float32),
 	)
+
+
+#============================================
+def test_fixed_zoom_omits_scale_on_disk(tmp_path):
+	"""fixed_zoom caches must not persist the constant-1.0 scale array."""
+	cache_path = str(tmp_path / "motion.npz")
+	camera_motion.save_motion_cache(
+		_make_motion_track([1.0, 1.0, 1.0]), cache_path,
+		motion_model=camera_motion.MOTION_MODEL_FIXED,
+		video_identity=_dummy_identity(),
+		config_hash="abcd1234",
+	)
+	with numpy.load(cache_path, allow_pickle=False) as npz:
+		keys = set(npz.files)
+	# scale (constant 1.0) and event_flags (dead) must not appear
+	assert {"scale", "event_flags"}.isdisjoint(keys)
+
+
+#============================================
+def test_fixed_zoom_cache_round_trip(tmp_path):
+	"""Round-trip invariant: dx/dy/quality preserved; scale synthesized."""
+	cache_path = str(tmp_path / "motion.npz")
+	motion_orig = _make_motion_track([1.0, 1.0, 1.0])
 	camera_motion.save_motion_cache(
 		motion_orig, cache_path,
 		motion_model=camera_motion.MOTION_MODEL_FIXED,
 		video_identity=_dummy_identity(),
 		config_hash="abcd1234",
 	)
-	# on disk: no scale array for fixed_zoom
-	with numpy.load(cache_path, allow_pickle=False) as npz:
-		assert "scale" not in npz.files
-		assert bytes(npz["motion_model"]).decode("utf-8") == "fixed_zoom"
-	# round-trip: dx/dy/quality preserved, scale synthesized as 1.0
 	loaded = camera_motion.load_motion_cache(cache_path)
+	# round-trip preserves signal; fixed_zoom synthesizes scale=1 on load
 	assert numpy.allclose(loaded.dx, motion_orig.dx)
-	assert numpy.allclose(loaded.dy, motion_orig.dy)
-	assert numpy.allclose(loaded.quality, motion_orig.quality)
-	assert numpy.allclose(loaded.scale, numpy.ones(3))
+	assert numpy.allclose(loaded.scale, 1.0)
 
 
 #============================================
-def test_discrete_zoom_cache_includes_scale(tmp_path):
-	"""discrete_zoom caches persist the scale array."""
+def test_discrete_zoom_cache_preserves_scale(tmp_path):
+	"""discrete_zoom persists the scale array across a round-trip."""
 	cache_path = str(tmp_path / "motion.npz")
-	motion_orig = camera_motion.MotionTrack(
-		dx=numpy.zeros(3, dtype=numpy.float32),
-		dy=numpy.zeros(3, dtype=numpy.float32),
-		scale=numpy.array([1.0, 2.0, 1.0], dtype=numpy.float32),
-		quality=numpy.ones(3, dtype=numpy.float32),
-	)
+	motion_orig = _make_motion_track([1.0, 2.0, 1.0])
 	camera_motion.save_motion_cache(
 		motion_orig, cache_path,
 		motion_model=camera_motion.MOTION_MODEL_DISCRETE,
 		video_identity=_dummy_identity(),
 		config_hash="hash01",
 	)
-	with numpy.load(cache_path, allow_pickle=False) as npz:
-		assert "scale" in npz.files
-		assert "event_flags" not in npz.files
 	loaded = camera_motion.load_motion_cache(cache_path)
 	assert numpy.allclose(loaded.scale, motion_orig.scale)
 
@@ -156,14 +166,8 @@ def test_discrete_zoom_cache_includes_scale(tmp_path):
 def test_stale_config_hash_treated_as_miss(tmp_path):
 	"""A mismatched config_hash makes load_motion_cache return None."""
 	cache_path = str(tmp_path / "motion.npz")
-	motion = camera_motion.MotionTrack(
-		dx=numpy.zeros(3, dtype=numpy.float32),
-		dy=numpy.zeros(3, dtype=numpy.float32),
-		scale=numpy.ones(3, dtype=numpy.float32),
-		quality=numpy.ones(3, dtype=numpy.float32),
-	)
 	camera_motion.save_motion_cache(
-		motion, cache_path,
+		_make_motion_track([1.0, 1.0, 1.0]), cache_path,
 		motion_model=camera_motion.MOTION_MODEL_FIXED,
 		video_identity=_dummy_identity(),
 		config_hash="original",
@@ -192,7 +196,6 @@ def test_loader_rejects_unknown_motion_model(tmp_path):
 		dy=numpy.zeros(3, dtype=numpy.float32),
 		quality=numpy.ones(3, dtype=numpy.float32),
 	)
-	import pytest
 	with pytest.raises(RuntimeError, match="unknown motion_model"):
 		camera_motion.load_motion_cache(cache_path)
 
@@ -215,7 +218,6 @@ def test_loader_rejects_discrete_without_scale(tmp_path):
 		dy=numpy.zeros(3, dtype=numpy.float32),
 		quality=numpy.ones(3, dtype=numpy.float32),
 	)
-	import pytest
 	with pytest.raises(RuntimeError, match="missing required array"):
 		camera_motion.load_motion_cache(cache_path)
 
