@@ -588,6 +588,24 @@ def _accepted_fraction_replay(funnel: dict) -> float | None:
 
 
 #============================================
+def _summarize_samples(samples: list) -> dict:
+	"""Return median/p90/max of a list of floats, or None values.
+
+	Empty input returns a dict with all None values so downstream CSV
+	writing can emit empty cells rather than sentinel zeros.
+	"""
+	if not samples:
+		return {"median": None, "p90": None, "max": None}
+	samples_sorted = sorted(samples)
+	n = len(samples_sorted)
+	median = samples_sorted[n // 2]
+	# p90: floor, to avoid sampling past the end on short intervals
+	p90_idx = max(0, min(n - 1, int(round(0.9 * (n - 1)))))
+	p90 = samples_sorted[p90_idx]
+	return {"median": median, "p90": p90, "max": samples_sorted[-1]}
+
+
+#============================================
 def _csv_row(
 	idx: int,
 	start_frame: int,
