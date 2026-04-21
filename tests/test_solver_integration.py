@@ -115,7 +115,7 @@ def test_analytical_solve_produces_fused_track():
 #============================================
 def test_diagnostics_v3_write_and_read(tmp_path):
 	"""Write v3 diagnostics with analytical scores and read back."""
-	diag_path = str(tmp_path / "test.diagnostics.json")
+	diag_path = str(tmp_path / "test.interval_scores.json")
 	# build minimal v3 diagnostics
 	diagnostics = {
 		"intervals": [

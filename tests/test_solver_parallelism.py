@@ -219,8 +219,9 @@ def test_on_interval_complete_fires_for_every_interval(monkeypatch):
 def test_fingerprints_unchanged_by_parallel_refactor():
 	"""compute_interval_fingerprint must return a deterministic string for fixed seeds.
 
-	This locks the no-cache-invalidation guarantee of the parallel rewrite:
-	a user's existing intervals.json keeps working after the refactor lands.
+	This locks the no-cache-invalidation guarantee of the solver cache:
+	a user's existing geometry_cache.npz keeps working across refactors
+	because fingerprints are deterministic for fixed seed positions.
 	"""
 	seed_a = {"frame_index": 100, "cx": 500.5, "cy": 300.25, "w": 40.0, "h": 80.0}
 	seed_b = {"frame_index": 200, "cx": 600.0, "cy": 310.0, "w": 42.0, "h": 82.0}

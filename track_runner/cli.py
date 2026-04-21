@@ -774,11 +774,21 @@ def _run_solve(
 		diagnostics["video_identity"] = VIDEO_IDENTITY
 	state_io.write_solver_diagnostics(diagnostics, diag_path, fps)
 	print(f"  diagnostics written to {diag_path}")
-	# optional debug sidecar: per-frame agreement data for investigation
+	# optional debug sidecar: per-frame agreement data for investigation.
+	# derive the sidecar path by stripping the canonical interval-scores
+	# suffix (NOT via str.replace on a legacy name -- that became a no-op
+	# after the diagnostics->interval_scores rename and silently wrote
+	# agreement data on top of the scoring file).
 	if args.debug:
-		debug_path = diag_path.replace(
-			".diagnostics.json", ".agreement_debug.json",
-		)
+		scores_suffix = ".track_runner.interval_scores.json"
+		if diag_path.endswith(scores_suffix):
+			debug_path = (
+				diag_path[: -len(scores_suffix)]
+				+ ".track_runner.agreement_debug.json"
+			)
+		else:
+			# defensive fallback for unusual paths; unlikely in practice
+			debug_path = diag_path + ".agreement_debug.json"
 		n_written = state_io.write_agreement_debug_sidecar(
 			diagnostics, debug_path,
 		)
@@ -1185,7 +1195,13 @@ def _mode_solve(
 		prior_count = len(intervals_file.get("solved_intervals", {}))
 		if prior_complete and prior_count > 0:
 			print(f"  prior solve completed ({prior_count} intervals)")
-			answer = input("  clear and re-solve from scratch? [y/N] ").strip().lower()
+			if getattr(args, "assume_yes", False):
+				answer = "y"
+				print("  clear and re-solve from scratch? [y/N] y (-y)")
+			else:
+				answer = input(
+					"  clear and re-solve from scratch? [y/N] "
+				).strip().lower()
 			if answer in ("y", "yes"):
 				os.remove(intervals_path)
 				print("  cleared solved intervals (full re-solve)")

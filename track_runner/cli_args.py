@@ -188,9 +188,17 @@ def parse_args() -> argparse.Namespace:
 	base_controller_module.BaseAnnotationController.add_argparse_args(target_parser)
 
 	# -- solve mode --
-	subparsers.add_parser(
+	solve_parser = subparsers.add_parser(
 		"solve", help="Full re-solve: clears prior results and solves all intervals fresh.",
 	)
+	solve_parser.add_argument(
+		"-y", "--yes", dest="assume_yes", action="store_true",
+		help=(
+			"Auto-confirm the 'clear and re-solve from scratch?' "
+			"prompt. Use this for scripted re-solve runs."
+		),
+	)
+	solve_parser.set_defaults(assume_yes=False)
 
 	# -- refine mode --
 	subparsers.add_parser(

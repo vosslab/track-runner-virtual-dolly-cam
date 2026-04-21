@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Print metric distributions, tier breakdown, and failure-reason counts
-from a track_runner diagnostics JSON. Intended for investigating why
-intervals are scored the way they are.
+from a track_runner interval-scores JSON. Intended for investigating
+why intervals are scored the way they are.
 
 Usage:
 	source source_me.sh && python tools/inspect_score_distribution.py \\
-		<path-to-diagnostics.json>
+		<path-to-interval_scores.json>
 
 If a sibling `.agreement_debug.json` sidecar is present, extra per-frame
 correlation stats are printed too.
