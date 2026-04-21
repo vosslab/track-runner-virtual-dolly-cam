@@ -10,7 +10,7 @@ for json in tr_config/*.seeds.json; do
   fi
 
   file "$video"
-  #./track_runner/track_runner.py --debug --debug-tracks -i $video solve
-  ./track_runner/track_runner.py --debug-tracks -i $video solve
+  #./track_runner/track_runner.py --debug --debug-tracks -i $video solve --yes
+  ./track_runner/track_runner.py --debug-tracks -i $video solve --yes
   sleep 1
 done
