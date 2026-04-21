@@ -1141,9 +1141,15 @@ def solve_all_intervals(
 
 	# convert all seeds to scene coordinates up front so both the in-process
 	# solve path and the pool-worker initializer see identical precomputed
-	# scene boxes.
+	# scene boxes. not_in_frame seeds carry no cx/cy geometry (they mark
+	# frames where the runner is off-screen) and never participate in
+	# interval solving; filter them out so the loop does not KeyError on
+	# a valid but non-geometric seed. Matches the established status
+	# filter in interval_fingerprint.compute_run_fingerprint_digest().
 	all_seeds_scene = []
 	for seed in seeds:
+		if seed.get("status") == "not_in_frame":
+			continue
 		frame_index = int(seed["frame_index"])
 		cx = float(seed["cx"])
 		cy = float(seed["cy"])
