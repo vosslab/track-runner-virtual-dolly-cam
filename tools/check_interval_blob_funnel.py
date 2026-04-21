@@ -42,6 +42,10 @@ import math
 import random
 import argparse
 
+# PIP3 modules
+import cv2
+import numpy
+
 # add track_runner directory to path so we can import its modules.
 # Mirrors the pattern used by every other tool under tools/.
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
