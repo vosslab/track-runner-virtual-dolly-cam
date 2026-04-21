@@ -441,20 +441,42 @@ def _merge_debug_tracks(solved_intervals: dict, sidecar_path: str) -> None:
 
 
 #============================================
-def _load_prior_results(intervals_path: str) -> tuple:
+def _load_prior_results(intervals_path: str, diag_path: str) -> tuple:
 	"""Load previously solved intervals and build a write-through callback.
 
-	Returns the solved-intervals dict and a callback that persists new
-	entries to disk immediately after each interval is solved.
+	Geometry (fused_track) comes from `geometry_cache.npz`. Scoring
+	(interval_score) comes from `interval_scores.json`. This helper
+	merges the two so every prior interval returned carries both its
+	trajectory AND its score, matching the shape `write_solver_diagnostics`
+	expects when it later rewrites the scoring file.
+
+	Scores are matched to intervals by (start_frame, end_frame) because
+	that pair is what `interval_scores.json` stores. A prior interval
+	without a matching score entry keeps an empty `interval_score` dict
+	so downstream code still sees a real mapping; the next pass can
+	re-score it if needed.
 
 	Args:
-		intervals_path: Path to the solved-intervals JSON file.
+		intervals_path: Path to the geometry cache NPZ.
+		diag_path: Path to the interval_scores JSON.
 
 	Returns:
 		Tuple (prior_results_dict, on_interval_solved_callback).
 	"""
 	intervals_file = state_io.load_geometry_cache(intervals_path)
 	solved = intervals_file.get("solved_intervals", {})
+	# merge prior interval_score back onto each geometry entry.
+	# key on (start_frame, end_frame) because interval_scores.json does
+	# not carry fingerprints.
+	prior_scores = {}
+	if os.path.isfile(diag_path):
+		diag = state_io.load_diagnostics(diag_path)
+		for iv in diag.get("intervals", []):
+			key = (int(iv["start_frame"]), int(iv["end_frame"]))
+			prior_scores[key] = iv.get("interval_score", {})
+	for entry in solved.values():
+		key = (int(entry["start_frame"]), int(entry["end_frame"]))
+		entry["interval_score"] = prior_scores.get(key, {})
 
 	def _on_interval_solved(fingerprint: str, result: dict) -> None:
 		"""Persist a newly solved interval to disk."""
@@ -678,7 +700,7 @@ def _run_solve(
 		f"({len(usable_seeds)} usable seeds, {num_workers} workers)")
 	print("  (press Q to quit, P to pause)")
 	t_solve_start = time.time()
-	prior_ivs, on_solved_cb = _load_prior_results(intervals_path)
+	prior_ivs, on_solved_cb = _load_prior_results(intervals_path, diag_path)
 	# build solver kwargs
 	solve_kwargs = {
 		"num_workers": num_workers,
