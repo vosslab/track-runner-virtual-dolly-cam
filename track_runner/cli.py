@@ -938,8 +938,25 @@ def _mode_edit(
 		)
 		if solved_intervals:
 			intervals_list = list(solved_intervals.values())
+			# geometry cache stores no scoring fields (interval_score lives
+			# in the interval-scores JSON since WP-C2). Merge scores back
+			# onto the interval dicts by (start_frame, end_frame) so that
+			# review.classify_interval_severity can read interval_score.
+			# Missing entries get an empty dict rather than KeyError; the
+			# downstream code uses dict.get() for individual score fields.
+			fps = float(video_info["fps"])
+			scored_by_key = {}
+			if os.path.isfile(diag_path):
+				score_data = state_io.load_diagnostics(diag_path)
+				for scored_iv in score_data.get("intervals", []):
+					key = (int(scored_iv["start_frame"]),
+						int(scored_iv["end_frame"]))
+					scored_by_key[key] = scored_iv.get("interval_score", {})
+			for iv in intervals_list:
+				key = (int(iv["start_frame"]), int(iv["end_frame"]))
+				iv["interval_score"] = scored_by_key.get(key, {})
 			predictions = _build_predictions_from_diagnostics(
-				{"intervals": intervals_list}
+				{"intervals": intervals_list, "fps": fps}
 			)
 			if predictions:
 				print(f"  loaded predictions for {len(predictions)} frames (from solved intervals)")

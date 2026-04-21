@@ -190,7 +190,47 @@ class VideoWriter:
 			raise RuntimeError("VideoWriter is already closed")
 		# write raw frame bytes to ffmpeg stdin
 		raw_bytes = frame.tobytes()
-		self.process.stdin.write(raw_bytes)
+		# BrokenPipeError here means the ffmpeg subprocess already exited.
+		# The raw errno-32 error is unhelpful -- drain ffmpeg stderr so the
+		# actual cause surfaces (missing codec, bad -vf filter, wrong
+		# PATH/environment, etc.) along with a source_me.sh hint.
+		try:
+			self.process.stdin.write(raw_bytes)
+		except BrokenPipeError as exc:
+			stderr_text = self._drain_stderr_after_pipe_break()
+			returncode = self.process.returncode
+			hint = (
+				"hint: this usually means the ffmpeg subprocess died before"
+				" accepting frames. If you did not run 'source source_me.sh'"
+				" first, the wrong ffmpeg / Python / library paths may be"
+				" active -- try: source source_me.sh && python"
+				" track_runner/track_runner.py ..."
+			)
+			msg = (
+				f"ffmpeg pipe broke (returncode={returncode}).\n"
+				f"ffmpeg stderr:\n{stderr_text}\n{hint}"
+			)
+			raise RuntimeError(msg) from exc
+
+	#============================================
+	def _drain_stderr_after_pipe_break(self) -> str:
+		"""Drain ffmpeg stderr after a broken pipe so the real error shows.
+
+		Returns:
+			Decoded stderr text, or a placeholder if stderr is unavailable.
+		"""
+		if self.process is None or self.process.stderr is None:
+			return "(stderr unavailable)"
+		# wait briefly for ffmpeg to finish emitting its error message,
+		# then read whatever is buffered; never block forever on a hung child
+		try:
+			self.process.wait(timeout=2.0)
+		except subprocess.TimeoutExpired:
+			pass
+		stderr_bytes = self.process.stderr.read()
+		if not stderr_bytes:
+			return "(empty)"
+		return stderr_bytes.decode("utf-8", errors="replace").strip()
 
 	#============================================
 	def close(self) -> None:

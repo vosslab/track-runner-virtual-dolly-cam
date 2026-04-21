@@ -59,6 +59,8 @@ Full re-solve. Clears all prior results and solves every interval from scratch.
 python track_runner/track_runner.py -i VIDEO.mp4 solve
 ```
 
+Options: `-y`/`--yes` auto-confirms the "clear and re-solve from scratch?" prompt (useful in scripts).
+
 ### refine
 
 Incremental re-solve. Only re-solves changed or new intervals; reuses prior results for unchanged intervals.
@@ -141,8 +143,8 @@ on the current frame.
   release, so the overlay will ghost on panning footage. A future patch
   will load the solver's motion-track artifact.
 - The overlay is strictly read-only. Enabling it does not alter
-  trajectories, `intervals.json`, `diagnostics.json`, or any solver
-  artifact. `SOLVER_FINGERPRINT_TAG` is unchanged.
+  trajectories, the geometry cache NPZ, interval-scores JSON, or any
+  solver artifact. `SOLVER_FINGERPRINT_TAG` is unchanged.
 - The overlay renders a display-oriented view: residual magnitudes below
   the configured `threshold` (default `10.0`) are suppressed so sensor
   noise does not fog the frame. This is an intentional divergence from
@@ -156,4 +158,8 @@ The default config file is [track_runner/track_runner.config.yaml](track_runner/
 ## Input and output
 
 - **Input:** any video file readable by ffmpeg/mediainfo.
-- **Output:** cropped and stabilized video file. State data (seeds, intervals, diagnostics) is stored as JSON alongside the input video.
+- **Output:** cropped and stabilized video file. Per-video state (seeds, geometry cache, interval scores, debug tracks, camera motion) is stored in the per-video `tr_config` store; see [docs/TR_CONFIG_FILES.md](TR_CONFIG_FILES.md) for the file layout.
+
+## Keyboard shortcuts
+
+See [docs/TRACK_RUNNER_KEYBINDINGS.md](TRACK_RUNNER_KEYBINDINGS.md) for the full annotation UI keybindings reference.

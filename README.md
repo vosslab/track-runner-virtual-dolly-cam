@@ -25,6 +25,7 @@ See [docs/USAGE.md](docs/USAGE.md) for the full subcommand reference and workflo
 
 - [docs/INSTALL.md](docs/INSTALL.md): Setup steps, system dependencies, and pip requirements.
 - [docs/USAGE.md](docs/USAGE.md): Subcommand reference, global options, and typical workflow.
+- [docs/TRACK_RUNNER_KEYBINDINGS.md](docs/TRACK_RUNNER_KEYBINDINGS.md): Annotation UI keyboard shortcuts.
 - [docs/CODE_ARCHITECTURE.md](docs/CODE_ARCHITECTURE.md): Pipeline overview and module descriptions.
 - [docs/FILE_STRUCTURE.md](docs/FILE_STRUCTURE.md): Directory map with what belongs where.
 - [docs/CHANGELOG.md](docs/CHANGELOG.md): Chronological record of changes.
@@ -39,21 +40,6 @@ See [docs/USAGE.md](docs/USAGE.md) for the full subcommand reference and workflo
 ### Design archive
 
 Historical design documents, specifications, and implementation plans are in [docs/archive/](docs/archive/).
-
-## Design decisions
-
-### Cross-correlation over feature detection
-
-All camera motion estimation uses FFT-based phase correlation (`cv2.phaseCorrelate`),
-not feature detection (SIFT, ORB, etc.). Track surfaces are large uniform regions
-with few stable keypoints, so feature detectors produce sparse, unreliable matches.
-Phase correlation operates on the entire frame in frequency domain, giving robust
-sub-pixel shifts even when most of the image is featureless. It also has predictable
-runtime, a single clear quality metric, and no multi-stage detect/match/RANSAC
-pipeline to fail silently.
-
-See [docs/CODE_ARCHITECTURE.md](docs/CODE_ARCHITECTURE.md) for the full rationale
-and architectural rule.
 
 ## Testing
 

@@ -2,189 +2,268 @@
 
 ## Design principle
 
-> Analytic model for geometry, visual cues for validation and short-range correction.
+> Human establishes identity. Machine interpolates geometry.
 
-Users place seed annotations to identify who the runner is. The solver interpolates
-runner position between seeds using phase-correlation camera motion estimation and
-cubic Hermite velocity models. See [docs/archive/TRACK_RUNNER_DESIGN.md](archive/TRACK_RUNNER_DESIGN.md)
-for the original design philosophy and the plan at
-[docs/archive/TRACK_RUNNER_PLAN_07_ANALYTICAL_REFACTOR.md](archive/TRACK_RUNNER_PLAN_07_ANALYTICAL_REFACTOR.md)
-for the analytical rewrite rationale.
+Users place seed annotations to identify who the runner is at specific frames.
+The solver interpolates runner position between seeds using phase-correlation
+camera motion estimation and cubic Hermite velocity models, with optional
+per-frame residual-motion blob observations. See
+[docs/TRACK_RUNNER_CONTRACT.md](TRACK_RUNNER_CONTRACT.md) for the hard
+invariants and [docs/TRACK_RUNNER_DESIGN.md](TRACK_RUNNER_DESIGN.md) for the
+reasoning.
 
 ## Design decisions
 
 ### Cross-correlation over feature detection
 
-All camera motion estimation uses FFT-based phase correlation (`cv2.phaseCorrelate`),
-not feature detection (SIFT, ORB, etc.). This is a deliberate architectural choice.
+All camera motion estimation uses FFT-based phase correlation
+(`cv2.phaseCorrelate`), not feature detection (SIFT, ORB, etc.). This is a
+deliberate architectural choice.
 
 **Why cross-correlation wins for this problem:**
 
-- **Track video has few stable features.** A track surface is a large uniform region.
-  Feature detectors find corners and blobs, but a rubberized track has almost none.
-  Audience members, lane markings, and distant structures produce sparse, unreliable
-  keypoints that cluster in small image regions.
+- **Track video has few stable features.** A track surface is a large uniform
+  region. Feature detectors find corners and blobs, but a rubberized track has
+  almost none. Audience members, lane markings, and distant structures produce
+  sparse, unreliable keypoints that cluster in small image regions.
 - **Phase correlation uses the entire frame.** It computes a single global
-  translation (and scale) from the full image, treating every pixel as signal. This
-  makes it robust even when most of the frame is featureless track surface.
-- **Fewer failure modes.** Feature detection pipelines require: detection, description,
-  matching, outlier rejection (RANSAC), and homography estimation. Each stage can
-  fail silently. Phase correlation is a single FFT operation with a clear quality
-  metric (the correlation peak response).
-- **Predictable runtime.** Phase correlation cost depends only on frame resolution.
-  Feature detection cost depends on scene content (audience shots produce thousands
-  of keypoints; empty track produces nearly zero).
-- **Better sub-pixel accuracy.** The correlation peak is interpolated in frequency
-  domain, giving smooth sub-pixel shifts without the quantization noise of
-  keypoint localization.
+  translation (and scale) from the full image, treating every pixel as signal.
+  This makes it robust even when most of the frame is featureless track surface.
+- **Fewer failure modes.** Feature detection pipelines require: detection,
+  description, matching, outlier rejection (RANSAC), and homography
+  estimation. Each stage can fail silently. Phase correlation is a single FFT
+  operation with a clear quality metric (the correlation peak response).
+- **Predictable runtime.** Phase correlation cost depends only on frame
+  resolution. Feature detection cost depends on scene content (audience shots
+  produce thousands of keypoints; empty track produces nearly zero).
+- **Better sub-pixel accuracy.** The correlation peak is interpolated in
+  frequency domain, giving smooth sub-pixel shifts without the quantization
+  noise of keypoint localization.
 
 **Where this applies in the codebase:**
 
-- `camera_motion.py` -- all three estimators (`FixedZoomEstimator`,
-  `DiscreteZoomEstimator`, `ContinuousZoomEstimator`) use `cv2.phaseCorrelate`
-- `tools/diagnose_residual_motion.py` -- camera compensation for the motion
-  diagnostic uses the same phase-correlation motion estimates via `SceneTransform`
-- The legacy solver's Lucas-Kanade optical flow (`propagator.py`) is a sparse
-  feature tracker and is intentionally being replaced by the analytical path
+- [track_runner/camera_motion.py](../track_runner/camera_motion.py) -- all
+  three estimators (`FixedZoomEstimator`, `DiscreteZoomEstimator`,
+  `ContinuousZoomEstimator`) use `cv2.phaseCorrelate`.
+- [tools/diagnose_residual_motion.py](../tools/diagnose_residual_motion.py)
+  -- camera compensation for the motion diagnostic uses the same
+  phase-correlation motion estimates via `SceneTransform`.
 
 **Rule:** Do not introduce feature-detection-based camera motion estimation
-(SIFT, ORB, AKAZE, or similar) without first demonstrating it outperforms phase
-correlation on actual track video. The burden of proof is on the new method.
-
-## Solver backends
-
-The tool supports two solver backends selected by `processing.solver_backend` in config:
-
-- `scene_interp` (default) -- analytical solver. Pre-computes camera motion via
-  phase correlation, converts seeds to scene coordinates, fits directionally
-  asymmetric Hermite curves for FWD/BWD propagation. No optical flow or detection
-  during solve.
-- `legacy_interval` -- original optical-flow solver. Uses Lucas-Kanade flow,
-  patch correlation, and YOLO person detection. Kept for rollback.
+(SIFT, ORB, AKAZE, or similar) without first demonstrating it outperforms
+phase correlation on actual track video. The burden of proof is on the new
+method.
 
 ## Pipeline overview
 
 ```
-setup --> seed --> solve --> crop trajectory --> encode
-  ^          ^         |
-  |          |         v
-  |          +--- refine (incremental re-solve)
+setup --> seed --> solve --> refine --> encode
+  ^          ^         |         |
+  |          |         v         v
+  |          +----- interval scoring and review
   +--- camera config questionnaire (one-time)
 ```
 
-1. **Setup** -- interactive CLI questionnaire collects camera properties (zoom type,
-   height, position, track size). Stored in per-video config YAML.
-2. **Seeding** -- user places bounding box annotations on key frames via PySide6 GUI.
+1. **Setup** -- interactive CLI questionnaire collects camera properties
+   (zoom type, height, position, track size). Stored in per-video config YAML.
+2. **Seeding** -- user places bounding-box annotations on key frames via a
+   PySide6 GUI. Seeds are the truth anchors for solve (contract C4).
 3. **Interval solving** -- each pair of adjacent seeds defines an interval.
-   - `scene_interp`: camera motion pre-computed for whole video, runner position
-     interpolated analytically between seeds using directionally asymmetric
-     FWD/BWD Hermite curves. Disagreement between directions signals uncertainty.
-   - `legacy_interval`: optical flow frame-by-frame tracking with YOLO detection.
-4. **Crop trajectory** -- adaptive smoothing with exponential filtering, deadband,
-   and velocity capping produces a stable crop path.
-5. **Encoding** -- ffmpeg-based encoding with optional filter pipeline.
+   Camera motion is pre-computed for the whole video; runner position is
+   interpolated analytically between seeds using directionally asymmetric
+   FWD/BWD cubic Hermite curves. Per-frame residual-motion blob observations
+   may snap the prediction locally when proximity, direction, and temporal
+   smoothness gates all pass (see
+   [docs/FWD_BWD_MODEL_METHODOLOGY.md](FWD_BWD_MODEL_METHODOLOGY.md) and
+   [docs/RESIDUAL_MOTION_OBSERVATIONS.md](RESIDUAL_MOTION_OBSERVATIONS.md)).
+   Intervals are independent (contract C3) and solved in parallel workers.
+4. **Refine** -- incremental re-solve of only affected intervals when seeds
+   change.
+5. **Encoding** -- `tr_crop.py` builds an adaptive crop trajectory with
+   exponential smoothing, deadband, and velocity capping; `encoder.py`
+   drives ffmpeg to produce the final cropped video with optional filters.
 
 ## Module map
 
-### CLI layer
+### CLI and orchestration
 
-- `cli.py` -- main entry point, subcommand dispatch, solver backend selection.
-- `cli_args.py` -- argparse configuration for all subcommands (seed, edit, target,
-  solve, refine, encode, analyze, setup).
-- `setup_mode.py` -- interactive camera configuration questionnaire.
+- [track_runner/track_runner.py](../track_runner/track_runner.py) -- entry
+  point shim.
+- [track_runner/cli.py](../track_runner/cli.py) -- subcommand dispatch, solve
+  and refine orchestration, diagnostics writers.
+- [track_runner/cli_args.py](../track_runner/cli_args.py) -- argparse
+  configuration for all subcommands (`seed`, `edit`, `target`, `solve`,
+  `refine`, `encode`, `analyze`, `setup`).
+- [track_runner/setup_mode.py](../track_runner/setup_mode.py) -- interactive
+  camera configuration questionnaire.
 
-### Analytical solver (scene_interp backend)
+### Analytical solver
 
-- `camera_motion.py` -- `MotionTrack` dataclass, `MotionEstimator` interface,
-  three estimators (`FixedZoomEstimator`, `DiscreteZoomEstimator`,
-  `ContinuousZoomEstimator`), NPZ caching.
-- `scene_coords.py` -- `SceneTransform` class for pixel-to-scene coordinate
-  conversion using accumulated camera motion.
-- `velocity_model.py` -- directional slope estimation, cubic Hermite interpolation,
-  PCHIP log-space size interpolation, stationary lock, FWD/BWD analytical propagation.
+- [track_runner/camera_motion.py](../track_runner/camera_motion.py) --
+  `MotionTrack` dataclass, `MotionEstimator` interface, three estimators,
+  NPZ caching with identity metadata.
+- [track_runner/scene_coords.py](../track_runner/scene_coords.py) --
+  `SceneTransform` for pixel-to-scene coordinate conversion using
+  accumulated camera motion.
+- [track_runner/velocity_model.py](../track_runner/velocity_model.py) --
+  directional slope estimation, cubic Hermite interpolation, PCHIP log-space
+  size interpolation, stationary lock, FWD/BWD analytical propagation with
+  optional residual-blob snap gates.
+- [track_runner/residual_motion.py](../track_runner/residual_motion.py) --
+  per-frame residual-motion cue map, ROI extraction, corridor filter,
+  `observe_blob_at`.
+- [track_runner/residual_heat_map.py](../track_runner/residual_heat_map.py)
+  -- residual heat-map generation for overlays and diagnostics.
+- [track_runner/interval_solver.py](../track_runner/interval_solver.py) --
+  `solve_interval_analytical()`, interval merging, trajectory stitching.
+- [track_runner/solve_queue.py](../track_runner/solve_queue.py) -- driver
+  for solve and refine: seed filtering, fingerprint walk, cache-hit
+  partition, pool dispatch, result aggregation. Shared by solve and refine
+  call sites.
+- [track_runner/solver_workers.py](../track_runner/solver_workers.py) --
+  worker-process state and per-worker `VideoReader`; workers return pure
+  interval results with no I/O.
+- [track_runner/interval_fingerprint.py](../track_runner/interval_fingerprint.py)
+  -- per-interval cache-key fingerprinting.
 
-### Core pipeline
+### Scoring, review, and regime
 
-- `seeding.py` -- seed frame collection logic.
-- `interval_solver.py` -- `solve_interval_analytical()` (scene_interp) and
-  `solve_interval()` (legacy) paths, interval merging, trajectory stitching.
-- `propagator.py` -- frame-to-frame tracking wrapper. Delegates to velocity_model
-  when scene_transform is provided, otherwise uses legacy optical flow.
-- `tr_crop.py` -- adaptive crop rectangle computation with smoothing.
-- `encoder.py` -- video encoding with optional filter pipeline.
+- [track_runner/scoring.py](../track_runner/scoring.py) -- interval scoring
+  (agreement, velocity consistency, size consistency, motion quality,
+  occlusion fraction). Sole owner of score data on disk.
+- [track_runner/review.py](../track_runner/review.py) -- interval quality
+  assessment, severity classification, seed suggestions.
+- [track_runner/regime_classifier.py](../track_runner/regime_classifier.py)
+  -- motion regime classification (straight, curve, stationary).
+- [track_runner/regime_policies.py](../track_runner/regime_policies.py) --
+  per-regime parameter policies.
+- [track_runner/race_phases.py](../track_runner/race_phases.py) -- race
+  phase logic (pre-race, race, post-race) referenced by contract C2.
 
-### Scoring and review
+### Crop, encode, and analysis
 
-- `scoring.py` -- `score_interval_analytical()` (v3: agreement, velocity_consistency,
-  size_consistency, motion_quality, occlusion_fraction) and legacy `score_interval()`
-  (v2: agreement, identity, competitor margin).
-- `review.py` -- interval quality assessment, severity classification, seed
-  suggestions. Reads confidence_tier (v3) or confidence (v2) via `_get_confidence()`.
-- `regime_classifier.py` -- motion regime classification (straight, curve, stationary).
-- `regime_policies.py` -- per-regime parameter policies.
+- [track_runner/tr_crop.py](../track_runner/tr_crop.py) -- adaptive crop
+  rectangle computation with smoothing, deadband, and velocity capping.
+- [track_runner/encoder.py](../track_runner/encoder.py) -- ffmpeg-based
+  encoding with optional filter pipeline.
+- [track_runner/encode_analysis.py](../track_runner/encode_analysis.py) --
+  post-encode quality analysis and reporting.
+- [track_runner/video_io.py](../track_runner/video_io.py) -- `VideoReader`
+  and frame decode utilities.
 
-### Detection (legacy/subordinate)
+### Detection and annotation support
 
-- `tr_detection.py` -- YOLOv8n person detection. Not used in scene_interp solve
-  path. Kept for future subordinate visual validation roles.
-- `hypothesis.py` -- stub. Competitor tracking removed in analytical rewrite.
-- `seed_color.py` -- jersey color extraction.
-- `box_utils.py` -- bounding box utilities.
+- [track_runner/tr_detection.py](../track_runner/tr_detection.py) -- YOLOv8n
+  person detection, available for optional seeding assistance. Not an
+  active tracking signal in the analytical solver (contract C6 bans
+  appearance-based identity evidence).
+- [track_runner/seed_color.py](../track_runner/seed_color.py) -- jersey
+  color extraction helpers. Banned as identity evidence per C6; kept for
+  non-identity uses only.
+- [track_runner/box_utils.py](../track_runner/box_utils.py) -- bounding box
+  utilities.
+- [track_runner/seeding.py](../track_runner/seeding.py) -- seed frame
+  collection logic.
+- [track_runner/seed_editor.py](../track_runner/seed_editor.py) -- seed
+  edit logic.
 
 ### State and config
 
-- `state_io.py` -- JSON serialization for seeds, intervals, and diagnostics.
-  Diagnostics v3 stores nested `interval_score_v2` for analytical mode.
-- `tr_config.py` -- YAML config parsing with camera section and solver_backend.
-- `tr_paths.py` -- path utilities for state, output, and motion cache files.
-- `tr_video_identity.py` -- video file identity tracking (hash-based).
+- [track_runner/state_io.py](../track_runner/state_io.py) -- seed, geometry
+  cache, interval-scores, debug-tracks, and camera-motion serialization.
+  Format rule: dense per-frame numeric series to NPZ, human-authored and
+  interval-level summary records to JSON. See
+  [docs/TR_CONFIG_FILES.md](TR_CONFIG_FILES.md).
+- [track_runner/tr_config.py](../track_runner/tr_config.py) -- YAML config
+  parsing, auto-migration of legacy keys.
+- [track_runner/tr_paths.py](../track_runner/tr_paths.py) -- per-video
+  state and output path helpers.
+- [track_runner/tr_video_identity.py](../track_runner/tr_video_identity.py)
+  -- video file identity (hash-based) for cache invalidation.
+- [track_runner/overlay_config.py](../track_runner/overlay_config.py) --
+  overlay style loader, backed by
+  [track_runner/overlay_styles.yaml](../track_runner/overlay_styles.yaml).
+- [track_runner/track_runner.config.yaml](../track_runner/track_runner.config.yaml)
+  -- default runtime config (camera, detection, processing sections).
 
 ### UI (PySide6)
 
-All UI modules are in `track_runner/ui/`:
+All UI modules live in [track_runner/ui/](../track_runner/ui/):
 
-- `app_shell.py` -- main window with dark/light theme management.
+- `app_shell.py` -- main window and dark/light theme management.
 - `base_controller.py` -- shared annotation controller base class.
 - `seed_controller.py` -- seed placement interface.
 - `edit_controller.py` -- seed editing interface.
-- `target_controller.py` -- weak interval targeting interface.
+- `target_controller.py` -- weak-interval targeting interface.
 - `frame_view.py` -- frame display widget.
 - `workspace.py` -- multi-frame workspace.
 - `overlay_items.py` -- visual overlays (bounding boxes, lines).
+- `heat_map_overlay.py` -- residual heat-map overlay.
 - `status_presenter.py` -- status bar display.
 - `zoom_controls.py` -- zoom interface.
 - `actions.py` -- UI action handlers.
 - `theme.py` -- dark/light theme definitions.
-
-### Analysis and encoding
-
-- `encode_analysis.py` -- encoding quality analysis. Reports analytical metrics
-  (velocity_consistency, size_consistency, motion_quality) or legacy metrics
-  (convergence, identity, competitor margin) depending on solver mode.
-- `video_io.py` -- video I/O utilities.
-- `key_input.py` -- keyboard input handling.
+- `key_input.py` (in package root) -- keyboard input handling.
 
 ### Shared utilities
 
-- `common_tools/frame_filters.py` -- frame filtering utilities.
-- `common_tools/frame_reader.py` -- frame reading utilities.
-- `common_tools/tools_common.py` -- shared tool helpers.
+- [common_tools/frame_filters.py](../common_tools/frame_filters.py) --
+  frame filtering utilities used by both `track_runner/` and `tools/`.
+- [common_tools/frame_reader.py](../common_tools/frame_reader.py) -- frame
+  reading utilities.
+- [common_tools/tools_common.py](../common_tools/tools_common.py) -- shared
+  helpers.
 
-### Configuration files
+## Per-video state files
 
-- `track_runner/track_runner.config.yaml` -- default runtime config (includes
-  camera section, solver_backend, detection, processing).
-- `track_runner/overlay_styles.yaml` -- visualization overlay styles.
+Per the Format rule in [docs/TR_CONFIG_FILES.md](TR_CONFIG_FILES.md):
 
-## Diagnostics schema
+- Seeds (human-authored): JSON, canonical four-field schema.
+- Geometry cache (dense per-frame arrays): NPZ manifest plus indexed float32
+  arrays.
+- Interval scores: JSON, sole owner of score data.
+- Debug tracks: NPZ, eight float32 arrays per interval.
+- Camera motion: NPZ, per-model schema plus cache-identity metadata, one
+  file per video, overwritten on hash mismatch.
 
-Two versions coexist:
+Legacy filenames (`intervals.json`, `diagnostics.json`) are no longer
+produced; migration is handled by a one-shot script.
 
-- **v2 (legacy)** -- flat fields: `agreement_score`, `identity_score`,
-  `competitor_margin`, `confidence`. Written by legacy solver.
-- **v3 (analytical)** -- nested `interval_score` dict with: `agreement`,
-  `velocity_consistency`, `size_consistency`, `motion_quality`,
-  `occlusion_fraction`, `confidence_tier`, `severity`, `failure_reasons`,
-  `warning_flags`. Written by analytical solver.
+## Testing and verification
 
-Seeds JSON format is unchanged across both versions.
+- Repo-wide lint and style gates:
+  [tests/test_pyflakes_code_lint.py](../tests/test_pyflakes_code_lint.py),
+  [tests/test_ascii_compliance.py](../tests/test_ascii_compliance.py),
+  [tests/test_indentation.py](../tests/test_indentation.py),
+  [tests/test_import_dot.py](../tests/test_import_dot.py),
+  [tests/test_import_star.py](../tests/test_import_star.py),
+  [tests/test_import_requirements.py](../tests/test_import_requirements.py),
+  [tests/test_init_files.py](../tests/test_init_files.py),
+  [tests/test_shebangs.py](../tests/test_shebangs.py),
+  [tests/test_whitespace.py](../tests/test_whitespace.py),
+  [tests/test_bandit_security.py](../tests/test_bandit_security.py).
+- Unit and integration tests cover camera motion, scene coords, velocity
+  model, scoring, review, seed schema, geometry cache schema, blob snap,
+  residual heat map, solver integration, and solver parallelism.
+- Run with `source source_me.sh && python -m pytest tests/ -q`.
+
+## Extension points
+
+- New camera-motion estimator: add a class in
+  [track_runner/camera_motion.py](../track_runner/camera_motion.py)
+  implementing the `MotionEstimator` interface and wire it into the motion
+  section of the default config.
+- New scoring term: extend
+  [track_runner/scoring.py](../track_runner/scoring.py); keep the on-disk
+  schema documented in [docs/TR_CONFIG_FILES.md](TR_CONFIG_FILES.md) in
+  sync.
+- New UI tool: add a controller under
+  [track_runner/ui/](../track_runner/ui/) following the
+  `base_controller.py` pattern.
+
+## Known gaps
+
+- Inter-interval smoothing (noted in
+  [docs/TRACK_RUNNER_CONTRACT.md](TRACK_RUNNER_CONTRACT.md) C3 as a
+  possible future pass layered on top of solve and refine) is not
+  implemented.

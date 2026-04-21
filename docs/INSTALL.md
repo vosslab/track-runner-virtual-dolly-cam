@@ -33,17 +33,21 @@ For development tools (pytest, pyflakes, bandit):
 pip3 install -r pip_requirements-dev.txt
 ```
 
-## YOLO weights (one-time setup)
+## YOLO weights (optional)
 
-The person detector uses a YOLOv8n ONNX model loaded through OpenCV DNN. The model file is cached at `~/.cache/track_runner/yolov8n.onnx`. To create it:
+The optional person detector in [track_runner/tr_detection.py](../track_runner/tr_detection.py) uses a YOLOv8n ONNX model loaded through OpenCV DNN. Detection is not an active tracking signal in the analytical solver (see [docs/TRACK_RUNNER_CONTRACT.md](TRACK_RUNNER_CONTRACT.md) C6); it is only used for optional seeding assistance.
+
+When needed, the detector expects the model at `~/.cache/track_runner/yolov8n.onnx`. Export it once from the upstream ultralytics package:
 
 ```bash
 pip3 install ultralytics
-python3 tools/export_yolo_onnx.py
+python3 -c "from ultralytics import YOLO; YOLO('yolov8n.pt').export(format='onnx')"
+mkdir -p ~/.cache/track_runner
+mv yolov8n.onnx ~/.cache/track_runner/
 pip3 uninstall ultralytics
 ```
 
-The `ultralytics` package is only needed for the one-time export. It is not a runtime dependency.
+The `ultralytics` package is only needed for the one-time export. It is not a runtime dependency and is not listed in [pip_requirements.txt](../pip_requirements.txt).
 
 ## Bootstrap
 
