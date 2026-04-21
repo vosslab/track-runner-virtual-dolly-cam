@@ -136,6 +136,15 @@ def parse_args() -> argparse.Namespace:
 		help="Enable debug video output with tracking overlays.",
 	)
 	parser.add_argument(
+		"--debug-tracks", dest="debug_tracks", action="store_true",
+		help=(
+			"When solving, also write a sidecar "
+			"<video>.track_runner.debug_tracks.npz carrying "
+			"forward/backward propagation tracks. Required input for "
+			"the FWD/BWD debug overlay in encode/analyze modes."
+		),
+	)
+	parser.add_argument(
 		"-w", "--workers", dest="workers", type=int, default=None,
 		help="Number of parallel workers (default: half of CPU cores).",
 	)
@@ -150,6 +159,7 @@ def parse_args() -> argparse.Namespace:
 	)
 	parser.set_defaults(
 		debug=False,
+		debug_tracks=False,
 	)
 
 	subparsers = parser.add_subparsers(dest="mode")

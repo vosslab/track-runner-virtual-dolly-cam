@@ -164,9 +164,9 @@ def probe_video(video_path: str) -> dict:
 def load_trajectory(video_name: str, data_dir: str, video_info: dict) -> tuple:
 	"""Load and reconstruct trajectory for a video."""
 	prefix = os.path.join(data_dir, video_name + ".track_runner")
-	intervals_path = prefix + ".intervals.json"
+	intervals_path = prefix + ".geometry_cache.npz"
 	seeds_path = prefix + ".seeds.json"
-	intervals_file = state_io.load_intervals(intervals_path)
+	intervals_file = state_io.load_geometry_cache(intervals_path)
 	solved = intervals_file.get("solved_intervals", {})
 	interval_results = sorted(
 		solved.values(), key=lambda r: int(r["start_frame"]),

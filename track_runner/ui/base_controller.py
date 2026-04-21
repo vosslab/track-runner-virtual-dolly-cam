@@ -6,8 +6,6 @@ scale bar, and activation lifecycle.
 """
 
 # Standard Library
-import glob
-import os
 import time
 
 # PIP3 modules
@@ -906,11 +904,12 @@ class BaseAnnotationController(QObject):
 	def _load_scene_transform_for_gui(self) -> tuple:
 		"""Find and load the solver's cached motion track for the heat map.
 
-		Mirrors the glob-based lookup in tools/diagnose_residual_motion.py:
-		cache files are named {basename}_*.npz under tr_paths.DATA_DIR.
-		If any cache file loads successfully it becomes the basis for a
-		real SceneTransform; otherwise we return an identity transform so
-		the GUI still opens on fresh videos.
+		The cache lives at
+		`<video>.track_runner.camera_motion.npz`, resolved via
+		tr_paths.default_motion_cache_path. If the file loads
+		successfully it becomes the basis for a real SceneTransform;
+		otherwise we return an identity transform so the GUI still
+		opens on fresh videos.
 
 		Returns:
 			Tuple (scene_transform, available: bool). available is True
@@ -921,12 +920,8 @@ class BaseAnnotationController(QObject):
 		motion_track = None
 		video_path = getattr(self._reader, "video_path", None)
 		if video_path is not None:
-			basename = os.path.basename(video_path)
-			cache_pattern = os.path.join(tr_paths.DATA_DIR, f"{basename}_*.npz")
-			for candidate in sorted(glob.glob(cache_pattern)):
-				motion_track = camera_motion.load_motion_cache(candidate)
-				if motion_track is not None:
-					break
+			cache_path = tr_paths.default_motion_cache_path(video_path)
+			motion_track = camera_motion.load_motion_cache(cache_path)
 		if motion_track is not None:
 			transform = scene_coords.SceneTransform(motion_track)
 			return (transform, True)
@@ -936,7 +931,6 @@ class BaseAnnotationController(QObject):
 			dy=numpy.zeros(n_frames, dtype=numpy.float32),
 			scale=numpy.ones(n_frames, dtype=numpy.float32),
 			quality=numpy.ones(n_frames, dtype=numpy.float32),
-			event_flags=numpy.zeros(n_frames, dtype=numpy.int32),
 		)
 		transform = scene_coords.SceneTransform(identity_motion)
 		return (transform, False)

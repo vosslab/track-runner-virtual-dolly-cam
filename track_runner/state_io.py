@@ -1,9 +1,21 @@
 """state_io.py
 
-JSON read/write for track_runner seeds and diagnostics files.
+Read/write for track_runner per-video state files.
 
-Seeds files store human and computed seed points for runner tracking.
-Diagnostics files store interval and trajectory data for debugging.
+Seeds files (JSON) store human-authored annotations. Under contract C7
+a seed is a torso box drawn by a human. The canonical on-disk shape
+(v3) is four fields per seed: frame_index, torso_box, status, pass.
+Convenience geometry (cx/cy/w/h) is derived in memory from torso_box
+at load time and discarded at write time; it never appears on disk.
+
+Geometry-cache files (NPZ) store the solved per-frame fused trajectory
+under the format rule "dense per-frame numeric series -> NPZ". Per
+interval, four float32 arrays (cx/cy/w/h) plus a small JSON manifest
+mapping fingerprint to array_index. No scoring content.
+
+Interval-scores files (JSON) are the sole owner of per-interval
+scoring and review summary data (agreement, confidence tier, race
+phase, cyclical prior). No per-frame trajectory.
 """
 
 # Standard Library
@@ -11,26 +23,72 @@ import json
 import os
 import tempfile
 
+# PIP3 modules
+import numpy
+
 #============================================
 
 # header key and version for seeds JSON files
+# v3: canonical four-field schema (frame_index, torso_box, status, pass)
+# v2: legacy with cx/cy/w/h, mode, conf, source, jersey_hsv, histogram, etc.
+# Loader accepts both; writer emits v3 only.
 SEEDS_HEADER_KEY = "track_runner_seeds"
-SEEDS_HEADER_VALUE = 2
+SEEDS_HEADER_VALUE = 3
+# Accepted on load, migrated to v3 on write
+SEEDS_ACCEPTED_HEADERS = frozenset({2, 3})
 
 # header key and version for diagnostics JSON files
 DIAGNOSTICS_HEADER_KEY = "track_runner_diagnostics"
 DIAGNOSTICS_HEADER_VALUE = 3
 
-# header key and version for solved-intervals JSON files
+# header key and version for geometry cache (kept on in-memory dicts
+# for compatibility with existing call sites; not a JSON on-disk
+# header -- the NPZ file carries `schema_version` as its own key).
+# v1 = legacy JSON intervals.json (no longer written). v2 = NPZ
+# geometry_cache.npz (current).
 INTERVALS_HEADER_KEY = "track_runner_intervals"
-INTERVALS_HEADER_VALUE = 1
+INTERVALS_HEADER_VALUE = 2
+
+# NPZ schema version key for geometry_cache.npz files
+GEOMETRY_CACHE_SCHEMA_VERSION = 2
 
 # valid mode values for seed entries
+# Retained for VALID_SEED_MODES import compatibility even though `mode` is
+# no longer a canonical on-disk field. Kept so tools that reference the
+# frozenset (e.g. validation in older scripts) don't break.
 VALID_SEED_MODES = frozenset(
 	["initial", "suggested_refine", "interval_refine", "gap_refine",
 	"edit_redraw", "solve_refine", "interactive_refine", "bbox_polish",
 	"target_refine"]
 )
+
+# canonical on-disk allow-list for v3 seeds.
+# Writer emits ONLY these keys. Loader tolerates extras in memory (for
+# forward compatibility with future fields) but the writer drops them,
+# so unknown keys never survive a round-trip to disk.
+CANONICAL_SEED_KEYS = frozenset(
+	["frame_index", "torso_box", "status", "pass"]
+)
+
+# legacy fields stripped at load time (dead on contract C6 or derivable).
+# histogram/jersey_hsv: banned by contract C6 (runner appearance not reliable)
+# frame: duplicate of frame_index
+# time_s: derivable from frame_index / fps
+# cx/cy/w/h: derived from torso_box (re-derived in memory, never stored)
+# mode: workflow provenance with no solver branches
+# conf: derivable from status (visible/partial -> 1.0, approximate -> 0.3)
+# source: always "human" under contract C7; legacy "propagated" rows are
+#         dropped entirely by the migration tool before state_io ever sees them
+LEGACY_SEED_STRIP_KEYS = frozenset(
+	["histogram", "jersey_hsv", "frame", "time_s",
+	"cx", "cy", "w", "h", "mode", "conf", "source"]
+)
+
+# derived-in-memory keys added by _derive_seed_geometry after load.
+# These are NOT on disk but are needed by interval_fingerprint,
+# velocity_model._compare_seed_positions, and UI code that reads cx/cy/w/h.
+# write_seeds strips them back out before serializing.
+DERIVED_SEED_KEYS = frozenset(["cx", "cy", "w", "h"])
 
 # flag to avoid repeating legacy obstructed-seed warnings on every save
 _WARNED_LEGACY_OBSTRUCTED = False
@@ -41,6 +99,50 @@ def _set_warned_legacy() -> None:
 	"""Set the warned flag so legacy obstructed warnings print only once."""
 	global _WARNED_LEGACY_OBSTRUCTED
 	_WARNED_LEGACY_OBSTRUCTED = True
+
+#============================================
+
+def _strip_legacy_seed_fields(seed: dict) -> None:
+	"""Remove banned and derivable fields from a seed dict in place.
+
+	Strips every key in LEGACY_SEED_STRIP_KEYS. Called by load_seeds so
+	downstream code never sees cx/cy/w/h from disk; _derive_seed_geometry
+	adds them back from torso_box in memory.
+
+	Args:
+		seed: Seed dict mutated in place.
+	"""
+	for key in LEGACY_SEED_STRIP_KEYS:
+		# discard each legacy key if present
+		if key in seed:
+			del seed[key]
+
+
+#============================================
+
+def _derive_seed_geometry(seed: dict) -> None:
+	"""Derive cx/cy/w/h from torso_box and attach in memory.
+
+	Called after _strip_legacy_seed_fields so downstream consumers
+	(interval_fingerprint, velocity_model, UI) see the geometry keys
+	they expect. Never stored; write_seeds strips them again.
+
+	Skips seeds with no torso_box (e.g. not_in_frame seeds).
+
+	Args:
+		seed: Seed dict mutated in place.
+	"""
+	box = seed.get("torso_box")
+	# not_in_frame and approximate-without-box seeds carry no geometry
+	if box is None:
+		return
+	# torso_box is [x, y, w, h] ints; centers can be half-pixel
+	tx, ty, tw, th = box
+	seed["cx"] = float(tx) + float(tw) / 2.0
+	seed["cy"] = float(ty) + float(th) / 2.0
+	seed["w"] = float(tw)
+	seed["h"] = float(th)
+
 
 #============================================
 
@@ -69,7 +171,18 @@ def validate_seed(seed: dict) -> int | None:
 #============================================
 
 def load_seeds(path: str) -> dict:
-	"""Load a seeds JSON file and validate the header.
+	"""Load a seeds JSON file and normalize to the in-memory v3 shape.
+
+	Accepts headers 2 (legacy) and 3 (canonical). Regardless of on-disk
+	header, the returned in-memory dict:
+
+	- Strips banned and derivable fields (histogram, jersey_hsv, frame,
+	  time_s, cx, cy, w, h, mode, conf, source) from each seed.
+	- Re-derives cx/cy/w/h from torso_box so interval_fingerprint,
+	  velocity_model, and UI code see the geometry they expect.
+	- Migrates legacy "obstructed" seeds: keep as "approximate" if a
+	  torso_box is present; drop otherwise (no position data).
+	- Sorts seeds by frame_index.
 
 	Returns an empty seeds structure if the file does not exist.
 
@@ -77,10 +190,10 @@ def load_seeds(path: str) -> dict:
 		path: Path to the seeds JSON file.
 
 	Returns:
-		dict: Parsed seeds data with validated header, or empty structure.
+		dict: In-memory seeds data with derived geometry attached.
 
 	Raises:
-		RuntimeError: If the file exists but header version is wrong.
+		RuntimeError: If the file exists but header version is not accepted.
 	"""
 	# return empty structure if file does not exist
 	if not os.path.isfile(path):
@@ -89,23 +202,20 @@ def load_seeds(path: str) -> dict:
 		data = json.load(fh)
 	if not isinstance(data, dict):
 		raise RuntimeError(f"seeds file did not parse as a mapping: {path}")
-	# validate the header key and version
+	# validate the header key and version (accept v2 legacy or v3 canonical)
 	header_val = data.get(SEEDS_HEADER_KEY)
-	if header_val != SEEDS_HEADER_VALUE:
+	if header_val not in SEEDS_ACCEPTED_HEADERS:
+		accepted = sorted(SEEDS_ACCEPTED_HEADERS)
 		raise RuntimeError(
 			f"seeds file header mismatch in {path}: "
-			f"expected {SEEDS_HEADER_KEY}={SEEDS_HEADER_VALUE}, got {header_val}"
+			f"expected {SEEDS_HEADER_KEY} in {accepted}, got {header_val}"
 		)
-	# backfill "conf" for seeds created before field was added
-	# migrate legacy "obstructed" with torso_box to "approximate"
-	# drop legacy "obstructed" without torso_box (unusable, no position data)
 	if "seeds" in data and isinstance(data["seeds"], list):
 		cleaned = []
 		dropped_count = 0
 		for seed in data["seeds"]:
-			if "conf" not in seed:
-				seed["conf"] = None
 			status = seed.get("status")
+			# migrate legacy "obstructed" (from pre-v3 files)
 			if status == "obstructed":
 				if seed.get("torso_box") is not None:
 					# has approx area, migrate to "approximate"
@@ -114,6 +224,11 @@ def load_seeds(path: str) -> dict:
 					# legacy obstructed without position data, drop it
 					dropped_count += 1
 					continue
+			# strip banned and derivable fields (belt-and-suspenders even
+			# on v3 files, so residue from a buggy writer gets cleaned)
+			_strip_legacy_seed_fields(seed)
+			# re-derive cx/cy/w/h from torso_box for downstream consumers
+			_derive_seed_geometry(seed)
 			cleaned.append(seed)
 		if dropped_count > 0:
 			print(f"  dropped {dropped_count} legacy obstructed seed(s) "
@@ -128,18 +243,42 @@ def load_seeds(path: str) -> dict:
 
 #============================================
 
+def _canonicalize_seed_for_write(seed: dict) -> dict:
+	"""Return a new seed dict containing only canonical allow-list keys.
+
+	Read-tolerant, write-strict: the caller's in-memory dict may carry
+	derived geometry (cx/cy/w/h) or other extras; the on-disk record
+	is exactly CANONICAL_SEED_KEYS.
+
+	Args:
+		seed: In-memory seed dict.
+
+	Returns:
+		dict: New dict with only canonical keys present.
+	"""
+	canonical = {}
+	for key in CANONICAL_SEED_KEYS:
+		# omit torso_box cleanly when the seed has none (not_in_frame)
+		if key == "torso_box" and seed.get("torso_box") is None:
+			continue
+		if key in seed:
+			canonical[key] = seed[key]
+	return canonical
+
+
+#============================================
+
 def write_seeds(path: str, seeds_data: dict) -> None:
 	"""Write seeds data to a JSON file with atomic write semantics.
 
-	Ensures the required header key is present before writing and validates
-	all seeds. Uses atomic rename to prevent data corruption.
+	Emits v3 canonical shape: each seed contains only frame_index,
+	torso_box (when present), status, pass. Derived geometry
+	(cx/cy/w/h) and any unknown keys in the in-memory dict are
+	discarded at write time so the on-disk record stays canonical.
 
 	Args:
 		path: Output file path.
 		seeds_data: Seeds dictionary to write (must include 'seeds' list).
-
-	Raises:
-		ValueError: If any seed fails validation.
 	"""
 	# validate all seeds before writing; collect legacy warnings
 	if "seeds" in seeds_data and isinstance(seeds_data["seeds"], list):
@@ -153,12 +292,15 @@ def write_seeds(path: str, seeds_data: dict) -> None:
 			print(f"  warning: {len(bad_frames)} approx seed(s) missing "
 				f"torso_box (use 'a' key to fix): frames {bad_frames}")
 
-	# ensure header version is set correctly before writing
+	# force header to v3; this is the canonical writer
 	seeds_data[SEEDS_HEADER_KEY] = SEEDS_HEADER_VALUE
-	# sort seeds by frame_index for human-readable output
+	# strip each seed to canonical keys only, then sort by frame_index
 	if "seeds" in seeds_data and isinstance(seeds_data["seeds"], list):
+		canonical_seeds = [
+			_canonicalize_seed_for_write(s) for s in seeds_data["seeds"]
+		]
 		seeds_data["seeds"] = sorted(
-			seeds_data["seeds"],
+			canonical_seeds,
 			key=lambda s: int(s["frame_index"]),
 		)
 
@@ -180,18 +322,28 @@ def write_seeds(path: str, seeds_data: dict) -> None:
 #============================================
 
 def load_diagnostics(path: str) -> dict:
-	"""Load a diagnostics JSON file and validate the header.
+	"""Load an interval-scores JSON file (formerly diagnostics.json).
 
-	Returns an empty diagnostics structure if the file does not exist.
+	Sole owner of per-interval scoring data plus optional race-phase
+	and cyclical-prior context. The file has been renamed from
+	`.diagnostics.json` to `.interval_scores.json` to match its
+	responsibility; this loader accepts either filename via the caller.
+	Function name is retained for callsite compatibility.
+
+	Returns an empty structure if the file does not exist. Accepts
+	legacy header values `2` and `3` and returns a v3-shaped dict.
 
 	Args:
-		path: Path to the diagnostics JSON file.
+		path: Path to the interval_scores.json (or legacy
+			diagnostics.json) file.
 
 	Returns:
-		dict: Parsed diagnostics data with validated header, or empty structure.
+		dict: Parsed scoring data with validated header, or empty
+			structure if the file is absent.
 
 	Raises:
-		RuntimeError: If the file exists but header version is wrong.
+		RuntimeError: If the file exists but the header version is not
+			in (2, 3).
 	"""
 	# return empty structure if file does not exist
 	if not os.path.isfile(path):
@@ -256,61 +408,353 @@ def write_diagnostics(path: str, diagnostics_data: dict) -> None:
 
 #============================================
 
-def load_intervals(path: str) -> dict:
-	"""Load a solved-intervals JSON file and validate the header.
+def load_geometry_cache(path: str) -> dict:
+	"""Load a geometry_cache.npz file into the legacy in-memory shape.
 
-	Returns an empty intervals structure if the file does not exist.
+	Returns a dict shaped like the old `load_intervals` output so that
+	call sites iterate unchanged:
+
+		{
+			"track_runner_intervals": 2,
+			"solved_intervals": {
+				"<fingerprint>": {
+					"start_frame": int,
+					"end_frame": int,
+					"fused_track": [
+						{"cx": float, "cy": float, "w": float, "h": float},
+						...
+					],
+				},
+				...
+			},
+			"video_identity": {...},
+			"solve_complete": bool,
+		}
+
+	On disk the NPZ stores a JSON manifest mapping fingerprint to an
+	`array_index` plus four float32 arrays per interval
+	(`i<k>_cx`, `i<k>_cy`, `i<k>_w`, `i<k>_h`). The loader reassembles
+	the list-of-dicts shape so downstream iteration is unchanged.
+
+	Returns an empty skeleton if the file does not exist. Raises if the
+	file exists but has a different or missing schema_version.
 
 	Args:
-		path: Path to the solved-intervals JSON file.
+		path: Path to the geometry_cache.npz file.
 
 	Returns:
-		dict: Parsed intervals data with validated header, or empty structure.
+		dict with the shape described above.
 
 	Raises:
-		RuntimeError: If the file exists but header version is wrong.
+		RuntimeError: If the schema version is not recognized or a
+			declared per-interval array is missing.
 	"""
 	# return empty structure if file does not exist
 	if not os.path.isfile(path):
-		return {INTERVALS_HEADER_KEY: INTERVALS_HEADER_VALUE, "solved_intervals": {}}
-	with open(path, "r") as fh:
-		data = json.load(fh)
-	if not isinstance(data, dict):
-		raise RuntimeError(f"intervals file did not parse as a mapping: {path}")
-	# validate the header key and version
-	header_val = data.get(INTERVALS_HEADER_KEY)
-	if header_val != INTERVALS_HEADER_VALUE:
-		raise RuntimeError(
-			f"intervals file header mismatch in {path}: "
-			f"expected {INTERVALS_HEADER_KEY}={INTERVALS_HEADER_VALUE}, got {header_val}"
-		)
-	return data
+		return {
+			INTERVALS_HEADER_KEY: INTERVALS_HEADER_VALUE,
+			"solved_intervals": {},
+		}
+	with numpy.load(path, allow_pickle=False) as npz:
+		schema_version = int(npz["schema_version"])
+		if schema_version != GEOMETRY_CACHE_SCHEMA_VERSION:
+			raise RuntimeError(
+				f"geometry cache schema mismatch in {path}: "
+				f"expected schema_version={GEOMETRY_CACHE_SCHEMA_VERSION}, "
+				f"got {schema_version}. Run tools/_migrate_tr_config.py "
+				f"to archive old caches; the next solve will regenerate."
+			)
+		# manifest is a 0-d bytes array containing JSON
+		manifest_bytes = bytes(npz["manifest"])
+		manifest = json.loads(manifest_bytes.decode("utf-8"))
+		# video_identity is optional; same encoding
+		video_identity = None
+		if "video_identity" in npz.files:
+			vid_bytes = bytes(npz["video_identity"])
+			video_identity = json.loads(vid_bytes.decode("utf-8"))
+		solve_complete = False
+		if "solve_complete" in npz.files:
+			solve_complete = bool(npz["solve_complete"])
+		# rebuild the solved_intervals dict from indexed arrays
+		solved = {}
+		for entry in manifest:
+			fingerprint = entry["fingerprint"]
+			idx = int(entry["array_index"])
+			start_frame = int(entry["start_frame"])
+			end_frame = int(entry["end_frame"])
+			# read the four per-frame arrays for this interval
+			cx_key = f"i{idx}_cx"
+			cy_key = f"i{idx}_cy"
+			w_key = f"i{idx}_w"
+			h_key = f"i{idx}_h"
+			for key in (cx_key, cy_key, w_key, h_key):
+				if key not in npz.files:
+					raise RuntimeError(
+						f"geometry cache missing array {key} in {path}"
+					)
+			cx_arr = npz[cx_key]
+			cy_arr = npz[cy_key]
+			w_arr = npz[w_key]
+			h_arr = npz[h_key]
+			# reassemble list-of-dicts for in-memory consumers
+			fused_track = [
+				{
+					"cx": float(cx_arr[i]),
+					"cy": float(cy_arr[i]),
+					"w": float(w_arr[i]),
+					"h": float(h_arr[i]),
+				}
+				for i in range(len(cx_arr))
+			]
+			solved[fingerprint] = {
+				"start_frame": start_frame,
+				"end_frame": end_frame,
+				"fused_track": fused_track,
+			}
+	result = {
+		INTERVALS_HEADER_KEY: INTERVALS_HEADER_VALUE,
+		"solved_intervals": solved,
+		"solve_complete": solve_complete,
+	}
+	if video_identity is not None:
+		result["video_identity"] = video_identity
+	return result
 
 
 #============================================
 
-def write_intervals(path: str, intervals_data: dict) -> None:
-	"""Write solved-intervals data to a JSON file.
+def write_geometry_cache(path: str, cache_data: dict) -> None:
+	"""Write a geometry cache as NPZ with a JSON manifest.
 
-	Ensures the required header key is present before writing.
+	Extracts `fused_track` cx/cy/w/h arrays from each solved interval
+	and writes them as float32 NPZ arrays. The manifest maps each
+	fingerprint to an `array_index`, `start_frame`, and `end_frame` so
+	the loader can reassemble the in-memory shape.
+
+	Does not persist `interval_score`, `forward_track`, `backward_track`,
+	or any per-frame extras. Scoring lives in `interval_scores.json`
+	(see `write_solver_diagnostics`, which writes to that file;
+	function name is retained for callsite compatibility). Forward/
+	backward tracks live in the opt-in `debug_tracks.npz` sidecar when
+	solve runs with `--debug-tracks`.
+
+	Atomic write via a sibling temp file and `os.replace`.
 
 	Args:
-		path: Output file path.
-		intervals_data: Intervals dictionary to write.
+		path: Output NPZ file path.
+		cache_data: Dict shaped like `load_geometry_cache` returns --
+			at minimum `{"solved_intervals": {fp: {start_frame,
+			end_frame, fused_track: [dicts]}}}`. Unknown top-level keys
+			are tolerated; only `video_identity` and `solve_complete`
+			are persisted beyond the manifest and per-interval arrays.
 	"""
-	# ensure header version is set correctly before writing
-	intervals_data[INTERVALS_HEADER_KEY] = INTERVALS_HEADER_VALUE
-	# atomic write: temp file + rename to avoid corrupt file on interruption
+	solved_intervals = cache_data.get("solved_intervals", {}) or {}
+	manifest = []
+	arrays = {}
+	for idx, (fingerprint, entry) in enumerate(solved_intervals.items()):
+		start_frame = int(entry["start_frame"])
+		end_frame = int(entry["end_frame"])
+		fused_track = entry.get("fused_track") or []
+		# extract columnar arrays from list-of-dicts
+		cx = numpy.asarray(
+			[float(s["cx"]) for s in fused_track], dtype=numpy.float32
+		)
+		cy = numpy.asarray(
+			[float(s["cy"]) for s in fused_track], dtype=numpy.float32
+		)
+		w = numpy.asarray(
+			[float(s["w"]) for s in fused_track], dtype=numpy.float32
+		)
+		h = numpy.asarray(
+			[float(s["h"]) for s in fused_track], dtype=numpy.float32
+		)
+		arrays[f"i{idx}_cx"] = cx
+		arrays[f"i{idx}_cy"] = cy
+		arrays[f"i{idx}_w"] = w
+		arrays[f"i{idx}_h"] = h
+		manifest.append({
+			"fingerprint": fingerprint,
+			"start_frame": start_frame,
+			"end_frame": end_frame,
+			"array_index": idx,
+		})
+	# top-level small metadata
+	arrays["schema_version"] = numpy.asarray(
+		GEOMETRY_CACHE_SCHEMA_VERSION, dtype=numpy.int32
+	)
+	manifest_json = json.dumps(manifest).encode("utf-8")
+	arrays["manifest"] = numpy.frombuffer(manifest_json, dtype=numpy.uint8)
+	video_identity = cache_data.get("video_identity")
+	if video_identity is not None:
+		vid_json = json.dumps(video_identity).encode("utf-8")
+		arrays["video_identity"] = numpy.frombuffer(vid_json, dtype=numpy.uint8)
+	solve_complete = cache_data.get("solve_complete", False)
+	arrays["solve_complete"] = numpy.asarray(bool(solve_complete))
+	_write_npz_atomic(path, arrays)
+
+
+#============================================
+
+# NPZ schema version key for debug_tracks.npz sidecar files
+DEBUG_TRACKS_SCHEMA_VERSION = 1
+
+
+def _write_npz_atomic(path: str, arrays: dict) -> None:
+	"""Write a dict of numpy arrays to an NPZ file atomically.
+
+	Shared helper used by write_geometry_cache and write_debug_tracks.
+
+	Args:
+		path: Target NPZ file path.
+		arrays: Dict of {key: numpy.ndarray} to persist.
+	"""
 	dir_path = os.path.dirname(os.path.abspath(path))
-	fd, tmp_path = tempfile.mkstemp(dir=dir_path, suffix=".tmp.json")
+	fd, tmp_path = tempfile.mkstemp(dir=dir_path, suffix=".tmp.npz")
+	os.close(fd)
 	try:
-		with os.fdopen(fd, "w") as fh:
-			json.dump(intervals_data, fh, indent=2)
-		os.replace(tmp_path, path)
+		numpy.savez(tmp_path, **arrays)
+		# numpy.savez appends .npz if the temp didn't already end in .npz
+		real_tmp = tmp_path
+		if not tmp_path.endswith(".npz"):
+			real_tmp = tmp_path + ".npz"
+		os.replace(real_tmp, path)
 	except Exception:
-		if os.path.exists(tmp_path):
-			os.unlink(tmp_path)
+		for candidate in (tmp_path, tmp_path + ".npz"):
+			if os.path.exists(candidate):
+				os.unlink(candidate)
 		raise
+
+
+#============================================
+
+def write_debug_tracks(path: str, cache_data: dict) -> None:
+	"""Write forward/backward track arrays as an NPZ debug sidecar.
+
+	Only called when solve runs with `--debug-tracks`. Accepts the same
+	in-memory shape produced by solve_all_intervals, picks out each
+	interval's `forward_track` and `backward_track` (list-of-dicts with
+	cx/cy/w/h), and writes two sets of four float32 arrays per
+	interval: `i<k>_fwd_{cx,cy,w,h}` and `i<k>_bwd_{cx,cy,w,h}`.
+
+	Intervals without forward_track/backward_track are silently skipped
+	(e.g. when solve was interrupted mid-interval).
+
+	The sidecar's manifest mirrors the geometry cache's manifest so the
+	debug overlay can intersect fingerprint sets on load.
+
+	Args:
+		path: Target NPZ file path (typically
+			`<video>.track_runner.debug_tracks.npz`).
+		cache_data: Dict shaped like `load_geometry_cache` output --
+			`{"solved_intervals": {fp: {start_frame, end_frame,
+			forward_track: [...], backward_track: [...]}}}`.
+	"""
+	solved_intervals = cache_data.get("solved_intervals", {}) or {}
+	manifest = []
+	arrays = {}
+	for idx, (fingerprint, entry) in enumerate(solved_intervals.items()):
+		fwd = entry.get("forward_track")
+		bwd = entry.get("backward_track")
+		# skip intervals with no debug tracks attached
+		if not fwd or not bwd:
+			continue
+		start_frame = int(entry["start_frame"])
+		end_frame = int(entry["end_frame"])
+		for direction, track in (("fwd", fwd), ("bwd", bwd)):
+			cx = numpy.asarray(
+				[float(s["cx"]) for s in track], dtype=numpy.float32
+			)
+			cy = numpy.asarray(
+				[float(s["cy"]) for s in track], dtype=numpy.float32
+			)
+			w = numpy.asarray(
+				[float(s["w"]) for s in track], dtype=numpy.float32
+			)
+			h = numpy.asarray(
+				[float(s["h"]) for s in track], dtype=numpy.float32
+			)
+			arrays[f"i{idx}_{direction}_cx"] = cx
+			arrays[f"i{idx}_{direction}_cy"] = cy
+			arrays[f"i{idx}_{direction}_w"] = w
+			arrays[f"i{idx}_{direction}_h"] = h
+		manifest.append({
+			"fingerprint": fingerprint,
+			"start_frame": start_frame,
+			"end_frame": end_frame,
+			"array_index": idx,
+		})
+	arrays["schema_version"] = numpy.asarray(
+		DEBUG_TRACKS_SCHEMA_VERSION, dtype=numpy.int32
+	)
+	manifest_json = json.dumps(manifest).encode("utf-8")
+	arrays["manifest"] = numpy.frombuffer(manifest_json, dtype=numpy.uint8)
+	_write_npz_atomic(path, arrays)
+
+
+#============================================
+
+def load_debug_tracks(path: str) -> dict:
+	"""Load a debug_tracks.npz sidecar into an in-memory dict.
+
+	Returns a dict keyed by fingerprint, shape:
+		{
+			"<fingerprint>": {
+				"start_frame": int,
+				"end_frame": int,
+				"forward_track": [{cx, cy, w, h}, ...],
+				"backward_track": [{cx, cy, w, h}, ...],
+			},
+			...
+		}
+
+	Returns an empty dict if the file does not exist. Raises on
+	unknown schema version.
+
+	Args:
+		path: Path to the debug_tracks.npz sidecar.
+
+	Returns:
+		dict mapping fingerprint to per-direction track dicts.
+	"""
+	if not os.path.isfile(path):
+		return {}
+	result = {}
+	with numpy.load(path, allow_pickle=False) as npz:
+		schema_version = int(npz["schema_version"])
+		if schema_version != DEBUG_TRACKS_SCHEMA_VERSION:
+			raise RuntimeError(
+				f"debug tracks schema mismatch in {path}: expected "
+				f"schema_version={DEBUG_TRACKS_SCHEMA_VERSION}, got "
+				f"{schema_version}"
+			)
+		manifest_bytes = bytes(npz["manifest"])
+		manifest = json.loads(manifest_bytes.decode("utf-8"))
+		for entry in manifest:
+			fingerprint = entry["fingerprint"]
+			idx = int(entry["array_index"])
+			tracks = {}
+			for direction in ("fwd", "bwd"):
+				cx = npz[f"i{idx}_{direction}_cx"]
+				cy = npz[f"i{idx}_{direction}_cy"]
+				w = npz[f"i{idx}_{direction}_w"]
+				h = npz[f"i{idx}_{direction}_h"]
+				track_records = [
+					{
+						"cx": float(cx[i]),
+						"cy": float(cy[i]),
+						"w": float(w[i]),
+						"h": float(h[i]),
+					}
+					for i in range(len(cx))
+				]
+				key = "forward_track" if direction == "fwd" else "backward_track"
+				tracks[key] = track_records
+			result[fingerprint] = {
+				"start_frame": int(entry["start_frame"]),
+				"end_frame": int(entry["end_frame"]),
+				**tracks,
+			}
+	return result
 
 
 #============================================
@@ -533,7 +977,8 @@ def write_agreement_debug_sidecar(
 
 # round-trip self-check for load/write pairs
 if __name__ == "__main__":
-	# test seeds round-trip
+	# test seeds round-trip: v3 canonical shape
+	# input dict carries legacy fields that must be stripped
 	seeds_data = {
 		"video_file": "test.mov",
 		"seeds": [
@@ -545,6 +990,9 @@ if __name__ == "__main__":
 				"pass": 1,
 				"source": "human",
 				"mode": "initial",
+				"status": "visible",
+				"cx": 660.0,
+				"cy": 390.0,
 			}
 		],
 	}
@@ -554,6 +1002,24 @@ if __name__ == "__main__":
 	loaded = load_seeds(tmp_path)
 	assert loaded["seeds"][0]["frame_index"] == 150
 	assert loaded[SEEDS_HEADER_KEY] == SEEDS_HEADER_VALUE
+	# on-disk: only canonical keys survive the writer
+	with open(tmp_path, "r") as fh:
+		raw = json.load(fh)
+	disk_seed_keys = set(raw["seeds"][0].keys())
+	assert disk_seed_keys == CANONICAL_SEED_KEYS, disk_seed_keys
+	# in-memory after load: canonical + derived geometry
+	loaded_seed_keys = set(loaded["seeds"][0].keys())
+	assert loaded_seed_keys == CANONICAL_SEED_KEYS | DERIVED_SEED_KEYS
+	# derived geometry matches torso_box
+	assert loaded["seeds"][0]["cx"] == 660.0
+	assert loaded["seeds"][0]["cy"] == 390.0
+	# second round-trip is byte-identical to the first (canonical stability)
+	with open(tmp_path, "rb") as fh:
+		first_bytes = fh.read()
+	write_seeds(tmp_path, loaded)
+	with open(tmp_path, "rb") as fh:
+		second_bytes = fh.read()
+	assert first_bytes == second_bytes
 	os.unlink(tmp_path)
 
 	# test diagnostics round-trip
@@ -578,22 +1044,34 @@ if __name__ == "__main__":
 	frame_10 = next(s for s in merged if s["frame_index"] == 10)
 	assert frame_10["mode"] == "initial"
 
-	# test solved-intervals round-trip
+	# test geometry-cache NPZ round-trip
+	fingerprint = "100|1731.50|629.50|39.00|59.00|450|1700.00|600.00|38.00|58.00"
 	intervals_data = {
 		"solved_intervals": {
-			"100|1731.50|629.50|39.00|59.00|450|1700.00|600.00|38.00|58.00": {
+			fingerprint: {
 				"start_frame": 100,
-				"end_frame": 450,
-				"fused_track": [{"cx": 100.0, "cy": 200.0}],
+				"end_frame": 101,
+				"fused_track": [
+					{"cx": 100.0, "cy": 200.0, "w": 40.0, "h": 60.0},
+					{"cx": 101.5, "cy": 200.5, "w": 40.0, "h": 60.0},
+				],
 			},
 		},
+		"solve_complete": True,
+		"video_identity": {"basename": "self_check.mov"},
 	}
-	with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
+	with tempfile.NamedTemporaryFile(suffix=".npz", delete=False) as tmp:
 		tmp_path = tmp.name
-	write_intervals(tmp_path, intervals_data)
-	loaded_iv = load_intervals(tmp_path)
+	write_geometry_cache(tmp_path, intervals_data)
+	loaded_iv = load_geometry_cache(tmp_path)
 	assert loaded_iv[INTERVALS_HEADER_KEY] == INTERVALS_HEADER_VALUE
 	assert len(loaded_iv["solved_intervals"]) == 1
+	reloaded = loaded_iv["solved_intervals"][fingerprint]
+	assert reloaded["start_frame"] == 100
+	assert len(reloaded["fused_track"]) == 2
+	assert reloaded["fused_track"][0]["cx"] == 100.0
+	assert loaded_iv["solve_complete"] is True
+	assert loaded_iv["video_identity"]["basename"] == "self_check.mov"
 	os.unlink(tmp_path)
 
 	# test interval_fingerprint determinism

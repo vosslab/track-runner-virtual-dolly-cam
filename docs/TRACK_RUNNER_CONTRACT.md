@@ -104,13 +104,13 @@ Per-interval worker state is allowed; it dies with the worker.
   [TRACK_RUNNER_DESIGN.md](TRACK_RUNNER_DESIGN.md) and may evolve. This
   clause only forbids re-introducing the unreliable cues.
 
-## C7. A seed is a torso box drawn by a human.
+## C7. A seed is a human-authored annotation for one frame
 
-* seed = human-authored annotation
-* a human-committed annotation for one frame. Usually a torso box, or a human-confirmed 
-  not_in_frame state. Seeds are the truth anchors for solve.
-* prediction / suggestion / polish / heat-map blob adjustment = machine-produced geometry
-* machine output may help the user draw or edit a seed, but it is not itself a seed until a human commits it
+* A seed is a human-authored annotation for one frame.
+* Usually this annotation is a torso box. It may also be a human-confirmed not_in_frame state.
+* Seeds are the truth anchors for solve.
+* Machine-produced geometry, including predictions, suggestions, polish outputs, and heat-map blob adjustments, is not a seed until a human commits it.
+* Code and docs must not label uncommitted machine geometry as a seed.
 
 ## Relationship to other docs
 

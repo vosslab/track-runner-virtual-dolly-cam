@@ -1,17 +1,17 @@
 # tr_config files
 
 Reference for every file the track runner persists under `tr_config/`.
-One row per video, plus a single global default. This doc covers the
-on-disk schema, the reader/writer functions, the lifecycle and
-invalidation rules, and the two things that most often surprise a
-first-time reader: why a `seeds.json` can be 20 MB, and where the
-global camera-motion track lives on disk.
+One row per video, plus a single global default. Covers on-disk schema,
+reader/writer functions, lifecycle rules, and the two things that most
+often surprise a first-time reader: why seeds files are so small now
+(they used to carry dead appearance data) and where the camera-motion
+cache lives.
 
 ## Purpose of tr_config
 
-`tr_config/` is the project's state directory. Each file is keyed by
-the source video's basename so it is obvious which file belongs to
-which clip. Most files follow the naming pattern:
+`tr_config/` is the project's state directory. Each per-video file is
+keyed by the source video's basename so it is obvious which file
+belongs to which clip. The naming pattern is:
 
 ```
 <video_basename>.track_runner.<kind>.<ext>
@@ -20,402 +20,192 @@ which clip. Most files follow the naming pattern:
 A single root-level default lives at
 [tr_config/track_runner.config.yaml](../tr_config/track_runner.config.yaml)
 and is merged under every per-video config at load time. Note: the
-loader used at runtime actually reads the default from
+loader used at runtime reads the built-in default from
 [track_runner/track_runner.config.yaml](../track_runner/track_runner.config.yaml)
 via `read_default_config()` in
 [track_runner/tr_config.py](../track_runner/tr_config.py); the
 `tr_config/` root-level copy is a user-editable starting point, not
 the built-in default.
 
+## Format rule
+
+**Dense per-frame numeric series are stored as NPZ. Human-authored
+annotations and interval-level summary records are stored as JSON.**
+This single rule dictates every file format below.
+
 ## File map
 
 | File | Format | Typical size | Writer | Reader |
 | --- | --- | --- | --- | --- |
 | `<video>.track_runner.config.yaml` | YAML | 250-450 B | `tr_config.write_config` | `tr_config.load_config` |
-| `<video>.track_runner.seeds.json` | JSON | 150 KB - 20 MB | `state_io.write_seeds` | `state_io.load_seeds` |
-| `<video>.track_runner.intervals.json` | JSON | tens of KB - several MB | `state_io.write_intervals` | `state_io.load_intervals` |
-| `<video>.track_runner.diagnostics.json` | JSON | ~100 KB | `state_io.write_solver_diagnostics` | `state_io.load_diagnostics` |
+| `<video>.track_runner.seeds.json` | JSON | 5-50 KB | `state_io.write_seeds` | `state_io.load_seeds` |
+| `<video>.track_runner.interval_scores.json` | JSON | ~100 KB | `state_io.write_solver_diagnostics` | `state_io.load_diagnostics` |
+| `<video>.track_runner.geometry_cache.npz` | NPZ | 100 KB - 3 MB | `state_io.write_geometry_cache` | `state_io.load_geometry_cache` |
+| `<video>.track_runner.debug_tracks.npz` | NPZ (opt-in) | 2-8x geometry_cache | `state_io.write_debug_tracks` | `state_io.load_debug_tracks` |
+| `<video>.track_runner.camera_motion.npz` | NPZ | 150-300 KB | `camera_motion.save_motion_cache` | `camera_motion.load_motion_cache` |
 | `<video>.track_runner.agreement_debug.json` | JSON | varies | `state_io.write_agreement_debug_sidecar` | manual |
-| `<basename>_<frames>_<estimator>_<hash8>.npz` | NumPy `.npz` | 100-200 KB | `camera_motion.save_motion_cache` | `camera_motion.load_motion_cache` |
 | `track_runner.config.yaml` (root) | YAML | ~250 B | hand-edited | merged under every per-video config |
-| `archive/` | directory | varies | hand-kept | none |
+| `archive/` | directory | varies | hand-kept or migration tool | none |
 
-## Config YAML
-
-Files: `<video>.track_runner.config.yaml` and the root
-[tr_config/track_runner.config.yaml](../tr_config/track_runner.config.yaml).
-
-Reader / writer / merge / validator all live in
-[track_runner/tr_config.py](../track_runner/tr_config.py):
-
-- `load_config(path)` -- parses YAML, checks the header, migrates v2 in
-  place, returns a v3-shaped dict.
-- `write_config(path, config)` -- writes YAML with `sort_keys=False` so
-  the authored order is preserved.
-- `merge_config(base, override)` -- deep-merges a per-video override
-  onto the defaults. Dicts merge recursively; scalars and lists are
-  replaced wholesale.
-- `validate_config(config)` -- enforces header and required sections.
-
-### Top-level keys (verified against loader and bundled default)
-
-| Key | Required | Notes |
-| --- | --- | --- |
-| `track_runner` | yes | Header; integer schema version. Accepted: `2` (legacy, auto-migrated) and `3`. |
-| `detection` | yes | Detector settings. |
-| `processing` | yes | Crop + encode + solver settings. |
-| `camera` | no | Auto-filled with a default block by `validate_config` if absent. |
-| `motion` | no | Camera-motion estimator settings (feeds the `.npz` cache). |
-
-Only these five keys are referenced by the loader and validator. Any
-other top-level key is preserved through load/write but is not part of
-the documented schema.
-
-### detection
-
-Seen in the bundled default and every per-video config:
-
-```yaml
-detection:
-  model: yolov8n
-  confidence_threshold: 0.25
-```
-
-YOLO is scoped as optional seeding assistance per
-[docs/TRACK_RUNNER_DESIGN.md](TRACK_RUNNER_DESIGN.md); it is not an
-active tracking signal.
-
-### processing
-
-Read defensively by several consumers; the only key the validator
-enforces is `torso_height_multiple`:
-
-- `torso_height_multiple` (float, required): crop height as a multiple
-  of the tracked torso height. Must be `>= 1`. This is the v3 key.
-- `crop_fill_ratio` (float, legacy): the v2 name. On load,
-  `_migrate_crop_fill_ratio` rewrites the dict in place:
-  `torso_height_multiple = 1 / crop_fill_ratio`. The old key is then
-  deleted. A one-line `[config migration]` notice prints when the
-  migration fires.
-- `crop_mode`, `crop_aspect`, `crop_min_size`, `output_resolution`,
-  `video_codec`, `crf`, `encode_filters`, `solver_backend`: read by
-  the crop and encoder stages. Not validated at config load.
-
-### camera
-
-Auto-filled with this default block if missing:
-
-```yaml
-camera:
-  zoom_type: fixed
-  zoom_levels: [1]
-  camera_height: elevated
-  camera_position: side
-  track_size: 400
-  venue_type: outdoor
-  lighting: daylight_sunny
-```
-
-`zoom_type` selects the camera-motion estimator; see the NPZ section
-below.
-
-### motion (optional)
-
-Controls the estimator used when computing the camera-motion NPZ:
-
-```yaml
-motion:
-  estimator:
-    type: iphone_discrete
-```
-
-`type` is the one field the estimator-selection logic in
-`camera_motion.precompute_camera_motion` looks at. Accepted values
-include the class names `FixedZoomEstimator`, `DiscreteZoomEstimator`,
-`ContinuousZoomEstimator` and the YAML aliases `iphone_discrete`,
-`discrete`, `continuous`. If `motion` is absent, the estimator is
-selected from `camera.zoom_type` instead.
-
-### Layering
-
-At startup the loader reads the built-in default from
-`track_runner/track_runner.config.yaml`, then `merge_config` overlays
-the per-video `<video>.track_runner.config.yaml`. The per-video file
-can therefore be minimal; it only needs the keys that differ from the
-default.
+Function names were retained across the cleanup for callsite
+compatibility even where the on-disk filename changed:
+`load_diagnostics`/`write_solver_diagnostics` operate on
+`interval_scores.json`, and `load_intervals`/`write_intervals` were
+replaced by new `load_geometry_cache`/`write_geometry_cache` because
+the underlying format changed from JSON to NPZ.
 
 ## Seeds JSON
 
-File: `<video>.track_runner.seeds.json`. Reader and writer are in
-[track_runner/state_io.py](../track_runner/state_io.py): `load_seeds`,
-`write_seeds`. Atomic write via a sibling temp file and `os.replace`.
+Purpose: human-authored annotation truth. Under contract C7, a seed
+is a torso box drawn by a human (or a human-committed `not_in_frame`
+state). Machine-produced geometry -- predictions, suggestions, polish
+outputs, heat-map blob adjustments -- is not a seed until a human
+commits it.
+
+File: `<video>.track_runner.seeds.json`. Atomic write via sibling
+temp file and `os.replace`.
 
 ### Top-level keys
 
 | Key | Type | Notes |
 | --- | --- | --- |
-| `track_runner_seeds` | int | Header; required value is `2`. |
+| `track_runner_seeds` | int | Header; required value is `3`. Loader accepts legacy `2` and migrates on next write. |
 | `seeds` | list | One record per annotated frame. |
-| `video_identity` | dict | Present on recent files; written by the seeding UI for mismatch detection. Fields mirror `tr_video_identity.make_video_identity`: `basename`, `size_bytes`, `width`, `height`, `fps`, `frame_count`, `duration_s`. |
+| `video_identity` | dict | Present on recent files; mismatch-detection metadata. |
 
-### Per-seed schema
+### Per-seed schema (v3 canonical, four fields)
 
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `frame_index` | int | Frame number in the source video (0-based). Deduped on merge; sorted on load. |
-| `frame` | int | Legacy duplicate of `frame_index`. Still written for compatibility. |
-| `time_s` | float | `frame_index / fps`. Convenience only. |
-| `torso_box` | `[x, y, w, h]` | Pixel-coordinate bounding box of the torso. Ints. |
-| `cx`, `cy` | float | Box center (derived from `torso_box`). |
-| `w`, `h` | float | Box dimensions (derived from `torso_box`). |
-| `pass` | int | Seeding pass that produced this seed (`1`, `2`, ...). |
-| `source` | str | `human` or `propagated`. |
-| `mode` | str | One of `VALID_SEED_MODES` (see below). |
-| `status` | str | `visible`, `partial`, `approximate`, or `not_in_frame`. Legacy `obstructed` is auto-migrated. |
-| `conf` | float or null | Confidence for approximate seeds (default 0.3); null for visible/partial. Backfilled on load. |
-| `jersey_hsv` | `[h, s, v]` | Legacy: median HSV of the torso. **Not used as identity evidence per contract C6**; preserved for on-disk schema stability. |
-| `histogram` | 2-D list of floats | **Legacy: present on files written before 2026-04-20.** Normalized HS histogram over the torso ROI (see below). No longer extracted, but still loaded and written verbatim if already present. |
+| `torso_box` | `[x, y, w, h]` (ints) | Pixel rectangle the human drew. Omitted when `status` is `not_in_frame`. Seeds are integer pixel geometry; any float-valued cx/cy/w/h the solver or fingerprint code uses are derived convenience geometry, not stored truth. |
+| `status` | str | `visible`, `partial`, `approximate`, or `not_in_frame`. Drives solver and erasure behavior. Load-bearing. |
+| `pass` | int | Seeding pass that produced this seed. Load-bearing for duplicate-frame deduplication. |
 
-Valid `mode` values come from `VALID_SEED_MODES` in
-[track_runner/state_io.py](../track_runner/state_io.py): `initial`,
-`suggested_refine`, `interval_refine`, `gap_refine`, `edit_redraw`,
-`solve_refine`, `interactive_refine`, `bbox_polish`, `target_refine`.
+### Not on disk (stripped by the writer)
 
-`not_in_frame` seeds intentionally omit `cx`, `cy`, `w`, `h`, and
-`torso_box`. Consumers that iterate all seeds must filter by `status`
-before reading positions. See the
-[2026-04-20 CHANGELOG entry](CHANGELOG.md) for a recent solve crash
-caused by a missing filter.
+- `histogram`, `jersey_hsv` -- banned by contract C6 (runner appearance unreliable).
+- `frame` -- duplicate of `frame_index`.
+- `time_s` -- derived as `frame_index / fps`.
+- `cx`, `cy`, `w`, `h` -- derived in memory by `load_seeds` from `torso_box`.
+- `mode` -- workflow provenance with no solver branches.
+- `conf` -- derivable from `status` (visible/partial -> 1.0, approximate -> 0.3).
+- `source` -- always `"human"` under C7.
 
-### Load-time normalization
+The canonical allow-list is `{frame_index, torso_box, status, pass}`.
+Unknown keys outside that set and the strip-list are tolerated in
+memory but discarded at write time. Read tolerant, write strict.
+
+### Load-time behavior
 
 [state_io.load_seeds](../track_runner/state_io.py):
+1. If the file does not exist, return
+   `{track_runner_seeds: 3, seeds: []}`.
+2. Accept headers 2 (legacy) or 3 (canonical); reject others.
+3. For every seed: migrate legacy `obstructed` status (keep as
+   `approximate` if `torso_box` present, drop otherwise), strip the
+   legacy field set, re-derive cx/cy/w/h from torso_box in memory
+   (skipped for `not_in_frame` seeds which carry no box).
+4. Sort by `frame_index`.
 
-1. If the file does not exist, return `{track_runner_seeds: 2, seeds: []}`.
-2. Reject any file whose header is not exactly `2`.
-3. For every seed: backfill `conf: None` if missing.
-4. Migrate legacy `obstructed` seeds: keep them as `approximate` if
-   they have a `torso_box`; drop them otherwise (no position data,
-   unusable).
-5. Sort the final list by `frame_index` so consumers always receive
-   time-ordered data.
+### Why seeds files are now small
 
-### Write-time normalization
+Legacy per-seed `histogram` fields (`(30, 32)` float64 arrays, ~11 KB
+of JSON each) dominated pre-migration file sizes. The 20 MB files
+observed before cleanup drop to ~5-50 KB in canonical v3 (~150-200 B
+per seed). The one-shot migration tool
+(`tools/_migrate_tr_config.py`) handles existing files.
 
-[state_io.write_seeds](../track_runner/state_io.py):
+## Geometry cache NPZ
 
-1. Validate every seed with `validate_seed`; warn once about
-   `approximate` seeds that lack `torso_box`.
-2. Force header to `2`.
-3. Sort by `frame_index` for human-readable output.
-4. Write to a sibling `.tmp.json`, then `os.replace` for atomicity.
+File: `<video>.track_runner.geometry_cache.npz`. This is the **cache
+of solved per-frame trajectory geometry that the encoder consumes.**
+Reader `state_io.load_geometry_cache`, writer
+`state_io.write_geometry_cache`.
 
-### Merge rule
-
-`state_io.merge_seeds(existing, new)` appends a new seed only when its
-`frame_index` is not already in `existing`. Existing seeds at a frame
-are never overwritten, so iterative refine passes enrich the set
-without clobbering prior work.
-
-### Why seeds.json can reach 20 MB
-
-The legacy `histogram` field is a `(30, 32)` `float64` array stored
-inline in each seed. That is ~11 KB of JSON per seed; stripping it
-leaves ~240 B per seed. On a clip with ~1000 seeds the histogram alone
-accounts for roughly 10-11 MB, which explains the 20 MB seed files
-written before 2026-04-20.
-
-Histogram extraction was removed from the seeding UI on 2026-04-20
-(contract C6 in
-[docs/TRACK_RUNNER_CONTRACT.md](TRACK_RUNNER_CONTRACT.md); CHANGELOG
-entry for that date). New seed files written by the current code do
-not add `histogram`, so removing legacy histograms eliminates the
-known 20 MB growth mode.
-
-However: `load_seeds` does not strip `histogram` or `jersey_hsv`, and
-`write_seeds` calls `json.dump(seeds_data, ...)` on whatever it is
-handed. A plain open-then-save cycle therefore preserves legacy
-histograms. Stripping them from existing files is a future cleanup
-task that would need a small migration script (load, pop `histogram`
-from each seed, write). Documenting that script is out of scope for
-this doc.
-
-## Intervals JSON
-
-File: `<video>.track_runner.intervals.json`. This is the **cache of
-solved interval geometry**. Reader and writer are
-`state_io.load_intervals` and `state_io.write_intervals` in
-[track_runner/state_io.py](../track_runner/state_io.py). Intervals
-themselves are produced by
-[track_runner/interval_solver.py](../track_runner/interval_solver.py)
-and include per-frame tracks emitted by
-[track_runner/velocity_model.py](../track_runner/velocity_model.py).
-
-### Top-level keys
+### Top-level keys (NPZ)
 
 | Key | Type | Notes |
 | --- | --- | --- |
-| `track_runner_intervals` | int | Header; required value is `1`. |
-| `solved_intervals` | dict | Keyed by fingerprint string. |
-| `video_identity` | dict | Same shape as the seeds `video_identity` block. |
+| `schema_version` | int32 | Required value is `2`. |
+| `manifest` | bytes (JSON-encoded) | List of per-interval entries mapping fingerprint to an `array_index` plus `start_frame`/`end_frame`. |
+| `i<k>_cx`, `i<k>_cy`, `i<k>_w`, `i<k>_h` | float32 arrays | Per-interval fused-trajectory arrays; `<k>` is the manifest's `array_index` for that interval. Array length equals `end_frame - start_frame + 1`. |
+| `video_identity` | bytes (JSON-encoded) | Optional; same shape as elsewhere. |
+| `solve_complete` | bool | Whether the solve completed vs. was interrupted. |
+
+### In-memory shape
+
+`load_geometry_cache` reassembles the legacy shape consumers expect:
+
+```python
+{
+    "track_runner_intervals": 2,
+    "solved_intervals": {
+        "<fingerprint>": {
+            "start_frame": int,
+            "end_frame": int,
+            "fused_track": [
+                {"cx": float, "cy": float, "w": float, "h": float},
+                ...
+            ],
+        },
+    },
+    "video_identity": {...},
+    "solve_complete": bool,
+}
+```
+
+This preserves `stitch_trajectories` and every other iteration site
+unchanged; only the read site changes.
+
+### Explicitly not stored
+
+- `interval_score` -- lives exclusively in `interval_scores.json`.
+- `forward_track`, `backward_track` -- live in the opt-in
+  `debug_tracks.npz` sidecar when solve runs with `--debug-tracks`.
+- Per-frame extras (`conf`, `source`, `fuse_flag`, `occlusion_risk`,
+  `blob_gate`, `stationary_lock`) -- not read by production code from
+  a loaded cache; dropped at write.
 
 ### Fingerprint format
 
-Computed by `state_io.interval_fingerprint(seed_start, seed_end, solver_tag)`:
+Computed by `state_io.interval_fingerprint(seed_start, seed_end,
+solver_tag)`. Derived `cx/cy/w/h` from the bracketing seeds are
+serialized with `:.2f`; the two-decimal format is a cache-key
+choice, not a claim that seeds carry subpixel precision.
 
 ```
-<fi_start>|<cx_s>|<cy_s>|<w_s>|<h_s>|<fi_end>|<cx_e>|<cy_e>|<w_e>|<h_e>||<solver_tag>
+49|1635.00|754.50|64.00|81.00|56|1630.50|756.50|69.00|87.00||blob_snap/v1/a0.600/...
 ```
-
-All position values are rounded to two decimal places with
-`:.2f` formatting. Example from a real file:
-
-```
-49|1635.00|754.50|64.00|81.00|56|1630.50|756.50|69.00|87.00||blob_snap/v1/a0.600/slk0.500/prp0.750/vf1.500/am0.500/ms0.500
-```
-
-The suffix after `||` encodes the solver semantics (blob-snap
-version, alpha, slack, propagation weight, velocity factor, etc.). Any
-change to seed position, seed frame index, or solver tag yields a new
-key, so stale entries are never reused; the old entry simply stays in
-the file until something prunes it.
-
-### Per-interval entry
-
-Each value in `solved_intervals` has:
-
-| Field | Type | Meaning |
-| --- | --- | --- |
-| `start_frame` | int | Inclusive interval start. |
-| `end_frame` | int | Inclusive interval end. |
-| `fused_track` | list of dicts | Blended forward + backward track, per frame. |
-| `forward_track` | list of dicts | Forward propagation track, per frame. |
-| `backward_track` | list of dicts | Backward propagation track, per frame. |
-| `interval_score` | dict | Compact per-interval score (see diagnostics section). |
-
-### Per-frame track record
-
-Fused-track records carry:
-
-| Field | Type | Meaning |
-| --- | --- | --- |
-| `cx`, `cy`, `w`, `h` | float | Box center and size. |
-| `conf` | float | Per-frame confidence. |
-| `source` | str | `propagated`, `merged`, `fused`. |
-| `fuse_flag` | bool | True if the fused record was blended from multiple sources. |
-| `occlusion_risk` | bool | True if the frame sits in an occlusion-risk window. |
-
-Forward/backward records carry `cx/cy/w/h/conf/source` plus:
-
-| Field | Type | Meaning |
-| --- | --- | --- |
-| `stationary_lock` | bool | True on the endpoint frame (start or end seed). Still emitted by the current `velocity_model.py` propagator. |
-| `blob_gate` | str | Output-only metadata (`skipped`, `pass`, `fail`, ...). Not a gate input; read only by `interval_solver._coverage_from_track` for diagnostics per contract C5. |
 
 ### Cache semantics
 
-- Solve computes a fingerprint for each (start-seed, end-seed,
-  solver-tag) triple. If the key is already in `solved_intervals`, the
-  entry is reused; otherwise the interval is solved and the result
-  added.
-- Refine uses the same fingerprint function so its cache hits align
-  with solve's.
-- The file is a pure cache. Deleting it forces a full re-solve on the
-  next run; nothing else depends on it.
+Solve computes a fingerprint for each (start-seed, end-seed,
+solver-tag) triple. Matching entries are reused from the cache;
+others are solved and added. Refine uses the same fingerprint so its
+cache hits align with solve's. Deleting the file forces a full
+re-solve; nothing else depends on it.
 
-## Camera-motion NPZ
+## Interval scores JSON
 
-Files named `<basename>_<frame_count>_<estimator>_<hash8>.npz`. Real
-examples from the working `tr_config/`:
-
-- `canon_60d_600m_zoom.MP4_2886_continuous_aebe0b2c.npz`
-- `Hononega-Orion_600m-IMG_3702.mkv_5536_iphone_discrete_4c91af73.npz`
-
-This is where the "global" camera-motion track is stored. Reader and
-writer are `load_motion_cache` and `save_motion_cache` in
-[track_runner/camera_motion.py](../track_runner/camera_motion.py); the
-compute-or-load driver is `precompute_camera_motion` in the same file.
-
-### Arrays
-
-`numpy.savez` writes five equal-length arrays:
-
-| Name | dtype | Shape | Meaning |
-| --- | --- | --- | --- |
-| `dx` | float64 | `(N,)` | Per-frame x translation in pixels. |
-| `dy` | float64 | `(N,)` | Per-frame y translation in pixels. |
-| `scale` | float64 | `(N,)` | Per-frame scale factor; `1.0` = no zoom change. |
-| `quality` | float64 | `(N,)` | Phase-correlation response / confidence. |
-| `event_flags` | int32 | `(N,)` | Bitfield: zoom-jump and low-quality markers. |
-
-`N` matches the video's frame count (possibly plus a small buffer
-from the estimator).
-
-### Cache key
-
-`camera_motion._compute_cache_key` joins four components with
-underscores:
-
-1. `video_identity["basename"]` -- the filename.
-2. `str(video_identity["frame_count"])`.
-3. The estimator string (for example `continuous`, `iphone_discrete`,
-   `FixedZoomEstimator`) -- the value taken directly from
-   `motion.estimator.type` in the config.
-4. The first 8 hex characters of an MD5 over the `motion.estimator`
-   dict serialized as sorted-key JSON
-   (`camera_motion._compute_config_fingerprint`).
-
-`video_identity` comes from
-[track_runner/tr_video_identity.py](../track_runner/tr_video_identity.py)
-`make_video_identity`, which records basename, size_bytes, width,
-height, fps, frame_count, and duration_s from the probed video.
-
-### Estimator selection
-
-`precompute_camera_motion` picks an estimator from
-`motion.estimator.type`, falling back to `camera.zoom_type`:
-
-| Config value | Estimator class |
-| --- | --- |
-| `fixed` / `FixedZoomEstimator` | `FixedZoomEstimator` |
-| `discrete` / `iphone_discrete` / `DiscreteZoomEstimator` | `DiscreteZoomEstimator` |
-| `continuous` / `ContinuousZoomEstimator` | `ContinuousZoomEstimator` |
-
-The fixed variant assumes no zoom. The discrete variant snaps scale to
-the configured `camera.zoom_levels`. The continuous variant estimates
-per-frame scale via log-polar phase correlation.
-
-### Lifecycle and invalidation
-
-- Computed once per (video, estimator config) pair. The result is
-  written alongside the video's other `tr_config/` files.
-- Changing the estimator type, any field inside `motion.estimator`, or
-  any video-identity field that feeds the cache key (basename,
-  frame_count) produces a new filename. Old caches linger on disk but
-  are never loaded.
-- Reused by solve, refine, encode, and the UI. The UI heat-map overlay
-  looks up the cache via a glob on `<basename>_*.npz`, so there should
-  be exactly one active motion cache per video at a time. Stale caches
-  are safe to delete.
-
-## Diagnostics JSON
-
-File: `<video>.track_runner.diagnostics.json`. Reader and writer are
-`state_io.load_diagnostics` and `state_io.write_solver_diagnostics` in
-[track_runner/state_io.py](../track_runner/state_io.py).
+File: `<video>.track_runner.interval_scores.json`. **Sole owner of
+interval scoring.** Reader `state_io.load_diagnostics`, writer
+`state_io.write_solver_diagnostics`. Function names retained for
+callsite compatibility even though the on-disk filename changed from
+the old `.diagnostics.json`.
 
 ### Top-level keys
 
 | Key | Type | Notes |
 | --- | --- | --- |
-| `track_runner_diagnostics` | int | Header; accepted values are `2` (legacy, migrated on load) and `3` (current). |
+| `track_runner_diagnostics` | int | Header; accepted values `2` (legacy, migrated on load) and `3` (current). |
 | `fps` | float | Video fps, rounded to 6 decimals. |
-| `intervals` | list | Compact per-interval scores (see below). |
+| `intervals` | list | Per-interval scoring entries. |
 | `cyclical_prior` | dict or null | Optional: period-detection result. |
 | `race_phase` | dict | Optional: race-start frame detection. |
-| `video_identity` | dict | Same shape as elsewhere. |
+| `video_identity` | dict | Optional. |
 
-### Per-interval entry (v3 analytical)
+### Per-interval entry
 
 ```json
 {
@@ -436,55 +226,139 @@ File: `<video>.track_runner.diagnostics.json`. Reader and writer are
 }
 ```
 
-Legacy v2 entries flatten the same fields onto the interval dict;
-`load_diagnostics` rebuilds the nested `interval_score` on read so
-downstream consumers see a single shape.
+No per-frame trajectory data -- trajectory lives in
+`geometry_cache.npz`. This file is exclusively the scoring summary
+consumed by review tooling.
 
-Per-frame trajectory is **not** written into this file -- it lives in
-`intervals.json` (in the per-interval tracks) or in the agreement-debug
-sidecar. The diagnostics file is a compact scoring summary sized for
-review tooling.
+## Debug tracks NPZ (opt-in)
 
-## Agreement-debug sidecar (optional)
+File: `<video>.track_runner.debug_tracks.npz`. Written only when
+solve runs with `--debug-tracks`. Reader `state_io.load_debug_tracks`,
+writer `state_io.write_debug_tracks`.
 
-File: `<video>.track_runner.agreement_debug.json`. Written by
-`state_io.write_agreement_debug_sidecar` only when the solver ran with
-`--debug` and at least one interval carries an `agreement_debug`
-sub-dict. Schema identifier: `track_runner.agreement_debug.v1`. Holds
-per-frame agreement series plus p10/p50/p90 IoU summaries. No reader
-is wired into the runtime; the file is for manual inspection.
+### Top-level keys (NPZ)
+
+| Key | Type | Notes |
+| --- | --- | --- |
+| `schema_version` | int32 | Required value is `1`. |
+| `manifest` | bytes (JSON-encoded) | List of per-interval entries (fingerprint, start_frame, end_frame, array_index). |
+| `i<k>_fwd_cx`, `i<k>_fwd_cy`, `i<k>_fwd_w`, `i<k>_fwd_h` | float32 | Forward propagation track per interval. |
+| `i<k>_bwd_cx`, `i<k>_bwd_cy`, `i<k>_bwd_w`, `i<k>_bwd_h` | float32 | Backward propagation track per interval. |
+
+### Lifecycle
+
+Each manifest entry's `fingerprint` is intersected against the
+current `geometry_cache.npz` manifest fingerprints on load;
+non-matching entries are ignored with a per-interval warning.
+`--debug-tracks` solve atomically overwrites the file with fresh
+tracks.
+
+### Consumers
+
+Only the debug overlay code in
+[track_runner/cli.py](../track_runner/cli.py) and the benchmark
+script `tools/benchmark_solver_gates.py`. Absent this sidecar, the
+FWD/BWD overlay silently degrades to empty and a one-line
+"run solve with --debug-tracks to regenerate" message prints per
+process.
+
+## Camera motion NPZ
+
+File: `<video>.track_runner.camera_motion.npz`. Single file per
+video; cache identity lives inside the file. Reader
+`camera_motion.load_motion_cache`, writer
+`camera_motion.save_motion_cache`.
+
+### Top-level keys
+
+| Key | Type | Notes |
+| --- | --- | --- |
+| `motion_model` | bytes (UTF-8) | One of `fixed_zoom`, `discrete_zoom`, `continuous_zoom`. |
+| `video_identity_basename` | bytes (UTF-8) | Basename of the source video. |
+| `frame_count` | int64 | Frame count from video probe. |
+| `config_hash` | bytes (UTF-8) | MD5-8 of the estimator config dict. Loader compares against the current config; mismatch means stale and triggers recompute + overwrite. No merge, no partial reuse. |
+
+### Per-model arrays (float32)
+
+| Model | Arrays |
+| --- | --- |
+| `fixed_zoom` | `dx`, `dy`, `quality` (no `scale` -- constant 1.0 carries no signal) |
+| `discrete_zoom` | `dx`, `dy`, `scale`, `quality` |
+| `continuous_zoom` | `dx`, `dy`, `scale`, `quality` |
+
+`event_flags` was removed from the schema (zero downstream readers).
+`quality` stays because `scoring.py` uses it for `motion_quality` in
+the interval scoring.
+
+### Lifecycle
+
+- Computed once per video by `precompute_camera_motion`. The result
+  is written alongside the video's other `tr_config/` files.
+- On the next run, the loader reads `config_hash` and returns the
+  cached track only if the hash matches the current config. On
+  mismatch, the file is treated as absent, the estimator runs, and
+  `save_motion_cache` atomically overwrites.
+- Reused by solve, refine, encode, and the UI. The UI heat-map
+  overlay now reads the single canonical filename directly (no more
+  glob pattern).
 
 ## tr_config/archive
 
-Hand-kept backups of older runs (prior diagnostics, intervals,
-seeds, old motion caches, snapshot YAMLs). No code path reads or
-writes `tr_config/archive/`. It is safe to delete the directory to
-reclaim disk space.
+Holds hand-kept backups plus the one-shot migration tool's archive
+directory (`tr_config/archive/pre_cleanup_<YYYYMMDD>/`). No code path
+reads `tr_config/archive/`. Safe to delete for disk reclamation once
+you have confirmed the new formats work end-to-end.
+
+## Migration from legacy formats
+
+The one-shot script `tools/_migrate_tr_config.py` canonicalizes seeds
+and archives every other legacy file:
+
+- Seeds canonicalization: drops rows with `source != "human"` under
+  C7, then rewrites through the v3 canonical writer.
+- Intervals/diagnostics/camera-motion legacy files: moved to
+  `tr_config/archive/pre_cleanup_<YYYYMMDD>/`. No translation; the
+  next solve / analyze / precompute_camera_motion regenerates under
+  the new format.
+- Debug sidecars: never touched (they did not exist pre-migration).
+
+Default is dry-run; use `--apply` to act. Fingerprint-drift refusal
+guards against files with stored cx/cy/w/h that disagree with
+torso_box-derived geometry; `--accept-drift` opts in to rewrite
+anyway.
+
+Once the migration has run successfully, the script may be deleted
+(`rm tools/_migrate_tr_config.py`).
 
 ## FAQ
 
-- **Why is my seeds.json 20 MB?** Legacy per-seed `histogram` fields
-  from before 2026-04-20. See the seeds section.
-- **Where is the global camera-motion track stored?** In the `.npz`
-  file whose name starts with the video basename. Keys are `dx`, `dy`,
-  `scale`, `quality`, `event_flags`.
-- **Can I delete tr_config/archive/ ?** Yes. Nothing reads it.
-- **Can I delete an old `_<hash8>.npz` that does not match the current
-  config?** Yes. It is a cache; the next run recomputes as needed.
+- **Why is my seeds.json no longer 20 MB?** The legacy `histogram`
+  field is gone under C6. The canonical four-field schema is
+  ~150-200 B per seed.
+- **Where is the camera-motion track stored?** In
+  `<video>.track_runner.camera_motion.npz`. Keys are `dx`, `dy`,
+  `quality` (plus `scale` for discrete/continuous zoom), and
+  cache-identity metadata (`motion_model`, `config_hash`,
+  `video_identity_basename`, `frame_count`).
+- **Can I delete `tr_config/archive/`?** Yes. Nothing reads it.
+- **Can I delete `<video>.track_runner.debug_tracks.npz`?** Yes. It
+  is optional; regenerate by re-running solve with `--debug-tracks`.
 - **What happens if I hand-edit a per-video config YAML?** The next
-  run reloads it; per-video values override the merged defaults. If
-  you drop `processing.torso_height_multiple`, `validate_config` will
-  refuse to load the file.
-- **Does re-saving seeds.json strip the legacy histogram?** No. The
-  writer serializes whatever the loader returned. Stripping legacy
-  fields requires a small migration script; that is a future task.
+  run reloads it; per-video values override the merged defaults.
+- **Does re-saving seeds.json introduce legacy fields?** No.
+  `write_seeds` is strict: it emits only the canonical four fields
+  regardless of what the in-memory dict carries.
+- **How do I get FWD/BWD overlays back?** Run
+  `... solve --debug-tracks`. The sidecar writer produces
+  `<video>.track_runner.debug_tracks.npz`, and the overlay reader
+  merges it into the in-memory intervals dict by fingerprint.
 
 ## Related docs
 
 - [docs/TRACK_RUNNER_CONTRACT.md](TRACK_RUNNER_CONTRACT.md) -- hard
-  invariants; C6 is why `histogram` and `jersey_hsv` are no longer
-  read.
+  invariants; C6 (appearance banned) and C7 (human-only seeds) drive
+  most of the schema cleanup.
 - [docs/TRACK_RUNNER_DESIGN.md](TRACK_RUNNER_DESIGN.md) -- overall
   philosophy, including how seeds, intervals, and motion fit together.
-- [docs/CHANGELOG.md](CHANGELOG.md) -- the 2026-04-20 entry for the
-  histogram removal and the `not_in_frame` seed-filter fix.
+- [docs/CHANGELOG.md](CHANGELOG.md) -- the 2026-04-21 entries record
+  the tr_config storage cleanup patches and size deltas.

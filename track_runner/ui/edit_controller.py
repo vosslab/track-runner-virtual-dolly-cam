@@ -352,7 +352,7 @@ class EditController(BaseAnnotationController):
 				interval_info = preds.get("interval_info")
 		self._status_presenter.update(
 			seed, self._nav_idx, len(self._filtered_indices),
-			seed_confidence, interval_info,
+			self._fps, seed_confidence, interval_info,
 		)
 
 		# Update scale bar
@@ -530,25 +530,13 @@ class EditController(BaseAnnotationController):
 		if self._approx_mode:
 			self._approx_mode = False
 			self._update_mode_badge()
-			# Build approximate seed with approx area box
 			norm_box = seed_color.normalize_seed_box(box, self._config)
-			tx, ty, tw, th = norm_box
-			cx = float(tx + tw / 2.0)
-			cy = float(ty + th / 2.0)
-			new_seed = {
-				"frame_index": frame_index,
-				"time_s": seed.get("time_s", round(frame_index / self._fps, 3)),
-				"status": "approximate",
-				"torso_box": norm_box,
-				"cx": cx,
-				"cy": cy,
-				"w": float(tw),
-				"h": float(th),
-				"conf": None,
-				"pass": seed["pass"],
-				"source": "human",
-				"mode": "edit_redraw",
-			}
+			new_seed = seed_color._build_seed_dict(
+				frame_index,
+				norm_box,
+				seed["pass"],
+				status="approximate",
+			)
 			self._work_seeds[seed_list_idx] = new_seed
 			self._redrawn += 1
 			self._reviewed += 1
@@ -562,18 +550,12 @@ class EditController(BaseAnnotationController):
 			self._partial_mode = False
 			self._update_mode_badge()
 			norm_box = seed_color.normalize_seed_box(box, self._config)
-			jersey_hsv = seed_color.extract_jersey_color(
-				self._current_bgr, norm_box
-			)
 			new_seed = seed_color._build_seed_dict(
 				frame_index,
-				frame_index / self._fps,
 				norm_box,
-				jersey_hsv,
 				seed["pass"],
-				"edit_redraw",
+				status="partial",
 			)
-			new_seed["status"] = "partial"
 			self._reviewed += 1
 			self._redrawn += 1
 			self._status_changed += 1
@@ -583,16 +565,10 @@ class EditController(BaseAnnotationController):
 			self._advance()
 		else:
 			norm_box = seed_color.normalize_seed_box(box, self._config)
-			jersey_hsv = seed_color.extract_jersey_color(
-				self._current_bgr, norm_box
-			)
 			new_seed = seed_color._build_seed_dict(
 				frame_index,
-				frame_index / self._fps,
 				norm_box,
-				jersey_hsv,
 				seed["pass"],
-				"edit_redraw",
 			)
 			self._reviewed += 1
 			self._redrawn += 1
@@ -646,15 +622,14 @@ class EditController(BaseAnnotationController):
 		self._status_changed += 1
 		self._changed_frames.add(frame_index)
 
-		# Build new seed without torso_box
+		# Build canonical seed with no torso_box (e.g., not_in_frame).
+		# No derived geometry: _derive_seed_geometry skips seeds without
+		# a torso_box, and downstream code filters by status before
+		# reading cx/cy.
 		new_seed = {
 			"frame_index": seed["frame_index"],
-			"time_s": seed.get("time_s"),
 			"status": new_status,
-			"conf": None,
 			"pass": seed["pass"],
-			"source": "human",
-			"mode": "edit_redraw",
 		}
 		self._work_seeds[seed_list_idx] = new_seed
 		self._save_callback(self._work_seeds)
@@ -786,18 +761,13 @@ class EditController(BaseAnnotationController):
 		refined = self._pending_refined
 		seed = self._current_seed
 		frame_index = int(seed["frame_index"])
-		time_sec = seed.get("time_s", frame_index / self._fps)
 		rx = int(refined["cx"] - refined["w"] / 2.0)
 		ry = int(refined["cy"] - refined["h"] / 2.0)
 		polish_box = [rx, ry, int(refined["w"]), int(refined["h"])]
 		import seed_color
 		norm_box = seed_color.normalize_seed_box(polish_box, self._config)
-		jersey_hsv = seed_color.extract_jersey_color(
-			self._current_bgr, norm_box
-		)
 		new_seed = seed_color._build_seed_dict(
-			frame_index, time_sec, norm_box, jersey_hsv, seed["pass"],
-			"bbox_polish",
+			frame_index, norm_box, seed["pass"],
 		)
 		seed_list_idx = self._filtered_indices[self._nav_idx]
 		self._work_seeds[seed_list_idx] = new_seed
@@ -832,7 +802,7 @@ class EditController(BaseAnnotationController):
 				interval_info = preds.get("interval_info")
 		self._status_presenter.update(
 			self._current_seed, self._nav_idx, len(self._filtered_indices),
-			conf, interval_info,
+			self._fps, conf, interval_info,
 		)
 
 	#============================================

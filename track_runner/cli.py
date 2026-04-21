@@ -375,6 +375,66 @@ def _build_predictions_from_diagnostics(diagnostics: dict) -> dict:
 
 
 #============================================
+# tracks whether we already warned the user about a missing debug
+# sidecar in the current process; keeps the log output quiet across
+# multiple debug-overlay consumers in the same invocation
+_WARNED_MISSING_DEBUG_SIDECAR = False
+
+
+def _merge_debug_tracks(solved_intervals: dict, sidecar_path: str) -> None:
+	"""Merge forward/backward tracks from a debug sidecar in place.
+
+	If the sidecar exists, every interval whose fingerprint matches an
+	entry in both the geometry cache and the sidecar gains
+	`forward_track` and `backward_track` keys on its in-memory dict so
+	downstream debug-overlay code paths (which use `iv.get(
+	"forward_track")`) render correctly. Fingerprints that appear in
+	only one side are left alone; sidecar entries that do not match
+	the current geometry cache are counted and reported but not
+	applied.
+
+	If the sidecar is absent, prints a single "run with
+	--debug-tracks to regenerate" message per process and returns.
+
+	Args:
+		solved_intervals: Dict of fingerprint -> in-memory interval
+			dict (mutated in place).
+		sidecar_path: Path to the debug_tracks.npz sidecar.
+	"""
+	global _WARNED_MISSING_DEBUG_SIDECAR
+	if not os.path.isfile(sidecar_path):
+		if not _WARNED_MISSING_DEBUG_SIDECAR:
+			_WARNED_MISSING_DEBUG_SIDECAR = True
+			print(
+				"  fwd/bwd debug overlay unavailable "
+				"(run solve with --debug-tracks to regenerate)"
+			)
+		return
+	debug_data = state_io.load_debug_tracks(sidecar_path)
+	if not debug_data:
+		return
+	matched = 0
+	stale = 0
+	for fingerprint, tracks in debug_data.items():
+		if fingerprint in solved_intervals:
+			solved_intervals[fingerprint]["forward_track"] = tracks[
+				"forward_track"
+			]
+			solved_intervals[fingerprint]["backward_track"] = tracks[
+				"backward_track"
+			]
+			matched += 1
+		else:
+			stale += 1
+	if stale > 0:
+		print(
+			f"  debug tracks: {matched} intervals matched, "
+			f"{stale} sidecar entries stale (re-run --debug-tracks "
+			f"to refresh)"
+		)
+
+
+#============================================
 def _load_prior_results(intervals_path: str) -> tuple:
 	"""Load previously solved intervals and build a write-through callback.
 
@@ -387,7 +447,7 @@ def _load_prior_results(intervals_path: str) -> tuple:
 	Returns:
 		Tuple (prior_results_dict, on_interval_solved_callback).
 	"""
-	intervals_file = state_io.load_intervals(intervals_path)
+	intervals_file = state_io.load_geometry_cache(intervals_path)
 	solved = intervals_file.get("solved_intervals", {})
 
 	def _on_interval_solved(fingerprint: str, result: dict) -> None:
@@ -397,7 +457,7 @@ def _load_prior_results(intervals_path: str) -> tuple:
 		# embed video identity in each write
 		if VIDEO_IDENTITY is not None:
 			intervals_file["video_identity"] = VIDEO_IDENTITY
-		state_io.write_intervals(intervals_path, intervals_file)
+		state_io.write_geometry_cache(intervals_path, intervals_file)
 
 	return (solved, _on_interval_solved)
 
@@ -417,7 +477,7 @@ def _invalidate_intervals_for_frames(
 		intervals_path: Path to the solved-intervals JSON file.
 		changed_frames: Set of frame_index ints that were modified.
 	"""
-	intervals_file = state_io.load_intervals(intervals_path)
+	intervals_file = state_io.load_geometry_cache(intervals_path)
 	solved = intervals_file.get("solved_intervals", {})
 	if not solved:
 		return
@@ -439,7 +499,7 @@ def _invalidate_intervals_for_frames(
 	intervals_file["solved_intervals"] = solved
 	if VIDEO_IDENTITY is not None:
 		intervals_file["video_identity"] = VIDEO_IDENTITY
-	state_io.write_intervals(intervals_path, intervals_file)
+	state_io.write_geometry_cache(intervals_path, intervals_file)
 	remaining = len(solved)
 	print(f"  invalidated {len(keys_to_remove)} solved intervals "
 		f"({remaining} remaining)")
@@ -661,7 +721,7 @@ def _run_solve(
 	diagnostics["fps"] = fps
 	t_solve_elapsed = time.time() - t_solve_start
 	# mark whether the solve completed or was interrupted
-	intervals_file = state_io.load_intervals(intervals_path)
+	intervals_file = state_io.load_geometry_cache(intervals_path)
 	if rc.quit_requested:
 		intervals_file["solve_complete"] = False
 		print(f"  solve interrupted ({t_solve_elapsed:.1f}s)")
@@ -670,7 +730,17 @@ def _run_solve(
 		print(f"  solve complete ({t_solve_elapsed:.1f}s)")
 	if VIDEO_IDENTITY is not None:
 		intervals_file["video_identity"] = VIDEO_IDENTITY
-	state_io.write_intervals(intervals_path, intervals_file)
+	state_io.write_geometry_cache(intervals_path, intervals_file)
+	# opt-in debug-tracks sidecar: uses the in-memory prior_ivs dict,
+	# which still carries forward_track/backward_track for every
+	# newly-solved interval because _on_interval_solved stored the full
+	# result before write_geometry_cache stripped them. Skipped when
+	# --debug-tracks was not passed; no file produced in that case.
+	if getattr(args, "debug_tracks", False):
+		debug_tracks_path = tr_paths.default_debug_tracks_path(args.input_file)
+		debug_cache_shape = {"solved_intervals": prior_ivs}
+		state_io.write_debug_tracks(debug_tracks_path, debug_cache_shape)
+		print(f"  debug tracks sidecar written to {debug_tracks_path}")
 	# write diagnostics to disk
 	if VIDEO_IDENTITY is not None:
 		diagnostics["video_identity"] = VIDEO_IDENTITY
@@ -733,8 +803,12 @@ def _mode_seed(
 			if predictions:
 				print(f"  loaded predictions for {len(predictions)} frames")
 	if not predictions and os.path.isfile(intervals_path):
-		intervals_file = state_io.load_intervals(intervals_path)
+		intervals_file = state_io.load_geometry_cache(intervals_path)
 		solved_intervals = intervals_file.get("solved_intervals", {})
+		_merge_debug_tracks(
+			solved_intervals,
+			tr_paths.default_debug_tracks_path(args.input_file),
+		)
 		if solved_intervals:
 			intervals_list = list(solved_intervals.values())
 			predictions = _build_predictions_from_diagnostics(
@@ -818,8 +892,12 @@ def _mode_edit(
 
 	# fallback: load predictions from solved intervals (has per-frame tracks)
 	if not predictions and os.path.isfile(intervals_path):
-		intervals_file = state_io.load_intervals(intervals_path)
+		intervals_file = state_io.load_geometry_cache(intervals_path)
 		solved_intervals = intervals_file.get("solved_intervals", {})
+		_merge_debug_tracks(
+			solved_intervals,
+			tr_paths.default_debug_tracks_path(args.input_file),
+		)
 		if solved_intervals:
 			intervals_list = list(solved_intervals.values())
 			predictions = _build_predictions_from_diagnostics(
@@ -1001,8 +1079,12 @@ def _mode_target(
 	predictions = _build_predictions_from_diagnostics(diag_data)
 	# fallback to solved intervals if diagnostics lack per-frame tracks
 	if not predictions and os.path.isfile(intervals_path):
-		intervals_file = state_io.load_intervals(intervals_path)
+		intervals_file = state_io.load_geometry_cache(intervals_path)
 		solved_intervals = intervals_file.get("solved_intervals", {})
+		_merge_debug_tracks(
+			solved_intervals,
+			tr_paths.default_debug_tracks_path(args.input_file),
+		)
 		if solved_intervals:
 			intervals_list = list(solved_intervals.values())
 			predictions = _build_predictions_from_diagnostics(
@@ -1070,7 +1152,7 @@ def _mode_solve(
 	# only clear intervals if a prior solve completed successfully;
 	# if the prior solve was interrupted, resume from saved intervals
 	if os.path.isfile(intervals_path):
-		intervals_file = state_io.load_intervals(intervals_path)
+		intervals_file = state_io.load_geometry_cache(intervals_path)
 		prior_complete = intervals_file.get("solve_complete", False)
 		prior_count = len(intervals_file.get("solved_intervals", {}))
 		if prior_complete and prior_count > 0:
@@ -1135,7 +1217,7 @@ def _mode_refine(
 	# plan_interval_work is the single source of truth for the seed
 	# filter, fingerprint walk, and orphan prune -- solve mode and
 	# refine mode both call it so cache keys match byte-for-byte.
-	intervals_file = state_io.load_intervals(intervals_path)
+	intervals_file = state_io.load_geometry_cache(intervals_path)
 	solved_intervals = intervals_file.get("solved_intervals", {})
 	plan = solve_queue.plan_interval_work(seeds, solved_intervals)
 	total_expected = plan.total_intervals
@@ -1163,7 +1245,7 @@ def _mode_refine(
 	pruned_count = before - len(plan.pruned_prior)
 	if pruned_count > 0:
 		intervals_file["solved_intervals"] = dict(plan.pruned_prior)
-		state_io.write_intervals(intervals_path, intervals_file)
+		state_io.write_geometry_cache(intervals_path, intervals_file)
 		print(f"  cache: pruned {pruned_count} stale intervals "
 			f"({before} -> {len(plan.pruned_prior)})")
 
@@ -1318,7 +1400,7 @@ def _mode_analyze(
 			f"no solved intervals found at {intervals_path}; "
 			f"run 'solve' first"
 		)
-	intervals_file = state_io.load_intervals(intervals_path)
+	intervals_file = state_io.load_geometry_cache(intervals_path)
 	solved = intervals_file.get("solved_intervals", {})
 	if not solved:
 		raise RuntimeError(
@@ -1446,11 +1528,16 @@ def _mode_encode(
 			f"no solved intervals found at {intervals_path}; "
 			f"run 'solve' first"
 		)
-	intervals_file = state_io.load_intervals(intervals_path)
+	intervals_file = state_io.load_geometry_cache(intervals_path)
 	solved = intervals_file.get("solved_intervals", {})
 	if not solved:
 		raise RuntimeError(
 			"solved intervals file contains no interval data"
+		)
+	# merge optional debug sidecar (fwd/bwd tracks) when debug is on
+	if args.debug:
+		_merge_debug_tracks(
+			solved, tr_paths.default_debug_tracks_path(args.input_file),
 		)
 	# sort interval results by start_frame for stitching
 	interval_results = sorted(

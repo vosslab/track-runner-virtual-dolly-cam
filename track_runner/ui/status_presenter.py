@@ -53,22 +53,25 @@ class StatusPresenter:
 		seed: dict,
 		seed_index: int,
 		total_seeds: int,
+		fps: float,
 		confidence: dict | None = None,
 		interval_info: dict | None = None,
 	) -> None:
 		"""Update the status label with seed information.
 
 		Args:
-			seed: Seed dict with frame_index, status, and time_s keys.
+			seed: Seed dict with frame_index and status keys.
 			seed_index: 0-based index in the filtered list.
 			total_seeds: Total number of seeds being reviewed.
+			fps: Video frame rate, used to compute time_s for display.
 			confidence: Optional dict with 'score' and 'label' keys.
 			interval_info: Optional dict with severity, agreement, margin,
 				and reasons keys from prediction diagnostics.
 		"""
 		frame_index = int(seed.get("frame_index", 0))
 		status = seed.get("status", "unknown")
-		time_s = float(seed.get("time_s", 0.0))
+		# time_s derived from frame_index / fps; not a stored seed field
+		time_s = float(frame_index) / fps if fps > 0 else 0.0
 
 		# primary info line
 		text = (

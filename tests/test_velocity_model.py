@@ -115,7 +115,6 @@ def test_fwd_bwd_asymmetry():
 		dy=numpy.zeros(5, dtype=numpy.float32),
 		scale=numpy.ones(5, dtype=numpy.float32),
 		quality=numpy.ones(5, dtype=numpy.float32),
-		event_flags=numpy.zeros(5, dtype=numpy.int32),
 	)
 	transform = scene_coords.SceneTransform(motion)
 
@@ -171,7 +170,6 @@ def test_seed_roundtrip_endpoints():
 		dy=numpy.zeros(10, dtype=numpy.float32),
 		scale=numpy.ones(10, dtype=numpy.float32),
 		quality=numpy.ones(10, dtype=numpy.float32),
-		event_flags=numpy.zeros(10, dtype=numpy.int32),
 	)
 	transform = scene_coords.SceneTransform(motion)
 
@@ -220,7 +218,6 @@ def test_stationary_lock():
 		dy=numpy.zeros(5, dtype=numpy.float32),
 		scale=numpy.ones(5, dtype=numpy.float32),
 		quality=numpy.ones(5, dtype=numpy.float32),
-		event_flags=numpy.zeros(5, dtype=numpy.int32),
 	)
 	transform = scene_coords.SceneTransform(motion)
 
@@ -267,7 +264,6 @@ def test_confidence_decay():
 		dy=numpy.zeros(10, dtype=numpy.float32),
 		scale=numpy.ones(10, dtype=numpy.float32),
 		quality=numpy.ones(10, dtype=numpy.float32),
-		event_flags=numpy.zeros(10, dtype=numpy.int32),
 	)
 	transform = scene_coords.SceneTransform(motion)
 

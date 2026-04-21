@@ -1,0 +1,89 @@
+{
+  "track_runner_seeds": 2,
+  "video_identity": {
+    "basename": "redacted_test_clip.mkv",
+    "size_bytes": 123456789,
+    "width": 1920,
+    "height": 1080,
+    "fps": 30.0,
+    "frame_count": 5000,
+    "duration_s": 166.666
+  },
+  "seeds": [
+    {
+      "frame_index": 10,
+      "frame": 10,
+      "time_s": 0.333,
+      "torso_box": [640, 360, 40, 60],
+      "cx": 660.0,
+      "cy": 390.0,
+      "w": 40.0,
+      "h": 60.0,
+      "jersey_hsv": [120, 180, 200],
+      "histogram": [[0.0, 0.01, 0.02], [0.03, 0.04, 0.05]],
+      "pass": 1,
+      "conf": null,
+      "source": "human",
+      "mode": "initial",
+      "status": "visible"
+    },
+    {
+      "frame_index": 50,
+      "frame": 50,
+      "time_s": 1.666,
+      "torso_box": [650, 365, 42, 61],
+      "cx": 671.0,
+      "cy": 395.5,
+      "w": 42.0,
+      "h": 61.0,
+      "jersey_hsv": [121, 181, 199],
+      "pass": 1,
+      "conf": 0.3,
+      "source": "human",
+      "mode": "interval_refine",
+      "status": "approximate"
+    },
+    {
+      "frame_index": 100,
+      "frame": 100,
+      "time_s": 3.333,
+      "pass": 1,
+      "conf": null,
+      "source": "human",
+      "mode": "gap_refine",
+      "status": "not_in_frame"
+    },
+    {
+      "frame_index": 150,
+      "frame": 150,
+      "time_s": 5.0,
+      "torso_box": [680, 375, 44, 63],
+      "cx": 702.0,
+      "cy": 406.5,
+      "w": 44.0,
+      "h": 63.0,
+      "jersey_hsv": [122, 180, 198],
+      "pass": 2,
+      "conf": null,
+      "source": "propagated",
+      "mode": "solve_refine",
+      "status": "visible"
+    },
+    {
+      "frame_index": 200,
+      "frame": 200,
+      "time_s": 6.666,
+      "torso_box": [700, 380, 46, 65],
+      "cx": 723.0,
+      "cy": 412.5,
+      "w": 46.0,
+      "h": 65.0,
+      "jersey_hsv": [123, 179, 197],
+      "pass": 1,
+      "conf": null,
+      "source": "human",
+      "mode": "edit_redraw",
+      "status": "partial"
+    }
+  ]
+}

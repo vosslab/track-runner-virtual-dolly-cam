@@ -146,7 +146,7 @@ def load_all_data(input_file: str) -> tuple:
 
 	# load solved intervals (has fused_track per interval)
 	intervals_path = tr_paths.default_intervals_path(input_file)
-	intervals_data = state_io.load_intervals(intervals_path)
+	intervals_data = state_io.load_geometry_cache(intervals_path)
 	solved_count = len(intervals_data.get("solved_intervals", {}))
 	print(f"  solved intervals: {solved_count}")
 

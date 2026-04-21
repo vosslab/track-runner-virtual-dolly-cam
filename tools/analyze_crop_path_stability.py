@@ -73,16 +73,16 @@ def discover_videos(data_dir: str) -> dict:
 		seeds_path, intervals_path, diagnostics_path, config_path.
 	"""
 	# find all intervals files
-	pattern = os.path.join(data_dir, "*.track_runner.intervals.json")
+	pattern = os.path.join(data_dir, "*.track_runner.geometry_cache.npz")
 	intervals_files = sorted(glob.glob(pattern))
 	videos = {}
 	for ipath in intervals_files:
 		basename = os.path.basename(ipath)
-		# extract video name by removing .track_runner.intervals.json
-		video_name = basename.replace(".track_runner.intervals.json", "")
+		# extract video name by removing .track_runner.geometry_cache.npz
+		video_name = basename.replace(".track_runner.geometry_cache.npz", "")
 		prefix = os.path.join(data_dir, video_name + ".track_runner")
 		seeds_path = prefix + ".seeds.json"
-		diag_path = prefix + ".diagnostics.json"
+		diag_path = prefix + ".interval_scores.json"
 		config_path = prefix + ".config.yaml"
 		videos[video_name] = {
 			"intervals_path": ipath,
@@ -171,7 +171,7 @@ def analyze_one_video(
 	else:
 		cfg = tr_config.read_default_config()
 	# load intervals
-	intervals_file = state_io.load_intervals(paths["intervals_path"])
+	intervals_file = state_io.load_geometry_cache(paths["intervals_path"])
 	solved = intervals_file.get("solved_intervals", {})
 	if not solved:
 		print("  no solved intervals, skipping")

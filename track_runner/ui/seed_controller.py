@@ -549,24 +549,14 @@ class SeedController(BaseAnnotationController):
 					)
 				return
 
-		# extract torso_box and compute jersey color
+		# extract torso_box and build canonical v3 seed
 		torso_box = candidate["torso_box"]
 		import seed_color
 
-		# jersey_hsv is stored on disk as a legacy schema field; it is
-		# NOT used as identity evidence at solve time (contract C6).
-		jersey_hsv = seed_color.extract_jersey_color(
-			self._current_bgr, torso_box
-		)
-
-		# build seed dict
 		seed = seed_color._build_seed_dict(
 			self._current_frame,
-			self._current_frame / self._fps,
 			torso_box,
-			jersey_hsv,
 			self._pass_number,
-			self._mode_str,
 		)
 		self._commit_seed(seed)
 		self._advance()
@@ -604,23 +594,12 @@ class SeedController(BaseAnnotationController):
 			self._approx_mode = False
 			self._update_mode_badge()
 			norm_box = seed_color.normalize_seed_box(box, self._config)
-			tx, ty, tw, th = norm_box
-			cx = float(tx + tw / 2.0)
-			cy = float(ty + th / 2.0)
-			seed = {
-				"frame_index": self._current_frame,
-				"time_s": round(self._current_frame / self._fps, 3),
-				"status": "approximate",
-				"torso_box": norm_box,
-				"cx": cx,
-				"cy": cy,
-				"w": float(tw),
-				"h": float(th),
-				"conf": None,
-				"pass": self._pass_number,
-				"source": "human",
-				"mode": self._mode_str,
-			}
+			seed = seed_color._build_seed_dict(
+				self._current_frame,
+				norm_box,
+				self._pass_number,
+				status="approximate",
+			)
 			self._commit_seed(seed)
 			self._advance()
 			return
@@ -628,32 +607,20 @@ class SeedController(BaseAnnotationController):
 			self._partial_mode = False
 			self._update_mode_badge()
 			norm_box = seed_color.normalize_seed_box(box, self._config)
-			jersey_hsv = seed_color.extract_jersey_color(
-				self._current_bgr, norm_box
-			)
 			seed = seed_color._build_seed_dict(
 				self._current_frame,
-				self._current_frame / self._fps,
 				norm_box,
-				jersey_hsv,
 				self._pass_number,
-				self._mode_str,
+				status="partial",
 			)
-			seed["status"] = "partial"
 			self._commit_seed(seed)
 			self._advance()
 		else:
 			norm_box = seed_color.normalize_seed_box(box, self._config)
-			jersey_hsv = seed_color.extract_jersey_color(
-				self._current_bgr, norm_box
-			)
 			seed = seed_color._build_seed_dict(
 				self._current_frame,
-				self._current_frame / self._fps,
 				norm_box,
-				jersey_hsv,
 				self._pass_number,
-				self._mode_str,
 			)
 			self._commit_seed(seed)
 			self._advance()

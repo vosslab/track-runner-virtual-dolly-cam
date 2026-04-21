@@ -51,7 +51,6 @@ def _make_motion_track(n_frames: int) -> camera_motion.MotionTrack:
 		dy=numpy.zeros(n_frames, dtype=numpy.float32),
 		scale=numpy.ones(n_frames, dtype=numpy.float32),
 		quality=numpy.ones(n_frames, dtype=numpy.float32),
-		event_flags=numpy.zeros(n_frames, dtype=numpy.int32),
 	)
 
 

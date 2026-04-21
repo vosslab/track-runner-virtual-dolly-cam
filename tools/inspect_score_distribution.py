@@ -272,7 +272,7 @@ def main():
 	analyze_diagnostics(diag_path)
 	# look for matching agreement_debug sidecar
 	sidecar_path = diag_path.replace(
-		".diagnostics.json", ".agreement_debug.json",
+		".interval_scores.json", ".agreement_debug.json",
 	)
 	if os.path.isfile(sidecar_path):
 		print(f"\nsidecar found: {sidecar_path}")

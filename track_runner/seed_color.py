@@ -1,73 +1,14 @@
 """Seed-assistance utilities.
 
-Provides functions that support user seeding: extracting the legacy
-jersey_hsv tag preserved on disk (not used as identity evidence per
-contract C6), normalizing user-drawn seed boxes, and proposing candidate
-regions from a detector.
-
-Per docs/TRACK_RUNNER_CONTRACT.md clause C6, jersey color and color
-histograms are banned as identity or classification evidence. The
-detector-assisted candidate ordering here is OPTIONAL seeding assistance
-ranked by detector confidence alone, never by appearance similarity.
-Manual annotation remains the authoritative path.
+Provides helpers for user seeding: normalizing user-drawn seed boxes,
+proposing detector candidates, and building the canonical v3 seed
+dict. Per docs/TRACK_RUNNER_CONTRACT.md clauses C6 and C7, appearance
+cues (jersey color, color histograms) are banned as identity evidence,
+and only human-drawn torso boxes count as seeds.
 """
 
 # PIP3 modules
-import cv2
 import numpy
-
-#============================================
-
-def _clamp_box(frame: numpy.ndarray, box: list) -> tuple:
-	"""Clamp a box to frame bounds and return the ROI.
-
-	Args:
-		frame: BGR image as a numpy array (H, W, 3).
-		box: Rectangle as [x, y, w, h] in pixel coordinates.
-
-	Returns:
-		Cropped ROI as a numpy array, or None if the clamped region is empty.
-	"""
-	frame_h, frame_w = frame.shape[:2]
-	x, y, w, h = box
-	# clamp top-left corner to frame bounds
-	x1 = max(0, int(x))
-	y1 = max(0, int(y))
-	# clamp bottom-right corner to frame bounds
-	x2 = min(frame_w, int(x + w))
-	y2 = min(frame_h, int(y + h))
-	# check for empty region after clamping
-	if x2 <= x1 or y2 <= y1:
-		return None
-	roi = frame[y1:y2, x1:x2]
-	return roi
-
-
-#============================================
-
-def extract_jersey_color(frame: numpy.ndarray, box: list) -> tuple:
-	"""Extract median HSV color from a rectangular region.
-
-	Args:
-		frame: BGR image as a numpy array (H, W, 3).
-		box: Rectangle as [x, y, w, h] in pixel coordinates.
-
-	Returns:
-		Tuple of (h_median, s_median, v_median) as ints,
-		or (0, 0, 0) if the box is out of frame bounds.
-	"""
-	# clamp box to frame bounds and extract ROI
-	roi = _clamp_box(frame, box)
-	if roi is None:
-		return (0, 0, 0)
-	# convert from BGR to HSV color space
-	hsv_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-	# compute median for each HSV channel
-	h_median = int(numpy.median(hsv_roi[:, :, 0]))
-	s_median = int(numpy.median(hsv_roi[:, :, 1]))
-	v_median = int(numpy.median(hsv_roi[:, :, 2]))
-	return (h_median, s_median, v_median)
-
 
 #============================================
 
@@ -210,45 +151,39 @@ def normalize_seed_box(box: list, config: dict) -> list:
 
 def _build_seed_dict(
 	frame_index: int,
-	time_sec: float,
 	torso_box: list,
-	jersey_hsv: tuple,
 	pass_number: int,
-	mode: str,
+	status: str = "visible",
 ) -> dict:
-	"""Build a v2 seed dict from collected fields.
+	"""Build a canonical v3 seed dict with derived geometry attached.
+
+	Canonical on-disk fields are frame_index, torso_box, status, pass.
+	The returned dict also carries cx/cy/w/h derived from torso_box so
+	in-memory consumers (interval_fingerprint, velocity_model, UI) work
+	without re-deriving. write_seeds strips the derived keys back out.
 
 	Args:
 		frame_index: Frame index (0-based).
-		time_sec: Time in seconds.
-		torso_box: Normalized torso box as [x, y, w, h].
-		jersey_hsv: Tuple of (h, s, v) median HSV values. Preserved in the
-			on-disk schema per the 2026-04-20 design note; not used as
-			identity evidence at solve time per contract C6.
-		pass_number: Which collection pass this seed came from (1 = initial).
-		mode: Seed collection mode string.
+		torso_box: Normalized torso box as [x, y, w, h] (ints).
+		pass_number: Seeding pass number (1 = initial).
+		status: Seed status; defaults to "visible". Callers override to
+			"partial" or "approximate" at the mode decision site.
 
 	Returns:
-		Seed dict in v2 format with frame, time_s, torso_box, jersey_hsv,
-		cx, cy, w, h, pass, source, mode, and status keys.
+		Seed dict with canonical keys plus derived cx/cy/w/h.
 	"""
 	tx, ty, tw, th = torso_box
-	# compute center format for propagator compatibility
-	cx = float(tx + tw / 2.0)
-	cy = float(ty + th / 2.0)
+	# compute derived geometry for in-memory consumers (stripped at write)
+	cx = float(tx) + float(tw) / 2.0
+	cy = float(ty) + float(th) / 2.0
 	seed = {
 		"frame_index": frame_index,
-		"time_s": round(time_sec, 3),
 		"torso_box": torso_box,
-		"jersey_hsv": list(jersey_hsv),
+		"status": status,
+		"pass": pass_number,
 		"cx": cx,
 		"cy": cy,
 		"w": float(tw),
 		"h": float(th),
-		"pass": pass_number,
-		"conf": None,
-		"source": "human",
-		"mode": mode,
-		"status": "visible",
 	}
 	return seed

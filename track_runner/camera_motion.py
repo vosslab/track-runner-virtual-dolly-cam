@@ -54,16 +54,16 @@ class MotionTrack:
 		dx: numpy array of per-frame x translations (pixels).
 		dy: numpy array of per-frame y translations (pixels).
 		scale: numpy array of per-frame scale factors (1.0 = no change).
-		quality: numpy array of per-frame confidence (phase correlation response).
-		event_flags: numpy array of int bitfield.
-			bit 0: zoom_jump flag (large scale change detected).
-			bit 1: low_quality flag (quality < 0.5).
+			For `fixed_zoom`, this is always 1.0 and is not persisted to
+			disk, but the field is kept in memory so downstream
+			SceneTransform code works uniformly across motion models.
+		quality: numpy array of per-frame confidence (phase correlation
+			response). Consumed by scoring.py for `motion_quality`.
 	"""
 	dx: numpy.ndarray
 	dy: numpy.ndarray
 	scale: numpy.ndarray
 	quality: numpy.ndarray
-	event_flags: numpy.ndarray
 
 
 #============================================
@@ -134,12 +134,11 @@ class FixedZoomEstimator(MotionEstimator):
 			MotionTrack with translation and quality metrics.
 		"""
 		total_frames = reader.frame_count
-		# allocate output arrays
+		# allocate output arrays (float32; event_flags not tracked)
 		dx_arr = numpy.zeros(total_frames, dtype=numpy.float32)
 		dy_arr = numpy.zeros(total_frames, dtype=numpy.float32)
 		scale_arr = numpy.ones(total_frames, dtype=numpy.float32)
 		quality_arr = numpy.zeros(total_frames, dtype=numpy.float32)
-		event_flags_arr = numpy.zeros(total_frames, dtype=numpy.int32)
 
 		# read first frame (frame 0)
 		prev_frame = reader.read_frame(0)
@@ -187,10 +186,6 @@ class FixedZoomEstimator(MotionEstimator):
 				dy_arr[frame_index] = dy_val
 				quality_arr[frame_index] = quality_val
 
-				# set low_quality bit if confidence is below threshold
-				if quality_val < 0.5:
-					event_flags_arr[frame_index] |= (1 << 1)
-
 				# move to next frame
 				prev_gray = curr_gray
 				progress.update(task, advance=1)
@@ -205,7 +200,6 @@ class FixedZoomEstimator(MotionEstimator):
 			dy=dy_arr,
 			scale=scale_arr,
 			quality=quality_arr,
-			event_flags=event_flags_arr,
 		)
 		return motion
 
@@ -256,20 +250,19 @@ class DiscreteZoomEstimator(MotionEstimator):
 			MotionTrack with per-frame dx, dy, scale, quality, event_flags.
 		"""
 		total = reader.frame_count
-		dx_arr = numpy.zeros(total, dtype=numpy.float64)
-		dy_arr = numpy.zeros(total, dtype=numpy.float64)
+		dx_arr = numpy.zeros(total, dtype=numpy.float32)
+		dy_arr = numpy.zeros(total, dtype=numpy.float32)
 		# raw per-frame scale from log-polar correlation
-		raw_scale = numpy.ones(total, dtype=numpy.float64)
-		quality_arr = numpy.zeros(total, dtype=numpy.float64)
-		event_flags_arr = numpy.zeros(total, dtype=numpy.int32)
+		raw_scale = numpy.ones(total, dtype=numpy.float32)
+		quality_arr = numpy.zeros(total, dtype=numpy.float32)
 
 		# read first frame
 		frame0 = reader.read_frame(0)
 		if frame0 is None:
 			motion = MotionTrack(
 				dx=dx_arr, dy=dy_arr,
-				scale=numpy.ones(total, dtype=numpy.float64),
-				quality=quality_arr, event_flags=event_flags_arr,
+				scale=numpy.ones(total, dtype=numpy.float32),
+				quality=quality_arr,
 			)
 			return motion
 		prev_gray = cv2.cvtColor(frame0, cv2.COLOR_BGR2GRAY)
@@ -307,7 +300,7 @@ class DiscreteZoomEstimator(MotionEstimator):
 		# detect zoom jumps using 5-frame sliding window
 		window_size = 5
 		zoom_levels = config.get("camera", {}).get("zoom_levels", [1])
-		scale_arr = numpy.ones(total, dtype=numpy.float64)
+		scale_arr = numpy.ones(total, dtype=numpy.float32)
 		cumulative_scale = 1.0
 
 		for i in range(1, total):
@@ -322,9 +315,7 @@ class DiscreteZoomEstimator(MotionEstimator):
 			min_s = numpy.min(window_scales)
 			ratio = max_s / max(min_s, 1e-6)
 			if ratio > 1.40:
-				# zoom transition detected
-				event_flags_arr[i] |= (1 << 0)
-				# snap to nearest zoom level ratio
+				# zoom transition detected; snap to nearest zoom level
 				cumulative_scale *= raw_scale[i]
 				snapped = self._snap_to_zoom_level(
 					cumulative_scale, zoom_levels,
@@ -342,7 +333,7 @@ class DiscreteZoomEstimator(MotionEstimator):
 
 		motion = MotionTrack(
 			dx=dx_arr, dy=dy_arr, scale=scale_arr,
-			quality=quality_arr, event_flags=event_flags_arr,
+			quality=quality_arr,
 		)
 		return motion
 
@@ -435,20 +426,19 @@ class ContinuousZoomEstimator(MotionEstimator):
 			config: Config dict.
 
 		Returns:
-			MotionTrack with per-frame dx, dy, scale, quality, event_flags.
+			MotionTrack with per-frame dx, dy, scale, quality.
 		"""
 		total = reader.frame_count
-		dx_arr = numpy.zeros(total, dtype=numpy.float64)
-		dy_arr = numpy.zeros(total, dtype=numpy.float64)
-		scale_arr = numpy.ones(total, dtype=numpy.float64)
-		quality_arr = numpy.zeros(total, dtype=numpy.float64)
-		event_flags_arr = numpy.zeros(total, dtype=numpy.int32)
+		dx_arr = numpy.zeros(total, dtype=numpy.float32)
+		dy_arr = numpy.zeros(total, dtype=numpy.float32)
+		scale_arr = numpy.ones(total, dtype=numpy.float32)
+		quality_arr = numpy.zeros(total, dtype=numpy.float32)
 
 		frame0 = reader.read_frame(0)
 		if frame0 is None:
 			motion = MotionTrack(
 				dx=dx_arr, dy=dy_arr, scale=scale_arr,
-				quality=quality_arr, event_flags=event_flags_arr,
+				quality=quality_arr,
 			)
 			return motion
 		prev_gray = cv2.cvtColor(frame0, cv2.COLOR_BGR2GRAY)
@@ -483,8 +473,6 @@ class ContinuousZoomEstimator(MotionEstimator):
 				# stricter quality gating for continuous zoom
 				if response < 0.3:
 					scale_arr[frame_index] = 1.0
-					# set low quality flag
-					event_flags_arr[frame_index] |= (1 << 1)
 				else:
 					scale_arr[frame_index] = scale_ratio
 
@@ -499,7 +487,7 @@ class ContinuousZoomEstimator(MotionEstimator):
 
 		motion = MotionTrack(
 			dx=dx_arr, dy=dy_arr, scale=scale_arr,
-			quality=quality_arr, event_flags=event_flags_arr,
+			quality=quality_arr,
 		)
 		return motion
 
@@ -523,75 +511,154 @@ def _compute_config_fingerprint(config: dict) -> str:
 
 
 #============================================
-def _compute_cache_key(
-	video_identity: dict,
-	estimator_type: str,
-	config_fingerprint: str,
-) -> str:
-	"""Compute a unique cache key for motion data.
 
-	Args:
-		video_identity: Video identity dict from tr_video_identity.
-		estimator_type: Name of the estimator class (e.g. "FixedZoomEstimator").
-		config_fingerprint: Hash of the estimator config.
+# Motion model identifiers written inside the NPZ as `motion_model`.
+MOTION_MODEL_FIXED = "fixed_zoom"
+MOTION_MODEL_DISCRETE = "discrete_zoom"
+MOTION_MODEL_CONTINUOUS = "continuous_zoom"
 
-	Returns:
-		String key suitable for naming cache files.
-	"""
-	# build a composite key from video identity and estimator info
-	components = [
-		video_identity.get("basename", "unknown"),
-		str(video_identity.get("frame_count", 0)),
-		estimator_type,
-		config_fingerprint[:8],  # first 8 chars of hash
-	]
-	cache_key = "_".join(components)
-	return cache_key
+# Valid model values; loader rejects anything else.
+VALID_MOTION_MODELS = frozenset({
+	MOTION_MODEL_FIXED, MOTION_MODEL_DISCRETE, MOTION_MODEL_CONTINUOUS,
+})
+
+# Per-model required array sets. Fixed zoom carries no scale because
+# it is constant 1.0 by construction; writing it would be pure ballast.
+_REQUIRED_ARRAYS = {
+	MOTION_MODEL_FIXED: ("dx", "dy", "quality"),
+	MOTION_MODEL_DISCRETE: ("dx", "dy", "scale", "quality"),
+	MOTION_MODEL_CONTINUOUS: ("dx", "dy", "scale", "quality"),
+}
+
+
+def _estimator_type_to_model(estimator_type: str) -> str:
+	"""Map a config-level estimator type string to a motion_model label."""
+	if estimator_type in ("FixedZoomEstimator", "fixed"):
+		return MOTION_MODEL_FIXED
+	if estimator_type in (
+		"DiscreteZoomEstimator", "discrete", "iphone_discrete",
+	):
+		return MOTION_MODEL_DISCRETE
+	if estimator_type in ("ContinuousZoomEstimator", "continuous"):
+		return MOTION_MODEL_CONTINUOUS
+	raise ValueError(f"unsupported estimator type: {estimator_type}")
 
 
 #============================================
 def save_motion_cache(
 	motion_track: MotionTrack,
 	cache_path: str,
+	motion_model: str,
+	video_identity: dict,
+	config_hash: str,
 ) -> None:
-	"""Save motion track to an NPZ cache file.
+	"""Save motion track to the canonical camera_motion.npz file.
+
+	Writes per-model arrays (fixed_zoom omits `scale`; discrete and
+	continuous include it) plus `motion_model`, `video_identity_basename`,
+	`frame_count`, and `config_hash` as cache-identity metadata. All
+	per-frame arrays are stored as float32. No `event_flags`.
 
 	Args:
 		motion_track: MotionTrack instance to save.
-		cache_path: Path to the output .npz file.
+		cache_path: Target NPZ file path
+			(`<video>.track_runner.camera_motion.npz`).
+		motion_model: One of MOTION_MODEL_{FIXED,DISCRETE,CONTINUOUS}.
+		video_identity: dict carrying at least `basename` and
+			`frame_count`; persisted so a stale cache can be detected
+			without re-probing the video.
+		config_hash: MD5-8 of the estimator config dict. Loader
+			compares to the current config; mismatch triggers recompute.
 	"""
+	if motion_model not in VALID_MOTION_MODELS:
+		raise ValueError(f"unknown motion_model: {motion_model}")
 	tr_paths.ensure_parent_dir(cache_path)
-	numpy.savez(
-		cache_path,
-		dx=motion_track.dx,
-		dy=motion_track.dy,
-		scale=motion_track.scale,
-		quality=motion_track.quality,
-		event_flags=motion_track.event_flags,
-	)
+	arrays = {
+		"motion_model": numpy.frombuffer(
+			motion_model.encode("utf-8"), dtype=numpy.uint8
+		),
+		"video_identity_basename": numpy.frombuffer(
+			str(video_identity.get("basename", "unknown")).encode("utf-8"),
+			dtype=numpy.uint8,
+		),
+		"frame_count": numpy.asarray(
+			int(video_identity.get("frame_count", 0)), dtype=numpy.int64,
+		),
+		"config_hash": numpy.frombuffer(
+			config_hash.encode("utf-8"), dtype=numpy.uint8
+		),
+		"dx": numpy.asarray(motion_track.dx, dtype=numpy.float32),
+		"dy": numpy.asarray(motion_track.dy, dtype=numpy.float32),
+		"quality": numpy.asarray(motion_track.quality, dtype=numpy.float32),
+	}
+	# fixed zoom omits scale; other models include it
+	if motion_model != MOTION_MODEL_FIXED:
+		arrays["scale"] = numpy.asarray(
+			motion_track.scale, dtype=numpy.float32,
+		)
+	numpy.savez(cache_path, **arrays)
 
 
 #============================================
-def load_motion_cache(cache_path: str) -> MotionTrack | None:
-	"""Load motion track from an NPZ cache file.
+def load_motion_cache(
+	cache_path: str,
+	expected_config_hash: str | None = None,
+) -> MotionTrack | None:
+	"""Load motion track from camera_motion.npz.
+
+	Returns None if the file does not exist OR the persisted
+	`config_hash` differs from `expected_config_hash`. A stale cache
+	(mismatched hash) is treated as absent so the caller recomputes
+	and overwrites atomically. No merge, no partial reuse.
+
+	For `fixed_zoom`, the on-disk file carries no `scale` array; the
+	loader synthesizes an all-ones scale array so downstream
+	SceneTransform code sees the same shape regardless of model.
 
 	Args:
-		cache_path: Path to the .npz cache file.
+		cache_path: Path to `<video>.track_runner.camera_motion.npz`.
+		expected_config_hash: Current config's md5-8 hash; if provided
+			and disagreeing with the stored value, the cache is
+			treated as stale and None is returned.
 
 	Returns:
-		MotionTrack instance, or None if file does not exist.
+		MotionTrack instance, or None if missing / stale / unknown
+		motion_model.
+
+	Raises:
+		RuntimeError: If the file exists but a required per-model
+			array is missing.
 	"""
 	if not os.path.isfile(cache_path):
 		return None
-	# load arrays from NPZ
-	data = numpy.load(cache_path)
-	motion = MotionTrack(
-		dx=numpy.array(data["dx"]),
-		dy=numpy.array(data["dy"]),
-		scale=numpy.array(data["scale"]),
-		quality=numpy.array(data["quality"]),
-		event_flags=numpy.array(data["event_flags"]),
-	)
+	with numpy.load(cache_path, allow_pickle=False) as npz:
+		motion_model = bytes(npz["motion_model"]).decode("utf-8")
+		if motion_model not in VALID_MOTION_MODELS:
+			raise RuntimeError(
+				f"unknown motion_model {motion_model!r} in {cache_path}; "
+				f"run tools/_migrate_tr_config.py to archive and regenerate"
+			)
+		stored_hash = bytes(npz["config_hash"]).decode("utf-8")
+		# stale cache: behave as if file is absent so caller recomputes
+		if expected_config_hash is not None and stored_hash != expected_config_hash:
+			return None
+		required = _REQUIRED_ARRAYS[motion_model]
+		for key in required:
+			if key not in npz.files:
+				raise RuntimeError(
+					f"motion cache missing required array {key!r} "
+					f"for model {motion_model} in {cache_path}"
+				)
+		dx = numpy.asarray(npz["dx"], dtype=numpy.float32)
+		dy = numpy.asarray(npz["dy"], dtype=numpy.float32)
+		quality = numpy.asarray(npz["quality"], dtype=numpy.float32)
+		if motion_model == MOTION_MODEL_FIXED:
+			# synthesize a constant-1.0 scale so downstream code sees
+			# a uniform MotionTrack shape regardless of model
+			scale = numpy.ones(len(dx), dtype=numpy.float32)
+		else:
+			scale = numpy.asarray(npz["scale"], dtype=numpy.float32)
+	motion = MotionTrack(dx=dx, dy=dy, scale=scale, quality=quality)
 	return motion
 
 
@@ -603,52 +670,55 @@ def precompute_camera_motion(
 	video_info: dict,
 	cache_dir: str,
 ) -> MotionTrack:
-	"""Estimate camera motion, checking cache first.
+	"""Estimate camera motion, checking the single-file cache first.
+
+	The cache lives at `<video>.track_runner.camera_motion.npz`. If
+	present and the stored `config_hash` matches the current
+	estimator-config hash, returns the cached track. Otherwise the
+	estimator runs and the cache is atomically overwritten.
 
 	Args:
 		reader: FrameReader instance with read_frame() and frame_count.
 		config: Configuration dict with motion estimator settings.
-		input_file: Path to the input video file (used for cache key).
+		input_file: Path to the input video file (used for cache path).
 		video_info: Video probe info dict (width, height, fps, etc.).
-		cache_dir: Directory where cache files are stored.
+		cache_dir: Directory where cache files are stored. Ignored for
+			path selection (tr_paths resolves to tr_config/); kept in
+			the signature for callsite compatibility.
 
 	Returns:
 		MotionTrack with per-frame motion data.
 	"""
+	del cache_dir  # retained for callsite compatibility; path from tr_paths
 	# build video identity for cache validation
 	video_identity = tr_video_identity.make_video_identity(
-		input_file,
-		video_info,
+		input_file, video_info,
 	)
-
 	# get estimator config (default to FixedZoomEstimator if not specified)
 	estimator_config = config.get("motion", {}).get("estimator", {})
-	estimator_type = estimator_config.get("type", "FixedZoomEstimator")
-
-	# compute cache key
+	estimator_type = estimator_config.get("type")
+	# fall back to camera.zoom_type alias when motion.estimator.type absent
+	if estimator_type is None:
+		zoom_type = config.get("camera", {}).get("zoom_type", "fixed")
+		estimator_type = zoom_type
+	motion_model = _estimator_type_to_model(estimator_type)
 	config_fp = _compute_config_fingerprint(estimator_config)
-	cache_key = _compute_cache_key(video_identity, estimator_type, config_fp)
-	cache_path = os.path.join(cache_dir, f"{cache_key}.npz")
-
-	# try to load from cache
-	cached_motion = load_motion_cache(cache_path)
+	config_hash = config_fp[:8]
+	cache_path = tr_paths.default_motion_cache_path(input_file)
+	# try to load from cache; stale hash returns None and triggers recompute
+	cached_motion = load_motion_cache(cache_path, config_hash)
 	if cached_motion is not None:
 		return cached_motion
-
-	# select estimator by type or zoom_type config alias
-	zoom_type = config.get("camera", {}).get("zoom_type", "fixed")
-	if estimator_type == "FixedZoomEstimator" or zoom_type == "fixed":
+	# select the matching estimator implementation
+	if motion_model == MOTION_MODEL_FIXED:
 		estimator = FixedZoomEstimator()
-	elif estimator_type in ("DiscreteZoomEstimator", "iphone_discrete") or zoom_type in ("iphone_discrete", "discrete"):
+	elif motion_model == MOTION_MODEL_DISCRETE:
 		estimator = DiscreteZoomEstimator()
-	elif estimator_type == "ContinuousZoomEstimator" or zoom_type == "continuous":
-		estimator = ContinuousZoomEstimator()
 	else:
-		raise ValueError(f"unsupported estimator type: {estimator_type}")
-
+		estimator = ContinuousZoomEstimator()
 	motion = estimator.estimate(reader, estimator_config)
-
-	# save to cache
-	save_motion_cache(motion, cache_path)
-
+	# save to cache atomically (numpy.savez overwrites in place)
+	save_motion_cache(
+		motion, cache_path, motion_model, video_identity, config_hash,
+	)
 	return motion

@@ -17,7 +17,6 @@ def test_identity_transform_pixel_equals_scene():
 		dy=numpy.zeros(5, dtype=numpy.float32),
 		scale=numpy.ones(5, dtype=numpy.float32),
 		quality=numpy.ones(5, dtype=numpy.float32),
-		event_flags=numpy.zeros(5, dtype=numpy.int32),
 	)
 	transform = scene_coords.SceneTransform(motion)
 
@@ -37,7 +36,6 @@ def test_pure_translation_removes_accumulated_offset():
 		dy=numpy.array([0.0, 5.0, 5.0, 5.0, 5.0], dtype=numpy.float32),
 		scale=numpy.ones(5, dtype=numpy.float32),
 		quality=numpy.ones(5, dtype=numpy.float32),
-		event_flags=numpy.zeros(5, dtype=numpy.int32),
 	)
 	transform = scene_coords.SceneTransform(motion)
 
@@ -56,7 +54,6 @@ def test_round_trip_pixel_to_scene_to_pixel():
 		dy=numpy.array([0.0, 3.0, 6.0, 9.0, 12.0], dtype=numpy.float32),
 		scale=numpy.ones(5, dtype=numpy.float32),
 		quality=numpy.ones(5, dtype=numpy.float32),
-		event_flags=numpy.zeros(5, dtype=numpy.int32),
 	)
 	transform = scene_coords.SceneTransform(motion)
 
@@ -75,7 +72,6 @@ def test_pixel_box_to_scene_round_trip():
 		dy=numpy.array([0.0, 4.0, 8.0], dtype=numpy.float32),
 		scale=numpy.ones(3, dtype=numpy.float32),
 		quality=numpy.ones(3, dtype=numpy.float32),
-		event_flags=numpy.zeros(3, dtype=numpy.int32),
 	)
 	transform = scene_coords.SceneTransform(motion)
 
@@ -109,7 +105,6 @@ def test_scale_factor_affects_coordinates():
 		dy=numpy.array([0.0, 0.0, 0.0, 0.0], dtype=numpy.float32),
 		scale=numpy.array([1.0, 2.0, 2.0, 2.0], dtype=numpy.float32),
 		quality=numpy.ones(4, dtype=numpy.float32),
-		event_flags=numpy.zeros(4, dtype=numpy.int32),
 	)
 	transform = scene_coords.SceneTransform(motion)
 
@@ -134,7 +129,6 @@ def test_scale_factor_affects_box_size():
 		dy=numpy.array([0.0, 0.0, 0.0, 0.0], dtype=numpy.float32),
 		scale=numpy.array([1.0, 1.0, 2.0, 2.0], dtype=numpy.float32),
 		quality=numpy.ones(4, dtype=numpy.float32),
-		event_flags=numpy.zeros(4, dtype=numpy.int32),
 	)
 	transform = scene_coords.SceneTransform(motion)
 
@@ -166,7 +160,6 @@ def test_combined_translation_and_scale():
 		dy=numpy.array([0.0, 5.0, 5.0], dtype=numpy.float32),
 		scale=numpy.array([1.0, 1.5, 1.5], dtype=numpy.float32),
 		quality=numpy.ones(3, dtype=numpy.float32),
-		event_flags=numpy.zeros(3, dtype=numpy.int32),
 	)
 	transform = scene_coords.SceneTransform(motion)
 
@@ -190,7 +183,6 @@ def test_scene_coords_at_frame_zero():
 		dy=numpy.array([3.0, 6.0, 9.0], dtype=numpy.float32),
 		scale=numpy.array([2.0, 2.0, 2.0], dtype=numpy.float32),
 		quality=numpy.ones(3, dtype=numpy.float32),
-		event_flags=numpy.zeros(3, dtype=numpy.int32),
 	)
 	transform = scene_coords.SceneTransform(motion)
 
@@ -221,7 +213,6 @@ def test_piecewise_scale_zoom_jump():
 			dtype=numpy.float32
 		),
 		quality=numpy.ones(6, dtype=numpy.float32),
-		event_flags=numpy.zeros(6, dtype=numpy.int32),
 	)
 	transform = scene_coords.SceneTransform(motion)
 

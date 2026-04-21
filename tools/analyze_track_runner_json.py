@@ -85,8 +85,8 @@ def discover_videos(input_dir: str) -> dict:
 		# extract video name by removing .track_runner.seeds.json
 		video_name = basename.replace(".track_runner.seeds.json", "")
 		prefix = os.path.join(input_dir, video_name + ".track_runner")
-		intervals_path = prefix + ".intervals.json"
-		diagnostics_path = prefix + ".diagnostics.json"
+		intervals_path = prefix + ".geometry_cache.npz"
+		diagnostics_path = prefix + ".interval_scores.json"
 		videos[video_name] = {
 			"seeds_path": sf,
 			"intervals_path": intervals_path if os.path.isfile(intervals_path) else None,
@@ -825,7 +825,7 @@ def get_fps_for_video(video_name: str, input_dir: str) -> float:
 		if config and "fps" in config:
 			return float(config["fps"])
 	# try diagnostics file for fps
-	diag_path = os.path.join(input_dir, video_name + ".track_runner.diagnostics.json")
+	diag_path = os.path.join(input_dir, video_name + ".track_runner.interval_scores.json")
 	if os.path.isfile(diag_path):
 		with open(diag_path) as f:
 			data = json.load(f)

@@ -1,9 +1,5 @@
 """Tests for track_runner.camera_motion module."""
 
-# Standard Library
-import os
-import tempfile
-
 # PIP3 modules
 import numpy
 
@@ -100,27 +96,128 @@ def test_fixed_zoom_estimator_detects_motion():
 
 
 #============================================
-def test_npz_cache_save_and_load():
-	"""Test NPZ cache save and load round-trip."""
-	with tempfile.TemporaryDirectory() as tmpdir:
-		cache_path = os.path.join(tmpdir, "motion_cache.npz")
+def _dummy_identity(basename: str = "test.mkv", frame_count: int = 3) -> dict:
+	"""Minimal video_identity dict for cache tests."""
+	return {"basename": basename, "frame_count": frame_count}
 
-		# create a motion track
-		motion_orig = camera_motion.MotionTrack(
-			dx=numpy.array([0.0, 1.5, 2.0], dtype=numpy.float32),
-			dy=numpy.array([0.0, -0.5, 0.1], dtype=numpy.float32),
-			scale=numpy.array([1.0, 1.0, 1.0], dtype=numpy.float32),
-			quality=numpy.array([0.9, 0.85, 0.88], dtype=numpy.float32),
-			event_flags=numpy.array([0, 0, 2], dtype=numpy.int32),
-		)
 
-		# save and reload
-		camera_motion.save_motion_cache(motion_orig, cache_path)
-		motion_loaded = camera_motion.load_motion_cache(cache_path)
+#============================================
+def test_fixed_zoom_cache_round_trip(tmp_path):
+	"""fixed_zoom caches round-trip without a scale array on disk."""
+	cache_path = str(tmp_path / "motion.npz")
+	motion_orig = camera_motion.MotionTrack(
+		dx=numpy.array([0.0, 1.5, 2.0], dtype=numpy.float32),
+		dy=numpy.array([0.0, -0.5, 0.1], dtype=numpy.float32),
+		scale=numpy.ones(3, dtype=numpy.float32),
+		quality=numpy.array([0.9, 0.85, 0.88], dtype=numpy.float32),
+	)
+	camera_motion.save_motion_cache(
+		motion_orig, cache_path,
+		motion_model=camera_motion.MOTION_MODEL_FIXED,
+		video_identity=_dummy_identity(),
+		config_hash="abcd1234",
+	)
+	# on disk: no scale array for fixed_zoom
+	with numpy.load(cache_path, allow_pickle=False) as npz:
+		assert "scale" not in npz.files
+		assert bytes(npz["motion_model"]).decode("utf-8") == "fixed_zoom"
+	# round-trip: dx/dy/quality preserved, scale synthesized as 1.0
+	loaded = camera_motion.load_motion_cache(cache_path)
+	assert numpy.allclose(loaded.dx, motion_orig.dx)
+	assert numpy.allclose(loaded.dy, motion_orig.dy)
+	assert numpy.allclose(loaded.quality, motion_orig.quality)
+	assert numpy.allclose(loaded.scale, numpy.ones(3))
 
-		# round-trip: all arrays survive save+load unchanged
-		assert numpy.allclose(motion_loaded.dx, motion_orig.dx)
-		assert numpy.array_equal(motion_loaded.event_flags, motion_orig.event_flags)
+
+#============================================
+def test_discrete_zoom_cache_includes_scale(tmp_path):
+	"""discrete_zoom caches persist the scale array."""
+	cache_path = str(tmp_path / "motion.npz")
+	motion_orig = camera_motion.MotionTrack(
+		dx=numpy.zeros(3, dtype=numpy.float32),
+		dy=numpy.zeros(3, dtype=numpy.float32),
+		scale=numpy.array([1.0, 2.0, 1.0], dtype=numpy.float32),
+		quality=numpy.ones(3, dtype=numpy.float32),
+	)
+	camera_motion.save_motion_cache(
+		motion_orig, cache_path,
+		motion_model=camera_motion.MOTION_MODEL_DISCRETE,
+		video_identity=_dummy_identity(),
+		config_hash="hash01",
+	)
+	with numpy.load(cache_path, allow_pickle=False) as npz:
+		assert "scale" in npz.files
+		assert "event_flags" not in npz.files
+	loaded = camera_motion.load_motion_cache(cache_path)
+	assert numpy.allclose(loaded.scale, motion_orig.scale)
+
+
+#============================================
+def test_stale_config_hash_treated_as_miss(tmp_path):
+	"""A mismatched config_hash makes load_motion_cache return None."""
+	cache_path = str(tmp_path / "motion.npz")
+	motion = camera_motion.MotionTrack(
+		dx=numpy.zeros(3, dtype=numpy.float32),
+		dy=numpy.zeros(3, dtype=numpy.float32),
+		scale=numpy.ones(3, dtype=numpy.float32),
+		quality=numpy.ones(3, dtype=numpy.float32),
+	)
+	camera_motion.save_motion_cache(
+		motion, cache_path,
+		motion_model=camera_motion.MOTION_MODEL_FIXED,
+		video_identity=_dummy_identity(),
+		config_hash="original",
+	)
+	# expected hash disagrees -> None
+	assert camera_motion.load_motion_cache(cache_path, "different") is None
+	# matching hash -> still loads
+	assert camera_motion.load_motion_cache(cache_path, "original") is not None
+
+
+#============================================
+def test_loader_rejects_unknown_motion_model(tmp_path):
+	"""Loader raises on unknown motion_model values."""
+	cache_path = str(tmp_path / "motion.npz")
+	numpy.savez(
+		cache_path,
+		motion_model=numpy.frombuffer(
+			b"mystery_model", dtype=numpy.uint8
+		),
+		video_identity_basename=numpy.frombuffer(
+			b"t.mkv", dtype=numpy.uint8
+		),
+		frame_count=numpy.asarray(3, dtype=numpy.int64),
+		config_hash=numpy.frombuffer(b"abcd", dtype=numpy.uint8),
+		dx=numpy.zeros(3, dtype=numpy.float32),
+		dy=numpy.zeros(3, dtype=numpy.float32),
+		quality=numpy.ones(3, dtype=numpy.float32),
+	)
+	import pytest
+	with pytest.raises(RuntimeError, match="unknown motion_model"):
+		camera_motion.load_motion_cache(cache_path)
+
+
+#============================================
+def test_loader_rejects_discrete_without_scale(tmp_path):
+	"""discrete_zoom without a scale array raises on load."""
+	cache_path = str(tmp_path / "motion.npz")
+	numpy.savez(
+		cache_path,
+		motion_model=numpy.frombuffer(
+			b"discrete_zoom", dtype=numpy.uint8
+		),
+		video_identity_basename=numpy.frombuffer(
+			b"t.mkv", dtype=numpy.uint8
+		),
+		frame_count=numpy.asarray(3, dtype=numpy.int64),
+		config_hash=numpy.frombuffer(b"abcd", dtype=numpy.uint8),
+		dx=numpy.zeros(3, dtype=numpy.float32),
+		dy=numpy.zeros(3, dtype=numpy.float32),
+		quality=numpy.ones(3, dtype=numpy.float32),
+	)
+	import pytest
+	with pytest.raises(RuntimeError, match="missing required array"):
+		camera_motion.load_motion_cache(cache_path)
 
 
 #============================================
@@ -140,36 +237,6 @@ def test_median_filter_smoothing():
 	# edge values should be unchanged by median filter
 	assert filtered[0] == arr[0]
 	assert filtered[-1] == arr[-1]
-
-
-#============================================
-def test_precompute_camera_motion_cache_hit():
-	"""Test cache hit path in precompute_camera_motion.
-
-	Note: this test mocks out video_identity to avoid file I/O.
-	We test the caching logic directly instead.
-	"""
-	with tempfile.TemporaryDirectory() as tmpdir:
-		# test direct cache save/load path instead of full precompute
-		motion_orig = camera_motion.MotionTrack(
-			dx=numpy.array([0.0, 1.0, 2.0, 3.0], dtype=numpy.float32),
-			dy=numpy.array([0.0, 0.5, 1.0, 1.5], dtype=numpy.float32),
-			scale=numpy.ones(4, dtype=numpy.float32),
-			quality=numpy.ones(4, dtype=numpy.float32),
-			event_flags=numpy.zeros(4, dtype=numpy.int32),
-		)
-
-		# save to cache
-		cache_path = os.path.join(tmpdir, "motion_test.npz")
-		camera_motion.save_motion_cache(motion_orig, cache_path)
-
-		# load from cache (simulating cache hit)
-		motion_loaded = camera_motion.load_motion_cache(cache_path)
-
-		# results should be identical
-		assert numpy.allclose(motion_loaded.dx, motion_orig.dx)
-		assert numpy.allclose(motion_loaded.dy, motion_orig.dy)
-		assert numpy.allclose(motion_loaded.scale, motion_orig.scale)
 
 
 #============================================
@@ -214,7 +281,6 @@ def test_scene_transform_zoom_jump():
 			dtype=numpy.float32
 		),
 		quality=numpy.ones(7, dtype=numpy.float32),
-		event_flags=numpy.zeros(7, dtype=numpy.int32),
 	)
 
 	transform = scene_coords.SceneTransform(motion)

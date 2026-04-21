@@ -88,30 +88,41 @@ def default_seeds_path(input_file: str) -> str:
 #============================================
 
 def default_diagnostics_path(input_file: str) -> str:
-	"""Return the default diagnostics JSON file path for a given input file.
+	"""Return the default interval-scores JSON file path for a given input file.
+
+	File extension renamed from `.diagnostics.json` to
+	`.interval_scores.json` to match the file's sole responsibility
+	(per-interval scoring summary). Function name retained for
+	callsite compatibility; callers continue to refer to this as the
+	"diagnostics path" but the on-disk filename is the new one.
 
 	Args:
 		input_file: Input media file path.
 
 	Returns:
-		str: Diagnostics JSON file path inside tr_config/.
+		str: Interval-scores JSON file path inside tr_config/.
 	"""
-	diag_path = _data_file_path(input_file, ".track_runner.diagnostics.json")
-	return diag_path
+	scores_path = _data_file_path(input_file, ".track_runner.interval_scores.json")
+	return scores_path
 
 #============================================
 
 def default_intervals_path(input_file: str) -> str:
-	"""Return the default solved-intervals JSON file path for a given input file.
+	"""Return the default geometry-cache NPZ file path for a given input file.
+
+	File format changed from JSON `.intervals.json` to NPZ
+	`.geometry_cache.npz` per the plan's format rule (dense per-frame
+	numeric series stored as NPZ). Function name retained for callsite
+	compatibility; the returned path points at the new NPZ file.
 
 	Args:
 		input_file: Input media file path.
 
 	Returns:
-		str: Solved-intervals JSON file path inside tr_config/.
+		str: Geometry-cache NPZ file path inside tr_config/.
 	"""
-	intervals_path = _data_file_path(input_file, ".track_runner.intervals.json")
-	return intervals_path
+	cache_path = _data_file_path(input_file, ".track_runner.geometry_cache.npz")
+	return cache_path
 
 #============================================
 
@@ -147,6 +158,26 @@ def default_output_path(input_file: str) -> str:
 
 #============================================
 
+def default_debug_tracks_path(input_file: str) -> str:
+	"""Return the default debug_tracks sidecar path for a given input file.
+
+	This sidecar is written only when solve runs with `--debug-tracks`.
+	It carries per-interval forward/backward propagation tracks for the
+	debug overlay, separate from the production geometry cache.
+
+	Args:
+		input_file: Input media file path.
+
+	Returns:
+		str: Debug tracks NPZ sidecar path inside tr_config/.
+	"""
+	sidecar_path = _data_file_path(
+		input_file, ".track_runner.debug_tracks.npz"
+	)
+	return sidecar_path
+
+#============================================
+
 def default_motion_cache_path(input_file: str) -> str:
 	"""Return the default camera motion cache path for a given input file.
 
@@ -156,5 +187,5 @@ def default_motion_cache_path(input_file: str) -> str:
 	Returns:
 		str: Camera motion cache NPZ file path inside tr_config/.
 	"""
-	motion_path = _data_file_path(input_file, ".camera_motion.npz")
+	motion_path = _data_file_path(input_file, ".track_runner.camera_motion.npz")
 	return motion_path
