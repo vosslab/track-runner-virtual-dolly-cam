@@ -232,7 +232,12 @@ def _make_entry_with_fwd_bwd(start: int, end: int) -> dict:
 
 def test_debug_paths_round_trip(tmp_path):
 	"""Debug sidecar writer/loader reconstruct fwd/bwd tracks
-	unchanged -- round-trip invariant."""
+	unchanged -- round-trip invariant.
+
+	Schema v2 invariant: slot 0 of forward_path and backward_path both
+	correspond to start_frame (chronological slot storage, same for
+	both passes).
+	"""
 	path = str(tmp_path / "debug.npz")
 	original = _make_entry_with_fwd_bwd(0, 4)
 	state_io.write_debug_paths(
@@ -245,6 +250,43 @@ def test_debug_paths_round_trip(tmp_path):
 		assert orig == rt
 	for orig, rt in zip(original["backward_path"], iv["backward_path"]):
 		assert orig == rt
+	# slot 0 of each pass survives round trip at the same logical
+	# position, i.e. writer/loader never silently reverse BWD
+	assert iv["forward_path"][0] == original["forward_path"][0]
+	assert iv["backward_path"][0] == original["backward_path"][0]
+
+
+#============================================
+
+
+def test_debug_paths_schema_version_is_two(tmp_path):
+	"""Writer emits schema_version=2 on disk (chronological BWD slots)."""
+	path = str(tmp_path / "debug.npz")
+	state_io.write_debug_paths(path, {
+		"solved_intervals": {"fp_a": _make_entry_with_fwd_bwd(0, 2)},
+	})
+	with numpy.load(path, allow_pickle=False) as npz:
+		assert int(npz["schema_version"]) == 2
+	assert state_io.DEBUG_PATHS_SCHEMA_VERSION == 2
+
+
+#============================================
+
+
+def test_debug_paths_rejects_v1_sidecar(tmp_path):
+	"""A v1 sidecar is rejected with a schema-mismatch error.
+
+	Contract C8: stale v1 files are regenerated on the next solve, not
+	silently re-interpreted under the new index-to-frame mapping.
+	"""
+	path = str(tmp_path / "legacy.npz")
+	numpy.savez(
+		path,
+		schema_version=numpy.asarray(1, dtype=numpy.int32),
+		manifest=numpy.frombuffer(b"[]", dtype=numpy.uint8),
+	)
+	with pytest.raises(RuntimeError, match="schema"):
+		state_io.load_debug_paths(path)
 
 
 #============================================

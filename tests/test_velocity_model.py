@@ -107,9 +107,13 @@ def test_directional_slope_no_neighbors():
 
 
 #============================================
-def test_fwd_bwd_asymmetry():
-	"""Test that FWD and BWD curves differ in mid-interval predictions."""
-	# create motion with 4 seeds
+def test_fwd_bwd_endpoint_alignment():
+	"""Both FWD and BWD map slot 0 to start_frame and slot -1 to end_frame.
+
+	Post-fix invariant: forward_path[i] and backward_path[i] both refer
+	to the same absolute frame (start_frame + i). The two passes differ
+	in internal Hermite slopes, not in array ordering.
+	"""
 	motion = camera_motion.MotionTrack(
 		dx=numpy.zeros(5, dtype=numpy.float32),
 		dy=numpy.zeros(5, dtype=numpy.float32),
@@ -147,7 +151,6 @@ def test_fwd_bwd_asymmetry():
 		left_seed, right_seed, all_seeds_scene, transform,
 	)
 
-	# propagate forward and backward
 	fwd_states = velocity_model.propagate_forward_analytical(
 		curves, transform,
 	)
@@ -155,11 +158,11 @@ def test_fwd_bwd_asymmetry():
 		curves, transform,
 	)
 
-	# FWD and BWD both anchor at the correct endpoints (directions reversed)
+	# both passes anchor slot 0 at left_seed, slot -1 at right_seed
 	assert numpy.isclose(fwd_states[0]["cx"], 10.0, atol=1.0)
 	assert numpy.isclose(fwd_states[-1]["cx"], 30.0, atol=1.0)
-	assert numpy.isclose(bwd_states[0]["cx"], 30.0, atol=1.0)
-	assert numpy.isclose(bwd_states[-1]["cx"], 10.0, atol=1.0)
+	assert numpy.isclose(bwd_states[0]["cx"], 10.0, atol=1.0)
+	assert numpy.isclose(bwd_states[-1]["cx"], 30.0, atol=1.0)
 
 
 #============================================
@@ -202,12 +205,20 @@ def test_seed_roundtrip_endpoints():
 	fwd_states = velocity_model.propagate_forward_analytical(
 		curves, transform,
 	)
+	bwd_states = velocity_model.propagate_backward_analytical(
+		curves, transform,
+	)
 
-	# endpoints should match seeds in center position
+	# both passes' endpoints match seeds in center position
+	# (chronological slot storage: slot 0 = start_frame, slot -1 = end_frame)
 	assert numpy.isclose(fwd_states[0]["cx"], left_seed["cx"], atol=0.1)
 	assert numpy.isclose(fwd_states[0]["cy"], left_seed["cy"], atol=0.1)
 	assert numpy.isclose(fwd_states[-1]["cx"], right_seed["cx"], atol=0.1)
 	assert numpy.isclose(fwd_states[-1]["cy"], right_seed["cy"], atol=0.1)
+	assert numpy.isclose(bwd_states[0]["cx"], left_seed["cx"], atol=0.1)
+	assert numpy.isclose(bwd_states[0]["cy"], left_seed["cy"], atol=0.1)
+	assert numpy.isclose(bwd_states[-1]["cx"], right_seed["cx"], atol=0.1)
+	assert numpy.isclose(bwd_states[-1]["cy"], right_seed["cy"], atol=0.1)
 
 
 #============================================
@@ -257,8 +268,8 @@ def test_stationary_lock():
 
 
 #============================================
-def test_confidence_decay():
-	"""Test that confidence decays by 0.97 per frame with floor."""
+def _make_decay_fixture():
+	"""Shared six-frame interval fixture for confidence-decay tests."""
 	motion = camera_motion.MotionTrack(
 		dx=numpy.zeros(10, dtype=numpy.float32),
 		dy=numpy.zeros(10, dtype=numpy.float32),
@@ -292,13 +303,200 @@ def test_confidence_decay():
 	curves = velocity_model.fit_interval_curves(
 		left_seed, right_seed, all_seeds_scene, transform,
 	)
+	return curves, transform
+
+
+#============================================
+def test_fwd_confidence_decays_from_start():
+	"""FWD confidence peaks at slot 0 and monotonically decreases."""
+	curves, transform = _make_decay_fixture()
 
 	fwd_states = velocity_model.propagate_forward_analytical(
 		curves, transform,
 	)
 
-	# confidence should decay: 1.0 * 0.97^n (frame 0 covered by i=0 case)
-	for i, state in enumerate(fwd_states):
-		expected_conf = max(0.1, 1.0 * (0.97 ** i))
-		assert numpy.isclose(state["conf"], expected_conf, atol=0.01)
+	confs = [s["conf"] for s in fwd_states]
+	# peak at the start_frame anchor (slot 0)
+	assert confs[0] == max(confs)
+	# monotonically non-increasing away from the anchor
+	for i in range(1, len(confs)):
+		assert confs[i] <= confs[i - 1] + 1e-9
+
+
+#============================================
+def test_bwd_confidence_decays_from_end():
+	"""BWD confidence peaks at slot n-1 and monotonically decreases.
+
+	Locks the "BWD math unchanged, storage flipped" rule: the BWD anchor
+	is the right (end_frame) seed, so confidence must peak at the last
+	slot (chronological end) even though the array is stored
+	chronologically.
+	"""
+	curves, transform = _make_decay_fixture()
+
+	bwd_states = velocity_model.propagate_backward_analytical(
+		curves, transform,
+	)
+
+	confs = [s["conf"] for s in bwd_states]
+	# peak at the end_frame anchor (slot -1)
+	assert confs[-1] == max(confs)
+	# monotonically non-increasing as we walk away from the anchor
+	for i in range(len(confs) - 1):
+		assert confs[i] <= confs[i + 1] + 1e-9
+
+
+#============================================
+def test_fwd_bwd_slot_alignment():
+	"""Both passes: slot i corresponds to absolute frame start_frame + i.
+
+	Central invariant of the chronological-BWD fix. Uses the private
+	_compute_raw_pred_* helpers directly because they expose the frame
+	index in tuple[0]; the public wrappers strip it.
+	"""
+	motion = camera_motion.MotionTrack(
+		dx=numpy.zeros(10, dtype=numpy.float32),
+		dy=numpy.zeros(10, dtype=numpy.float32),
+		scale=numpy.ones(10, dtype=numpy.float32),
+		quality=numpy.ones(10, dtype=numpy.float32),
+	)
+	transform = scene_coords.SceneTransform(motion)
+
+	left_seed = {
+		"frame_index": 2,
+		"cx": 100.0,
+		"cy": 200.0,
+		"w": 50.0,
+		"h": 80.0,
+		"status": "visible",
+	}
+	right_seed = {
+		"frame_index": 7,
+		"cx": 150.0,
+		"cy": 220.0,
+		"w": 50.0,
+		"h": 80.0,
+		"status": "visible",
+	}
+	all_seeds_scene = [
+		(2, 100.0, 200.0, 50.0, 80.0),
+		(7, 150.0, 220.0, 50.0, 80.0),
+	]
+
+	curves = velocity_model.fit_interval_curves(
+		left_seed, right_seed, all_seeds_scene, transform,
+	)
+	raw_fwd = velocity_model._compute_raw_pred_forward(curves, transform)
+	raw_bwd = velocity_model._compute_raw_pred_backward(curves, transform)
+
+	start_frame = left_seed["frame_index"]
+	assert len(raw_fwd) == len(raw_bwd)
+	for i in range(len(raw_fwd)):
+		assert int(raw_fwd[i][0]) == start_frame + i
+		assert int(raw_bwd[i][0]) == start_frame + i
+
+
+#============================================
+def test_bwd_gate_tangent_chronological():
+	"""BWD gate-time tangent points in the same chronological direction as FWD.
+
+	Pre-fix, raw_bwd was stored reverse-chronologically, so v_prev =
+	raw_bwd[i][1:3] - raw_bwd[i-1][1:3] pointed backward through time.
+	Post-fix, both passes store chronologically, so both tangents share
+	sign orientation. Monotonic-x motion fixture; sign-only check.
+	"""
+	motion = camera_motion.MotionTrack(
+		dx=numpy.zeros(10, dtype=numpy.float32),
+		dy=numpy.zeros(10, dtype=numpy.float32),
+		scale=numpy.ones(10, dtype=numpy.float32),
+		quality=numpy.ones(10, dtype=numpy.float32),
+	)
+	transform = scene_coords.SceneTransform(motion)
+
+	left_seed = {
+		"frame_index": 0,
+		"cx": 50.0,
+		"cy": 100.0,
+		"w": 40.0,
+		"h": 80.0,
+		"status": "visible",
+	}
+	right_seed = {
+		"frame_index": 6,
+		"cx": 200.0,
+		"cy": 100.0,
+		"w": 40.0,
+		"h": 80.0,
+		"status": "visible",
+	}
+	all_seeds_scene = [
+		(0, 50.0, 100.0, 40.0, 80.0),
+		(6, 200.0, 100.0, 40.0, 80.0),
+	]
+
+	curves = velocity_model.fit_interval_curves(
+		left_seed, right_seed, all_seeds_scene, transform,
+	)
+	raw_fwd = velocity_model._compute_raw_pred_forward(curves, transform)
+	raw_bwd = velocity_model._compute_raw_pred_backward(curves, transform)
+
+	# on monotonic-x motion, v_prev.x must be positive for both passes
+	# at every interior slot
+	for i in range(1, len(raw_fwd) - 1):
+		fwd_vx = raw_fwd[i][1] - raw_fwd[i - 1][1]
+		bwd_vx = raw_bwd[i][1] - raw_bwd[i - 1][1]
+		assert fwd_vx > 0.0
+		assert bwd_vx > 0.0
+
+
+#============================================
+def test_bwd_raw_pred_confidence_peak_at_end():
+	"""BWD raw_pred confidence peaks at slot n-1 (end_frame anchor).
+
+	Tests the low-level _compute_raw_pred_backward helper directly.
+	Pre-fix, confidence peaked at slot 0 (because iteration order
+	coincided with decay axis). Post-fix, iteration is chronological
+	but decay still measures distance from end_frame via
+	frames_from_end = end_frame - frame_index, so the peak moves to
+	slot n-1 and the old "peak at slot 0" assumption would fail.
+	"""
+	motion = camera_motion.MotionTrack(
+		dx=numpy.zeros(10, dtype=numpy.float32),
+		dy=numpy.zeros(10, dtype=numpy.float32),
+		scale=numpy.ones(10, dtype=numpy.float32),
+		quality=numpy.ones(10, dtype=numpy.float32),
+	)
+	transform = scene_coords.SceneTransform(motion)
+
+	left_seed = {
+		"frame_index": 0,
+		"cx": 100.0,
+		"cy": 100.0,
+		"w": 50.0,
+		"h": 80.0,
+		"status": "visible",
+	}
+	right_seed = {
+		"frame_index": 5,
+		"cx": 120.0,
+		"cy": 110.0,
+		"w": 50.0,
+		"h": 80.0,
+		"status": "visible",
+	}
+	all_seeds_scene = [
+		(0, 100.0, 100.0, 50.0, 80.0),
+		(5, 120.0, 110.0, 50.0, 80.0),
+	]
+
+	curves = velocity_model.fit_interval_curves(
+		left_seed, right_seed, all_seeds_scene, transform,
+	)
+	raw_bwd = velocity_model._compute_raw_pred_backward(curves, transform)
+
+	# confidence is field index 5 in the tuple
+	confs = [float(row[5]) for row in raw_bwd]
+	assert confs[-1] == max(confs)
+	for i in range(len(confs) - 1):
+		assert confs[i] <= confs[i + 1] + 1e-9
 

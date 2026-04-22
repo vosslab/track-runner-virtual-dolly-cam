@@ -73,8 +73,10 @@ def compute_meeting_point_errors(
 	Args:
 		forward_path: List of tracking state dicts from forward propagation.
 			Each dict has keys "cx", "cy", "w", "h", "conf", "source".
-		backward_path: List of tracking state dicts from backward propagation,
-			already reversed to align frame-by-frame with forward_path.
+		backward_path: List of tracking state dicts from backward propagation.
+			Chronological from propagate_backward_analytical; aligned
+			frame-by-frame with forward_path by shared slot convention
+			(slot i for both is absolute frame start_frame + i).
 
 	Returns:
 		List of dicts with keys:
@@ -125,8 +127,9 @@ def compute_agreement_debug(
 
 	Args:
 		forward_path: List of tracking state dicts from forward propagation.
-		backward_path: List of tracking state dicts from backward propagation,
-			aligned frame-by-frame with forward_path.
+		backward_path: List of tracking state dicts from backward propagation.
+			Chronological from propagate_backward_analytical; aligned
+			frame-by-frame with forward_path by shared slot convention.
 		start_frame: Absolute frame index of forward_path[0], used to tag
 			per-frame records with their absolute frame_index.
 
@@ -198,8 +201,9 @@ def compute_agreement(forward_path: list, backward_path: list) -> float:
 
 	Args:
 		forward_path: List of tracking state dicts from forward propagation.
-		backward_path: List of tracking state dicts from backward propagation,
-			aligned frame-by-frame with forward_path.
+		backward_path: List of tracking state dicts from backward propagation.
+			Chronological from propagate_backward_analytical; aligned
+			frame-by-frame with forward_path by shared slot convention.
 
 	Returns:
 		Float in [0.0, 1.0] where 1.0 means perfect agreement.
@@ -300,8 +304,9 @@ def score_interval(
 	Args:
 		forward_path: List of tracking state dicts from forward propagation.
 			Each dict has keys "cx", "cy", "w", "h", "conf", "source".
-		backward_path: List of tracking state dicts from backward propagation,
-			already reversed to align frame-by-frame with forward_path.
+		backward_path: List of tracking state dicts from backward propagation.
+			Chronological from propagate_backward_analytical; aligned
+			frame-by-frame with forward_path by shared slot convention.
 		identity_scores: List of per-frame identity match scores (float 0-1).
 		competitor_margins: List of per-frame competitor margin scores (float 0-1).
 

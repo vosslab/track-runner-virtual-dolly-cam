@@ -250,9 +250,11 @@ def blend_paths(
 
 	Args:
 		forward_path: List of tracking state dicts from propagate_forward().
-			Index 0 is the seed frame.
+			Index 0 is the start_frame seed.
 		backward_path: List of tracking state dicts from propagate_backward().
-			Already reversed so index 0 is the seed frame.
+			Chronological from propagate_backward_analytical; index 0 is
+			the start_frame seed, aligned frame-by-frame with forward_path
+			by shared slot convention.
 
 	Returns:
 		List of blended interval path state dicts, one per frame. Source field is

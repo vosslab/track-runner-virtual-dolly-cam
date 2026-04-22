@@ -450,9 +450,12 @@ def _compute_raw_pred_backward(
 ) -> list:
 	"""Stage 1 of the backward pass: pure Hermite prediction per frame.
 
-	Returns the same shape as _compute_raw_pred_forward but with BWD
-	Hermite slopes and reverse-order iteration. Confidence decays from
-	the end seed.
+	Returns the same shape and ordering as _compute_raw_pred_forward:
+	raw[i] holds the tuple for absolute frame start_frame + i. The
+	backward pass is distinguished by its Hermite slopes (evaluated at
+	the right seed) and its confidence decay (measured from the end
+	seed, so confidence peaks at the last slot). Solve direction is
+	still conceptually end -> start; only storage is chronological.
 	"""
 	start_frame = interval_curves["start_frame"]
 	end_frame = interval_curves["end_frame"]
@@ -492,9 +495,10 @@ def _compute_raw_pred_backward(
 	conf_floor = 0.1
 	start_conf = 1.0
 
-	# iterate reverse-order: frame_index from end_frame down to start_frame.
-	# Index 0 of the returned list is at end_frame.
-	for frame_index in range(end_frame, start_frame - 1, -1):
+	# iterate chronologically so raw[i] corresponds to absolute frame
+	# start_frame + i (same slot convention as _compute_raw_pred_forward).
+	# Confidence is still end-anchored via frames_from_end below.
+	for frame_index in range(start_frame, end_frame + 1):
 		if interval_length > 0:
 			t = (frame_index - start_frame) / interval_length
 		else:
@@ -871,9 +875,6 @@ def propagate_backward_analytical(
 ) -> list:
 	"""Propagate backward using BWD Hermite curve plus optional blob snap.
 
-	Output order matches the pre-patch contract: index 0 is at end_frame,
-	index -1 is at start_frame (reverse iteration).
-
 	Args:
 		interval_curves: Dict from fit_interval_curves().
 		scene_transform: SceneTransform instance.
@@ -884,8 +885,12 @@ def propagate_backward_analytical(
 			docstring for the cache content boundary).
 
 	Returns:
-		List of tracking state dicts from end_frame to start_frame
-		(reverse order). Index 0 is at end_frame.
+		List of tracking state dicts, one per frame from start_frame to
+		end_frame inclusive. Index 0 is at start_frame (chronological).
+		Same ordering convention as propagate_forward_analytical.
+		BWD-specific behavior (backward Hermite slopes, end-anchored
+		confidence decay) lives in the Hermite math, not in array
+		ordering.
 	"""
 	raw = _compute_raw_pred_backward(interval_curves, scene_transform)
 	if reader is None or residual_cache is None:

@@ -596,7 +596,7 @@ def write_geometry_cache(path: str, cache_data: dict) -> None:
 #============================================
 
 # NPZ schema version key for debug_paths.npz sidecar files
-DEBUG_PATHS_SCHEMA_VERSION = 1
+DEBUG_PATHS_SCHEMA_VERSION = 2
 
 
 def _write_npz_atomic(path: str, arrays: dict) -> None:
