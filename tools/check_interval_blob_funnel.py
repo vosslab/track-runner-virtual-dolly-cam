@@ -136,12 +136,12 @@ def parse_args() -> argparse.Namespace:
 		)
 	)
 	parser.add_argument(
-		"--diagnostic-fused-reference", dest="diagnostic_fused_reference",
+		"--diagnostic-blended-reference", dest="diagnostic_blended_reference",
 		action="store_true",
 		help=(
 			"OFFLINE DIAGNOSTIC ONLY. Replace the corridor-best-blob "
 			"centroid with the solver's blended interval path "
-			"(fused_track) position at that frame before running the "
+			"(blended_path) position at that frame before running the "
 			"gates. Tests whether the current gates would accept the "
 			"solver's own final output location. Not a legal solve-time "
 			"input; never wire into production."
@@ -210,7 +210,7 @@ def _replay_frame_funnel(
 	reader: object,
 	scene_transform: object,
 	residual_cache: dict,
-	fused_override: tuple = None,
+	blended_override: tuple = None,
 ) -> dict:
 	"""Run the snap pipeline on one frame and return the funnel stamp.
 
@@ -337,13 +337,13 @@ def _replay_frame_funnel(
 
 	real_bx = best_blob["centroid_x"]
 	real_by = best_blob["centroid_y"]
-	# real-blob-to-fused distance: only meaningful when a fused_override
+	# real-blob-to-blended distance: only meaningful when a blended_override
 	# exists for this frame. Captured before the override so the CSV can
 	# show how far the real corridor pick was from the solver's output.
-	real_to_fused_h = None
-	if fused_override is not None:
-		fx, fy = fused_override
-		real_to_fused_h = (
+	real_to_blended_h = None
+	if blended_override is not None:
+		fx, fy = blended_override
+		real_to_blended_h = (
 			math.sqrt((real_bx - fx) ** 2 + (real_by - fy) ** 2) / h
 			if h > 0.0 else None
 		)
@@ -405,7 +405,7 @@ def _replay_frame_funnel(
 			path_perp_px / h if path_perp_px is not None and h > 0.0
 			else None
 		),
-		"real_to_fused_h": real_to_fused_h,
+		"real_to_blended_h": real_to_blended_h,
 	}
 
 
@@ -429,7 +429,7 @@ def _empty_funnel() -> dict:
 		"accepted": 0,
 		"blob_dist_h_samples": [],
 		"path_perp_h_samples": [],
-		"real_to_fused_h_samples": [],
+		"real_to_blended_h_samples": [],
 	}
 
 
@@ -458,8 +458,8 @@ def _funnel_add_frame(funnel: dict, stamp: dict) -> None:
 		funnel["blob_dist_h_samples"].append(stamp["blob_dist_h"])
 	if stamp.get("path_perp_h") is not None:
 		funnel["path_perp_h_samples"].append(stamp["path_perp_h"])
-	if stamp.get("real_to_fused_h") is not None:
-		funnel["real_to_fused_h_samples"].append(stamp["real_to_fused_h"])
+	if stamp.get("real_to_blended_h") is not None:
+		funnel["real_to_blended_h_samples"].append(stamp["real_to_blended_h"])
 
 
 #============================================
@@ -686,7 +686,7 @@ def replay_pass(
 	scene_transform: object,
 	residual_cache: dict,
 	on_frame: object = None,
-	fused_lookup: dict = None,
+	blended_lookup: dict = None,
 ) -> dict:
 	"""Replay one pass (FWD or BWD) and return its funnel counts.
 
@@ -713,17 +713,17 @@ def replay_pass(
 		# if the tool got this far, the reader is real.
 		if is_endpoint or is_stat:
 			continue
-		# fused_lookup, when provided, maps frame_index -> (cx, cy).
+		# blended_lookup, when provided, maps frame_index -> (cx, cy).
 		# Skip the override (treat as pure real-blob run) when the
-		# fused track has no entry for this frame so the gate math
+		# blended track has no entry for this frame so the gate math
 		# still runs against the real corridor pick.
-		fused_override = None
-		if fused_lookup is not None:
-			fused_override = fused_lookup.get(int(raw_pred[i][0]))
+		blended_override = None
+		if blended_lookup is not None:
+			blended_override = blended_lookup.get(int(raw_pred[i][0]))
 		stamp = _replay_frame_funnel(
 			raw_pred[i - 1], raw_pred[i], raw_pred[i + 1],
 			reader, scene_transform, residual_cache,
-			fused_override=fused_override,
+			blended_override=blended_override,
 		)
 		_funnel_add_frame(funnel, stamp)
 		if on_frame is not None:
@@ -868,7 +868,7 @@ CSV_COLUMNS = (
 	"accepted_fraction_replay",
 	"median_blob_dist_h", "p90_blob_dist_h", "max_blob_dist_h",
 	"median_path_perp_h", "p90_path_perp_h", "max_path_perp_h",
-	"median_real_to_fused_h", "p90_real_to_fused_h",
+	"median_real_to_blended_h", "p90_real_to_blended_h",
 )
 
 
@@ -933,7 +933,7 @@ def _csv_row(
 	dist_summary = _summarize_samples(funnel["blob_dist_h_samples"])
 	perp_summary = _summarize_samples(funnel["path_perp_h_samples"])
 	rf_summary = _summarize_samples(
-		funnel.get("real_to_fused_h_samples", [])
+		funnel.get("real_to_blended_h_samples", [])
 	)
 	row = [
 		idx, start_frame, end_frame, f"{duration_s:.4f}",
@@ -966,8 +966,8 @@ def _sanitize_funnel_for_json(funnel: dict) -> dict:
 			out["blob_dist_h"] = _summarize_samples(value)
 		elif key == "path_perp_h_samples":
 			out["path_perp_h"] = _summarize_samples(value)
-		elif key == "real_to_fused_h_samples":
-			out["real_to_fused_h"] = _summarize_samples(value)
+		elif key == "real_to_blended_h_samples":
+			out["real_to_blended_h"] = _summarize_samples(value)
 		else:
 			out[key] = value
 	return out
@@ -1195,32 +1195,32 @@ def main() -> None:
 	# fields (confidence_tier, blob_coverage_fwd/bwd). Absent file -> {}.
 	scores_by_key = _load_scores_by_interval(diag_path)
 
-	# --diagnostic-fused-reference: load geometry_cache once and build a
+	# --diagnostic-blended-reference: load geometry_cache once and build a
 	# per-interval lookup from (start_frame, end_frame) -> dict mapping
 	# absolute frame_index -> (cx, cy). Off by default.
-	fused_by_interval_key = {}
-	if args.diagnostic_fused_reference:
+	blended_by_interval_key = {}
+	if args.diagnostic_blended_reference:
 		geom_path = tr_paths.default_intervals_path(args.input_file)
 		if not os.path.isfile(geom_path):
 			raise RuntimeError(
 				f"geometry cache missing: {geom_path}\n"
 				"run 'track_runner.py -i VIDEO solve' first; "
-				"--diagnostic-fused-reference needs a solved blended path."
+				"--diagnostic-blended-reference needs a solved blended path."
 			)
 		geom = state_io.load_geometry_cache(geom_path)
 		solved = geom.get("solved_intervals", {}) or {}
 		for _fp, iv in solved.items():
 			start = int(iv["start_frame"])
 			end = int(iv["end_frame"])
-			fused_track = iv.get("fused_track") or []
+			blended_path = iv.get("blended_path") or []
 			per_frame = {}
-			for offset, entry in enumerate(fused_track):
+			for offset, entry in enumerate(blended_path):
 				fi = start + offset
 				per_frame[fi] = (float(entry["cx"]), float(entry["cy"]))
-			fused_by_interval_key[(start, end)] = per_frame
+			blended_by_interval_key[(start, end)] = per_frame
 		print(
-			f"  diagnostic-fused-reference: loaded blended paths for "
-			f"{len(fused_by_interval_key)} intervals"
+			f"  diagnostic-blended-reference: loaded blended paths for "
+			f"{len(blended_by_interval_key)} intervals"
 		)
 
 	# race-start cutoff: contract C2 says pre-race frames anchor to a
@@ -1339,19 +1339,19 @@ def main() -> None:
 				+ (r_scene[1] - l_scene[1]) ** 2
 			)
 
-			fused_lookup = fused_by_interval_key.get(
+			blended_lookup = blended_by_interval_key.get(
 				(start_frame, end_frame)
-			) if args.diagnostic_fused_reference else None
+			) if args.diagnostic_blended_reference else None
 
 			fwd_funnel = replay_pass(
 				raw_pred_fwd, reader, transform, residual_cache,
 				on_frame=_make_saver("FWD"),
-				fused_lookup=fused_lookup,
+				blended_lookup=blended_lookup,
 			)
 			bwd_funnel = replay_pass(
 				raw_pred_bwd, reader, transform, residual_cache,
 				on_frame=_make_saver("BWD"),
-				fused_lookup=fused_lookup,
+				blended_lookup=blended_lookup,
 			)
 			residual_cache.clear()
 

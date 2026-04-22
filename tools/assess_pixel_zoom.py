@@ -463,7 +463,7 @@ def _compute_side_strip_log_polar(
 	scale estimate is the median of valid strip results.
 
 	Returns:
-		log-polar array (averaged or fused representation)
+		log-polar array (averaged or blended representation)
 	"""
 	h, w = gray.shape
 	scales = []

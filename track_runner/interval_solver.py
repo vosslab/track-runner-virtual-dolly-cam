@@ -257,10 +257,10 @@ def blend_paths(
 	Returns:
 		List of blended interval path state dicts, one per frame. Source field is
 		"merged" when both agreed, "propagated" when one was picked over the
-		other. A "fuse_flag" key is added when the interval paths disagreed.
+		other. A "blend_flag" key is added when the interval paths disagreed.
 	"""
 	n = min(len(forward_path), len(backward_path))
-	fused = []
+	blended = []
 
 	for i in range(n):
 		fwd = forward_path[i]
@@ -312,7 +312,7 @@ def blend_paths(
 				"h": merged_h,
 				"conf": merged_conf,
 				"source": "merged",
-				"fuse_flag": False,
+				"blend_flag": False,
 				"occlusion_risk": frame_occlusion,
 			}
 		else:
@@ -323,13 +323,13 @@ def blend_paths(
 			else:
 				winner = dict(bwd)
 				winner["source"] = "propagated"
-			winner["fuse_flag"] = True
+			winner["blend_flag"] = True
 			winner["occlusion_risk"] = frame_occlusion
 			state = winner
 
-		fused.append(state)
+		blended.append(state)
 
-	return fused
+	return blended
 
 
 #============================================
@@ -491,8 +491,8 @@ def stitch_trajectories(
 
 	for result in interval_results:
 		start = result["start_frame"]
-		fused = result["blended_path"]
-		for i, state in enumerate(fused):
+		blended = result["blended_path"]
+		for i, state in enumerate(blended):
 			frame_index = start + i
 			if 0 <= frame_index <= last_end:
 				trajectory[frame_index] = state

@@ -28,11 +28,11 @@ Use these in prose:
   consumption rules in
   [FWD_BWD_MODEL_METHODOLOGY.md](FWD_BWD_MODEL_METHODOLOGY.md).
 
-The current in-code identifiers (`forward_track`, `backward_track`,
-`fused_track`) are legacy names scheduled for cleanup; see the
+The in-code identifiers match the prose: `forward_path`,
+`backward_path`, `blended_path`. See the
 "Legacy code names" subsection of
 [FWD_BWD_MODEL_METHODOLOGY.md](FWD_BWD_MODEL_METHODOLOGY.md) for the
-staged rename plan and the canonical definitions.
+historical rename record.
 
 ## Core principle
 

@@ -58,40 +58,6 @@ collides with the track-and-field source material. Each of these three
 objects is local to one seed-to-seed interval, so "interval path" is the
 honest name.
 
-### Legacy code names (scheduled for cleanup)
-
-The current in-code identifiers are legacy and should be renamed in a
-follow-up cleanup to match the vocabulary above:
-
-| Concept | Legacy code name | Target code name |
-| --- | --- | --- |
-| forward interval path | `forward_track` | `forward_path` (or `forward_interval_path`) |
-| backward interval path | `backward_track` | `backward_path` (or `backward_interval_path`) |
-| blended interval path | `fused_track` | `blended_path` (or `blended_interval_path`) |
-| `fuse_tracks(...)` | `fuse_tracks` | `blend_paths` |
-| debug interval paths sidecar | `debug_tracks.npz` filename, `--debug-tracks` flag, `load_debug_tracks` / `write_debug_tracks` | `debug_paths.npz`, `--debug-paths`, `load_debug_paths` / `write_debug_paths` |
-
-Until that cleanup lands, docs use the new vocabulary and note the
-legacy code name on first mention in any section that touches the
-identifier. The split is intentionally temporary; long-term coexistence
-of "blended interval path" in prose and `fused_track` in code creates
-translation overhead and is the bad outcome.
-
-Risk-staged rename plan:
-
-1. **Now (this pass)**: docs vocabulary, comments, printed labels,
-   analysis-tool output text.
-2. **One coordinated patch**: rename in-code identifiers across all
-   callsites (function arguments, local variables, dict keys built in
-   memory, log strings).
-3. **Deliberate schema bump (or compatibility shim)**: rename on-disk
-   keys and reconstructed in-memory shapes used by
-   `state_io.load_geometry_cache`, `state_io.load_debug_tracks`, the
-   debug overlay builder, and tools that read cached interval / debug
-   data. This is the only step with real blast radius and gets its own
-   plan. The per-video config YAML is unaffected -- it does not use
-   these trajectory object names as schema keys.
-
 ## Overview
 
 Every seed-to-seed interval is solved by TWO independent propagations: a
@@ -102,7 +68,7 @@ optionally snaps to a per-frame residual-motion blob observation. The
 resulting forward interval path and backward interval path are ONLY
 combined at two clearly separated points: by
 [track_runner/interval_solver.py](../track_runner/interval_solver.py) to
-produce the blended interval path for output (`fuse_tracks`), and by
+produce the blended interval path for output (`blend_paths`), and by
 [track_runner/scoring.py](../track_runner/scoring.py) for a diagnostic
 agreement metric computed on the two raw pass paths. Raw disagreement
 between the passes is the system's primary uncertainty signal; anything
@@ -148,14 +114,14 @@ that narrows it without evidence is a regression.
   `test_seed_endpoints_never_moved_by_blob`.
 - **The blended interval path is output-only.** It feeds rendering and
   anchor correction. It MUST NOT feed the agreement metric. See
-  `compute_agreement(forward_track, backward_track)` at
+  `compute_agreement(forward_path, backward_path)` at
   [scoring.py line 192 / 473](../track_runner/scoring.py) which takes the
-  raw pass paths, not `fused_track`.
+  raw pass paths, not `blended_path`.
 - **Agreement metrics come from the raw forward and backward interval
-  paths, never from the blended one.** `fused_track` is accepted as an
+  paths, never from the blended one.** `blended_path` is accepted as an
   optional argument in `score_interval_analytical` but used only for
   `velocity_consistency` (trajectory smoothness), never for `agreement`.
-  Do not refactor the agreement call to take `fused_track`.
+  Do not refactor the agreement call to take `blended_path`.
 
 ## Signal flow
 
@@ -174,7 +140,7 @@ fit_interval_curves  (velocity_model.py)
   |    _apply_blob_snap  (reads raw[] only; shared residual_cache)
   |       |
   |       v
-  |    forward_track (snap_pred)
+  |    forward_path (snap_pred)
   |
   +---- BWD Hermite slopes (forward regression at right seed)
           |
@@ -185,16 +151,16 @@ fit_interval_curves  (velocity_model.py)
        _apply_blob_snap  (reads raw[] only)
           |
           v
-       backward_track (snap_pred)
+       backward_path (snap_pred)
 
-forward_track, backward_track
+forward_path, backward_path
   |           |
   |           +--> scoring.compute_agreement()          [DIAGNOSTIC]
   |           |    (raw-pass agreement drives confidence_tier,
   |           |     review severity, seed recommendations)
   |           |
   v           v
-fuse_tracks(forward_track, backward_track)              [OUTPUT]
+blend_paths(forward_path, backward_path)                [OUTPUT]
   |
   v
 stitch_trajectories -> anchor_to_seeds -> _apply_trajectory_erasure
@@ -204,7 +170,7 @@ encoder / crop
 ```
 
 Agreement lives on the LEFT branch (raw forward/backward interval paths).
-Everything downstream of `fuse_tracks` -- the blended interval path -- is
+Everything downstream of `blend_paths` -- the blended interval path -- is
 the RIGHT branch and is strictly an output concern.
 
 ## Blob snap layer
@@ -243,7 +209,7 @@ Reject these at code review:
 - Reading `snap_pred[...]` inside any gate or slope computation.
 - Writing accepted-blob positions, filtered blobs, or gate outcomes into
   `residual_cache`. The cache is IMAGE DATA ONLY.
-- Passing `fused_track` (the blended interval path) or the stitched
+- Passing `blended_path` (the blended interval path) or the stitched
   trajectory into `compute_agreement`,
   `compute_meeting_point_errors`, or any severity computation in
   [review.py](../track_runner/review.py).

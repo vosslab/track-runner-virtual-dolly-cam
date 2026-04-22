@@ -176,11 +176,11 @@ def find_trajectory_box(
 		start = interval["start_frame"]
 		end = interval["end_frame"]
 		if start <= frame_index <= end:
-			fused = interval.get("blended_path", [])
+			blended = interval.get("blended_path", [])
 			# blended_path index maps to frame offset from start
 			offset = frame_index - start
-			if offset < len(fused):
-				box = fused[offset]
+			if offset < len(blended):
+				box = blended[offset]
 				return box
 	return None
 
@@ -205,10 +205,10 @@ def find_blended_path_for_frame(
 		start = interval["start_frame"]
 		end = interval["end_frame"]
 		if start <= frame_index <= end:
-			fused = interval.get("blended_path", [])
+			blended = interval.get("blended_path", [])
 			offset = frame_index - start
-			if offset < len(fused):
-				return (fused, offset, start)
+			if offset < len(blended):
+				return (blended, offset, start)
 	return (None, -1, -1)
 
 
@@ -238,12 +238,12 @@ def _gap_has_motion(
 		iv_end = interval["end_frame"]
 		# find an interval that covers this gap
 		if iv_start <= gap_start and iv_end >= gap_end:
-			fused = interval.get("blended_path", [])
+			blended = interval.get("blended_path", [])
 			offset_a = gap_start - iv_start
 			offset_b = gap_end - iv_start
-			if offset_a < len(fused) and offset_b < len(fused):
-				box_a = fused[offset_a]
-				box_b = fused[offset_b]
+			if offset_a < len(blended) and offset_b < len(blended):
+				box_a = blended[offset_a]
+				box_b = blended[offset_b]
 				# compute displacement in pixels
 				dx = float(box_b["cx"]) - float(box_a["cx"])
 				dy = float(box_b["cy"]) - float(box_a["cy"])

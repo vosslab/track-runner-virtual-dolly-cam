@@ -107,9 +107,9 @@ def test_analytical_solve_produces_blended_path():
 		fps=30.0,
 	)
 	# endpoints should match seeds within 1px
-	fused = result["blended_path"]
-	assert abs(fused[0]["cx"] - seeds[0]["cx"]) < 1.0
-	assert abs(fused[-1]["cx"] - seeds[1]["cx"]) < 1.0
+	blended = result["blended_path"]
+	assert abs(blended[0]["cx"] - seeds[0]["cx"]) < 1.0
+	assert abs(blended[-1]["cx"] - seeds[1]["cx"]) < 1.0
 
 
 #============================================

@@ -355,11 +355,11 @@ def analyze_intervals(intervals_data: dict) -> dict:
 	center_errs = []
 	scale_errs = []
 	# -- item 12: blended interval path quality --
-	total_fused_points = 0
+	total_blended_points = 0
 	merged_count = 0
 	propagated_count = 0
 	seed_count = 0
-	fuse_flag_count = 0
+	blend_flag_count = 0
 
 	for key, interval in solved.items():
 		# duration
@@ -390,9 +390,9 @@ def analyze_intervals(intervals_data: dict) -> dict:
 			if "scale_err_pct" in mpe:
 				scale_errs.append(mpe["scale_err_pct"])
 		# blended interval path quality
-		fused = interval.get("blended_path", [])
-		for pt in fused:
-			total_fused_points += 1
+		blended = interval.get("blended_path", [])
+		for pt in blended:
+			total_blended_points += 1
 			src = pt.get("source", "")
 			if src == "merged":
 				merged_count += 1
@@ -400,8 +400,8 @@ def analyze_intervals(intervals_data: dict) -> dict:
 				propagated_count += 1
 			elif src == "seed":
 				seed_count += 1
-			if pt.get("fuse_flag", False):
-				fuse_flag_count += 1
+			if pt.get("blend_flag", False):
+				blend_flag_count += 1
 
 	# build distribution summaries
 	durations_sorted = sorted(durations)
@@ -425,13 +425,13 @@ def analyze_intervals(intervals_data: dict) -> dict:
 		"center_err_dist": _dist_summary(center_errs_sorted),
 		"scale_err_dist": _dist_summary(scale_errs_sorted),
 		"blended_path_quality": {
-			"total_points": total_fused_points,
+			"total_points": total_blended_points,
 			"merged": merged_count,
 			"propagated": propagated_count,
 			"seed": seed_count,
-			"fuse_flag_count": fuse_flag_count,
-			"merged_pct": round(100.0 * merged_count / total_fused_points, 1) if total_fused_points > 0 else 0.0,
-			"fuse_flag_pct": round(100.0 * fuse_flag_count / total_fused_points, 1) if total_fused_points > 0 else 0.0,
+			"blend_flag_count": blend_flag_count,
+			"merged_pct": round(100.0 * merged_count / total_blended_points, 1) if total_blended_points > 0 else 0.0,
+			"blend_flag_pct": round(100.0 * blend_flag_count / total_blended_points, 1) if total_blended_points > 0 else 0.0,
 		},
 	}
 	return result
@@ -679,7 +679,7 @@ def format_report(all_results: dict, cross: dict) -> str:
 				lines.append(f"    scale_err_pct: "
 					f"min={se['min']}, median={se['median']}, "
 					f"p90={se['p90']}, max={se['max']}")
-			# fused quality
+			# blended quality
 			fq = intv.get("blended_path_quality", {})
 			if fq:
 				lines.append("")
@@ -688,7 +688,7 @@ def format_report(all_results: dict, cross: dict) -> str:
 				lines.append(f"    Merged: {fq['merged']} ({fq['merged_pct']}%)")
 				lines.append(f"    Propagated: {fq['propagated']}")
 				lines.append(f"    Seed: {fq['seed']}")
-				lines.append(f"    Fuse flags: {fq['fuse_flag_count']} ({fq['fuse_flag_pct']}%)")
+				lines.append(f"    Blend flags: {fq['blend_flag_count']} ({fq['blend_flag_pct']}%)")
 		else:
 			lines.append("")
 			lines.append("  No intervals data found.")

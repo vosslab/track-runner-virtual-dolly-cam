@@ -501,7 +501,7 @@ class BaseAnnotationController(QObject):
 	def _get_prediction_center(self) -> tuple | None:
 		"""Get center of best prediction for the current frame.
 
-		Prefers the REFINED (fused) box when available, falling back
+		Prefers the REFINED (blended) box when available, falling back
 		to averaging FWD/BWD centers.
 
 		Returns:
@@ -513,10 +513,10 @@ class BaseAnnotationController(QObject):
 		if preds is None:
 			return None
 
-		# Prefer REFINED (fused second-pass) center
-		fused = preds.get("blended")
-		if fused is not None:
-			return (float(fused["cx"]), float(fused["cy"]))
+		# Prefer REFINED (blended second-pass) center
+		blended = preds.get("blended")
+		if blended is not None:
+			return (float(blended["cx"]), float(blended["cy"]))
 
 		# Fall back to averaging FWD/BWD centers
 		centers = []
@@ -537,7 +537,7 @@ class BaseAnnotationController(QObject):
 	#============================================
 
 	def _update_fwd_bwd_overlays(self) -> None:
-		"""Update FWD/BWD/fused/consensus prediction overlays on the scene."""
+		"""Update FWD/BWD/blended/consensus prediction overlays on the scene."""
 		# Reset peek suppression on frame advance
 		self._preds_suppressed = False
 
@@ -583,21 +583,21 @@ class BaseAnnotationController(QObject):
 			self._add_overlay(self._consensus_item)
 
 		# Fused (refined second-pass) overlay -- Z=4
-		fused = preds.get("blended")
-		if fused is not None:
-			fused_style = overlay_config.get_prediction_style("blended")
-			cx = float(fused["cx"])
-			cy = float(fused["cy"])
-			w = float(fused["w"])
-			h = float(fused["h"])
+		blended = preds.get("blended")
+		if blended is not None:
+			blended_style = overlay_config.get_prediction_style("blended")
+			cx = float(blended["cx"])
+			cy = float(blended["cy"])
+			w = float(blended["w"])
+			h = float(blended["h"])
 			x = int(cx - w / 2.0)
 			y = int(cy - h / 2.0)
 			self._blended_item = RectItem(
 				x, y, int(w), int(h),
-				color_str=fused_style["color"],
+				color_str=blended_style["color"],
 				label="REFINED",
-				fill_alpha=int(fused_style["fill_opacity"] * 255),
-				dashed=(fused_style["line_style"] == "dashed"),
+				fill_alpha=int(blended_style["fill_opacity"] * 255),
+				dashed=(blended_style["line_style"] == "dashed"),
 			)
 			self._blended_item.setZValue(4)
 			self._add_overlay(self._blended_item)
@@ -854,7 +854,7 @@ class BaseAnnotationController(QObject):
 	def _get_heat_prediction(self, frame_index: int) -> tuple | None:
 		"""Return ((cx, cy), (w, h)) for the heat ROI, or None.
 
-		Chooses the most trustworthy available prediction: fused over
+		Chooses the most trustworthy available prediction: blended over
 		consensus over forward. Returns None when no prediction is
 		available (pre-race, unsolved intervals, edge frames).
 
@@ -869,7 +869,7 @@ class BaseAnnotationController(QObject):
 		preds = self._predictions.get(frame_index)
 		if preds is None:
 			return None
-		# priority order: fused > consensus > forward. Use explicit
+		# priority order: blended > consensus > forward. Use explicit
 		# None checks so a legitimately falsy dict (e.g. an empty one)
 		# does not silently fall through to a less-preferred source.
 		pick = None

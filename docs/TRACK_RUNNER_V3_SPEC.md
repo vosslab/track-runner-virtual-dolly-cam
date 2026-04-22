@@ -23,7 +23,7 @@ trigger a review pass that asks the user for more seeds. Refinement repeats
 until all intervals reach acceptable confidence or the user accepts the result.
 
 v3 adds support for approximate seeds with uncertain bounding boxes,
-interval-length-aware confidence scoring, post-fuse refinement with soft
+interval-length-aware confidence scoring, post-blend refinement with soft
 spatial priors, multi-seed anchored interpolation, a PySide6-based annotation
 UI, and a configurable encode filter pipeline.
 
@@ -223,7 +223,7 @@ Seeds carry a `mode` field recording how they were created.
 The interval solver treats each inter-seed span as an independent bounded
 problem. Seeds are hard anchors. Within each interval the solver runs forward
 propagation (from the left seed) and backward propagation (from the right
-seed), then fuses the two tracks into a scored result.
+seed), then blends the two interval paths into a scored result.
 
 ### Forward and backward propagation
 
@@ -253,29 +253,29 @@ Floor is 0.1. Seeds start at 1.0 (visible/partial) or 0.3 (approximate).
 
 `source` values: `seed`, `detected`, `propagated`, `absent`.
 
-### Confidence-weighted fusion
+### Confidence-weighted blending
 
-After forward and backward propagation the interval solver fuses the two
+After forward and backward propagation the interval solver blends the two
 tracks. At each frame, if the Dice overlap coefficient >= 0.3 (boxes agree),
-the fused position is a confidence-weighted average:
+the blended position is a confidence-weighted average:
 
 ```
-fused_cx = (fwd_conf * fwd_cx + bwd_conf * bwd_cx) / (fwd_conf + bwd_conf)
+blended_cx = (fwd_conf * fwd_cx + bwd_conf * bwd_cx) / (fwd_conf + bwd_conf)
 ```
 
-Same for `cy`, `w`, `h`. Fused confidence = `Dice * max(fwd_conf, bwd_conf)`.
+Same for `cy`, `w`, `h`. Blended confidence = `Dice * max(fwd_conf, bwd_conf)`.
 
 When Dice < 0.3 (disagreement), the higher-confidence direction is used
 directly.
 
-### Post-fuse refinement pass (historical / aspirational)
+### Post-blend refinement pass (historical / aspirational)
 
 > **Status note:** This section describes a "soft-prior" refinement pass
 > that re-propagated each interval using the blended interval path as a
 > spatial prior. The current `refine` CLI mode in
 > [track_runner/cli.py](../track_runner/cli.py) `_mode_refine` does
 > something different -- it re-solves only intervals whose fingerprint
-> changed (cache-invalidation refinement, not post-fuse soft-prior
+> changed (cache-invalidation refinement, not post-blend soft-prior
 > refinement). Treat the rest of this section as the historical design
 > sketch; the methodology doc and the code in
 > [track_runner/interval_solver.py](../track_runner/interval_solver.py)
@@ -288,7 +288,7 @@ Pipeline order (as designed):
 1. Independent FWD/BWD propagation (first pass)
 2. Fuse (first pass) -- produces the blended interval path
 3. **Refinement**: re-run FWD/BWD with the blended interval path as soft
-   prior, re-fuse
+   prior, re-blend
 4. Anchor-to-seeds regularization
 5. Stamp confidence + erasure
 6. Crop
@@ -300,10 +300,10 @@ recommendation.
 Prior weight formula:
 
 ```
-prior_weight = min(0.3, fused_conf * 0.3)
+prior_weight = min(0.3, blended_conf * 0.3)
 ```
 
-The prior only affects `cx`/`cy`, not `w`/`h`. Low-confidence fused frames
+The prior only affects `cx`/`cy`, not `w`/`h`. Low-confidence blended frames
 produce near-zero prior weight, preventing error reinforcement.
 
 At each propagated frame:

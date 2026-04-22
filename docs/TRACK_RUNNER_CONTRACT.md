@@ -81,15 +81,15 @@ their own per-pass working state. That state must remain pass-local.
 
 Terminology for per-interval geometry ("forward interval path",
 "backward interval path", "blended interval path") is defined in
-[FWD_BWD_MODEL_METHODOLOGY.md](FWD_BWD_MODEL_METHODOLOGY.md). "Fused
+[FWD_BWD_MODEL_METHODOLOGY.md](FWD_BWD_MODEL_METHODOLOGY.md). "Blended
 output" below refers to the blended interval path.
 
 For scoring and review:
 - agreement and uncertainty must be computed from the two independent
-    pass trajectories, not from fused output
+    pass trajectories, not from blended output
 - the forward pass must not read backward-pass trajectory state
 - the backward pass must not read forward-pass trajectory state
-- neither pass may read fused output or stitched output while solving
+- neither pass may read blended output or stitched output while solving
 
 Allowed:
 - pass-local temporary state that exists only while solving one interval

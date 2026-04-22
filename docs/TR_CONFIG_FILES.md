@@ -144,7 +144,7 @@ Reader `state_io.load_geometry_cache`, writer
         "<fingerprint>": {
             "start_frame": int,
             "end_frame": int,
-            "fused_track": [
+            "blended_path": [
                 # blended interval path: combined FWD+BWD output
                 # trajectory for this interval. Output artifact only;
                 # never used for FWD/BWD agreement scoring.
@@ -164,11 +164,11 @@ unchanged; only the read site changes.
 ### Explicitly not stored
 
 - `interval_score` -- lives exclusively in `interval_scores.json`.
-- `forward_track`, `backward_track` -- the per-pass forward and
+- `forward_path`, `backward_path` -- the per-pass forward and
   backward interval paths. Live in the opt-in debug interval paths
   sidecar (`debug_paths.npz` on disk) when solve runs with
   `--debug-paths`.
-- Per-frame extras (`conf`, `source`, `fuse_flag`, `occlusion_risk`,
+- Per-frame extras (`conf`, `source`, `blend_flag`, `occlusion_risk`,
   `blob_gate`, `stationary_lock`) -- not read by production code from
   a loaded cache; dropped at write.
 
