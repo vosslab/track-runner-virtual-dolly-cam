@@ -136,15 +136,6 @@ def parse_args() -> argparse.Namespace:
 		help="Enable debug video output with tracking overlays.",
 	)
 	parser.add_argument(
-		"--debug-tracks", dest="debug_tracks", action="store_true",
-		help=(
-			"When solving, also write a sidecar "
-			"<video>.track_runner.debug_tracks.npz carrying "
-			"forward/backward propagation tracks. Required input for "
-			"the FWD/BWD debug overlay in encode/analyze modes."
-		),
-	)
-	parser.add_argument(
 		"-w", "--workers", dest="workers", type=int, default=None,
 		help="Number of parallel workers (default: half of CPU cores).",
 	)
@@ -159,7 +150,6 @@ def parse_args() -> argparse.Namespace:
 	)
 	parser.set_defaults(
 		debug=False,
-		debug_tracks=False,
 	)
 
 	subparsers = parser.add_subparsers(dest="mode")
@@ -198,7 +188,18 @@ def parse_args() -> argparse.Namespace:
 			"prompt. Use this for scripted re-solve runs."
 		),
 	)
-	solve_parser.set_defaults(assume_yes=False)
+	solve_parser.add_argument(
+		"--debug-tracks", dest="debug_tracks", action="store_true",
+		help=(
+			"Also write <video>.track_runner.debug_tracks.npz with "
+			"forward/backward propagation tracks for every solved "
+			"interval. Required input for the FWD/BWD debug overlay "
+			"in later encode/analyze --debug runs. Solve-only: "
+			"refine intentionally does not touch the sidecar so a "
+			"partial re-solve cannot clobber a complete sidecar."
+		),
+	)
+	solve_parser.set_defaults(assume_yes=False, debug_tracks=False)
 
 	# -- refine mode --
 	subparsers.add_parser(
