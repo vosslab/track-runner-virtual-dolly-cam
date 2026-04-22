@@ -46,7 +46,7 @@ import residual_heat_map
 #    0.6  heat ROI outline       (below every overlay)
 #    1.0  seed rectangle         (edit_controller)
 #    3.0  consensus box          (base_controller)
-#    4.0  fused box              (base_controller)
+#    4.0  blended box            (base_controller)
 #    5.0  fwd / bwd boxes        (base_controller)
 #   20.0  heat legend text       (above every box; small corner text)
 #   20.5  heat badge background  (backs the warning label)

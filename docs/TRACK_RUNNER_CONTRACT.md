@@ -79,6 +79,11 @@ Seeds are hard anchors. An interval runs seed -> seed.
 Within a single interval, the forward pass and backward pass may each keep
 their own per-pass working state. That state must remain pass-local.
 
+Terminology for per-interval geometry ("forward interval path",
+"backward interval path", "blended interval path") is defined in
+[FWD_BWD_MODEL_METHODOLOGY.md](FWD_BWD_MODEL_METHODOLOGY.md). "Fused
+output" below refers to the blended interval path.
+
 For scoring and review:
 - agreement and uncertainty must be computed from the two independent
     pass trajectories, not from fused output

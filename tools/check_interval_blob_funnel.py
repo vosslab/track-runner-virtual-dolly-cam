@@ -135,6 +135,18 @@ def parse_args() -> argparse.Namespace:
 			"first N. Uses OS entropy: each run picks a different sample."
 		)
 	)
+	parser.add_argument(
+		"--diagnostic-fused-reference", dest="diagnostic_fused_reference",
+		action="store_true",
+		help=(
+			"OFFLINE DIAGNOSTIC ONLY. Replace the corridor-best-blob "
+			"centroid with the solver's blended interval path "
+			"(fused_track) position at that frame before running the "
+			"gates. Tests whether the current gates would accept the "
+			"solver's own final output location. Not a legal solve-time "
+			"input; never wire into production."
+		)
+	)
 	args = parser.parse_args()
 	if args.interval_range is not None and args.interval_indices is not None:
 		parser.error("--interval and --interval-index are mutually exclusive")
@@ -198,6 +210,7 @@ def _replay_frame_funnel(
 	reader: object,
 	scene_transform: object,
 	residual_cache: dict,
+	fused_override: tuple = None,
 ) -> dict:
 	"""Run the snap pipeline on one frame and return the funnel stamp.
 
@@ -322,8 +335,23 @@ def _replay_frame_funnel(
 			"gate_outcome": "absent",
 		}
 
-	bx = best_blob["centroid_x"]
-	by = best_blob["centroid_y"]
+	real_bx = best_blob["centroid_x"]
+	real_by = best_blob["centroid_y"]
+	# real-blob-to-fused distance: only meaningful when a fused_override
+	# exists for this frame. Captured before the override so the CSV can
+	# show how far the real corridor pick was from the solver's output.
+	real_to_fused_h = None
+	if fused_override is not None:
+		fx, fy = fused_override
+		real_to_fused_h = (
+			math.sqrt((real_bx - fx) ** 2 + (real_by - fy) ** 2) / h
+			if h > 0.0 else None
+		)
+		bx = fx
+		by = fy
+	else:
+		bx = real_bx
+		by = real_by
 	dx = bx - raw_cx
 	dy = by - raw_cy
 	dist = math.sqrt(dx * dx + dy * dy)
@@ -377,6 +405,7 @@ def _replay_frame_funnel(
 			path_perp_px / h if path_perp_px is not None and h > 0.0
 			else None
 		),
+		"real_to_fused_h": real_to_fused_h,
 	}
 
 
@@ -400,6 +429,7 @@ def _empty_funnel() -> dict:
 		"accepted": 0,
 		"blob_dist_h_samples": [],
 		"path_perp_h_samples": [],
+		"real_to_fused_h_samples": [],
 	}
 
 
@@ -428,6 +458,8 @@ def _funnel_add_frame(funnel: dict, stamp: dict) -> None:
 		funnel["blob_dist_h_samples"].append(stamp["blob_dist_h"])
 	if stamp.get("path_perp_h") is not None:
 		funnel["path_perp_h_samples"].append(stamp["path_perp_h"])
+	if stamp.get("real_to_fused_h") is not None:
+		funnel["real_to_fused_h_samples"].append(stamp["real_to_fused_h"])
 
 
 #============================================
@@ -654,6 +686,7 @@ def replay_pass(
 	scene_transform: object,
 	residual_cache: dict,
 	on_frame: object = None,
+	fused_lookup: dict = None,
 ) -> dict:
 	"""Replay one pass (FWD or BWD) and return its funnel counts.
 
@@ -680,9 +713,17 @@ def replay_pass(
 		# if the tool got this far, the reader is real.
 		if is_endpoint or is_stat:
 			continue
+		# fused_lookup, when provided, maps frame_index -> (cx, cy).
+		# Skip the override (treat as pure real-blob run) when the
+		# fused track has no entry for this frame so the gate math
+		# still runs against the real corridor pick.
+		fused_override = None
+		if fused_lookup is not None:
+			fused_override = fused_lookup.get(int(raw_pred[i][0]))
 		stamp = _replay_frame_funnel(
 			raw_pred[i - 1], raw_pred[i], raw_pred[i + 1],
 			reader, scene_transform, residual_cache,
+			fused_override=fused_override,
 		)
 		_funnel_add_frame(funnel, stamp)
 		if on_frame is not None:
@@ -819,13 +860,15 @@ def _load_race_start_frame(diag_path: str) -> int | None:
 
 #============================================
 CSV_COLUMNS = (
-	"interval_index", "start_frame", "end_frame", "duration_s", "pass",
+	"interval_index", "start_frame", "end_frame", "duration_s",
+	"scene_displacement_px", "pass",
 	"confidence_tier", "blob_coverage_existing",
 	"eligible", "residual_ok", "raw_blob", "corridor",
 	"proximity_pass", "direction_pass", "path_pass", "accepted",
 	"accepted_fraction_replay",
 	"median_blob_dist_h", "p90_blob_dist_h", "max_blob_dist_h",
 	"median_path_perp_h", "p90_path_perp_h", "max_path_perp_h",
+	"median_real_to_fused_h", "p90_real_to_fused_h",
 )
 
 
@@ -864,6 +907,7 @@ def _csv_row(
 	pass_name: str,
 	funnel: dict,
 	score_row: dict | None,
+	scene_displacement_px: float,
 ) -> list:
 	"""Build one CSV row for a single (interval, pass)."""
 	duration_s = (end_frame - start_frame) / fps
@@ -888,8 +932,12 @@ def _csv_row(
 
 	dist_summary = _summarize_samples(funnel["blob_dist_h_samples"])
 	perp_summary = _summarize_samples(funnel["path_perp_h_samples"])
+	rf_summary = _summarize_samples(
+		funnel.get("real_to_fused_h_samples", [])
+	)
 	row = [
-		idx, start_frame, end_frame, f"{duration_s:.4f}", pass_name,
+		idx, start_frame, end_frame, f"{duration_s:.4f}",
+		f"{scene_displacement_px:.3f}", pass_name,
 		tier, _cell(cov_existing),
 		funnel["eligible"], funnel["residual_ok"], funnel["raw_blob"],
 		funnel["corridor"], funnel["proximity_pass"],
@@ -899,6 +947,7 @@ def _csv_row(
 		_cell(dist_summary["max"]),
 		_cell(perp_summary["median"]), _cell(perp_summary["p90"]),
 		_cell(perp_summary["max"]),
+		_cell(rf_summary["median"]), _cell(rf_summary["p90"]),
 	]
 	return row
 
@@ -917,6 +966,8 @@ def _sanitize_funnel_for_json(funnel: dict) -> dict:
 			out["blob_dist_h"] = _summarize_samples(value)
 		elif key == "path_perp_h_samples":
 			out["path_perp_h"] = _summarize_samples(value)
+		elif key == "real_to_fused_h_samples":
+			out["real_to_fused_h"] = _summarize_samples(value)
 		else:
 			out[key] = value
 	return out
@@ -1042,6 +1093,43 @@ def _print_summary(per_interval: list, fps: float) -> None:
 			)
 		print(f"    {label:<9} (n={len(bucket_items):3d}): {rates}")
 
+	# eligible-frame-count buckets: sharper than duration because it
+	# does not conflate fps and seed density. Denominator is the sum of
+	# eligible frames across intervals in the bucket (not the average
+	# of per-interval percentages), so a 40-frame interval is weighted
+	# more than a 3-frame one.
+	frame_buckets = (
+		(0, 5, "<   5 frames"),
+		(5, 15, "5-15 frames "),
+		(15, 40, "15-40 frames"),
+		(40, 10 ** 9, "40+  frames "),
+	)
+	print("")
+	print("  by eligible-frame count (FWD+BWD summed):")
+	for lo, hi, label in frame_buckets:
+		bucket_pairs = []
+		for item in per_interval:
+			for pass_key in ("fwd", "bwd"):
+				elig = item[pass_key]["eligible"]
+				if lo <= elig < hi:
+					bucket_pairs.append(item[pass_key])
+		if not bucket_pairs:
+			print(f"    {label} (n=  0): (empty)")
+			continue
+		elig_sum = sum(p["eligible"] for p in bucket_pairs)
+		prox_sum = sum(p["proximity_pass"] for p in bucket_pairs)
+		path_sum = sum(p["path_pass"] for p in bucket_pairs)
+		accepted_sum = sum(p["accepted"] for p in bucket_pairs)
+		if elig_sum == 0:
+			rates = "(no eligible frames)"
+		else:
+			rates = (
+				f"proximity={prox_sum / elig_sum:.0%} "
+				f"path={path_sum / elig_sum:.0%} "
+				f"accepted={accepted_sum / elig_sum:.0%}"
+			)
+		print(f"    {label} (n={len(bucket_pairs):3d}): {rates}")
+
 
 #============================================
 def main() -> None:
@@ -1106,6 +1194,34 @@ def main() -> None:
 	# existing interval_scores.json keyed by (start, end) for the header
 	# fields (confidence_tier, blob_coverage_fwd/bwd). Absent file -> {}.
 	scores_by_key = _load_scores_by_interval(diag_path)
+
+	# --diagnostic-fused-reference: load geometry_cache once and build a
+	# per-interval lookup from (start_frame, end_frame) -> dict mapping
+	# absolute frame_index -> (cx, cy). Off by default.
+	fused_by_interval_key = {}
+	if args.diagnostic_fused_reference:
+		geom_path = tr_paths.default_intervals_path(args.input_file)
+		if not os.path.isfile(geom_path):
+			raise RuntimeError(
+				f"geometry cache missing: {geom_path}\n"
+				"run 'track_runner.py -i VIDEO solve' first; "
+				"--diagnostic-fused-reference needs a solved blended path."
+			)
+		geom = state_io.load_geometry_cache(geom_path)
+		solved = geom.get("solved_intervals", {}) or {}
+		for _fp, iv in solved.items():
+			start = int(iv["start_frame"])
+			end = int(iv["end_frame"])
+			fused_track = iv.get("fused_track") or []
+			per_frame = {}
+			for offset, entry in enumerate(fused_track):
+				fi = start + offset
+				per_frame[fi] = (float(entry["cx"]), float(entry["cy"]))
+			fused_by_interval_key[(start, end)] = per_frame
+		print(
+			f"  diagnostic-fused-reference: loaded blended paths for "
+			f"{len(fused_by_interval_key)} intervals"
+		)
 
 	# race-start cutoff: contract C2 says pre-race frames anchor to a
 	# stationary reference with averaged seed geometry, not per-frame
@@ -1207,13 +1323,35 @@ def main() -> None:
 
 				return _save
 
+			# scene-space endpoint displacement: one geometry number per
+			# interval, lets post-hoc analysis scatter (displacement,
+			# accept rate) without re-running the tool.
+			l_scene = transform.pixel_box_to_scene(
+				int(left["frame_index"]), float(left["cx"]),
+				float(left["cy"]), float(left["w"]), float(left["h"]),
+			)
+			r_scene = transform.pixel_box_to_scene(
+				int(right["frame_index"]), float(right["cx"]),
+				float(right["cy"]), float(right["w"]), float(right["h"]),
+			)
+			scene_displacement_px = math.sqrt(
+				(r_scene[0] - l_scene[0]) ** 2
+				+ (r_scene[1] - l_scene[1]) ** 2
+			)
+
+			fused_lookup = fused_by_interval_key.get(
+				(start_frame, end_frame)
+			) if args.diagnostic_fused_reference else None
+
 			fwd_funnel = replay_pass(
 				raw_pred_fwd, reader, transform, residual_cache,
 				on_frame=_make_saver("FWD"),
+				fused_lookup=fused_lookup,
 			)
 			bwd_funnel = replay_pass(
 				raw_pred_bwd, reader, transform, residual_cache,
 				on_frame=_make_saver("BWD"),
+				fused_lookup=fused_lookup,
 			)
 			residual_cache.clear()
 
@@ -1222,6 +1360,7 @@ def main() -> None:
 				"interval_index": idx,
 				"start_frame": start_frame,
 				"end_frame": end_frame,
+				"scene_displacement_px": scene_displacement_px,
 				"confidence_tier": (score_row or {}).get(
 					"confidence_tier", ""
 				),
@@ -1245,11 +1384,11 @@ def main() -> None:
 			if csv_writer is not None:
 				csv_writer.writerow(_csv_row(
 					idx, start_frame, end_frame, fps, "FWD",
-					fwd_funnel, score_row,
+					fwd_funnel, score_row, scene_displacement_px,
 				))
 				csv_writer.writerow(_csv_row(
 					idx, start_frame, end_frame, fps, "BWD",
-					bwd_funnel, score_row,
+					bwd_funnel, score_row, scene_displacement_px,
 				))
 				csv_fh.flush()
 	finally:
