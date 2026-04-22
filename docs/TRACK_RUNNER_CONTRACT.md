@@ -8,6 +8,8 @@ lives in [TRACK_RUNNER_V3_SPEC.md](TRACK_RUNNER_V3_SPEC.md).
 If any other doc or any code appears to conflict with this contract, the
 contract wins. The other doc or the code is the thing to fix.
 
+User must approve any new contract items. Agents are not allowed to edit.
+
 ## C1. Torso box is the unit of scale for runner-relative decisions
 
 Runners range from near-full-frame down to roughly 10 px tall across the
@@ -72,22 +74,24 @@ Seeds are hard anchors. An interval runs seed -> seed.
 - Bad seeds are fixed by the user editing them. "Seeds are truth" means
   best-available truth at solve time, not permanent truth.
 
-## C5. No temporal memory inside a pass, beyond raw image-derived caches
+## C5. FWD/BWD must remain independent for scoring
 
-Principle: caches may store image-derived observations, never accepted
-interpretations of those observations.
+Within a single interval, the forward pass and backward pass may each keep
+their own per-pass working state. That state must remain pass-local.
 
-Allowed per-frame persistence inside a single solve or refine pass:
+For scoring and review:
+- agreement and uncertainty must be computed from the two independent
+    pass trajectories, not from fused output
+- the forward pass must not read backward-pass trajectory state
+- the backward pass must not read forward-pass trajectory state
+- neither pass may read fused output or stitched output while solving
 
-- residual magnitude maps
-- validity masks
-- raw extracted blobs (pre-gate)
+Allowed:
+- pass-local temporary state that exists only while solving one interval
+- raw image-derived observations and caches
+- a separate output-only corrected track, if added later, provided it is
+    not used for FWD/BWD agreement scoring
 
-Forbidden: any accumulator built from accepted outputs, including but not
-limited to accepted blobs, `snap_pred` history, gate decisions,
-`last_blob`, `prev_accepted_*`, `*_chain_*`, and miss counters.
-
-Per-interval worker state is allowed; it dies with the worker.
 
 ## C6. Jersey color and runner-appearance template matching are not reliable
 
