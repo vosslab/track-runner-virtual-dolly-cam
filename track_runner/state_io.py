@@ -8,7 +8,7 @@ a seed is a torso box drawn by a human. The canonical on-disk shape
 Convenience geometry (cx/cy/w/h) is derived in memory from torso_box
 at load time and discarded at write time; it never appears on disk.
 
-Geometry-cache files (NPZ) store the solved per-frame fused trajectory
+Geometry-cache files (NPZ) store the solved per-frame blended interval path
 under the format rule "dense per-frame numeric series -> NPZ". Per
 interval, four float32 arrays (cx/cy/w/h) plus a small JSON manifest
 mapping fingerprint to array_index. No scoring content.
@@ -420,7 +420,7 @@ def load_geometry_cache(path: str) -> dict:
 				"<fingerprint>": {
 					"start_frame": int,
 					"end_frame": int,
-					"fused_track": [
+					"blended_path": [
 						{"cx": float, "cy": float, "w": float, "h": float},
 						...
 					],
@@ -497,7 +497,7 @@ def load_geometry_cache(path: str) -> dict:
 			w_arr = npz[w_key]
 			h_arr = npz[h_key]
 			# reassemble list-of-dicts for in-memory consumers
-			fused_track = [
+			blended_path = [
 				{
 					"cx": float(cx_arr[i]),
 					"cy": float(cy_arr[i]),
@@ -509,7 +509,7 @@ def load_geometry_cache(path: str) -> dict:
 			solved[fingerprint] = {
 				"start_frame": start_frame,
 				"end_frame": end_frame,
-				"fused_track": fused_track,
+				"blended_path": blended_path,
 			}
 	result = {
 		INTERVALS_HEADER_KEY: INTERVALS_HEADER_VALUE,
@@ -526,17 +526,17 @@ def load_geometry_cache(path: str) -> dict:
 def write_geometry_cache(path: str, cache_data: dict) -> None:
 	"""Write a geometry cache as NPZ with a JSON manifest.
 
-	Extracts `fused_track` cx/cy/w/h arrays from each solved interval
-	and writes them as float32 NPZ arrays. The manifest maps each
-	fingerprint to an `array_index`, `start_frame`, and `end_frame` so
-	the loader can reassemble the in-memory shape.
+	Extracts `blended_path` (blended interval path) cx/cy/w/h arrays from
+	each solved interval and writes them as float32 NPZ arrays. The
+	manifest maps each fingerprint to an `array_index`, `start_frame`,
+	and `end_frame` so the loader can reassemble the in-memory shape.
 
-	Does not persist `interval_score`, `forward_track`, `backward_track`,
+	Does not persist `interval_score`, `forward_path`, `backward_path`,
 	or any per-frame extras. Scoring lives in `interval_scores.json`
 	(see `write_solver_diagnostics`, which writes to that file;
-	function name is retained for callsite compatibility). Forward/
-	backward tracks live in the opt-in `debug_tracks.npz` sidecar when
-	solve runs with `--debug-tracks`.
+	function name is retained for callsite compatibility). Forward and
+	backward interval paths live in the opt-in `debug_paths.npz` sidecar
+	when solve runs with `--debug-paths`.
 
 	Atomic write via a sibling temp file and `os.replace`.
 
@@ -544,7 +544,7 @@ def write_geometry_cache(path: str, cache_data: dict) -> None:
 		path: Output NPZ file path.
 		cache_data: Dict shaped like `load_geometry_cache` returns --
 			at minimum `{"solved_intervals": {fp: {start_frame,
-			end_frame, fused_track: [dicts]}}}`. Unknown top-level keys
+			end_frame, blended_path: [dicts]}}}`. Unknown top-level keys
 			are tolerated; only `video_identity` and `solve_complete`
 			are persisted beyond the manifest and per-interval arrays.
 	"""
@@ -554,19 +554,19 @@ def write_geometry_cache(path: str, cache_data: dict) -> None:
 	for idx, (fingerprint, entry) in enumerate(solved_intervals.items()):
 		start_frame = int(entry["start_frame"])
 		end_frame = int(entry["end_frame"])
-		fused_track = entry.get("fused_track") or []
+		blended_path = entry.get("blended_path") or []
 		# extract columnar arrays from list-of-dicts
 		cx = numpy.asarray(
-			[float(s["cx"]) for s in fused_track], dtype=numpy.float32
+			[float(s["cx"]) for s in blended_path], dtype=numpy.float32
 		)
 		cy = numpy.asarray(
-			[float(s["cy"]) for s in fused_track], dtype=numpy.float32
+			[float(s["cy"]) for s in blended_path], dtype=numpy.float32
 		)
 		w = numpy.asarray(
-			[float(s["w"]) for s in fused_track], dtype=numpy.float32
+			[float(s["w"]) for s in blended_path], dtype=numpy.float32
 		)
 		h = numpy.asarray(
-			[float(s["h"]) for s in fused_track], dtype=numpy.float32
+			[float(s["h"]) for s in blended_path], dtype=numpy.float32
 		)
 		arrays[f"i{idx}_cx"] = cx
 		arrays[f"i{idx}_cy"] = cy
@@ -595,14 +595,14 @@ def write_geometry_cache(path: str, cache_data: dict) -> None:
 
 #============================================
 
-# NPZ schema version key for debug_tracks.npz sidecar files
-DEBUG_TRACKS_SCHEMA_VERSION = 1
+# NPZ schema version key for debug_paths.npz sidecar files
+DEBUG_PATHS_SCHEMA_VERSION = 1
 
 
 def _write_npz_atomic(path: str, arrays: dict) -> None:
 	"""Write a dict of numpy arrays to an NPZ file atomically.
 
-	Shared helper used by write_geometry_cache and write_debug_tracks.
+	Shared helper used by write_geometry_cache and write_debug_paths.
 
 	Args:
 		path: Target NPZ file path.
@@ -627,16 +627,17 @@ def _write_npz_atomic(path: str, arrays: dict) -> None:
 
 #============================================
 
-def write_debug_tracks(path: str, cache_data: dict) -> None:
-	"""Write forward/backward track arrays as an NPZ debug sidecar.
+def write_debug_paths(path: str, cache_data: dict) -> None:
+	"""Write forward/backward interval path arrays as an NPZ debug sidecar.
 
-	Only called when solve runs with `--debug-tracks`. Accepts the same
+	Only called when solve runs with `--debug-paths`. Accepts the same
 	in-memory shape produced by solve_all_intervals, picks out each
-	interval's `forward_track` and `backward_track` (list-of-dicts with
-	cx/cy/w/h), and writes two sets of four float32 arrays per
+	interval's `forward_path` and `backward_path` (list-of-dicts with
+	cx/cy/w/h, the forward and backward interval paths), and writes two
+	sets of four float32 arrays per
 	interval: `i<k>_fwd_{cx,cy,w,h}` and `i<k>_bwd_{cx,cy,w,h}`.
 
-	Intervals without forward_track/backward_track are silently skipped
+	Intervals without forward_path/backward_path are silently skipped
 	(e.g. when solve was interrupted mid-interval).
 
 	The sidecar's manifest mirrors the geometry cache's manifest so the
@@ -644,18 +645,18 @@ def write_debug_tracks(path: str, cache_data: dict) -> None:
 
 	Args:
 		path: Target NPZ file path (typically
-			`<video>.track_runner.debug_tracks.npz`).
+			`<video>.track_runner.debug_paths.npz`).
 		cache_data: Dict shaped like `load_geometry_cache` output --
 			`{"solved_intervals": {fp: {start_frame, end_frame,
-			forward_track: [...], backward_track: [...]}}}`.
+			forward_path: [...], backward_path: [...]}}}`.
 	"""
 	solved_intervals = cache_data.get("solved_intervals", {}) or {}
 	manifest = []
 	arrays = {}
 	for idx, (fingerprint, entry) in enumerate(solved_intervals.items()):
-		fwd = entry.get("forward_track")
-		bwd = entry.get("backward_track")
-		# skip intervals with no debug tracks attached
+		fwd = entry.get("forward_path")
+		bwd = entry.get("backward_path")
+		# skip intervals with no debug interval paths attached
 		if not fwd or not bwd:
 			continue
 		start_frame = int(entry["start_frame"])
@@ -684,7 +685,7 @@ def write_debug_tracks(path: str, cache_data: dict) -> None:
 			"array_index": idx,
 		})
 	arrays["schema_version"] = numpy.asarray(
-		DEBUG_TRACKS_SCHEMA_VERSION, dtype=numpy.int32
+		DEBUG_PATHS_SCHEMA_VERSION, dtype=numpy.int32
 	)
 	manifest_json = json.dumps(manifest).encode("utf-8")
 	arrays["manifest"] = numpy.frombuffer(manifest_json, dtype=numpy.uint8)
@@ -693,16 +694,16 @@ def write_debug_tracks(path: str, cache_data: dict) -> None:
 
 #============================================
 
-def load_debug_tracks(path: str) -> dict:
-	"""Load a debug_tracks.npz sidecar into an in-memory dict.
+def load_debug_paths(path: str) -> dict:
+	"""Load a debug_paths.npz sidecar into an in-memory dict.
 
 	Returns a dict keyed by fingerprint, shape:
 		{
 			"<fingerprint>": {
 				"start_frame": int,
 				"end_frame": int,
-				"forward_track": [{cx, cy, w, h}, ...],
-				"backward_track": [{cx, cy, w, h}, ...],
+				"forward_path": [{cx, cy, w, h}, ...],
+				"backward_path": [{cx, cy, w, h}, ...],
 			},
 			...
 		}
@@ -711,7 +712,7 @@ def load_debug_tracks(path: str) -> dict:
 	unknown schema version.
 
 	Args:
-		path: Path to the debug_tracks.npz sidecar.
+		path: Path to the debug_paths.npz sidecar.
 
 	Returns:
 		dict mapping fingerprint to per-direction track dicts.
@@ -721,10 +722,10 @@ def load_debug_tracks(path: str) -> dict:
 	result = {}
 	with numpy.load(path, allow_pickle=False) as npz:
 		schema_version = int(npz["schema_version"])
-		if schema_version != DEBUG_TRACKS_SCHEMA_VERSION:
+		if schema_version != DEBUG_PATHS_SCHEMA_VERSION:
 			raise RuntimeError(
-				f"debug tracks schema mismatch in {path}: expected "
-				f"schema_version={DEBUG_TRACKS_SCHEMA_VERSION}, got "
+				f"debug interval paths schema mismatch in {path}: expected "
+				f"schema_version={DEBUG_PATHS_SCHEMA_VERSION}, got "
 				f"{schema_version}"
 			)
 		manifest_bytes = bytes(npz["manifest"])
@@ -747,7 +748,7 @@ def load_debug_tracks(path: str) -> dict:
 					}
 					for i in range(len(cx))
 				]
-				key = "forward_track" if direction == "fwd" else "backward_track"
+				key = "forward_path" if direction == "fwd" else "backward_path"
 				tracks[key] = track_records
 			result[fingerprint] = {
 				"start_frame": int(entry["start_frame"]),
@@ -1051,7 +1052,7 @@ if __name__ == "__main__":
 			fingerprint: {
 				"start_frame": 100,
 				"end_frame": 101,
-				"fused_track": [
+				"blended_path": [
 					{"cx": 100.0, "cy": 200.0, "w": 40.0, "h": 60.0},
 					{"cx": 101.5, "cy": 200.5, "w": 40.0, "h": 60.0},
 				],
@@ -1068,8 +1069,8 @@ if __name__ == "__main__":
 	assert len(loaded_iv["solved_intervals"]) == 1
 	reloaded = loaded_iv["solved_intervals"][fingerprint]
 	assert reloaded["start_frame"] == 100
-	assert len(reloaded["fused_track"]) == 2
-	assert reloaded["fused_track"][0]["cx"] == 100.0
+	assert len(reloaded["blended_path"]) == 2
+	assert reloaded["blended_path"][0]["cx"] == 100.0
 	assert loaded_iv["solve_complete"] is True
 	assert loaded_iv["video_identity"]["basename"] == "self_check.mov"
 	os.unlink(tmp_path)

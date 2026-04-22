@@ -158,21 +158,21 @@ def default_output_path(input_file: str) -> str:
 
 #============================================
 
-def default_debug_tracks_path(input_file: str) -> str:
-	"""Return the default debug_tracks sidecar path for a given input file.
+def default_debug_paths_path(input_file: str) -> str:
+	"""Return the default debug_paths sidecar path for a given input file.
 
-	This sidecar is written only when solve runs with `--debug-tracks`.
-	It carries per-interval forward/backward propagation tracks for the
+	This sidecar is written only when solve runs with `--debug-paths`.
+	It carries per-interval forward and backward interval paths for the
 	debug overlay, separate from the production geometry cache.
 
 	Args:
 		input_file: Input media file path.
 
 	Returns:
-		str: Debug tracks NPZ sidecar path inside tr_config/.
+		str: Debug interval paths NPZ sidecar path inside tr_config/.
 	"""
 	sidecar_path = _data_file_path(
-		input_file, ".track_runner.debug_tracks.npz"
+		input_file, ".track_runner.debug_paths.npz"
 	)
 	return sidecar_path
 

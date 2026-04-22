@@ -146,7 +146,7 @@ class AnnotationWindow(AppShell):
 		pred_colors = {
 			"fwd": ("FWD", overlay_config.get_prediction_color("forward")),
 			"bwd": ("BWD", overlay_config.get_prediction_color("backward")),
-			"fused": ("REFINED", overlay_config.get_prediction_color("fused")),
+			"blended": ("REFINED", overlay_config.get_prediction_color("blended")),
 			"consensus": ("AVG", overlay_config.get_prediction_color("consensus")),
 			"legend": ("Legend", "#FFFFFF"),
 		}

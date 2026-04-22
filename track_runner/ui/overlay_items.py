@@ -275,7 +275,7 @@ class ScaleBarItem(QGraphicsTextItem):
 _LEGEND_ENTRIES = [
 	("forward", "FWD"),
 	("backward", "BWD"),
-	("fused", "REFINED"),
+	("blended", "REFINED"),
 	("consensus", "AVG"),
 ]
 

@@ -68,9 +68,9 @@ def _fake_result(seed_start: dict, seed_end: dict) -> dict:
 	return {
 		"start_frame": int(seed_start["frame_index"]),
 		"end_frame": int(seed_end["frame_index"]),
-		"fused_track": [],
-		"forward_track": [],
-		"backward_track": [],
+		"blended_path": [],
+		"forward_path": [],
+		"backward_path": [],
 		"interval_score": {"agreement": 1.0, "confidence_tier": "high"},
 	}
 

@@ -1,6 +1,6 @@
 """Interval confidence metrics for track_runner.
 
-Takes interval evidence from forward and backward tracking passes and
+Takes interval evidence from the forward interval path and backward interval path and
 returns agreement score, identity score, competitor margin, and a
 final confidence label.
 """
@@ -65,16 +65,16 @@ def _compute_dice_coefficient(
 
 #============================================
 def compute_meeting_point_errors(
-	forward_track: list,
-	backward_track: list,
+	forward_path: list,
+	backward_path: list,
 ) -> list:
-	"""Compute per-frame center and scale errors between forward and backward tracks.
+	"""Compute per-frame center and scale errors between forward and backward interval paths.
 
 	Args:
-		forward_track: List of tracking state dicts from forward propagation.
+		forward_path: List of tracking state dicts from forward propagation.
 			Each dict has keys "cx", "cy", "w", "h", "conf", "source".
-		backward_track: List of tracking state dicts from backward propagation,
-			already reversed to align frame-by-frame with forward_track.
+		backward_path: List of tracking state dicts from backward propagation,
+			already reversed to align frame-by-frame with forward_path.
 
 	Returns:
 		List of dicts with keys:
@@ -84,10 +84,10 @@ def compute_meeting_point_errors(
 	"""
 	errors = []
 	# Iterate over the shorter of the two tracks to avoid index errors
-	num_frames = min(len(forward_track), len(backward_track))
+	num_frames = min(len(forward_path), len(backward_path))
 	for i in range(num_frames):
-		fwd = forward_track[i]
-		bwd = backward_track[i]
+		fwd = forward_path[i]
+		bwd = backward_path[i]
 		# Compute Euclidean center distance
 		dx = fwd["cx"] - bwd["cx"]
 		dy = fwd["cy"] - bwd["cy"]
@@ -112,8 +112,8 @@ def compute_meeting_point_errors(
 
 #============================================
 def compute_agreement_debug(
-	forward_track: list,
-	backward_track: list,
+	forward_path: list,
+	backward_path: list,
 	start_frame: int = 0,
 ) -> dict:
 	"""Compute FWD/BWD agreement with per-frame diagnostic records.
@@ -124,10 +124,10 @@ def compute_agreement_debug(
 	can be investigated empirically without changing the metric itself.
 
 	Args:
-		forward_track: List of tracking state dicts from forward propagation.
-		backward_track: List of tracking state dicts from backward propagation,
-			aligned frame-by-frame with forward_track.
-		start_frame: Absolute frame index of forward_track[0], used to tag
+		forward_path: List of tracking state dicts from forward propagation.
+		backward_path: List of tracking state dicts from backward propagation,
+			aligned frame-by-frame with forward_path.
+		start_frame: Absolute frame index of forward_path[0], used to tag
 			per-frame records with their absolute frame_index.
 
 	Returns:
@@ -138,7 +138,7 @@ def compute_agreement_debug(
 				fwd_w, fwd_h, bwd_cx, bwd_cy, bwd_w, bwd_h, iou,
 				center_dist_px, size_ratio_w, size_ratio_h
 	"""
-	num_frames = min(len(forward_track), len(backward_track))
+	num_frames = min(len(forward_path), len(backward_path))
 	if num_frames == 0:
 		return {
 			"agreement": 0.0,
@@ -149,8 +149,8 @@ def compute_agreement_debug(
 	per_frame = []
 	ious = []
 	for i in range(num_frames):
-		fwd = forward_track[i]
-		bwd = backward_track[i]
+		fwd = forward_path[i]
+		bwd = backward_path[i]
 		iou = _compute_dice_coefficient(fwd, bwd)
 		ious.append(iou)
 		dx = float(fwd["cx"]) - float(bwd["cx"])
@@ -189,29 +189,29 @@ def compute_agreement_debug(
 
 
 #============================================
-def compute_agreement(forward_track: list, backward_track: list) -> float:
-	"""Compute overall agreement score between forward and backward tracks.
+def compute_agreement(forward_path: list, backward_path: list) -> float:
+	"""Compute overall agreement score between forward and backward interval paths.
 
 	Uses Dice coefficient (2*intersection / (area_a + area_b)) per frame,
 	which naturally handles scale: two large boxes with high overlap score
 	well regardless of absolute pixel size.
 
 	Args:
-		forward_track: List of tracking state dicts from forward propagation.
-		backward_track: List of tracking state dicts from backward propagation,
-			aligned frame-by-frame with forward_track.
+		forward_path: List of tracking state dicts from forward propagation.
+		backward_path: List of tracking state dicts from backward propagation,
+			aligned frame-by-frame with forward_path.
 
 	Returns:
 		Float in [0.0, 1.0] where 1.0 means perfect agreement.
 	"""
-	num_frames = min(len(forward_track), len(backward_track))
+	num_frames = min(len(forward_path), len(backward_path))
 	if num_frames == 0:
 		return 0.0
 
 	frame_scores = []
 	for i in range(num_frames):
-		fwd = forward_track[i]
-		bwd = backward_track[i]
+		fwd = forward_path[i]
+		bwd = backward_path[i]
 		# Dice coefficient captures both position and scale agreement
 		# as a single area-overlap metric
 		dice = _compute_dice_coefficient(fwd, bwd)
@@ -290,18 +290,18 @@ def classify_confidence(
 
 #============================================
 def score_interval(
-	forward_track: list,
-	backward_track: list,
+	forward_path: list,
+	backward_path: list,
 	identity_scores: list,
 	competitor_margins: list,
 ) -> dict:
-	"""Score an interval using forward/backward track evidence.
+	"""Score an interval using forward/backward interval path evidence.
 
 	Args:
-		forward_track: List of tracking state dicts from forward propagation.
+		forward_path: List of tracking state dicts from forward propagation.
 			Each dict has keys "cx", "cy", "w", "h", "conf", "source".
-		backward_track: List of tracking state dicts from backward propagation,
-			already reversed to align frame-by-frame with forward_track.
+		backward_path: List of tracking state dicts from backward propagation,
+			already reversed to align frame-by-frame with forward_path.
 		identity_scores: List of per-frame identity match scores (float 0-1).
 		competitor_margins: List of per-frame competitor margin scores (float 0-1).
 
@@ -315,7 +315,7 @@ def score_interval(
 			- "meeting_point_error": list of per-frame error dicts
 	"""
 	# Compute agreement between forward and backward passes
-	agreement_score = compute_agreement(forward_track, backward_track)
+	agreement_score = compute_agreement(forward_path, backward_path)
 
 	# Average identity score across frames; default 0.0 if no data
 	if identity_scores:
@@ -332,11 +332,11 @@ def score_interval(
 	# Classify confidence from the three aggregate signals
 	confidence, failure_reasons = classify_confidence(
 		agreement_score, identity_score, competitor_margin,
-		interval_length=len(forward_track),
+		interval_length=len(forward_path),
 	)
 
 	# Compute per-frame meeting point errors for diagnostic output
-	meeting_point_error = compute_meeting_point_errors(forward_track, backward_track)
+	meeting_point_error = compute_meeting_point_errors(forward_path, backward_path)
 
 	result = {
 		"agreement_score": agreement_score,
@@ -427,14 +427,14 @@ def _compute_velocity_smoothness(
 
 #============================================
 def score_interval_analytical(
-	forward_track: list,
-	backward_track: list,
+	forward_path: list,
+	backward_path: list,
 	all_seeds_scene: list,
 	interval_curves: dict,
 	scene_transform: object,
 	motion_track: object = None,
 	all_seeds: list = None,
-	fused_track: list = None,
+	blended_path: list = None,
 	fps: float = 30.0,
 ) -> dict:
 	"""Score an interval using analytical velocity model metrics.
@@ -444,17 +444,17 @@ def score_interval_analytical(
 	(interpolation residual), and assigns confidence tier and failure reasons.
 
 	Args:
-		forward_track: List of tracking state dicts from propagate_forward_analytical.
-		backward_track: List of tracking state dicts from propagate_backward_analytical.
+		forward_path: List of tracking state dicts from propagate_forward_analytical.
+		backward_path: List of tracking state dicts from propagate_backward_analytical.
 		all_seeds_scene: List of all seeds as (frame, sx, sy, sw, sh) tuples
 			in scene coordinates.
 		motion_track: Optional MotionTrack for computing motion_quality.
 		all_seeds: Optional list of original seed dicts for occlusion_fraction.
 		interval_curves: Dict from fit_interval_curves with curve parameters.
 		scene_transform: SceneTransform instance.
-		fused_track: Optional list of fused FWD/BWD states used for the
+		blended_path: Optional list of blended FWD/BWD states (the blended interval path) used for the
 			velocity_consistency smoothness computation. If None, falls back
-			to forward_track.
+			to forward_path.
 		fps: Video frame rate. Used for the long-interval demotion threshold.
 
 	Returns:
@@ -469,15 +469,15 @@ def score_interval_analytical(
 			- failure_reasons: list of str
 			- warning_flags: list of str
 	"""
-	# compute agreement between forward and backward tracks
-	agreement = compute_agreement(forward_track, backward_track)
+	# compute agreement between forward and backward interval paths
+	agreement = compute_agreement(forward_path, backward_path)
 
 	# velocity consistency: internal trajectory smoothness in scene coords
 	# rationale: the previous LOO-slope metric measured whether a linear
 	# extrapolation outside the interval matched external seeds. On curved
 	# motion (real tracks) that metric systematically fails even for correct
 	# tracking, because linear extrapolation is the wrong model. This metric
-	# instead measures how jerky the fused trajectory is relative to its
+	# instead measures how jerky the blended interval path is relative to its
 	# typical speed. Smooth motion on a curve scores high; identity swaps,
 	# frame drops, or propagator failures inject spikes that drop the score.
 	start_frame = interval_curves["start_frame"]
@@ -493,7 +493,7 @@ def score_interval_analytical(
 			support_seeds_right.append((frame, sx, sy, sw, sh))
 
 	velocity_consistency = _compute_velocity_smoothness(
-		fused_track if fused_track is not None else forward_track,
+		blended_path if blended_path is not None else forward_path,
 		start_frame, scene_transform,
 	)
 
@@ -504,7 +504,7 @@ def score_interval_analytical(
 	if interval_length > 0:
 		# average interpolation error over interval
 		size_errors = []
-		for i, state in enumerate(forward_track):
+		for i, state in enumerate(forward_path):
 			frame_index = start_frame + i
 			t = (frame_index - start_frame) / interval_length
 			# expected height by linear interpolation
@@ -570,7 +570,7 @@ def score_interval_analytical(
 			occlusion_fraction = min(1.0, occlusion_fraction)
 
 	# confidence tier classification
-	interval_len = len(forward_track)
+	interval_len = len(forward_path)
 	if agreement > 0.5 and velocity_consistency > 0.5 and size_consistency > 0.5:
 		confidence_tier = "high"
 	elif agreement > 0.5 and velocity_consistency > 0.3:

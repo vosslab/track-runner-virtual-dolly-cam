@@ -146,11 +146,11 @@ def test_fps_threaded_through_scoring():
 
 	score_60 = scoring.score_interval_analytical(
 		fwd, bwd, all_seeds_scene, interval_curves, transform,
-		fused_track=fwd, fps=60.0,
+		blended_path=fwd, fps=60.0,
 	)
 	score_30 = scoring.score_interval_analytical(
 		fwd, bwd, all_seeds_scene, interval_curves, transform,
-		fused_track=fwd, fps=30.0,
+		blended_path=fwd, fps=30.0,
 	)
 	tier_order = ["low", "fair", "good", "high"]
 	# fps=60 should leave the tier alone; fps=30 should demote at least once

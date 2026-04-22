@@ -241,16 +241,16 @@ def _find_occlusion_exits(interval: dict) -> list:
 	they are the first frame after the runner re-emerges cleanly.
 
 	Args:
-		interval: Interval dict with fused_track list of state dicts.
+		interval: Interval dict with blended_path list of state dicts.
 
 	Returns:
 		List of absolute frame indices where occlusion exits.
 	"""
-	fused_track = interval.get("fused_track", [])
+	blended_path = interval.get("blended_path", [])
 	start_frame = int(interval["start_frame"])
 	exits = []
 	prev_risk = False
-	for i, state in enumerate(fused_track):
+	for i, state in enumerate(blended_path):
 		if not isinstance(state, dict):
 			prev_risk = False
 			continue
@@ -290,10 +290,10 @@ def identify_weak_spans(diagnostics: dict) -> list:
 		confidence = get_confidence_label(score)
 		failure_reasons = list(score.get("failure_reasons", []))
 
-		# check for occlusion frames in the fused track
-		fused_track = interval.get("fused_track", [])
+		# check for occlusion frames in the blended interval path
+		blended_path = interval.get("blended_path", [])
 		occlusion_count = sum(
-			1 for s in fused_track
+			1 for s in blended_path
 			if isinstance(s, dict) and s.get("occlusion_risk", False)
 		)
 		has_occlusion = occlusion_count > 0

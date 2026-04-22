@@ -352,7 +352,7 @@ def draw_debug_overlay_cropped(
 
 	Transforms tracking boxes from full-frame center coords into
 	crop-space pixel coords. Draws accepted torso track (solid green),
-	forward/backward track boxes (dashed), competitor box (red), and
+	forward/backward interval path boxes (dashed), competitor box (red), and
 	text labels for confidence, source, and interval ID.
 
 	All drawing elements scale with output resolution and tracked box
@@ -437,14 +437,14 @@ def draw_debug_overlay_cropped(
 	# draw all boxes and crosshair on an overlay for alpha blending
 	overlay = frame.copy()
 
-	# draw dashed blue forward track box when available
+	# draw dashed blue forward interval path box when available
 	if forward_box is not None:
 		fx1, fy1, fx2, fy2 = _box_to_crop_coords(forward_box, crop_rect, out_w, out_h)
 		_draw_dashed_rect(overlay, fx1, fy1, fx2, fy2,
 			overlay_config.get_prediction_bgr("forward"),
 			thickness=thin_line, dash_len=dash_len)
 
-	# draw dashed orange backward track box when available
+	# draw dashed orange backward interval path box when available
 	if backward_box is not None:
 		bx1, by1, bx2, by2 = _box_to_crop_coords(backward_box, crop_rect, out_w, out_h)
 		_draw_dashed_rect(overlay, bx1, by1, bx2, by2,

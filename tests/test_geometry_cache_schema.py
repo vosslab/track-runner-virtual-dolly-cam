@@ -2,10 +2,10 @@
 
 Covers the WP-I1 + WP-I4 (combined Patch 4+7) acceptance criteria:
 - NPZ round-trip reconstructs the in-memory shape existing consumers
-  expect (fingerprint-keyed dict with fused_track list-of-dicts).
+  expect (fingerprint-keyed dict with blended_path list-of-dicts).
 - Writer emits schema_version = GEOMETRY_CACHE_SCHEMA_VERSION, a JSON
   manifest, and per-interval float32 arrays.
-- interval_score, forward_track, backward_track, and per-frame extras
+- interval_score, forward_path, backward_path, and per-frame extras
   are NOT persisted (scoring-owner gate enforcement).
 - Loader rejects unknown schema versions with a clear error pointing
   at the migration tool.
@@ -30,9 +30,9 @@ import state_io
 
 
 def _make_interval_entry(start: int, end: int) -> dict:
-	"""Build an in-memory interval entry with a short fused_track."""
+	"""Build an in-memory interval entry with a short blended_path."""
 	n = end - start + 1
-	fused_track = [
+	blended_path = [
 		{
 			"cx": 100.0 + i,
 			"cy": 200.0 + i * 0.5,
@@ -41,7 +41,7 @@ def _make_interval_entry(start: int, end: int) -> dict:
 		}
 		for i in range(n)
 	]
-	return {"start_frame": start, "end_frame": end, "fused_track": fused_track}
+	return {"start_frame": start, "end_frame": end, "blended_path": blended_path}
 
 
 #============================================
@@ -69,7 +69,7 @@ def test_single_interval_round_trip(tmp_path):
 	loaded = state_io.load_geometry_cache(path)
 	iv = loaded["solved_intervals"]["fp_a"]
 	# round-trip invariant: every per-frame record survives unchanged
-	for orig, rt in zip(original["fused_track"], iv["fused_track"]):
+	for orig, rt in zip(original["blended_path"], iv["blended_path"]):
 		assert orig == rt
 
 
@@ -77,19 +77,19 @@ def test_single_interval_round_trip(tmp_path):
 
 
 def test_interval_score_not_persisted(tmp_path):
-	"""Scoring-owner gate: interval_score, forward_track, and
-	backward_track must not survive write_geometry_cache in any
+	"""Scoring-owner gate: interval_score, forward_path, and
+	backward_path must not survive write_geometry_cache in any
 	form (NPZ key, indexed array, or manifest field)."""
 	path = str(tmp_path / "cache.npz")
 	entry = _make_interval_entry(0, 3)
 	# inject fields that MUST be stripped by the writer
 	entry["interval_score"] = {"agreement": 0.9, "confidence_tier": "high"}
-	entry["forward_track"] = [{"cx": 1.0, "cy": 1.0, "w": 1.0, "h": 1.0}]
-	entry["backward_track"] = [{"cx": 2.0, "cy": 2.0, "w": 1.0, "h": 1.0}]
+	entry["forward_path"] = [{"cx": 1.0, "cy": 1.0, "w": 1.0, "h": 1.0}]
+	entry["backward_path"] = [{"cx": 2.0, "cy": 2.0, "w": 1.0, "h": 1.0}]
 	state_io.write_geometry_cache(
 		path, {"solved_intervals": {"fp_a": entry}},
 	)
-	forbidden = {"interval_score", "forward_track", "backward_track"}
+	forbidden = {"interval_score", "forward_path", "backward_path"}
 	# gather every place a forbidden name could appear on disk
 	with numpy.load(path, allow_pickle=False) as npz:
 		on_disk = set(npz.files)
@@ -184,7 +184,7 @@ def test_size_beats_equivalent_json(tmp_path):
 			"fp_a" * 12: {
 				"start_frame": 0,
 				"end_frame": 499,
-				"fused_track": entry["fused_track"],
+				"blended_path": entry["blended_path"],
 			}
 		}
 	}
@@ -214,13 +214,13 @@ def test_unknown_top_level_fields_ignored(tmp_path):
 
 
 def _make_entry_with_fwd_bwd(start: int, end: int) -> dict:
-	"""Build an entry with forward/backward tracks for debug-sidecar tests."""
+	"""Build an entry with forward/backward interval paths for debug-sidecar tests."""
 	entry = _make_interval_entry(start, end)
-	entry["forward_track"] = [
+	entry["forward_path"] = [
 		{"cx": 10.0 + i, "cy": 20.0 + i, "w": 30.0, "h": 40.0}
 		for i in range(end - start + 1)
 	]
-	entry["backward_track"] = [
+	entry["backward_path"] = [
 		{"cx": 11.0 + i, "cy": 21.0 + i, "w": 30.0, "h": 40.0}
 		for i in range(end - start + 1)
 	]
@@ -230,28 +230,28 @@ def _make_entry_with_fwd_bwd(start: int, end: int) -> dict:
 #============================================
 
 
-def test_debug_tracks_round_trip(tmp_path):
+def test_debug_paths_round_trip(tmp_path):
 	"""Debug sidecar writer/loader reconstruct fwd/bwd tracks
 	unchanged -- round-trip invariant."""
 	path = str(tmp_path / "debug.npz")
 	original = _make_entry_with_fwd_bwd(0, 4)
-	state_io.write_debug_tracks(
+	state_io.write_debug_paths(
 		path, {"solved_intervals": {"fp_a": original}},
 	)
-	loaded = state_io.load_debug_tracks(path)
+	loaded = state_io.load_debug_paths(path)
 	iv = loaded["fp_a"]
 	# round-trip invariant: every fwd and bwd frame survives unchanged
-	for orig, rt in zip(original["forward_track"], iv["forward_track"]):
+	for orig, rt in zip(original["forward_path"], iv["forward_path"]):
 		assert orig == rt
-	for orig, rt in zip(original["backward_track"], iv["backward_track"]):
+	for orig, rt in zip(original["backward_path"], iv["backward_path"]):
 		assert orig == rt
 
 
 #============================================
 
 
-def test_debug_tracks_skips_intervals_without_fwd_bwd(tmp_path):
-	"""Intervals without forward/backward tracks are silently omitted
+def test_debug_paths_skips_intervals_without_fwd_bwd(tmp_path):
+	"""Intervals without forward/backward interval paths are silently omitted
 	from the debug sidecar."""
 	path = str(tmp_path / "debug.npz")
 	data = {
@@ -260,18 +260,18 @@ def test_debug_tracks_skips_intervals_without_fwd_bwd(tmp_path):
 			"fp_without": _make_interval_entry(10, 13),
 		},
 	}
-	state_io.write_debug_tracks(path, data)
-	loaded = state_io.load_debug_tracks(path)
+	state_io.write_debug_paths(path, data)
+	loaded = state_io.load_debug_paths(path)
 	assert set(loaded.keys()) == {"fp_with"}
 
 
 #============================================
 
 
-def test_debug_tracks_loader_missing_file_returns_empty(tmp_path):
-	"""load_debug_tracks returns {} when the sidecar does not exist."""
+def test_debug_paths_loader_missing_file_returns_empty(tmp_path):
+	"""load_debug_paths returns {} when the sidecar does not exist."""
 	path = str(tmp_path / "does_not_exist.npz")
-	loaded = state_io.load_debug_tracks(path)
+	loaded = state_io.load_debug_paths(path)
 	assert loaded == {}
 
 
@@ -300,10 +300,10 @@ def test_video_identity_readable_from_npz_without_json_load(tmp_path):
 #============================================
 
 
-def test_debug_tracks_dtype_is_float32(tmp_path):
+def test_debug_paths_dtype_is_float32(tmp_path):
 	"""Debug sidecar arrays are float32."""
 	path = str(tmp_path / "debug.npz")
-	state_io.write_debug_tracks(path, {
+	state_io.write_debug_paths(path, {
 		"solved_intervals": {"fp_a": _make_entry_with_fwd_bwd(0, 2)},
 	})
 	with numpy.load(path, allow_pickle=False) as npz:

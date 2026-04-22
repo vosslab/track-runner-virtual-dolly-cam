@@ -313,7 +313,7 @@ def _print_quality_summary(diagnostics: dict, fps: float) -> None:
 def _build_predictions_from_diagnostics(diagnostics: dict) -> dict:
 	"""Build frame-indexed prediction dict with overlays and interval metadata.
 
-	Each frame entry includes FWD/BWD/fused/consensus boxes plus interval-level
+	Each frame entry includes FWD/BWD/blended/consensus boxes plus interval-level
 	quality metadata (severity, confidence, scores, failure reasons) so the GUI
 	can display why an interval was flagged.
 
@@ -327,9 +327,9 @@ def _build_predictions_from_diagnostics(diagnostics: dict) -> dict:
 	fps = float(diagnostics.get("fps", 30.0))
 	predictions = {}
 	for iv in diagnostics.get("intervals", []):
-		fwd_track = iv.get("forward_track")
-		bwd_track = iv.get("backward_track")
-		fused_track = iv.get("fused_track")
+		fwd_track = iv.get("forward_path")
+		bwd_track = iv.get("backward_path")
+		blended_path = iv.get("blended_path")
 		if fwd_track is None or bwd_track is None:
 			# stored intervals may lack per-direction tracks
 			continue
@@ -363,9 +363,9 @@ def _build_predictions_from_diagnostics(diagnostics: dict) -> dict:
 				"backward": bwd_track[i],
 				"interval_info": interval_info,
 			}
-			# add fused (refined second-pass) if available
-			if fused_track is not None and i < len(fused_track):
-				frame_preds["fused"] = fused_track[i]
+			# add blended interval path (refined second-pass) if available
+			if blended_path is not None and i < len(blended_path):
+				frame_preds["blended"] = blended_path[i]
 			# compute consensus as average of FWD and BWD
 			fwd_box = fwd_track[i]
 			bwd_box = bwd_track[i]
@@ -398,7 +398,7 @@ def _predictions_from_geometry_cache(
 	an empty dict; downstream code uses dict.get() for individual fields.
 
 	Args:
-		input_file: Video input path; used to locate the debug-tracks sidecar.
+		input_file: Video input path; used to locate the debug interval paths sidecar.
 		intervals_path: Path to the geometry_cache.npz file.
 		diag_path: Path to the interval_scores.json file (may be absent).
 		fps: Video frame rate.
@@ -408,9 +408,9 @@ def _predictions_from_geometry_cache(
 	"""
 	intervals_file = state_io.load_geometry_cache(intervals_path)
 	solved_intervals = intervals_file.get("solved_intervals", {})
-	_merge_debug_tracks(
+	_merge_debug_paths(
 		solved_intervals,
-		tr_paths.default_debug_tracks_path(input_file),
+		tr_paths.default_debug_paths_path(input_file),
 	)
 	if not solved_intervals:
 		return {}
@@ -439,25 +439,25 @@ def _predictions_from_geometry_cache(
 _WARNED_MISSING_DEBUG_SIDECAR = False
 
 
-def _merge_debug_tracks(solved_intervals: dict, sidecar_path: str) -> None:
-	"""Merge forward/backward tracks from a debug sidecar in place.
+def _merge_debug_paths(solved_intervals: dict, sidecar_path: str) -> None:
+	"""Merge forward and backward interval paths from a debug sidecar in place.
 
 	If the sidecar exists, every interval whose fingerprint matches an
 	entry in both the geometry cache and the sidecar gains
-	`forward_track` and `backward_track` keys on its in-memory dict so
+	`forward_path` and `backward_path` keys on its in-memory dict so
 	downstream debug-overlay code paths (which use `iv.get(
-	"forward_track")`) render correctly. Fingerprints that appear in
+	"forward_path")`) render correctly. Fingerprints that appear in
 	only one side are left alone; sidecar entries that do not match
 	the current geometry cache are counted and reported but not
 	applied.
 
 	If the sidecar is absent, prints a single "run with
-	--debug-tracks to regenerate" message per process and returns.
+	--debug-paths to regenerate" message per process and returns.
 
 	Args:
 		solved_intervals: Dict of fingerprint -> in-memory interval
 			dict (mutated in place).
-		sidecar_path: Path to the debug_tracks.npz sidecar.
+		sidecar_path: Path to the debug_paths.npz sidecar.
 	"""
 	global _WARNED_MISSING_DEBUG_SIDECAR
 	if not os.path.isfile(sidecar_path):
@@ -465,29 +465,29 @@ def _merge_debug_tracks(solved_intervals: dict, sidecar_path: str) -> None:
 			_WARNED_MISSING_DEBUG_SIDECAR = True
 			print(
 				"  fwd/bwd debug overlay unavailable "
-				"(run solve with --debug-tracks to regenerate)"
+				"(run solve with --debug-paths to regenerate)"
 			)
 		return
-	debug_data = state_io.load_debug_tracks(sidecar_path)
+	debug_data = state_io.load_debug_paths(sidecar_path)
 	if not debug_data:
 		return
 	matched = 0
 	stale = 0
 	for fingerprint, tracks in debug_data.items():
 		if fingerprint in solved_intervals:
-			solved_intervals[fingerprint]["forward_track"] = tracks[
-				"forward_track"
+			solved_intervals[fingerprint]["forward_path"] = tracks[
+				"forward_path"
 			]
-			solved_intervals[fingerprint]["backward_track"] = tracks[
-				"backward_track"
+			solved_intervals[fingerprint]["backward_path"] = tracks[
+				"backward_path"
 			]
 			matched += 1
 		else:
 			stale += 1
 	if stale > 0:
 		print(
-			f"  debug tracks: {matched} intervals matched, "
-			f"{stale} sidecar entries stale (re-run --debug-tracks "
+			f"  debug interval paths: {matched} intervals matched, "
+			f"{stale} sidecar entries stale (re-run --debug-paths "
 			f"to refresh)"
 		)
 
@@ -496,7 +496,7 @@ def _merge_debug_tracks(solved_intervals: dict, sidecar_path: str) -> None:
 def _load_prior_results(intervals_path: str, diag_path: str) -> tuple:
 	"""Load previously solved intervals and build a write-through callback.
 
-	Geometry (fused_track) comes from `geometry_cache.npz`. Scoring
+	Geometry (`blended_path`, the blended interval path) comes from `geometry_cache.npz`. Scoring
 	(interval_score) comes from `interval_scores.json`. This helper
 	merges the two so every prior interval returned carries both its
 	trajectory AND its score, matching the shape `write_solver_diagnostics`
@@ -811,16 +811,16 @@ def _run_solve(
 	if VIDEO_IDENTITY is not None:
 		intervals_file["video_identity"] = VIDEO_IDENTITY
 	state_io.write_geometry_cache(intervals_path, intervals_file)
-	# opt-in debug-tracks sidecar: uses the in-memory prior_ivs dict,
-	# which still carries forward_track/backward_track for every
+	# opt-in debug-paths sidecar: uses the in-memory prior_ivs dict,
+	# which still carries forward_path/backward_path for every
 	# newly-solved interval because _on_interval_solved stored the full
 	# result before write_geometry_cache stripped them. Skipped when
-	# --debug-tracks was not passed; no file produced in that case.
-	if getattr(args, "debug_tracks", False):
-		debug_tracks_path = tr_paths.default_debug_tracks_path(args.input_file)
+	# --debug-paths was not passed; no file produced in that case.
+	if getattr(args, "debug_paths", False):
+		debug_paths_path = tr_paths.default_debug_paths_path(args.input_file)
 		debug_cache_shape = {"solved_intervals": prior_ivs}
-		state_io.write_debug_tracks(debug_tracks_path, debug_cache_shape)
-		print(f"  debug tracks sidecar written to {debug_tracks_path}")
+		state_io.write_debug_paths(debug_paths_path, debug_cache_shape)
+		print(f"  debug interval paths sidecar written to {debug_paths_path}")
 	# write diagnostics to disk
 	if VIDEO_IDENTITY is not None:
 		diagnostics["video_identity"] = VIDEO_IDENTITY
@@ -895,9 +895,9 @@ def _mode_seed(
 	if not predictions and os.path.isfile(intervals_path):
 		intervals_file = state_io.load_geometry_cache(intervals_path)
 		solved_intervals = intervals_file.get("solved_intervals", {})
-		_merge_debug_tracks(
+		_merge_debug_paths(
 			solved_intervals,
-			tr_paths.default_debug_tracks_path(args.input_file),
+			tr_paths.default_debug_paths_path(args.input_file),
 		)
 		if solved_intervals:
 			intervals_list = list(solved_intervals.values())
@@ -1616,8 +1616,8 @@ def _mode_encode(
 		)
 	# merge optional debug sidecar (fwd/bwd tracks) when debug is on
 	if args.debug:
-		_merge_debug_tracks(
-			solved, tr_paths.default_debug_tracks_path(args.input_file),
+		_merge_debug_paths(
+			solved, tr_paths.default_debug_paths_path(args.input_file),
 		)
 	# sort interval results by start_frame for stitching
 	interval_results = sorted(
@@ -1634,14 +1634,14 @@ def _mode_encode(
 			dict(s) if s is not None else None
 			for s in trajectory
 		]
-		# stitch forward and backward tracks for FWD/BWD overlay boxes
+		# stitch forward and backward interval paths for FWD/BWD overlay boxes
 		n_frames = len(trajectory)
 		fwd_trajectory_for_debug = [None] * n_frames
 		bwd_trajectory_for_debug = [None] * n_frames
 		for result in interval_results:
 			start = int(result["start_frame"])
-			fwd_track = result.get("forward_track", [])
-			bwd_track = result.get("backward_track", [])
+			fwd_track = result.get("forward_path", [])
+			bwd_track = result.get("backward_path", [])
 			for i, fwd_state in enumerate(fwd_track):
 				fi = start + i
 				if 0 <= fi < n_frames and fwd_state is not None:

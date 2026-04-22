@@ -322,8 +322,8 @@ def meeting_point_center_errors(intervals: list) -> list:
 	"""
 	all_errors = []
 	for iv in intervals:
-		fwd = iv.get("forward_track")
-		bwd = iv.get("backward_track")
+		fwd = iv.get("forward_path")
+		bwd = iv.get("backward_path")
 		if fwd is None or bwd is None:
 			continue
 		errors = scoring.compute_meeting_point_errors(fwd, bwd)
@@ -344,8 +344,8 @@ def meeting_point_normalized_errors(intervals: list) -> list:
 	"""
 	all_errors = []
 	for iv in intervals:
-		fwd = iv.get("forward_track")
-		bwd = iv.get("backward_track")
+		fwd = iv.get("forward_path")
+		bwd = iv.get("backward_path")
 		if fwd is None or bwd is None:
 			continue
 		errors = scoring.compute_meeting_point_errors(fwd, bwd)
@@ -375,8 +375,8 @@ def meeting_point_scale_errors(intervals: list) -> list:
 	"""
 	all_errors = []
 	for iv in intervals:
-		fwd = iv.get("forward_track")
-		bwd = iv.get("backward_track")
+		fwd = iv.get("forward_path")
+		bwd = iv.get("backward_path")
 		if fwd is None or bwd is None:
 			continue
 		errors = scoring.compute_meeting_point_errors(fwd, bwd)

@@ -77,8 +77,8 @@ def _make_seeds_linear_motion(
 
 
 #============================================
-def test_analytical_solve_produces_fused_track():
-	"""Full analytical solve on one interval produces valid fused track."""
+def test_analytical_solve_produces_blended_path():
+	"""Full analytical solve on one interval produces valid blended interval path."""
 	n_frames = 300
 	motion = _make_synthetic_motion_track(n_frames)
 	scene_transform = scene_coords.SceneTransform(motion)
@@ -107,7 +107,7 @@ def test_analytical_solve_produces_fused_track():
 		fps=30.0,
 	)
 	# endpoints should match seeds within 1px
-	fused = result["fused_track"]
+	fused = result["blended_path"]
 	assert abs(fused[0]["cx"] - seeds[0]["cx"]) < 1.0
 	assert abs(fused[-1]["cx"] - seeds[1]["cx"]) < 1.0
 

@@ -144,7 +144,7 @@ def load_all_data(input_file: str) -> tuple:
 	diag_intervals = diagnostics.get("intervals", [])
 	print(f"  diagnostics: {len(diag_intervals)} intervals")
 
-	# load solved intervals (has fused_track per interval)
+	# load solved intervals (has blended_path per interval)
 	intervals_path = tr_paths.default_intervals_path(input_file)
 	intervals_data = state_io.load_geometry_cache(intervals_path)
 	solved_count = len(intervals_data.get("solved_intervals", {}))
@@ -161,7 +161,7 @@ def find_trajectory_box(
 	seeds_list: list,
 	intervals_data: dict,
 ) -> dict | None:
-	"""Find the fused-track box for a given frame from solved intervals.
+	"""Find the blended interval path box for a given frame from solved intervals.
 
 	Args:
 		frame_index: Frame to look up.
@@ -176,8 +176,8 @@ def find_trajectory_box(
 		start = interval["start_frame"]
 		end = interval["end_frame"]
 		if start <= frame_index <= end:
-			fused = interval.get("fused_track", [])
-			# fused_track index maps to frame offset from start
+			fused = interval.get("blended_path", [])
+			# blended_path index maps to frame offset from start
 			offset = frame_index - start
 			if offset < len(fused):
 				box = fused[offset]
@@ -186,18 +186,18 @@ def find_trajectory_box(
 
 
 #============================================
-def find_fused_track_for_frame(
+def find_blended_path_for_frame(
 	frame_index: int,
 	intervals_data: dict,
 ) -> tuple:
-	"""Find the fused track and offset for a frame.
+	"""Find the blended interval path and offset for a frame.
 
 	Args:
 		frame_index: Frame to look up.
 		intervals_data: Solved intervals data.
 
 	Returns:
-		Tuple of (fused_track_list, frame_offset_in_track, start_frame)
+		Tuple of (blended_path_list, frame_offset_in_track, start_frame)
 		or (None, -1, -1) if not found.
 	"""
 	solved = intervals_data.get("solved_intervals", {})
@@ -205,7 +205,7 @@ def find_fused_track_for_frame(
 		start = interval["start_frame"]
 		end = interval["end_frame"]
 		if start <= frame_index <= end:
-			fused = interval.get("fused_track", [])
+			fused = interval.get("blended_path", [])
 			offset = frame_index - start
 			if offset < len(fused):
 				return (fused, offset, start)
@@ -220,7 +220,7 @@ def _gap_has_motion(
 ) -> bool:
 	"""Check whether a gap between seeds contains actual runner motion.
 
-	A gap is stationary if the fused track shows negligible displacement
+	A gap is stationary if the blended interval path shows negligible displacement
 	between start and end (pre-race, standing still, etc.).
 
 	Args:
@@ -231,14 +231,14 @@ def _gap_has_motion(
 	Returns:
 		True if the runner moves significantly in this gap.
 	"""
-	# check displacement across the gap in the fused track
+	# check displacement across the gap in the blended interval path
 	solved = intervals_data.get("solved_intervals", {})
 	for key, interval in solved.items():
 		iv_start = interval["start_frame"]
 		iv_end = interval["end_frame"]
 		# find an interval that covers this gap
 		if iv_start <= gap_start and iv_end >= gap_end:
-			fused = interval.get("fused_track", [])
+			fused = interval.get("blended_path", [])
 			offset_a = gap_start - iv_start
 			offset_b = gap_end - iv_start
 			if offset_a < len(fused) and offset_b < len(fused):
@@ -569,17 +569,17 @@ def draw_crosshair(
 
 #============================================
 def compute_local_tangent(
-	fused_track: list,
+	blended_path: list,
 	frame_offset: int,
 	span: int = 5,
 ) -> tuple:
-	"""Compute local tangent and normal vectors from fused track.
+	"""Compute local tangent and normal vectors from blended interval path.
 
 	Uses positions at +/-span frames to estimate direction of motion.
 
 	Args:
-		fused_track: List of dicts with cx, cy keys.
-		frame_offset: Index into fused_track for the target frame.
+		blended_path: List of dicts with cx, cy keys.
+		frame_offset: Index into blended_path for the target frame.
 		span: Number of frames on each side for tangent estimation.
 
 	Returns:
@@ -588,13 +588,13 @@ def compute_local_tangent(
 	"""
 	# clamp to available range
 	lo = max(0, frame_offset - span)
-	hi = min(len(fused_track) - 1, frame_offset + span)
+	hi = min(len(blended_path) - 1, frame_offset + span)
 	if lo >= hi:
 		# cannot compute tangent
 		return (1.0, 0.0, 0.0, 1.0)
 
-	dx = float(fused_track[hi]["cx"]) - float(fused_track[lo]["cx"])
-	dy = float(fused_track[hi]["cy"]) - float(fused_track[lo]["cy"])
+	dx = float(blended_path[hi]["cx"]) - float(blended_path[lo]["cx"])
+	dy = float(blended_path[hi]["cy"]) - float(blended_path[lo]["cy"])
 	magnitude = (dx**2 + dy**2)**0.5
 	if magnitude < 0.001:
 		return (1.0, 0.0, 0.0, 1.0)
@@ -662,8 +662,8 @@ def apply_hermite_correction(
 	Args:
 		blob_x: Raw blob centroid x.
 		blob_y: Raw blob centroid y.
-		hermite_cx: Hermite fused track center x.
-		hermite_cy: Hermite fused track center y.
+		hermite_cx: Hermite blended interval path center x.
+		hermite_cy: Hermite blended interval path center y.
 		tangent: (tx, ty, nx, ny) unit vectors from compute_local_tangent.
 		corridor_radius: Cross-track clamp limit in pixels.
 
@@ -1193,15 +1193,15 @@ def compute_frame_statistics(
 	stats["interval"] = iv_idx
 	stats["tier"] = tier
 
-	# get fused track and reference box
-	fused_track, fused_offset, fused_start = find_fused_track_for_frame(
+	# get blended interval path and reference box
+	blended_path, blended_offset, blended_start = find_blended_path_for_frame(
 		frame_index, intervals_data
 	)
 	ref_box = find_trajectory_box(frame_index, seeds_list, intervals_data)
 
-	# compute tangent from fused track
-	if fused_track is not None:
-		tangent = compute_local_tangent(fused_track, fused_offset)
+	# compute tangent from blended interval path
+	if blended_path is not None:
+		tangent = compute_local_tangent(blended_path, blended_offset)
 	else:
 		tangent = (1.0, 0.0, 0.0, 1.0)
 	stats["tangent"] = tangent
@@ -1221,7 +1221,7 @@ def compute_frame_statistics(
 		stats["ref_h"] = ref_h
 		stats["corridor_radius"] = search_radius
 	elif ref_box is not None:
-		# gap frame: use fused track position with corridor
+		# gap frame: use blended interval path position with corridor
 		ref_cx = float(ref_box["cx"]) * scale_factor
 		ref_cy = float(ref_box["cy"]) * scale_factor
 		ref_w = float(ref_box["w"]) * scale_factor
@@ -1473,17 +1473,17 @@ def compute_frame_statistics(
 
 
 #============================================
-def get_fused_track_positions(
-	fused_track: list,
-	fused_offset: int,
+def get_blended_path_positions(
+	blended_path: list,
+	blended_offset: int,
 	scale_factor: float,
 	num_points: int = 25,
 ) -> list:
-	"""Get fused track positions around a frame for curve drawing.
+	"""Get blended interval path positions around a frame for curve drawing.
 
 	Args:
-		fused_track: List of dicts with cx, cy keys.
-		fused_offset: Index of the target frame in fused_track.
+		blended_path: List of dicts with cx, cy keys.
+		blended_offset: Index of the target frame in blended_path.
 		scale_factor: Scale factor for coordinates.
 		num_points: Number of points on each side.
 
@@ -1491,11 +1491,11 @@ def get_fused_track_positions(
 		List of (x, y) tuples in scaled pixel coords.
 	"""
 	points = []
-	lo = max(0, fused_offset - num_points)
-	hi = min(len(fused_track), fused_offset + num_points + 1)
+	lo = max(0, blended_offset - num_points)
+	hi = min(len(blended_path), blended_offset + num_points + 1)
 	for i in range(lo, hi):
-		px = float(fused_track[i]["cx"]) * scale_factor
-		py = float(fused_track[i]["cy"]) * scale_factor
+		px = float(blended_path[i]["cx"]) * scale_factor
+		py = float(blended_path[i]["cy"]) * scale_factor
 		points.append((px, py))
 	return points
 
@@ -1666,12 +1666,12 @@ def render_diagnostic_png(
 				(255, 255, 0), 2, "seed truth")
 	else:
 		# draw curve segment and corridor for gap frames
-		fused_track, fused_offset, fused_start = find_fused_track_for_frame(
+		blended_path, blended_offset, blended_start = find_blended_path_for_frame(
 			frame_index, intervals_data
 		)
-		if fused_track is not None:
-			curve_pts = get_fused_track_positions(
-				fused_track, fused_offset, scale_factor
+		if blended_path is not None:
+			curve_pts = get_blended_path_positions(
+				blended_path, blended_offset, scale_factor
 			)
 			tangent = stats.get("tangent", (1, 0, 0, 1))
 			c_radius = stats.get("corridor_radius", 50)
@@ -1760,12 +1760,12 @@ def render_diagnostic_png(
 		cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
 	# draw corridor/boxes on residual panel
 	if pool == "gap":
-		fused_track, fused_offset, fused_start = find_fused_track_for_frame(
+		blended_path, blended_offset, blended_start = find_blended_path_for_frame(
 			frame_index, intervals_data
 		)
-		if fused_track is not None:
-			curve_pts = get_fused_track_positions(
-				fused_track, fused_offset, scale_factor
+		if blended_path is not None:
+			curve_pts = get_blended_path_positions(
+				blended_path, blended_offset, scale_factor
 			)
 			tangent = stats.get("tangent", (1, 0, 0, 1))
 			c_radius = stats.get("corridor_radius", 50)
@@ -1803,12 +1803,12 @@ def render_diagnostic_png(
 	cv2.putText(panel_bl, f"motion mask (t={threshold:.1f})", (10, 25),
 		cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
 	if pool == "gap":
-		fused_track, fused_offset, fused_start = find_fused_track_for_frame(
+		blended_path, blended_offset, blended_start = find_blended_path_for_frame(
 			frame_index, intervals_data
 		)
-		if fused_track is not None:
-			curve_pts = get_fused_track_positions(
-				fused_track, fused_offset, scale_factor
+		if blended_path is not None:
+			curve_pts = get_blended_path_positions(
+				blended_path, blended_offset, scale_factor
 			)
 			tangent = stats.get("tangent", (1, 0, 0, 1))
 			c_radius = stats.get("corridor_radius", 50)

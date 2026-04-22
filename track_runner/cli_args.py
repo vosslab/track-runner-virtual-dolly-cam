@@ -189,9 +189,9 @@ def parse_args() -> argparse.Namespace:
 		),
 	)
 	solve_parser.add_argument(
-		"--debug-tracks", dest="debug_tracks", action="store_true",
+		"--debug-paths", dest="debug_paths", action="store_true",
 		help=(
-			"Also write <video>.track_runner.debug_tracks.npz with "
+			"Also write <video>.track_runner.debug_paths.npz with "
 			"forward/backward propagation tracks for every solved "
 			"interval. Required input for the FWD/BWD debug overlay "
 			"in later encode/analyze --debug runs. Solve-only: "
@@ -199,7 +199,7 @@ def parse_args() -> argparse.Namespace:
 			"partial re-solve cannot clobber a complete sidecar."
 		),
 	)
-	solve_parser.set_defaults(assume_yes=False, debug_tracks=False)
+	solve_parser.set_defaults(assume_yes=False, debug_paths=False)
 
 	# -- refine mode --
 	subparsers.add_parser(

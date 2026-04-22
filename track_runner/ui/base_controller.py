@@ -98,7 +98,7 @@ class BaseAnnotationController(QObject):
 		self._overlay_items: list = []
 		self._fwd_item: object = None
 		self._bwd_item: object = None
-		self._fused_item: object = None
+		self._blended_item: object = None
 		self._consensus_item: object = None
 		self._scale_bar_item: object = None
 		self._legend_item: object = None
@@ -115,7 +115,7 @@ class BaseAnnotationController(QObject):
 		# track_runner/ui/heat_map_overlay.py. Mode-switch reset in
 		# AnnotationWindow must respect this default explicitly.
 		self._overlay_visibility: dict = {
-			"fwd": True, "bwd": True, "fused": True,
+			"fwd": True, "bwd": True, "blended": True,
 			"consensus": True, "legend": True, "heat": False,
 		}
 		# Heat-map overlay (created in activate() when the scene exists)
@@ -225,7 +225,7 @@ class BaseAnnotationController(QObject):
 		self._overlay_items.clear()
 		self._fwd_item = None
 		self._bwd_item = None
-		self._fused_item = None
+		self._blended_item = None
 		self._consensus_item = None
 		self._scale_bar_item = None
 		self._legend_item = None
@@ -514,7 +514,7 @@ class BaseAnnotationController(QObject):
 			return None
 
 		# Prefer REFINED (fused second-pass) center
-		fused = preds.get("fused")
+		fused = preds.get("blended")
 		if fused is not None:
 			return (float(fused["cx"]), float(fused["cy"]))
 
@@ -548,9 +548,9 @@ class BaseAnnotationController(QObject):
 		if self._bwd_item is not None:
 			self._remove_overlay(self._bwd_item)
 			self._bwd_item = None
-		if self._fused_item is not None:
-			self._remove_overlay(self._fused_item)
-			self._fused_item = None
+		if self._blended_item is not None:
+			self._remove_overlay(self._blended_item)
+			self._blended_item = None
 		if self._consensus_item is not None:
 			self._remove_overlay(self._consensus_item)
 			self._consensus_item = None
@@ -583,24 +583,24 @@ class BaseAnnotationController(QObject):
 			self._add_overlay(self._consensus_item)
 
 		# Fused (refined second-pass) overlay -- Z=4
-		fused = preds.get("fused")
+		fused = preds.get("blended")
 		if fused is not None:
-			fused_style = overlay_config.get_prediction_style("fused")
+			fused_style = overlay_config.get_prediction_style("blended")
 			cx = float(fused["cx"])
 			cy = float(fused["cy"])
 			w = float(fused["w"])
 			h = float(fused["h"])
 			x = int(cx - w / 2.0)
 			y = int(cy - h / 2.0)
-			self._fused_item = RectItem(
+			self._blended_item = RectItem(
 				x, y, int(w), int(h),
 				color_str=fused_style["color"],
 				label="REFINED",
 				fill_alpha=int(fused_style["fill_opacity"] * 255),
 				dashed=(fused_style["line_style"] == "dashed"),
 			)
-			self._fused_item.setZValue(4)
-			self._add_overlay(self._fused_item)
+			self._blended_item.setZValue(4)
+			self._add_overlay(self._blended_item)
 
 		# FWD prediction -- Z=5
 		fwd = preds.get("forward")
@@ -778,7 +778,7 @@ class BaseAnnotationController(QObject):
 		item_map = {
 			"fwd": self._fwd_item,
 			"bwd": self._bwd_item,
-			"fused": self._fused_item,
+			"blended": self._blended_item,
 			"consensus": self._consensus_item,
 			"legend": self._legend_item,
 		}
@@ -794,7 +794,7 @@ class BaseAnnotationController(QObject):
 		"""Set persistent visibility for a specific overlay type.
 
 		Args:
-			key: Overlay key ("fwd", "bwd", "fused", "consensus",
+			key: Overlay key ("fwd", "bwd", "blended", "consensus",
 				"legend", "heat").
 			enabled: Whether the overlay should be visible.
 		"""
@@ -873,8 +873,8 @@ class BaseAnnotationController(QObject):
 		# None checks so a legitimately falsy dict (e.g. an empty one)
 		# does not silently fall through to a less-preferred source.
 		pick = None
-		if preds.get("fused") is not None:
-			pick = preds["fused"]
+		if preds.get("blended") is not None:
+			pick = preds["blended"]
 		elif preds.get("consensus") is not None:
 			pick = preds["consensus"]
 		elif preds.get("forward") is not None:

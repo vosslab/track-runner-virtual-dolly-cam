@@ -334,7 +334,7 @@ def analyze_intervals(intervals_data: dict) -> dict:
 	"""Analyze intervals JSON data. Returns metrics dict.
 
 	Covers plan items 7-12: interval statistics, confidence breakdown,
-	failure analysis, score distributions, meeting point error, fused track quality.
+	failure analysis, score distributions, meeting point error, blended interval path quality.
 	"""
 	solved = intervals_data.get("solved_intervals", {})
 	count = len(solved)
@@ -354,7 +354,7 @@ def analyze_intervals(intervals_data: dict) -> dict:
 	# -- item 11: meeting point error --
 	center_errs = []
 	scale_errs = []
-	# -- item 12: fused track quality --
+	# -- item 12: blended interval path quality --
 	total_fused_points = 0
 	merged_count = 0
 	propagated_count = 0
@@ -389,8 +389,8 @@ def analyze_intervals(intervals_data: dict) -> dict:
 				center_errs.append(mpe["center_err_px"])
 			if "scale_err_pct" in mpe:
 				scale_errs.append(mpe["scale_err_pct"])
-		# fused track quality
-		fused = interval.get("fused_track", [])
+		# blended interval path quality
+		fused = interval.get("blended_path", [])
 		for pt in fused:
 			total_fused_points += 1
 			src = pt.get("source", "")
@@ -424,7 +424,7 @@ def analyze_intervals(intervals_data: dict) -> dict:
 		"margin_dist": _dist_summary(margins_sorted),
 		"center_err_dist": _dist_summary(center_errs_sorted),
 		"scale_err_dist": _dist_summary(scale_errs_sorted),
-		"fused_track_quality": {
+		"blended_path_quality": {
 			"total_points": total_fused_points,
 			"merged": merged_count,
 			"propagated": propagated_count,
@@ -680,10 +680,10 @@ def format_report(all_results: dict, cross: dict) -> str:
 					f"min={se['min']}, median={se['median']}, "
 					f"p90={se['p90']}, max={se['max']}")
 			# fused quality
-			fq = intv.get("fused_track_quality", {})
+			fq = intv.get("blended_path_quality", {})
 			if fq:
 				lines.append("")
-				lines.append("  FUSED TRACK QUALITY")
+				lines.append("  BLENDED INTERVAL PATH QUALITY")
 				lines.append(f"    Total points: {fq['total_points']}")
 				lines.append(f"    Merged: {fq['merged']} ({fq['merged_pct']}%)")
 				lines.append(f"    Propagated: {fq['propagated']}")

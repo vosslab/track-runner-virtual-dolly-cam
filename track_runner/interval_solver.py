@@ -69,8 +69,8 @@ def _coverage_from_track(track: list) -> dict:
 #============================================
 def _stamp_blob_coverage(
 	interval_score: dict,
-	forward_track: list,
-	backward_track: list,
+	forward_path: list,
+	backward_path: list,
 ) -> None:
 	"""Write per-pass blob-snap coverage fields into an interval_score dict.
 
@@ -89,8 +89,8 @@ def _stamp_blob_coverage(
 	  - candidate_frame_count_fwd / _bwd: ints.
 	  - propagated_frame_count_fwd / _bwd: ints.
 	"""
-	fwd = _coverage_from_track(forward_track)
-	bwd = _coverage_from_track(backward_track)
+	fwd = _coverage_from_track(forward_path)
+	bwd = _coverage_from_track(backward_path)
 	interval_score["blob_coverage_fwd"] = fwd["fraction"]
 	interval_score["blob_coverage_bwd"] = bwd["fraction"]
 	interval_score["candidate_frame_count_fwd"] = fwd["candidate_count"]
@@ -237,34 +237,34 @@ AGREE_DICE_THRESHOLD = 0.3
 
 
 #============================================
-def fuse_tracks(
-	forward_track: list,
-	backward_track: list,
+def blend_paths(
+	forward_path: list,
+	backward_path: list,
 ) -> list:
-	"""Fuse forward and backward tracking passes frame by frame.
+	"""Blend forward and backward interval paths frame by frame.
 
-	Where both tracks agree (center within tolerance, scale within tolerance),
-	produces a confidence-weighted average position. Where they disagree,
-	picks the higher-confidence track and flags the frame. Never averages
-	two mediocre conflicting paths into a false consensus.
+	Where both interval paths agree (center within tolerance, scale within
+	tolerance), produces a confidence-weighted average position. Where they
+	disagree, picks the higher-confidence interval path and flags the frame.
+	Never averages two mediocre conflicting paths into a false consensus.
 
 	Args:
-		forward_track: List of tracking state dicts from propagate_forward().
+		forward_path: List of tracking state dicts from propagate_forward().
 			Index 0 is the seed frame.
-		backward_track: List of tracking state dicts from propagate_backward().
+		backward_path: List of tracking state dicts from propagate_backward().
 			Already reversed so index 0 is the seed frame.
 
 	Returns:
-		List of fused tracking state dicts, one per frame. Source field is
+		List of blended interval path state dicts, one per frame. Source field is
 		"merged" when both agreed, "propagated" when one was picked over the
-		other. A "fuse_flag" key is added when the tracks disagreed.
+		other. A "fuse_flag" key is added when the interval paths disagreed.
 	"""
-	n = min(len(forward_track), len(backward_track))
+	n = min(len(forward_path), len(backward_path))
 	fused = []
 
 	for i in range(n):
-		fwd = forward_track[i]
-		bwd = backward_track[i]
+		fwd = forward_path[i]
+		bwd = backward_path[i]
 
 		fwd_cx = float(fwd["cx"])
 		fwd_cy = float(fwd["cy"])
@@ -316,7 +316,7 @@ def fuse_tracks(
 				"occlusion_risk": frame_occlusion,
 			}
 		else:
-			# disagreement: pick the higher-confidence track
+			# disagreement: pick the higher-confidence interval path
 			if fwd_conf >= bwd_conf:
 				winner = dict(fwd)
 				winner["source"] = "propagated"
@@ -347,7 +347,7 @@ def solve_interval_analytical(
 	"""Solve one interval using analytical velocity model (no optical flow).
 
 	Fits directionally asymmetric Hermite curves to seed positions in scene
-	coordinates, propagates forward and backward, fuses tracks, and scores
+	coordinates, propagates forward and backward, blends interval paths, and scores
 	the interval using velocity consistency and size consistency.
 
 	Args:
@@ -362,9 +362,9 @@ def solve_interval_analytical(
 	Returns:
 		Dict with keys:
 			- start_frame, end_frame: frame indices
-			- fused_track: list of tracking state dicts (pixel coords)
-			- forward_track: forward pass (for diagnostics)
-			- backward_track: backward pass (for diagnostics)
+			- blended_path: list of blended interval path state dicts (pixel coords)
+			- forward_path: forward interval path (for diagnostics)
+			- backward_path: backward interval path (for diagnostics)
 			- interval_score: interval_score_v2 dict from score_interval_analytical
 	"""
 	start_frame = int(seed_start["frame_index"])
@@ -395,13 +395,13 @@ def solve_interval_analytical(
 	residual_cache = {} if reader is not None else None
 
 	# propagate forward (backward-looking slopes)
-	forward_track_scene = velocity_model.propagate_forward_analytical(
+	forward_path_scene = velocity_model.propagate_forward_analytical(
 		interval_curves, scene_transform,
 		reader=reader, residual_cache=residual_cache,
 	)
 
 	# propagate backward (forward-looking slopes)
-	backward_track_scene = velocity_model.propagate_backward_analytical(
+	backward_path_scene = velocity_model.propagate_backward_analytical(
 		interval_curves, scene_transform,
 		reader=reader, residual_cache=residual_cache,
 	)
@@ -411,26 +411,26 @@ def solve_interval_analytical(
 		residual_cache.clear()
 
 	# velocity model returns pixel coordinates directly (already converted)
-	forward_track = list(forward_track_scene)
-	backward_track = list(backward_track_scene)
+	forward_path = list(forward_path_scene)
+	backward_path = list(backward_path_scene)
 
 	if debug:
-		print(f"    fusing tracks ({len(forward_track)}+{len(backward_track)} "
+		print(f"    blending interval paths ({len(forward_path)}+{len(backward_path)} "
 			f"states)...")
 
-	# fuse forward and backward tracks
-	fused_track = fuse_tracks(forward_track, backward_track)
+	# blend forward and backward interval paths
+	blended_path = blend_paths(forward_path, backward_path)
 
 	if debug:
 		print("    scoring interval analytically...")
 
 	# score the interval using analytical metrics
 	interval_score = scoring.score_interval_analytical(
-		forward_track, backward_track, all_seeds_scene,
+		forward_path, backward_path, all_seeds_scene,
 		interval_curves, scene_transform,
 		motion_track=motion_track,
 		all_seeds=all_seeds,
-		fused_track=fused_track,
+		blended_path=blended_path,
 		fps=fps,
 	)
 
@@ -440,14 +440,14 @@ def solve_interval_analytical(
 	# "skipped" because propagators skip snap at index 0 and -1 of each
 	# pass. the denominator is candidate frames only, so heavily occluded
 	# intervals (mostly "absent") are not unfairly penalized.
-	_stamp_blob_coverage(interval_score, forward_track, backward_track)
+	_stamp_blob_coverage(interval_score, forward_path, backward_path)
 
 	result = {
 		"start_frame": start_frame,
 		"end_frame": end_frame,
-		"fused_track": fused_track,
-		"forward_track": forward_track,
-		"backward_track": backward_track,
+		"blended_path": blended_path,
+		"forward_path": forward_path,
+		"backward_path": backward_path,
 		"interval_score": interval_score,
 	}
 
@@ -458,7 +458,7 @@ def solve_interval_analytical(
 	# diagnostics schema.
 	if debug:
 		agreement_debug = scoring.compute_agreement_debug(
-			forward_track, backward_track, start_frame=start_frame,
+			forward_path, backward_path, start_frame=start_frame,
 		)
 		result["agreement_debug"] = agreement_debug
 	return result
@@ -491,7 +491,7 @@ def stitch_trajectories(
 
 	for result in interval_results:
 		start = result["start_frame"]
-		fused = result["fused_track"]
+		fused = result["blended_path"]
 		for i, state in enumerate(fused):
 			frame_index = start + i
 			if 0 <= frame_index <= last_end:
@@ -509,7 +509,7 @@ def _stamp_seed_confidence(
 	"""Stamp seed confidence and status onto trajectory at seed frames.
 
 	Ensures seed frames have the correct confidence regardless of what
-	fuse_tracks() computed. Visible and partial seeds get conf=1.0
+	blend_paths() computed. Visible and partial seeds get conf=1.0
 	(precise position known). Approx seeds get conf=0.3 (uncertain).
 
 	Also propagates seed_status into the trajectory state for downstream
@@ -912,7 +912,7 @@ def anchor_to_seeds(
 ) -> list:
 	"""Apply multi-seed anchored interpolation to a stitched trajectory.
 
-	Corrects drift in fused trajectories by fitting local splines through
+	Corrects drift in blended interval path trajectories by fitting local splines through
 	seed positions and blending corrections toward the reference path.
 	Visible seeds are hard-pinned; partial seeds guide the fit but are
 	not forced to exact values.

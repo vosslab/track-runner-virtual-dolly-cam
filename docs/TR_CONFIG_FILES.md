@@ -41,7 +41,7 @@ This single rule dictates every file format below.
 | `<video>.track_runner.seeds.json` | JSON | 5-50 KB | `state_io.write_seeds` | `state_io.load_seeds` |
 | `<video>.track_runner.interval_scores.json` | JSON | ~100 KB | `state_io.write_solver_diagnostics` | `state_io.load_diagnostics` |
 | `<video>.track_runner.geometry_cache.npz` | NPZ | 100 KB - 3 MB | `state_io.write_geometry_cache` | `state_io.load_geometry_cache` |
-| `<video>.track_runner.debug_tracks.npz` | NPZ (opt-in) | 2-8x geometry_cache | `state_io.write_debug_tracks` | `state_io.load_debug_tracks` |
+| `<video>.track_runner.debug_paths.npz` | NPZ (opt-in) | 2-8x geometry_cache | `state_io.write_debug_paths` | `state_io.load_debug_paths` |
 | `<video>.track_runner.camera_motion.npz` | NPZ | 150-300 KB | `camera_motion.save_motion_cache` | `camera_motion.load_motion_cache` |
 | `<video>.track_runner.agreement_debug.json` | JSON | varies | `state_io.write_agreement_debug_sidecar` | manual |
 | `track_runner.config.yaml` (root) | YAML | ~250 B | hand-edited | merged under every per-video config |
@@ -166,8 +166,8 @@ unchanged; only the read site changes.
 - `interval_score` -- lives exclusively in `interval_scores.json`.
 - `forward_track`, `backward_track` -- the per-pass forward and
   backward interval paths. Live in the opt-in debug interval paths
-  sidecar (`debug_tracks.npz` on disk) when solve runs with
-  `--debug-tracks`.
+  sidecar (`debug_paths.npz` on disk) when solve runs with
+  `--debug-paths`.
 - Per-frame extras (`conf`, `source`, `fuse_flag`, `occlusion_risk`,
   `blob_gate`, `stationary_lock`) -- not read by production code from
   a loaded cache; dropped at write.
@@ -237,13 +237,12 @@ consumed by review tooling.
 
 ## Debug interval paths NPZ (opt-in)
 
-Canonical prose name: **debug interval paths sidecar**. The on-disk
-filename retains the legacy `debug_tracks.npz` suffix until a
-coordinated rename pass; "debug tracks" is the legacy wording.
+Canonical prose name: **debug interval paths sidecar**. On-disk
+filename: `debug_paths.npz`.
 
-File: `<video>.track_runner.debug_tracks.npz`. Written only when
-solve runs with `--debug-tracks`. Reader `state_io.load_debug_tracks`,
-writer `state_io.write_debug_tracks`.
+File: `<video>.track_runner.debug_paths.npz`. Written only when
+solve runs with `--debug-paths`. Reader `state_io.load_debug_paths`,
+writer `state_io.write_debug_paths`.
 
 ### Top-level keys (NPZ)
 
@@ -350,16 +349,16 @@ Once the migration has run successfully, the script may be deleted
   cache-identity metadata (`motion_model`, `config_hash`,
   `video_identity_basename`, `frame_count`).
 - **Can I delete `tr_config/archive/`?** Yes. Nothing reads it.
-- **Can I delete `<video>.track_runner.debug_tracks.npz`?** Yes. It
-  is optional; regenerate by re-running solve with `--debug-tracks`.
+- **Can I delete `<video>.track_runner.debug_paths.npz`?** Yes. It
+  is optional; regenerate by re-running solve with `--debug-paths`.
 - **What happens if I hand-edit a per-video config YAML?** The next
   run reloads it; per-video values override the merged defaults.
 - **Does re-saving seeds.json introduce legacy fields?** No.
   `write_seeds` is strict: it emits only the canonical four fields
   regardless of what the in-memory dict carries.
 - **How do I get FWD/BWD overlays back?** Run
-  `... solve --debug-tracks`. The sidecar writer produces
-  `<video>.track_runner.debug_tracks.npz`, and the overlay reader
+  `... solve --debug-paths`. The sidecar writer produces
+  `<video>.track_runner.debug_paths.npz`, and the overlay reader
   merges it into the in-memory intervals dict by fingerprint.
 
 ## Related docs

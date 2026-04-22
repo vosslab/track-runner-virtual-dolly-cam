@@ -40,7 +40,7 @@ predictions:
   backward:
     color: "#FF00FF"
     line_style: dashed
-  fused:
+  blended:
     color: "#06B6D4"
     line_style: solid
   consensus:
