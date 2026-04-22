@@ -13,6 +13,6 @@ for json in tr_config/*.seeds.json; do
   echo "================================="
   file "$video"
   #./track_runner/track_runner.py --debug --debug-tracks -i $video solve --yes
-  ./track_runner/track_runner.py --debug-tracks -i $video solve --yes
+  ./track_runner/track_runner.py -i $video solve --yes --debug-paths
   sleep 1
 done
