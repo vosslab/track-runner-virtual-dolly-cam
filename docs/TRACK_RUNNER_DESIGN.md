@@ -14,6 +14,26 @@ technical doc). The short consumer-facing summary is
 evolution history, see
 [TRACK_RUNNER_HISTORY.md](TRACK_RUNNER_HISTORY.md).
 
+## Per-interval vocabulary
+
+Three terms name the geometry that lives inside one seed-to-seed interval.
+Use these in prose:
+
+- **forward interval path** -- what the FWD pass produces for this
+  interval.
+- **backward interval path** -- what the BWD pass produces for the same
+  interval, independently.
+- **blended interval path** -- the output trajectory formed by combining
+  the two pass paths after both complete. Output artifact only; full
+  consumption rules in
+  [FWD_BWD_MODEL_METHODOLOGY.md](FWD_BWD_MODEL_METHODOLOGY.md).
+
+The current in-code identifiers (`forward_track`, `backward_track`,
+`fused_track`) are legacy names scheduled for cleanup; see the
+"Legacy code names" subsection of
+[FWD_BWD_MODEL_METHODOLOGY.md](FWD_BWD_MODEL_METHODOLOGY.md) for the
+staged rename plan and the canonical definitions.
+
 ## Core principle
 
 > Human establishes identity. Machine interpolates geometry.
@@ -34,7 +54,7 @@ Benefits of this design:
 - **Parallelizable**: intervals have no cross-talk, so they can be solved
   concurrently.
 - **Debuggable**: a bad interval can be diagnosed in isolation by inspecting
-  its forward and backward tracks.
+  its forward and backward interval paths.
 - **Incrementally refinable**: adding a seed splits one interval into two.
   Only the two new intervals need re-solving.
 - **Disagreement is signal**: when forward and backward propagation disagree,
@@ -111,12 +131,16 @@ diagnostic signal drives:
 - Seed recommendation (which intervals need more seeds)
 - Severity classification (how urgently an interval needs attention)
 
-The refinement pass then re-propagates with the fused track as a soft prior,
-producing smoother geometry for output. Refinement improves position accuracy
-but must not replace the diagnostic signal. If refinement were used for
-scoring, it would mask real identity ambiguity under smooth geometry.
+Any later refinement step (if and when present) operates after the two
+pass paths have already produced a blended interval path; it must not
+replace the diagnostic signal. If refinement-derived geometry were used
+for scoring, it would mask real identity ambiguity under smooth geometry.
+See [FWD_BWD_MODEL_METHODOLOGY.md](FWD_BWD_MODEL_METHODOLOGY.md) and
+[TRACK_RUNNER_V3_SPEC.md](TRACK_RUNNER_V3_SPEC.md) for the current state
+of any refinement step.
 
-Rule: scoring uses first-pass signal; output uses refined geometry.
+Rule: scoring uses first-pass signal; output uses the blended interval
+path (and any refined geometry layered on top of it).
 
 ## Separation of concerns
 

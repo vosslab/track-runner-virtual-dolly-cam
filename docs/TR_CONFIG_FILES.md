@@ -129,7 +129,7 @@ Reader `state_io.load_geometry_cache`, writer
 | --- | --- | --- |
 | `schema_version` | int32 | Required value is `2`. |
 | `manifest` | bytes (JSON-encoded) | List of per-interval entries mapping fingerprint to an `array_index` plus `start_frame`/`end_frame`. |
-| `i<k>_cx`, `i<k>_cy`, `i<k>_w`, `i<k>_h` | float32 arrays | Per-interval fused-trajectory arrays; `<k>` is the manifest's `array_index` for that interval. Array length equals `end_frame - start_frame + 1`. |
+| `i<k>_cx`, `i<k>_cy`, `i<k>_w`, `i<k>_h` | float32 arrays | Per-interval blended-interval-path arrays (the combined FWD+BWD output trajectory); `<k>` is the manifest's `array_index` for that interval. Array length equals `end_frame - start_frame + 1`. |
 | `video_identity` | bytes (JSON-encoded) | Optional; same shape as elsewhere. |
 | `solve_complete` | bool | Whether the solve completed vs. was interrupted. |
 
@@ -145,6 +145,9 @@ Reader `state_io.load_geometry_cache`, writer
             "start_frame": int,
             "end_frame": int,
             "fused_track": [
+                # blended interval path: combined FWD+BWD output
+                # trajectory for this interval. Output artifact only;
+                # never used for FWD/BWD agreement scoring.
                 {"cx": float, "cy": float, "w": float, "h": float},
                 ...
             ],
@@ -161,8 +164,10 @@ unchanged; only the read site changes.
 ### Explicitly not stored
 
 - `interval_score` -- lives exclusively in `interval_scores.json`.
-- `forward_track`, `backward_track` -- live in the opt-in
-  `debug_tracks.npz` sidecar when solve runs with `--debug-tracks`.
+- `forward_track`, `backward_track` -- the per-pass forward and
+  backward interval paths. Live in the opt-in debug interval paths
+  sidecar (`debug_tracks.npz` on disk) when solve runs with
+  `--debug-tracks`.
 - Per-frame extras (`conf`, `source`, `fuse_flag`, `occlusion_risk`,
   `blob_gate`, `stationary_lock`) -- not read by production code from
   a loaded cache; dropped at write.
@@ -230,7 +235,11 @@ No per-frame trajectory data -- trajectory lives in
 `geometry_cache.npz`. This file is exclusively the scoring summary
 consumed by review tooling.
 
-## Debug tracks NPZ (opt-in)
+## Debug interval paths NPZ (opt-in)
+
+Canonical prose name: **debug interval paths sidecar**. The on-disk
+filename retains the legacy `debug_tracks.npz` suffix until a
+coordinated rename pass; "debug tracks" is the legacy wording.
 
 File: `<video>.track_runner.debug_tracks.npz`. Written only when
 solve runs with `--debug-tracks`. Reader `state_io.load_debug_tracks`,
@@ -242,8 +251,8 @@ writer `state_io.write_debug_tracks`.
 | --- | --- | --- |
 | `schema_version` | int32 | Required value is `1`. |
 | `manifest` | bytes (JSON-encoded) | List of per-interval entries (fingerprint, start_frame, end_frame, array_index). |
-| `i<k>_fwd_cx`, `i<k>_fwd_cy`, `i<k>_fwd_w`, `i<k>_fwd_h` | float32 | Forward propagation track per interval. |
-| `i<k>_bwd_cx`, `i<k>_bwd_cy`, `i<k>_bwd_w`, `i<k>_bwd_h` | float32 | Backward propagation track per interval. |
+| `i<k>_fwd_cx`, `i<k>_fwd_cy`, `i<k>_fwd_w`, `i<k>_fwd_h` | float32 | Forward interval path per interval (legacy: "forward propagation track"). |
+| `i<k>_bwd_cx`, `i<k>_bwd_cy`, `i<k>_bwd_w`, `i<k>_bwd_h` | float32 | Backward interval path per interval (legacy: "backward propagation track"). |
 
 ### Lifecycle
 

@@ -268,22 +268,32 @@ Same for `cy`, `w`, `h`. Fused confidence = `Dice * max(fwd_conf, bwd_conf)`.
 When Dice < 0.3 (disagreement), the higher-confidence direction is used
 directly.
 
-### Post-fuse refinement pass
+### Post-fuse refinement pass (historical / aspirational)
 
-After the first-pass independent FWD/BWD propagation and fusion, a refinement
-pass re-propagates each interval using the fused track as a soft spatial prior.
-This reduces mid-interval wobble where both passes had decayed confidence.
+> **Status note:** This section describes a "soft-prior" refinement pass
+> that re-propagated each interval using the blended interval path as a
+> spatial prior. The current `refine` CLI mode in
+> [track_runner/cli.py](../track_runner/cli.py) `_mode_refine` does
+> something different -- it re-solves only intervals whose fingerprint
+> changed (cache-invalidation refinement, not post-fuse soft-prior
+> refinement). Treat the rest of this section as the historical design
+> sketch; the methodology doc and the code in
+> [track_runner/interval_solver.py](../track_runner/interval_solver.py)
+> are the truth for what currently runs. (For the canonical definitions
+> of forward / backward / blended interval path, see
+> [FWD_BWD_MODEL_METHODOLOGY.md](FWD_BWD_MODEL_METHODOLOGY.md).)
 
-Pipeline order:
+Pipeline order (as designed):
 
 1. Independent FWD/BWD propagation (first pass)
-2. Fuse (first pass)
-3. **Refinement**: re-run FWD/BWD with fused track as soft prior, re-fuse
+2. Fuse (first pass) -- produces the blended interval path
+3. **Refinement**: re-run FWD/BWD with the blended interval path as soft
+   prior, re-fuse
 4. Anchor-to-seeds regularization
 5. Stamp confidence + erasure
 6. Crop
 
-The refinement pass is always on. It does not affect the first-pass
+The refinement pass, where present, must not affect the first-pass
 diagnostic signal, which drives confidence scoring and seed
 recommendation.
 
@@ -813,20 +823,42 @@ Valid `mode` values: `initial`, `suggested_refine`, `interval_refine`,
 `gap_refine`, `target_refine`, `bbox_polish`, `edit_redraw`, `solve_refine`,
 `interactive_refine`.
 
-### Diagnostics JSON
+### Interval scores JSON
 
-Path: `{input}.track_runner.diagnostics.json`
+Path: `{input}.track_runner.interval_scores.json` (renamed from the legacy
+`.diagnostics.json`).
 
-Header key `track_runner_diagnostics` must equal `2`.
+Sole owner of per-interval scoring: interval scores, failure reasons,
+race-phase summary. Reader `state_io.load_diagnostics`, writer
+`state_io.write_solver_diagnostics` (function names retained for
+callsite compatibility despite the on-disk filename change).
 
-Contains per-interval results: forward track, backward track, fused track,
-interval scores, failure reasons.
+This file does NOT carry the forward, backward, or blended interval
+paths. Per-frame geometry lives elsewhere; see "Geometry cache NPZ"
+below and the canonical reference in
+[TR_CONFIG_FILES.md](TR_CONFIG_FILES.md).
 
-### Intervals JSON
+### Geometry cache NPZ
 
-Path: `{input}.track_runner.intervals.json`
+Path: `{input}.track_runner.geometry_cache.npz` (replaces the legacy
+`.intervals.json`).
 
-Header key `track_runner_intervals` must equal `1`.
+Persists the per-interval blended interval path as four float32 arrays
+per interval (`i<k>_cx`, `i<k>_cy`, `i<k>_w`, `i<k>_h`) plus a JSON
+manifest. The forward and backward interval paths are NOT stored here;
+they live in the opt-in debug-paths sidecar (see "Debug interval paths
+sidecar" below). Full schema in
+[TR_CONFIG_FILES.md](TR_CONFIG_FILES.md).
+
+### Debug interval paths sidecar
+
+Path: `{input}.track_runner.debug_tracks.npz` (legacy filename;
+"debug interval paths" is the canonical prose name).
+
+Opt-in artifact written only when `solve --debug-tracks` runs. Holds
+the per-interval forward and backward interval paths for overlay /
+inspection only. Not consulted by solve, refine, or scoring. Governed
+by contract clause C8.
 
 Stores interval fingerprints for incremental refinement. Each fingerprint
 encodes start/end seed frame and position so that `refine` mode can detect

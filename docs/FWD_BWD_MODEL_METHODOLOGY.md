@@ -23,20 +23,90 @@ model, see [MOTION_CUE_HEAT_MAP.md](MOTION_CUE_HEAT_MAP.md). For the
 shorter consumer-facing summary of the observation API, see
 [RESIDUAL_MOTION_OBSERVATIONS.md](RESIDUAL_MOTION_OBSERVATIONS.md).
 
+## Terminology
+
+These three terms are the canonical vocabulary for per-interval geometry.
+Use them in prose and in new identifiers.
+
+- **forward interval path** -- the per-pass solved trajectory the FWD
+  propagator emits for one seed-to-seed interval, after optional blob
+  snap. Local to that interval, local to that pass.
+- **backward interval path** -- the per-pass solved trajectory the BWD
+  propagator emits for the same interval. Independent of the forward
+  interval path; pass-local.
+- **blended interval path** -- the per-interval output trajectory formed
+  by combining the forward interval path and the backward interval path
+  after both passes have completed. Output artifact only: it feeds
+  rendering, stitching, anchor correction, and crop. It is not a seed,
+  not a raw pass prediction, not a scoring object, and not a legal input
+  to either pass while that interval is being solved.
+
+Supporting terms:
+
+- **`raw_pred`** -- the frozen Hermite-only prediction inside one pass,
+  before blob snap. Pass-local; the only trajectory a gate is allowed to
+  read.
+- **debug interval paths** -- the per-interval forward and backward
+  interval paths persisted to the opt-in
+  `<video>.track_runner.debug_tracks.npz` sidecar (legacy filename) when
+  solve runs with `--debug-tracks`. Saved for overlay and inspection
+  only; never read by solve, refine, or scoring. Governed by contract
+  clause C8.
+
+Why "interval path" and not "track": "track" reads as whole-video and
+collides with the track-and-field source material. Each of these three
+objects is local to one seed-to-seed interval, so "interval path" is the
+honest name.
+
+### Legacy code names (scheduled for cleanup)
+
+The current in-code identifiers are legacy and should be renamed in a
+follow-up cleanup to match the vocabulary above:
+
+| Concept | Legacy code name | Target code name |
+| --- | --- | --- |
+| forward interval path | `forward_track` | `forward_path` (or `forward_interval_path`) |
+| backward interval path | `backward_track` | `backward_path` (or `backward_interval_path`) |
+| blended interval path | `fused_track` | `blended_path` (or `blended_interval_path`) |
+| `fuse_tracks(...)` | `fuse_tracks` | `blend_paths` |
+| debug interval paths sidecar | `debug_tracks.npz` filename, `--debug-tracks` flag, `load_debug_tracks` / `write_debug_tracks` | `debug_paths.npz`, `--debug-paths`, `load_debug_paths` / `write_debug_paths` |
+
+Until that cleanup lands, docs use the new vocabulary and note the
+legacy code name on first mention in any section that touches the
+identifier. The split is intentionally temporary; long-term coexistence
+of "blended interval path" in prose and `fused_track` in code creates
+translation overhead and is the bad outcome.
+
+Risk-staged rename plan:
+
+1. **Now (this pass)**: docs vocabulary, comments, printed labels,
+   analysis-tool output text.
+2. **One coordinated patch**: rename in-code identifiers across all
+   callsites (function arguments, local variables, dict keys built in
+   memory, log strings).
+3. **Deliberate schema bump (or compatibility shim)**: rename on-disk
+   keys and reconstructed in-memory shapes used by
+   `state_io.load_geometry_cache`, `state_io.load_debug_tracks`, the
+   debug overlay builder, and tools that read cached interval / debug
+   data. This is the only step with real blast radius and gets its own
+   plan. The per-video config YAML is unaffected -- it does not use
+   these trajectory object names as schema keys.
+
 ## Overview
 
 Every seed-to-seed interval is solved by TWO independent propagations: a
 forward (FWD) pass that starts at the left seed and a backward (BWD) pass
 that starts at the right seed. Each pass builds its own directionally
 asymmetric Hermite curve, produces its own `raw_pred` trajectory, and then
-optionally snaps to a per-frame residual-motion blob observation. The two
-resulting tracks are ONLY combined at two clearly separated points: by
-[track_runner/interval_solver.py](../track_runner/interval_solver.py) for
-output (`fuse_tracks`) and by
+optionally snaps to a per-frame residual-motion blob observation. The
+resulting forward interval path and backward interval path are ONLY
+combined at two clearly separated points: by
+[track_runner/interval_solver.py](../track_runner/interval_solver.py) to
+produce the blended interval path for output (`fuse_tracks`), and by
 [track_runner/scoring.py](../track_runner/scoring.py) for a diagnostic
-agreement metric. Raw disagreement between the passes is the system's
-primary uncertainty signal; anything that narrows it without evidence is a
-regression.
+agreement metric computed on the two raw pass paths. Raw disagreement
+between the passes is the system's primary uncertainty signal; anything
+that narrows it without evidence is a regression.
 
 ## Why two passes
 
@@ -76,16 +146,16 @@ regression.
   by blob snap: `_apply_blob_snap` short-circuits on `i == 0` and
   `i == num - 1` (blob_gate = "skipped"). Locked by
   `test_seed_endpoints_never_moved_by_blob`.
-- **The fused track is output-only.** It feeds rendering and anchor
-  correction. It MUST NOT feed the agreement metric. See
+- **The blended interval path is output-only.** It feeds rendering and
+  anchor correction. It MUST NOT feed the agreement metric. See
   `compute_agreement(forward_track, backward_track)` at
   [scoring.py line 192 / 473](../track_runner/scoring.py) which takes the
-  raw pass tracks, not `fused_track`.
-- **Agreement metrics come from raw FWD and BWD, never from fused.**
-  `fused_track` is accepted as an optional argument in
-  `score_interval_analytical` but used only for `velocity_consistency`
-  (trajectory smoothness), never for `agreement`. Do not refactor the
-  agreement call to take `fused_track`.
+  raw pass paths, not `fused_track`.
+- **Agreement metrics come from the raw forward and backward interval
+  paths, never from the blended one.** `fused_track` is accepted as an
+  optional argument in `score_interval_analytical` but used only for
+  `velocity_consistency` (trajectory smoothness), never for `agreement`.
+  Do not refactor the agreement call to take `fused_track`.
 
 ## Signal flow
 
@@ -133,8 +203,9 @@ stitch_trajectories -> anchor_to_seeds -> _apply_trajectory_erasure
 encoder / crop
 ```
 
-Agreement lives on the LEFT branch (raw tracks). Everything downstream of
-`fuse_tracks` is the RIGHT branch and is strictly an output concern.
+Agreement lives on the LEFT branch (raw forward/backward interval paths).
+Everything downstream of `fuse_tracks` -- the blended interval path -- is
+the RIGHT branch and is strictly an output concern.
 
 ## Blob snap layer
 
@@ -172,9 +243,10 @@ Reject these at code review:
 - Reading `snap_pred[...]` inside any gate or slope computation.
 - Writing accepted-blob positions, filtered blobs, or gate outcomes into
   `residual_cache`. The cache is IMAGE DATA ONLY.
-- Passing `fused_track` (or the stitched trajectory) into
-  `compute_agreement`, `compute_meeting_point_errors`, or any severity
-  computation in [review.py](../track_runner/review.py).
+- Passing `fused_track` (the blended interval path) or the stitched
+  trajectory into `compute_agreement`,
+  `compute_meeting_point_errors`, or any severity computation in
+  [review.py](../track_runner/review.py).
 - Reintroducing per-pass running state: any variable named `last_*`,
   `prev_accepted_*`, `miss_count`, `chain_*`, or any list that grows as
   the propagator iterates and is read by a gate.

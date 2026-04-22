@@ -10,7 +10,7 @@ The solver should automatically identify when the race ends (runner crosses fini
 or stops). Currently post-race seeds are handled ad hoc. Recording race end timing
 in the diagnostics would complement the existing race start detection.
 
-Detection approach: use the target runner's fused track velocity in scene coordinates.
+Detection approach: use the target runner's blended-interval-path velocity in scene coordinates.
 - End: sustained drop to near-zero velocity or plateau in along-track progress
 - Must use track-specific velocity, not global cues
 
