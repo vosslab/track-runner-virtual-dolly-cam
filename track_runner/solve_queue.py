@@ -371,13 +371,30 @@ def execute_interval_work(
 	# pure cache-hit fast-exit: no bar, no pool. Post-loop summary and
 	# accounting assertion still run below.
 	if pending_total > 0:
+		# frame-weighted ETA: sum span across cache-miss intervals using
+		# the same arithmetic that advances seq_frame_counter on
+		# completion, so the counter reaches exactly total_frames and ETA
+		# does not drift. Fallback to interval-unit ETA if the denominator
+		# is degenerate (not expected in practice).
+		total_frames = 0
+		for pair_idx in pending_pair_indices:
+			seed_start = usable_seeds_sorted[pair_idx]
+			seed_end = usable_seeds_sorted[pair_idx + 1]
+			total_frames += (
+				int(seed_end["frame_index"]) - int(seed_start["frame_index"])
+			)
+		if total_frames > 0:
+			eta_column = interval_solver.FrameETAColumn(
+				seq_frame_counter, total_frames,
+			)
+		else:
+			eta_column = rich.progress.TimeRemainingColumn()
 		with rich.progress.Progress(
 			rich.progress.TextColumn("{task.description}"),
 			interval_solver.BlockBarColumn(),
 			rich.progress.MofNCompleteColumn(),
 			rich.progress.TaskProgressColumn(),
-			rich.progress.TimeElapsedColumn(),
-			rich.progress.TimeRemainingColumn(),
+			eta_column,
 			refresh_per_second=2,
 		) as progress:
 			# bar is sized to cache-miss work only. the cache-hit count

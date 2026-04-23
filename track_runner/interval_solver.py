@@ -224,7 +224,10 @@ class FrameETAColumn(rich.progress.ProgressColumn):
 			return rich.text.Text(self._last_text)
 		fps_rate = done / elapsed
 		remaining = self.total_frames - done
-		eta_s = max(0, remaining / fps_rate)
+		# ceiling on displayed seconds: avoids truncating 9:27.9 down
+		# to 9:27; honest presentation choice (also used by camera_motion
+		# and encoder bars that share this column).
+		eta_s = math.ceil(max(0, remaining / fps_rate))
 		eta_str = self._format_duration(eta_s)
 		self._last_text = f"ETA {eta_str}  elapsed {elapsed_str}"
 		return rich.text.Text(self._last_text)
