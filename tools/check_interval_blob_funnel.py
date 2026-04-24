@@ -1166,6 +1166,135 @@ def _print_gate_trace(
 				f"(prox={n_prox} dir={n_dir} path={n_path}) "
 				f"accepted={n_accepted}"
 			)
+			# 5-bucket semantic summary. Reframes raw accept/reject into
+			# what the blob did (or should have done) to the Hermite path.
+			# AGREE:  blob on prediction (dist/h < 0.3), no correction needed
+			# REFINE: accepted correction (0.3 <= dist/h < 1.0), Hermite moved
+			# MISSED: gate-rejected blob in the refine band; lost improvement
+			# FAR:    dist/h >= 1.0; correctly (or plausibly) too distant
+			# ABSENT: no blob this frame (corridor empty or no residual)
+			n_agree = 0
+			n_refine = 0
+			n_missed = 0
+			n_far = 0
+			for r in rows:
+				if not r.get("blob_present"):
+					continue
+				dh = r.get("blob_dist_h")
+				if dh is None:
+					continue
+				if dh >= 1.0:
+					n_far += 1
+				elif dh < 0.3:
+					n_agree += 1
+				elif r.get("accepted"):
+					n_refine += 1
+				else:
+					n_missed += 1
+			print(
+				f"      buckets: AGREE={n_agree} REFINE={n_refine} "
+				f"MISSED={n_missed} FAR={n_far} ABSENT={n_absent}"
+			)
+	_print_seed_distance_summary(per_interval, gate_trace_rows)
+
+
+#============================================
+def _classify_bucket(row: dict) -> str:
+	"""Map a per-frame stamp to one of AGREE/REFINE/MISSED/FAR/ABSENT.
+
+	Keeps the classification in one place so the per-interval rollup and
+	the seed-distance summary cannot drift.
+	"""
+	if not row.get("blob_present"):
+		return "ABSENT"
+	dh = row.get("blob_dist_h")
+	if dh is None:
+		return "ABSENT"
+	if dh >= 1.0:
+		return "FAR"
+	if dh < 0.3:
+		return "AGREE"
+	if row.get("accepted"):
+		return "REFINE"
+	return "MISSED"
+
+
+#============================================
+def _seed_distance_bin(d: int) -> str:
+	"""Label a frame by distance-to-nearest-seed endpoint.
+
+	Bins: 1, 2, 3-5, 6-10, 11-20, 21+. Bins widen with distance because
+	the quantity of interest is the regime change -- "at what N does the
+	blob signal collapse" -- not fine-grained distance-by-distance.
+	"""
+	if d <= 1:
+		return "1"
+	if d == 2:
+		return "2"
+	if d <= 5:
+		return "3-5"
+	if d <= 10:
+		return "6-10"
+	if d <= 20:
+		return "11-20"
+	return "21+"
+
+
+#============================================
+def _print_seed_distance_summary(
+	per_interval: list,
+	gate_trace_rows: dict,
+) -> None:
+	"""Aggregate traced frames by distance to nearest seed endpoint.
+
+	Answers: "blobs work on seeds; at what N frames out from a seed does
+	AGREE/REFINE collapse into MISSED/FAR/ABSENT?" Each traced frame
+	contributes its `min(frame - start_seed, end_seed - frame)` to a bin
+	and its 5-bucket classification to the column totals.
+	"""
+	if not gate_trace_rows:
+		return
+	bin_order = ["1", "2", "3-5", "6-10", "11-20", "21+"]
+	tally = {b: {"AGREE": 0, "REFINE": 0, "MISSED": 0, "FAR": 0, "ABSENT": 0}
+		for b in bin_order}
+	total_frames = 0
+	for item in per_interval:
+		idx = item["interval_index"]
+		if idx not in gate_trace_rows:
+			continue
+		start_frame = item["start_frame"]
+		end_frame = item["end_frame"]
+		pass_rows = gate_trace_rows[idx]
+		for pass_label in ("FWD", "BWD"):
+			for row in pass_rows.get(pass_label, []):
+				fi = int(row["frame_index"])
+				d = min(fi - start_frame, end_frame - fi)
+				if d < 0:
+					continue
+				bucket = _classify_bucket(row)
+				tally[_seed_distance_bin(d)][bucket] += 1
+				total_frames += 1
+	if total_frames == 0:
+		return
+	print("")
+	print("  by distance to nearest seed endpoint (FWD+BWD combined):")
+	print(
+		"    dist    n   AGREE REFINE MISSED  FAR  ABSENT  "
+		"good%  (good = AGREE+REFINE)"
+	)
+	for b in bin_order:
+		row = tally[b]
+		n = sum(row.values())
+		if n == 0:
+			print(f"    {b:5s}   0   (empty)")
+			continue
+		good = row["AGREE"] + row["REFINE"]
+		pct = 100.0 * good / n
+		print(
+			f"    {b:5s}  {n:3d}   {row['AGREE']:5d} {row['REFINE']:6d} "
+			f"{row['MISSED']:6d} {row['FAR']:4d} {row['ABSENT']:6d}  "
+			f"{pct:4.0f}%"
+		)
 
 
 #============================================

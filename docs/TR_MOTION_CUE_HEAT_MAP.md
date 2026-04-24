@@ -67,7 +67,9 @@ For one frame at `frame_index`:
 2. Optionally crop the target to a square ROI centered on the
    caller's predicted position (see "ROI geometry" below).
 3. For each neighbor `frame_index + k` with `k` in
-   `[-half_window, +half_window] \ {0}`:
+   `[-half_window, +half_window] \ {0}` (the default is
+   `DEFAULT_HALF_WINDOW = 4`, i.e. a 9-frame window spanning
+   `[frame_index - 4, frame_index + 4]`):
    - Read the neighbor frame (BGR, cached separately).
    - Build a 2x3 affine warp matrix that transforms the neighbor
      into the target frame's camera position. The warp uses the
@@ -294,6 +296,48 @@ state owned by
   suppressed. Interval-level `blob_coverage_fraction` in the
   diagnostics carries `no_candidate_blobs: true` when the whole
   interval had zero candidates.
+
+## Why the default window is 9 frames (half_window = 4)
+
+The background estimator is a `nanmedian` over aligned neighbors. Median
+robustness needs enough valid samples per pixel to ignore a single
+moving object passing through, and in practice that means a 9-frame
+window (`+/- 4`): the runner occupies a small fraction of those eight
+neighbors at any given pixel, so the median collapses to the stationary
+background almost everywhere. A 5-frame window (`+/- 2`) leaves the
+median with only four neighbors, which is too few for the median to
+reject the runner from its own path: the runner's pixels enter the
+background estimate and the residual under-reports real motion.
+
+The 9-frame window has always been the value used by
+`tools/diagnose_residual_motion.py`, which is the most-exercised
+reference implementation in this repo. The production path briefly
+shipped with `half_window = 2` (5-frame window) but that was an
+oversight, not a deliberate choice; the production `DEFAULT_HALF_WINDOW`
+was raised to `4` to match diagnose. The 9-frame window should be
+treated as the canonical default for all callers.
+
+Trade-offs at the default:
+
+- Compute cost scales linearly with window size. A 9-frame window
+  performs four frame reads + warps per target frame (plus the target
+  itself), versus two for a 5-frame window.
+- Near sequence boundaries the available stack shrinks; the fallback
+  condition `len(aligned_stack) < 2` in the library returns
+  `(None, None)` and the propagator falls through to pure Hermite.
+  This happens on up to four frames on each end instead of two; the
+  behavioral impact is negligible because those regions are already
+  close to seeds.
+- Very fast cross-frame camera motion widens the per-pair warp residual
+  near ROI edges (more "invalid" pixels), but the median already masks
+  NaNs and the wider window improves the odds that at least two
+  neighbors contribute a valid value at each pixel.
+
+If you see evidence that the default is the wrong regime for a
+particular scene, prefer re-running `tools/diagnose_residual_motion.py`
+with an explicit `--half-window` override before editing
+`DEFAULT_HALF_WINDOW`. Changing the constant affects every production
+caller and invalidates geometry caches.
 
 ## Version tag
 
