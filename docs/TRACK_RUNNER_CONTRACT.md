@@ -121,6 +121,13 @@ Allowed:
 * Machine-produced geometry, including predictions, suggestions, polish outputs, and heat-map blob adjustments, is not a seed until a human commits it.
 * Code and docs must not label uncommitted machine geometry as a seed.
 
+## C8. keep SCHEMA_VERSION in sync
+
+- do not use multiple SCHEMA_VERSIONs
+- this is forbidden: 3 for ITEM_SCHEMA_VERSION and 4 for OBJECT_SCHEMA_VERSION
+- C8 does not mean every metadata-only schema change must invalidate solved geometry caches.
+- Use one SCHEMA_VERSION value everywhere schema is recorded. 
+
 ## Relationship to other docs
 
 - [TRACK_RUNNER_DESIGN.md](TRACK_RUNNER_DESIGN.md): reasoning and
