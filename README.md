@@ -4,27 +4,37 @@ Track runner is a Python tool that tracks a runner in track meet video and produ
 
 **Status:** v26.02, active development.
 
+## Design philosophy
+
+Human establishes identity; the machine interpolates geometry. See
+[docs/TRACK_RUNNER_DESIGN.md](docs/TRACK_RUNNER_DESIGN.md) for the
+design philosophy and
+[docs/TRACK_RUNNER_CONTRACT.md](docs/TRACK_RUNNER_CONTRACT.md) for the
+non-negotiable invariants.
+
 ## Quick start
 
 ```bash
 source source_me.sh
-
-# 1. Place seed annotations on the runner
+python track_runner/track_runner.py -i VIDEO.mp4 setup
 python track_runner/track_runner.py -i VIDEO.mp4 seed
-
-# 2. Solve tracking between seeds
 python track_runner/track_runner.py -i VIDEO.mp4 solve
-
-# 3. Encode cropped output video
+python track_runner/track_runner.py -i VIDEO.mp4 target
+python track_runner/track_runner.py -i VIDEO.mp4 refine
+# Repeat target + refine until interval scores are acceptable.
 python track_runner/track_runner.py -i VIDEO.mp4 encode
 ```
 
-See [docs/USAGE.md](docs/USAGE.md) for the full subcommand reference and workflow details.
+`setup` runs once per video and is required before `solve`, `refine`, or
+`target`. See [docs/USAGE.md](docs/USAGE.md) for the full subcommand
+reference and workflow details.
 
 ## Documentation
 
 - [docs/INSTALL.md](docs/INSTALL.md): Setup steps, system dependencies, and pip requirements.
 - [docs/USAGE.md](docs/USAGE.md): Subcommand reference, global options, and typical workflow.
+- [docs/TRACK_RUNNER_CONTRACT.md](docs/TRACK_RUNNER_CONTRACT.md): Hard invariants the tool and contributors must respect.
+- [docs/TRACK_RUNNER_DESIGN.md](docs/TRACK_RUNNER_DESIGN.md): Design philosophy and signal hierarchy behind the solver.
 - [docs/TRACK_RUNNER_KEYBINDINGS.md](docs/TRACK_RUNNER_KEYBINDINGS.md): Annotation UI keyboard shortcuts.
 - [docs/CODE_ARCHITECTURE.md](docs/CODE_ARCHITECTURE.md): Pipeline overview and module descriptions.
 - [docs/FILE_STRUCTURE.md](docs/FILE_STRUCTURE.md): Directory map with what belongs where.

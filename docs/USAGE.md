@@ -21,6 +21,28 @@ Global options must appear before the subcommand.
 
 ## Subcommands
 
+Subcommands are listed below in the order of the canonical workflow:
+`setup` -> `seed` -> `solve` -> `target` -> `refine` (repeat) -> `encode`.
+`edit` and `analyze` are diagnostic/maintenance detours off the main path.
+
+### setup
+
+Interactive CLI questionnaire that collects per-video camera configuration
+(zoom type, camera height, camera position, track size) and stores it in
+the per-video config YAML.
+
+```bash
+python track_runner/track_runner.py -i VIDEO.mp4 setup
+```
+
+`setup` is required before `solve`, `refine`, or `target` (the gate is
+enforced in [track_runner/cli.py](../track_runner/cli.py); those modes
+consume setup-only config and will stop and direct you back to `setup` if
+it has not been run). Ideally run `setup` before `seed` as well, so the
+annotation UI has the correct camera/track context from the first seed;
+`seed` itself is not code-gated, but seeding without setup is not the
+recommended order.
+
 ### seed
 
 Interactively place seed annotations on the runner. Seeds are anchor frames that establish the runner's identity and position.
@@ -31,15 +53,20 @@ python track_runner/track_runner.py -i VIDEO.mp4 seed
 
 Options: `-I`/`--seed-interval` sets the interval in seconds between seed frames (default 10).
 
-### edit
+### solve
 
-Review, fix, or delete existing seeds interactively.
+Full solve. Clears all prior results and solves every interval from scratch.
 
 ```bash
-python track_runner/track_runner.py -i VIDEO.mp4 edit
+python track_runner/track_runner.py -i VIDEO.mp4 solve
 ```
 
-Options: `-s`/`--severity` filters seeds near weak intervals at a threshold (`high`, `medium`, `low`).
+Options:
+
+| Flag | Description |
+| --- | --- |
+| `-y`, `--yes` | Auto-confirm the "clear and re-solve from scratch?" prompt (useful in scripts). |
+| `--debug-paths` | Also write `<video>.track_runner.debug_paths.npz` with forward/backward propagation tracks for every solved interval. Required input for the FWD/BWD debug overlay in later `encode`/`analyze --debug` runs. Solve-only: `refine` intentionally does not touch the sidecar so a partial re-solve cannot clobber a complete sidecar. |
 
 ### target
 
@@ -49,25 +76,39 @@ Add seeds at weak interval frames. Shows forward/backward propagation overlays t
 python track_runner/track_runner.py -i VIDEO.mp4 target
 ```
 
-Options: `-s`/`--severity` sets the minimum severity of weak intervals to target.
+Options:
 
-### solve
-
-Full re-solve. Clears all prior results and solves every interval from scratch.
-
-```bash
-python track_runner/track_runner.py -i VIDEO.mp4 solve
-```
-
-Options: `-y`/`--yes` auto-confirms the "clear and re-solve from scratch?" prompt (useful in scripts).
+| Flag | Description |
+| --- | --- |
+| `-s`, `--severity` | Minimum severity of weak intervals to target. |
+| `-I`, `--seed-interval` | Seconds between candidate target frames. |
+| `--race-start` | Target frames around the detected race-start transition for confirmation. Selects interval endpoints and offset-derived frames around `race_start_frame`, prints the race-start contact sheet path, and enters the target UI without automatically inserting seeds. Use this to refine race-start seeds after viewing the contact sheet PNG produced during solve/refine. |
 
 ### refine
 
-Incremental re-solve. Only re-solves changed or new intervals; reuses prior results for unchanged intervals.
+Incremental re-solve. Only re-solves changed or new intervals; reuses prior
+results for unchanged intervals.
 
 ```bash
 python track_runner/track_runner.py -i VIDEO.mp4 refine
 ```
+
+`refine` will never force a full solve. If refine detects that a full solve
+is needed, it exits and directs you to run `solve`. Untouched intervals are
+retained per contract C6.
+
+### edit
+
+Fix mistakes in existing seeds, or double-check seeds the scorer flagged
+as inconsistent. Not part of the main pipeline; use it when a seed looks
+wrong or the scoring step surfaced a low-quality seed that needs human
+review.
+
+```bash
+python track_runner/track_runner.py -i VIDEO.mp4 edit
+```
+
+Options: `-s`/`--severity` filters seeds near weak intervals at a threshold (`high`, `medium`, `low`).
 
 ### encode
 
@@ -88,22 +129,59 @@ Options:
 
 ### analyze
 
-Analyze crop path stability before encoding.
+Pre-encode diagnostic. `analyze` rebuilds the same trajectory and crop
+rects that `encode` would use, then reports on the result without writing
+a video. It is not required before `encode`; run it when you want a
+stability readout or want to catch problems before kicking off an encode.
 
 ```bash
 python track_runner/track_runner.py -i VIDEO.mp4 analyze
 ```
 
-Options: `--aspect` overrides the crop aspect ratio.
+What it computes and prints:
+
+- **Crop-path stability** -- smoothness metrics on the crop rectangle
+  trajectory (jitter, velocity, acceleration, deadband behavior), via
+  `encode_analysis.analyze_crop_stability`.
+- **Solver context** -- per-interval confidence, seed density, and
+  agreement summary derived from the solved intervals and seeds, via
+  `encode_analysis.analyze_solver_context`.
+- **Motion regime summary** -- straight / curve / stationary span
+  classification used by smart-mode crop policies, via
+  `regime_classifier.classify_regimes`.
+
+Outputs:
+
+- A formatted console report.
+- A YAML report at
+  `<video>.track_runner.encode_analysis.yaml` (path from
+  `tr_paths.default_encode_analysis_path`). `encode` and most other
+  modes print this path when the file exists, as a diagnostic-awareness
+  hint; they do not read it.
+
+Prerequisites: `analyze` needs `solve` (and therefore `setup`) to have
+produced diagnostics and solved intervals. If either is missing the
+command fails with a "run 'solve' first" message.
+
+Options: `--aspect` overrides the crop aspect ratio (useful for checking
+what a different aspect would look like without re-encoding). See
+[docs/TRACK_RUNNER_ANALYZE_AND_ENCODE.md](TRACK_RUNNER_ANALYZE_AND_ENCODE.md)
+for the deeper reference on analyze and encode.
 
 ## Typical workflow
 
-1. **Seed** -- place anchor annotations on the runner at regular intervals.
-2. **Solve** -- run the full solver to propagate tracking between seeds.
-3. **Analyze** (optional) -- check crop path stability and identify weak intervals.
-4. **Target** (optional) -- add corrective seeds at weak intervals.
-5. **Refine** (optional) -- incrementally re-solve after adding seeds.
-6. **Encode** -- produce the final cropped output video.
+1. **setup** -- one-time camera configuration for the video.
+2. **seed** -- place anchor seeds on the runner.
+3. **solve** -- full solve from the seed set.
+4. **target** -- add corrective seeds at weak intervals.
+5. **refine** -- incremental re-solve picking up the new seeds.
+6. Repeat `target` + `refine` until interval scores are acceptable.
+7. **encode** -- produce the final cropped output video.
+
+`edit` is for fixing bad seeds or double-checking ones the scorer flagged.
+`analyze` is a pre-encode diagnostic that reports crop-path stability,
+solver context, and motion-regime classification without producing a
+video; it is not required before `encode`. Run either when you need it.
 
 ## Motion heat-map overlay
 

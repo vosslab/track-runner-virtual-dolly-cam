@@ -2,6 +2,10 @@
 
 ### Additions and New Features
 
+- **C6 retention regression tests** in [tests/test_refine_retention.py](../tests/test_refine_retention.py): seven tests driving `solve_queue.plan_interval_work` directly to prove that refine partitions cache-hit vs pending intervals strictly by seed-endpoint fingerprint. Scenarios covered: no-change (all reused), edit-post-race-seed (exactly 2 pending adjacent to edit), add-seed (exactly 2 pending halves), remove-seed (exactly 1 pending merge), edit-pre-race-seed with `race_start_interval` set (only the 2 adjacent pre-race intervals pending, post-race retained), orphan prune (orphan key dropped, current keys survive), and the full-solve-fallthrough pattern used by the new refine guard.
+
+- **Refine full-solve guard** in [track_runner/cli.py](../track_runner/cli.py) `_mode_refine`: after `plan_interval_work` returns, if `plan.reused_count == 0` while `plan.total_intervals > 0` and `plan.pending_count == plan.total_intervals`, refine now raises `RuntimeError` with a message telling the user to run `solve` instead. Prevents the pre-existing silent fallthrough (previously a WARNING at `solve_queue.py:~765` that kept going). Aligns with contract C6: "refine mode should never force a full solve. If a full solve is needed, exit and tell the user to run solve with a reason."
+
 - **Geometry/schema fingerprint split** in [track_runner/interval_fingerprint.py](../track_runner/interval_fingerprint.py): introduces `GEOMETRY_TAG` (cache-key suffix; blob-observer version + blob-snap numeric constants only) distinct from `SOLVER_FINGERPRINT_TAG` (telemetry; same as GEOMETRY_TAG plus `/schema/<SCHEMA_VERSION>`). `compute_interval_fingerprint` now uses `GEOMETRY_TAG` so schema bumps no longer invalidate solved-geometry cache entries. New helper `migrate_legacy_fingerprints(solved)` rewrites known-compatible legacy tails (`/score_schema/4/prerace/4` pre-unification, plus any pure `/schema/<N>` metadata suffix) to the current `GEOMETRY_TAG` at load time; called from [track_runner/cli.py](../track_runner/cli.py) `_load_prior_results` (solve/refine) and `_mode_refine` with write-back so the next load is free. Per contract C8 schema bumps are metadata-only by default; only entries explicitly marked geometry-affecting in [docs/TR_SCHEMA_VERSION_HISTORY.md](TR_SCHEMA_VERSION_HISTORY.md) invalidate the cache.
 
 - **Fingerprint migration tests** [tests/test_fingerprint_migration.py](../tests/test_fingerprint_migration.py): covers pure-schema-suffix migration, explicit v4 pre-unification tail, current-tag no-op, geometry-incompatible tail is left alone, and mixed-dict partial migration.
@@ -17,6 +21,32 @@
 - `compute_interval_fingerprint` signature unchanged but now emits cache keys with the geometry-only tag. Solve and refine remain byte-for-byte aligned because both routes call this helper.
 
 ### Fixes and Maintenance
+
+- **README and user/developer docs refreshed to match current CLI.**
+  [README.md](../README.md) quick start replaced with the explicit
+  setup-first loop (`setup` -> `seed` -> `solve` -> `target` -> `refine`
+  -> `encode`) with an inline "repeat target + refine" callout; added
+  a "Design philosophy" pointer to
+  [docs/TRACK_RUNNER_DESIGN.md](TRACK_RUNNER_DESIGN.md) and
+  [docs/TRACK_RUNNER_CONTRACT.md](TRACK_RUNNER_CONTRACT.md), plus docs
+  bullets for both. [docs/USAGE.md](USAGE.md) subcommand section
+  reordered to match the workflow, added `setup` section, added
+  `target --race-start` and `solve --debug-paths` flag docs, noted that
+  `refine` refuses full solves, and flagged `edit` / `analyze` as
+  diagnostic detours. [docs/INSTALL.md](INSTALL.md) added a "First run:
+  per-video setup" section linking
+  [docs/TR_CONFIG_FILES.md](TR_CONFIG_FILES.md).
+  [docs/CODE_ARCHITECTURE.md](CODE_ARCHITECTURE.md) pipeline diagram
+  updated to `setup --> seed --> solve --> (target --> refine)* -->
+  encode`; added notes on `setup_mode.run_setup` ownership, the
+  `--debug-paths` solve-only flag, `target --race-start` as a
+  user-guided seed-authoring path (not automatic), and race-start
+  contact sheet as a solve/refine Stage 2 diagnostic artifact.
+  [docs/FILE_STRUCTURE.md](FILE_STRUCTURE.md) "Generated artifacts"
+  section now lists the per-video setup config YAML, the race-start
+  confirmation contact sheet PNG
+  (`<video>.track_runner.race_start_check.png`), and the solve-only
+  debug paths NPZ (`<video>.track_runner.debug_paths.npz`).
 
 - Replaced `test_tag_contains_schema_version` and `test_builder_reflects_schema_version` in [tests/test_interval_fingerprint.py](../tests/test_interval_fingerprint.py) with `test_geometry_tag_excludes_schema`, `test_solver_fingerprint_tag_includes_schema`, and `test_cache_key_is_stable_across_schema_bump` to lock the new policy (schema version lives in the telemetry tag, not the cache key).
 

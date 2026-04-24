@@ -58,3 +58,23 @@ source source_me.sh
 ```
 
 This sets `PYTHONUNBUFFERED=1` and `PYTHONDONTWRITEBYTECODE=1`.
+
+## First run: per-video setup
+
+The environment steps above (Python, system deps, pip, bootstrap) are a
+one-time install. Each video then needs its own `setup` pass before
+`solve`, `refine`, or `target` will run:
+
+```bash
+python track_runner/track_runner.py -i VIDEO.mp4 setup
+```
+
+`setup` is an interactive questionnaire that captures camera zoom type,
+height, position, and track size for this specific video. Those answers
+are written to the per-video config YAML. `setup` is required before
+`solve`, `refine`, or `target`, and should ideally run before `seed` as
+well so the annotation UI has the correct camera/track context from the
+first seed. For the full file layout (config YAML, seeds, geometry
+cache, diagnostics, contact sheet, debug paths, encoded output), see
+[docs/TR_CONFIG_FILES.md](TR_CONFIG_FILES.md). For the full subcommand
+reference and workflow, see [docs/USAGE.md](USAGE.md).

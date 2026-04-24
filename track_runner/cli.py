@@ -1528,6 +1528,20 @@ def _mode_refine(
 		print(f"  cache: pruned {pruned_count} stale intervals "
 			f"({before} -> {len(plan.pruned_prior)})")
 
+	# contract C6: refine must retain untouched intervals. If the prune
+	# above emptied the prior cache but intervals remain to solve, refine
+	# would be doing a full solve under the refine label. Fail loud and
+	# tell the user to run 'solve' with a reason.
+	if (plan.reused_count == 0 and plan.total_intervals > 0
+			and plan.pending_count == plan.total_intervals):
+		raise RuntimeError(
+			f"refine would re-solve all {plan.total_intervals} intervals "
+			f"(no prior fingerprints matched); this is a full solve -- "
+			f"run 'solve' instead. Likely cause: geometry tag changed "
+			f"without a migration entry, or the cache file is for a "
+			f"different seed set."
+		)
+
 	print(f"  refine: {plan.pending_count} of {total_expected} intervals "
 		f"need solving ({plan.reused_count} will be reused)")
 

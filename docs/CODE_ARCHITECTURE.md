@@ -57,15 +57,19 @@ method.
 ## Pipeline overview
 
 ```
-setup --> seed --> solve --> refine --> encode
-  ^          ^         |         |
-  |          |         v         v
+setup --> seed --> solve --> (target --> refine)* --> encode
+  ^          ^         |              |
+  |          |         v              v
   |          +----- interval scoring and review
   +--- camera config questionnaire (one-time)
 ```
 
 1. **Setup** -- interactive CLI questionnaire collects camera properties
    (zoom type, height, position, track size). Stored in per-video config YAML.
+   `setup_mode.run_setup` owns this step; `cli.py` gates `solve`, `refine`,
+   and `target` on setup having been run, and setup should ideally precede
+   `seed` as well so annotation has the correct camera/track context
+   (`seed` itself is not code-gated).
 2. **Seeding** -- user places bounding-box annotations on key frames via a
    PySide6 GUI. Seeds are the truth anchors for solve (contract C4).
 3. **Interval solving** -- each pair of adjacent seeds defines an interval.
@@ -77,8 +81,17 @@ setup --> seed --> solve --> refine --> encode
    [docs/FWD_BWD_MODEL_METHODOLOGY.md](FWD_BWD_MODEL_METHODOLOGY.md) and
    [docs/RESIDUAL_MOTION_OBSERVATIONS.md](RESIDUAL_MOTION_OBSERVATIONS.md)).
    Intervals are independent (contract C3) and solved in parallel workers.
-4. **Refine** -- incremental re-solve of only affected intervals when seeds
-   change.
+   `solve` is the full solve from scratch. The solve-only flag
+   `--debug-paths` also writes the per-interval FWD/BWD debug NPZ sidecar
+   consumed later by `encode --debug` and `analyze --debug`.
+4. **Target and refine** -- `target` is a user-guided seed-authoring step
+   that surfaces weak intervals (and, with `--race-start`, frames around
+   the detected race-start transition) for human correction; it does not
+   auto-generate seeds. `refine` is strictly incremental: it re-solves
+   only intervals affected by the new seeds and refuses any full solve
+   (contract C6). The race-start confirmation contact sheet PNG is a
+   `solve` / `refine` Stage 2 diagnostic artifact, not a seed-authoring
+   output.
 5. **Encoding** -- `tr_crop.py` builds an adaptive crop trajectory with
    exponential smoothing, deadband, and velocity capping; `encoder.py`
    drives ffmpeg to produce the final cropped video with optional filters.
