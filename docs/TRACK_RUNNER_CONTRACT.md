@@ -10,7 +10,15 @@ contract wins. The other doc or the code is the thing to fix.
 
 User must approve any new contract items. Agents are not allowed to edit.
 
-## C1. Torso box is the unit of scale for runner-relative decisions
+## C1. A seed is a human-authored annotation of a torso box for one frame
+
+- A seed is a human-authored annotation of a torso box for one frame.
+- Usually this annotation is a torso box. It may also be a human-confirmed not_in_frame state.
+- Seeds are the truth anchors for solve.
+- Machine-produced geometry, including predictions, suggestions, polish outputs, and heat-map blob adjustments, is not a seed until a human commits it.
+- Code and docs must not label uncommitted machine geometry as a seed.
+
+## C2. Torso box is the unit of scale for runner-relative decisions
 
 Runners range from near-full-frame down to roughly 10 px tall across the
 scenes this tool is used on. Pixel thresholds for runner-relative decisions
@@ -37,7 +45,17 @@ Allowed as raw pixels (non-scene quantities):
 New pixel constants must land in the "allowed" bucket above or be
 expressed as a multiple of the current torso box.
 
-## C2. Pre-race frames define a fixed reference
+## C3. Seeds are truth for solve; seed quality is ranked for the user
+
+- The solver treats seeds as hard anchors. It must not silently override
+  or soften them.
+- A separate scoring step may flag seeds that look inconsistent with
+  neighbors, detection evidence, or pre-race averages, and surface those
+  seeds to the user.
+- Bad seeds are fixed by the user editing them. "Seeds are truth" means
+  best-available truth at solve time, not permanent truth.
+
+## C4. Pre-race start frames define a fixed reference
 
 Before `race_start_frame` the runner is stationary relative to the
 surroundings, and the camera and zoom are fixed. Seed variation in this
@@ -50,7 +68,7 @@ range reflects human annotation noise, not runner motion.
 - Code that treats pre-race seeds as independent measurements of a moving
   target violates this rule.
 
-## C3. Intervals are independent across intervals
+## C5. Intervals after race start are independent
 
 Seeds are hard anchors. An interval runs seed -> seed.
 
@@ -64,17 +82,26 @@ Seeds are hard anchors. An interval runs seed -> seed.
 - Future interval-to-interval smoothing, if added, is a separate pass
   layered on top of solve and refine. It never lives inside them.
 
-## C4. Seeds are truth for solve; seed quality is ranked for the user
+## C6. Refine mode only modifies after race start intervals with new seeds
+- refine mode should never force a full solve. If a full solve is needed,
+  exit and tell the user to run solve with a reason.
 
-- The solver treats seeds as hard anchors. It must not silently override
-  or soften them.
-- A separate scoring step may flag seeds that look inconsistent with
-  neighbors, detection evidence, or pre-race averages, and surface those
-  seeds to the user.
-- Bad seeds are fixed by the user editing them. "Seeds are truth" means
-  best-available truth at solve time, not permanent truth.
+## C7. Jersey color and runner-appearance template matching are not reliable
 
-## C5. FWD/BWD must remain independent for scoring
+- Jersey and clothing color, color-histogram matching, and
+  runner-appearance template matching are banned as identity or
+  classification evidence.
+- Local patch correlation used for non-identity purposes, for example
+  short-horizon propagation flow, is out of scope for this clause.
+- Rationale: runner appearance varies with pose, distance, lighting,
+  occlusion, and motion blur, and prior versions produced unreliable
+  results. See
+  [archive/TRACK_RUNNER_V3_FINDINGS.md](archive/TRACK_RUNNER_V3_FINDINGS.md).
+- The current active machine-evidence set lives in
+  [TRACK_RUNNER_DESIGN.md](TRACK_RUNNER_DESIGN.md) and may evolve. This
+  clause only forbids re-introducing the unreliable cues.
+
+## C8. FWD/BWD must remain independent for scoring
 
 Within a single interval, the forward pass and backward pass may each keep
 their own per-pass working state. That state must remain pass-local.
@@ -97,31 +124,7 @@ Allowed:
 - a separate output-only corrected track, if added later, provided it is
     not used for FWD/BWD agreement scoring
 
-
-## C6. Jersey color and runner-appearance template matching are not reliable
-
-- Jersey and clothing color, color-histogram matching, and
-  runner-appearance template matching are banned as identity or
-  classification evidence.
-- Local patch correlation used for non-identity purposes, for example
-  short-horizon propagation flow, is out of scope for this clause.
-- Rationale: runner appearance varies with pose, distance, lighting,
-  occlusion, and motion blur, and prior versions produced unreliable
-  results. See
-  [archive/TRACK_RUNNER_V3_FINDINGS.md](archive/TRACK_RUNNER_V3_FINDINGS.md).
-- The current active machine-evidence set lives in
-  [TRACK_RUNNER_DESIGN.md](TRACK_RUNNER_DESIGN.md) and may evolve. This
-  clause only forbids re-introducing the unreliable cues.
-
-## C7. A seed is a human-authored annotation for one frame
-
-* A seed is a human-authored annotation for one frame.
-* Usually this annotation is a torso box. It may also be a human-confirmed not_in_frame state.
-* Seeds are the truth anchors for solve.
-* Machine-produced geometry, including predictions, suggestions, polish outputs, and heat-map blob adjustments, is not a seed until a human commits it.
-* Code and docs must not label uncommitted machine geometry as a seed.
-
-## C8. keep SCHEMA_VERSION in sync
+## C9. keep SCHEMA_VERSION in sync
 
 - do not use multiple SCHEMA_VERSIONs
 - this is forbidden: 3 for ITEM_SCHEMA_VERSION and 4 for OBJECT_SCHEMA_VERSION
