@@ -85,6 +85,7 @@ Seeds are hard anchors. An interval runs seed -> seed.
 ## C6. Refine mode only modifies after race start intervals with new seeds
 - refine mode should never force a full solve. If a full solve is needed,
   exit and tell the user to run solve with a reason.
+- recalculating race_start_frame is fine, but I just want to make sure untouched intervals are retained
 
 ## C7. Jersey color and runner-appearance template matching are not reliable
 
