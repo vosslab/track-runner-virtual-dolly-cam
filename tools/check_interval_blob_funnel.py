@@ -136,6 +136,18 @@ def parse_args() -> argparse.Namespace:
 		)
 	)
 	parser.add_argument(
+		"-G", "--gate-trace", dest="gate_trace", action="store_true",
+		help=(
+			"Print one row per eligible frame per interval showing "
+			"blob presence, dist/h, each gate's pass/fail, v_pred magnitude, "
+			"and the first gate that rejected (or 'none' / 'absent' / "
+			"'no_corridor'). Diagnostic for deciding whether the gate logic "
+			"or the corridor is the reason a given interval has a low "
+			"blob_accept percentage. Pair with --interval-index to scope "
+			"the trace to human-verified intervals."
+		)
+	)
+	parser.add_argument(
 		"--diagnostic-blended-reference", dest="diagnostic_blended_reference",
 		action="store_true",
 		help=(
@@ -272,6 +284,9 @@ def _replay_frame_funnel(
 				"path_ok": None,
 				"accepted": False,
 				"gate_outcome": "absent",
+				"blob_present": False,
+				"v_pred_mag": v_pred_mag,
+				"first_failed_gate": "no_residual",
 			}
 		raw_blobs = residual_motion.extract_frame_blobs(
 			residual, validity_mask, residual_motion.DEFAULT_THRESHOLD,
@@ -294,6 +309,9 @@ def _replay_frame_funnel(
 			"path_ok": None,
 			"accepted": False,
 			"gate_outcome": "absent",
+			"blob_present": False,
+			"v_pred_mag": v_pred_mag,
+			"first_failed_gate": "no_raw_blob",
 		}
 
 	corridor_radius = max(1.5 * w, 0.75 * h)
@@ -311,6 +329,9 @@ def _replay_frame_funnel(
 			"path_ok": None,
 			"accepted": False,
 			"gate_outcome": "absent",
+			"blob_present": False,
+			"v_pred_mag": v_pred_mag,
+			"first_failed_gate": "no_corridor",
 		}
 
 	# best-confidence corridor blob, identical to observe_blob_at's pick
@@ -333,6 +354,9 @@ def _replay_frame_funnel(
 			"path_ok": None,
 			"accepted": False,
 			"gate_outcome": "absent",
+			"blob_present": False,
+			"v_pred_mag": v_pred_mag,
+			"first_failed_gate": "no_best",
 		}
 
 	real_bx = best_blob["centroid_x"]
@@ -389,6 +413,19 @@ def _replay_frame_funnel(
 		path_perp_px = math.sqrt(perp_x * perp_x + perp_y * perp_y)
 
 	accepted = proximity_ok and direction_ok and path_ok
+	# first_failed_gate: earliest of (proximity, direction, path) that
+	# returned False, in the same order velocity_model evaluates them.
+	# "none" when all three pass. direction_ok can be True-as-vacuous
+	# below the velocity floor; that still counts as a pass here because
+	# the solver accepts it.
+	if accepted:
+		first_failed_gate = "none"
+	elif not proximity_ok:
+		first_failed_gate = "proximity"
+	elif not direction_ok:
+		first_failed_gate = "direction"
+	else:
+		first_failed_gate = "path"
 	return {
 		"residual_ok": True,
 		"raw_blob_count": raw_blob_count,
@@ -406,6 +443,9 @@ def _replay_frame_funnel(
 			else None
 		),
 		"real_to_blended_h": real_to_blended_h,
+		"blob_present": True,
+		"v_pred_mag": v_pred_mag,
+		"first_failed_gate": first_failed_gate,
 	}
 
 
@@ -500,10 +540,11 @@ def _render_side_by_side(
 	x1, y1, x2, y2 = roi
 	real_crop = frame_bgr[y1:y2, x1:x2].copy()
 
-	# colorize residual magnitude. clip to 255 to avoid overflow when
-	# the solver's threshold (~10) is at the low end of typical magnitudes.
-	mag_u8 = numpy.clip(residual_mag, 0, 255).astype(numpy.uint8)
-	heat = cv2.applyColorMap(mag_u8, cv2.COLORMAP_JET)
+	# colorize residual magnitude via the shared residual_motion primitive.
+	# Same fixed-max scale the annotation GUI and
+	# tools/diagnose_residual_motion.py use, so all callers produce visually
+	# identical heat maps.
+	heat = residual_motion.colorize_jet(residual_mag)
 	# darken invalid pixels so visually clipped regions are obvious
 	if validity_mask is not None:
 		invalid = validity_mask == 0
@@ -1013,6 +1054,121 @@ def _write_json_sidecar(
 
 
 #============================================
+def _fmt_bool_cell(value: object) -> str:
+	"""Render a gate-pass bool: True -> 'OK', False -> 'FAIL', None -> '-'."""
+	if value is None:
+		return "-"
+	if value:
+		return "OK"
+	return "FAIL"
+
+
+#============================================
+def _fmt_float_cell(value: object, width: int = 5, decimals: int = 2) -> str:
+	"""Render a float cell or '-' when missing. Fixed width for alignment."""
+	if value is None:
+		return "-".rjust(width)
+	return f"{float(value):{width}.{decimals}f}"
+
+
+#============================================
+def _print_gate_trace(
+	per_interval: list,
+	gate_trace_rows: dict,
+) -> None:
+	"""Print per-frame gate trace for each processed interval.
+
+	Emits one table per (interval, pass) with columns: frame, blob?,
+	dist/h, proximity, direction, path, |v_pred|, first_failed_gate.
+	Intended for manual inspection of a small number of intervals the
+	user has visually verified -- not for bulk analysis. Follow with a
+	per-interval rollup summarizing where the frames fall among the
+	absent / rejected-by-gate / accepted buckets so the trace is
+	self-contained even when the surrounding funnel summary is also
+	printed.
+
+	Args:
+		per_interval: main loop's per_interval_results list.
+		gate_trace_rows: collected per-frame stamps keyed by interval
+			index and pass label. Empty entries are tolerated (they
+			mean the interval had only endpoint/stationary frames).
+	"""
+	if not gate_trace_rows:
+		return
+	print("")
+	print("  gate trace (per-frame, --gate-trace):")
+	# deterministic order: iterate per_interval so the trace follows the
+	# same interval ordering as the funnel summary above.
+	header = (
+		"    frame  blob?  dist/h  prox  dir   path  |v_pred|  first_fail"
+	)
+	for item in per_interval:
+		idx = item["interval_index"]
+		if idx not in gate_trace_rows:
+			continue
+		start_frame = item["start_frame"]
+		end_frame = item["end_frame"]
+		pass_rows = gate_trace_rows[idx]
+		print("")
+		print(
+			f"  interval [{idx:3d}] {start_frame:5d}-{end_frame:5d}"
+		)
+		for pass_label in ("FWD", "BWD"):
+			rows = pass_rows.get(pass_label, [])
+			print(f"    pass={pass_label}  eligible={len(rows)}")
+			if not rows:
+				print("      (no eligible frames)")
+				continue
+			print(header)
+			# per-frame table. Width choices keep the row under ~80 cols
+			# so ssh/tmux windows do not wrap. first_fail is last and may
+			# overflow -- that is OK, it's the key column and a long name
+			# like "no_corridor" is better unwrapped at line end than
+			# truncated mid-word.
+			for row in rows:
+				fi = int(row["frame_index"])
+				blob_flag = "Y" if row.get("blob_present") else "N"
+				dist_h = _fmt_float_cell(row.get("blob_dist_h"), 6, 2)
+				prox = _fmt_bool_cell(row.get("proximity_ok"))
+				direc = _fmt_bool_cell(row.get("direction_ok"))
+				path = _fmt_bool_cell(row.get("path_ok"))
+				v_mag = _fmt_float_cell(row.get("v_pred_mag"), 6, 2)
+				first_fail = row.get("first_failed_gate", "-")
+				print(
+					f"    {fi:5d}   {blob_flag}   "
+					f"{dist_h}  {prox:4s}  {direc:4s}  {path:4s}  "
+					f"{v_mag}    {first_fail}"
+				)
+			# per-pass rollup: how the frames partitioned. Numbers should
+			# add up to len(rows); discrepancy is a bug in the stamp
+			# writer, not the rollup.
+			n_absent = sum(1 for r in rows if not r.get("blob_present"))
+			n_accepted = sum(1 for r in rows if r.get("accepted"))
+			n_rejected = sum(
+				1 for r in rows
+				if r.get("blob_present") and not r.get("accepted")
+			)
+			n_prox = sum(
+				1 for r in rows
+				if r.get("first_failed_gate") == "proximity"
+			)
+			n_dir = sum(
+				1 for r in rows
+				if r.get("first_failed_gate") == "direction"
+			)
+			n_path = sum(
+				1 for r in rows
+				if r.get("first_failed_gate") == "path"
+			)
+			print(
+				f"      rollup: absent={n_absent} "
+				f"rejected={n_rejected} "
+				f"(prox={n_prox} dir={n_dir} path={n_path}) "
+				f"accepted={n_accepted}"
+			)
+
+
+#============================================
 def _print_summary(per_interval: list, fps: float) -> None:
 	"""Aggregate counters and duration-bucketed accept rates."""
 	n = len(per_interval)
@@ -1289,6 +1445,10 @@ def main() -> None:
 		kept.sort(key=lambda item: item[0])
 		print(f"  limited to {len(kept)} intervals")
 
+	# per-interval per-pass lists of per-frame stamps, populated only when
+	# --gate-trace is set. Keyed by interval_index -> {"FWD": [...], "BWD": [...]}.
+	# Empty dict when the flag is off; _print_gate_trace handles both cases.
+	gate_trace_rows: dict = {}
 	per_interval_results = []
 	try:
 		for idx, left, right, start_frame, end_frame in kept:
@@ -1309,19 +1469,33 @@ def main() -> None:
 			residual_cache = {}
 
 			def _make_saver(pass_label: str):
-				# closure captures idx + pass_label; frames_dir None -> no-op
-				if frames_dir is None:
+				# closure captures idx + pass_label. Handles two optional
+				# per-frame side-effects: PNG rendering (frames_dir) and
+				# gate-trace row collection (--gate-trace). Returns None
+				# only when neither is active so replay_pass can skip the
+				# per-frame hook entirely.
+				want_save = frames_dir is not None
+				want_trace = args.gate_trace
+				if not want_save and not want_trace:
 					return None
+				if want_trace:
+					trace_iv = gate_trace_rows.setdefault(idx, {})
+					trace_iv.setdefault(pass_label, [])
 
-				def _save(i, raw_prev, raw_curr, raw_next, stamp):
+				def _hook(i, raw_prev, raw_curr, raw_next, stamp):
 					frame_index = int(raw_curr[0])
-					_save_frame_png(
-						frames_dir, idx, frame_index, pass_label,
-						raw_curr, raw_prev, raw_next,
-						reader, transform, stamp,
-					)
+					if want_trace:
+						row = dict(stamp)
+						row["frame_index"] = frame_index
+						gate_trace_rows[idx][pass_label].append(row)
+					if want_save:
+						_save_frame_png(
+							frames_dir, idx, frame_index, pass_label,
+							raw_curr, raw_prev, raw_next,
+							reader, transform, stamp,
+						)
 
-				return _save
+				return _hook
 
 			# scene-space endpoint displacement: one geometry number per
 			# interval, lets post-hoc analysis scatter (displacement,
@@ -1396,6 +1570,9 @@ def main() -> None:
 			csv_fh.close()
 
 	_print_summary(per_interval_results, fps)
+
+	if args.gate_trace:
+		_print_gate_trace(per_interval_results, gate_trace_rows)
 
 	if args.json_path is not None:
 		_write_json_sidecar(

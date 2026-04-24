@@ -27,7 +27,6 @@ import os
 import sys
 import glob
 import random
-import warnings
 import argparse
 
 # add track_runner directory to path so we can import its modules
@@ -46,6 +45,7 @@ import scene_coords
 import state_io
 import tr_paths
 import video_io
+import residual_motion
 
 # track scoring weights (cross-track penalty dominates)
 WEIGHT_PERSISTENCE = 2.0
@@ -59,9 +59,6 @@ REVIEW_MIN_TRACK_LENGTH = 3
 REVIEW_MAX_CROSS_TRACK = 100.0
 REVIEW_MAX_ALONG_TRACK = 300.0
 REVIEW_MIN_SCORE = 1.5
-
-# minimum blob area in pixels to suppress noise specks
-MIN_BLOB_AREA = 25
 
 
 #============================================
@@ -284,11 +281,31 @@ def select_diagnostic_frames(
 		List of dicts with keys: frame_index, pool ("seed" or "gap"),
 		truth_box (dict with cx/cy/w/h for seed frames, None for gap).
 	"""
-	usable_statuses = {"visible", "partial"}
+	# skip anything before race_start_frame when detection is available.
+	# pre-race frames have a stationary runner and fixed camera, so
+	# background subtraction produces no useful residual-motion signal.
+	pre_race = diagnostics.get("pre_race_reference")
+	if pre_race is not None and pre_race.get("race_start_frame") is not None:
+		race_start_frame = int(pre_race["race_start_frame"])
+	else:
+		race_start_frame = 0
+
+	# only "visible" seeds are reliable positive controls. "partial" seeds
+	# mark that the torso box is clipped by the frame edge or an occluder,
+	# which makes them poor anchors for diagnostic evaluation.
+	usable_statuses = {"visible"}
 	usable_seeds = []
+	pre_race_seed_skips = 0
 	for seed in seeds_list:
-		if seed.get("status") in usable_statuses:
-			usable_seeds.append(seed)
+		if seed.get("status") not in usable_statuses:
+			continue
+		if int(seed["frame_index"]) < race_start_frame:
+			pre_race_seed_skips += 1
+			continue
+		usable_seeds.append(seed)
+	if pre_race_seed_skips > 0:
+		print(f"  frame sampler: skipped {pre_race_seed_skips} "
+			f"pre-race seed(s) (frame_index < race_start_frame={race_start_frame})")
 
 	# split budget: half for seeds, half for gaps
 	seed_budget = num_samples // 2
@@ -381,11 +398,13 @@ def select_diagnostic_frames(
 						gap_candidates.append(candidate)
 						break
 
-		# deduplicate and clamp
+		# deduplicate and clamp; also exclude any pre-race candidate
+		# (can happen when a seed near race_start_frame emits a -offset
+		# candidate that falls before the race starts)
 		gap_candidates = sorted(set(gap_candidates))
 		gap_candidates = [
 			f for f in gap_candidates
-			if 1 <= f <= frame_count - 2
+			if 1 <= f <= frame_count - 2 and f >= race_start_frame
 		]
 
 		# if we have more candidates than budget, sample; otherwise use all
@@ -412,101 +431,6 @@ def select_diagnostic_frames(
 	print(f"  frame sampler: {seed_count} seed frames + {gap_count} gap frames "
 		f"= {len(frames)} total")
 	return frames
-
-
-#============================================
-def build_warp_matrix(
-	scene_transform: scene_coords.SceneTransform,
-	frame_n: int,
-	frame_n1: int,
-	scale_factor: float,
-) -> numpy.ndarray:
-	"""Build 2x3 affine matrix to warp frame N+1 into frame N's camera position.
-
-	The SceneTransform stores cumulative motion. To warp N+1 into N's space,
-	we need the delta transform: how did the camera move from N to N+1.
-
-	The forward transform is: pixel = scene * cum_scale + (cum_dx, cum_dy)
-	To warp frame N+1 pixels into frame N pixel space:
-	  pixel_N = (pixel_N1 - cum_translation_N1) / cum_scale_N1 * cum_scale_N + cum_translation_N
-
-	This simplifies to an affine: pixel_N = pixel_N1 * (scale_N/scale_N1) + delta_translation
-
-	Args:
-		scene_transform: SceneTransform instance.
-		frame_n: Source reference frame index.
-		frame_n1: Frame to warp into frame_n's space.
-		scale_factor: Downsample factor applied to frames.
-
-	Returns:
-		2x3 numpy float32 affine matrix for cv2.warpAffine.
-	"""
-	# cumulative values at each frame
-	cum_dx_n = float(scene_transform.cum_dx[frame_n])
-	cum_dy_n = float(scene_transform.cum_dy[frame_n])
-	cum_scale_n = float(scene_transform.cum_scale[frame_n])
-
-	cum_dx_n1 = float(scene_transform.cum_dx[frame_n1])
-	cum_dy_n1 = float(scene_transform.cum_dy[frame_n1])
-	cum_scale_n1 = float(scene_transform.cum_scale[frame_n1])
-
-	# relative scale: how much to scale frame N+1 to match frame N
-	rel_scale = cum_scale_n / cum_scale_n1
-
-	# translation delta in frame N pixel space
-	tx = (cum_dx_n - cum_dx_n1 * rel_scale) * scale_factor
-	ty = (cum_dy_n - cum_dy_n1 * rel_scale) * scale_factor
-
-	# build 2x3 affine matrix
-	warp_matrix = numpy.array([
-		[rel_scale, 0.0, tx],
-		[0.0, rel_scale, ty],
-	], dtype=numpy.float32)
-	return warp_matrix
-
-
-#============================================
-def compute_validity_mask(
-	warped: numpy.ndarray,
-) -> numpy.ndarray:
-	"""Create a mask of valid (non-black) pixels after warping.
-
-	Pixels that land outside the source frame after warpAffine are black.
-	These must be excluded from flow computation and statistics.
-
-	Args:
-		warped: Warped BGR frame.
-
-	Returns:
-		Binary mask (uint8, 255=valid, 0=invalid).
-	"""
-	gray = cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY)
-	_, mask = cv2.threshold(gray, 1, 255, cv2.THRESH_BINARY)
-	kernel = numpy.ones((3, 3), numpy.uint8)
-	mask = cv2.erode(mask, kernel, iterations=1)
-	return mask
-
-
-#============================================
-def colorize_residual(
-	mag: numpy.ndarray,
-	fixed_max: float = 30.0,
-) -> numpy.ndarray:
-	"""Convert residual magnitude to a JET colormap with fixed scale.
-
-	Uses a fixed maximum so background noise stays dark and only genuine
-	motion residuals light up. No per-frame normalization.
-
-	Args:
-		mag: Residual magnitude array (absolute intensity difference).
-		fixed_max: Maximum value mapped to full red (default 30 intensity).
-
-	Returns:
-		BGR colorized image (uint8).
-	"""
-	normalized = numpy.clip(mag / fixed_max * 255, 0, 255).astype(numpy.uint8)
-	colored = cv2.applyColorMap(normalized, cv2.COLORMAP_JET)
-	return colored
 
 
 #============================================
@@ -699,96 +623,6 @@ def apply_hermite_correction(
 		"clamped_cross": clamped_cross,
 		"correction_mag": correction_mag,
 	}
-	return result
-
-
-#============================================
-def extract_frame_blobs(
-	mag: numpy.ndarray,
-	validity_mask: numpy.ndarray,
-	threshold: float,
-	top_k: int = 10,
-) -> list:
-	"""Extract top-K motion blobs from a residual magnitude image.
-
-	Args:
-		mag: Residual magnitude array.
-		validity_mask: Binary validity mask (255=valid).
-		threshold: Motion threshold.
-		top_k: Maximum number of blobs to return.
-
-	Returns:
-		List of dicts with keys: centroid_x, centroid_y, area,
-		integrated_mag, label_id.
-	"""
-	# threshold and mask
-	thresh_mask = (mag > threshold).astype(numpy.uint8)
-	thresh_mask = thresh_mask & (validity_mask > 0).astype(numpy.uint8)
-	num_labels, labels, label_stats, centroids = cv2.connectedComponentsWithStats(
-		thresh_mask, connectivity=8
-	)
-
-	blobs = []
-	for label_id in range(1, num_labels):
-		area = int(label_stats[label_id, cv2.CC_STAT_AREA])
-		# skip tiny noise specks
-		if area < MIN_BLOB_AREA:
-			continue
-		component_pixels = labels == label_id
-		integrated = float(numpy.sum(mag[component_pixels]))
-		cx = float(centroids[label_id][0])
-		cy = float(centroids[label_id][1])
-		blobs.append({
-			"centroid_x": cx,
-			"centroid_y": cy,
-			"area": area,
-			"integrated_mag": integrated,
-			"label_id": label_id,
-		})
-
-	# sort by integrated magnitude descending, keep top K
-	blobs.sort(key=lambda b: b["integrated_mag"], reverse=True)
-	result = blobs[:top_k]
-	return result
-
-
-#============================================
-def filter_blobs_to_corridor(
-	blobs: list,
-	ref_x: float,
-	ref_y: float,
-	tangent: tuple,
-	corridor_radius: float,
-) -> list:
-	"""Filter blobs to those within a corridor around a reference point.
-
-	The corridor is defined by a center point, a tangent direction, and
-	a half-width. Blobs are kept if their cross-track distance from the
-	reference is within the corridor radius.
-
-	Args:
-		blobs: List of blob dicts from extract_frame_blobs.
-		ref_x: Corridor center x.
-		ref_y: Corridor center y.
-		tangent: Tuple of (tx, ty, nx, ny) from compute_local_tangent.
-		corridor_radius: Half-width of the corridor.
-
-	Returns:
-		Filtered list of blob dicts (with cross_track and along_track added).
-	"""
-	tx, ty, nx, ny = tangent
-	result = []
-	for blob in blobs:
-		dx = blob["centroid_x"] - ref_x
-		dy = blob["centroid_y"] - ref_y
-		# decompose into along-track and cross-track
-		along = dx * tx + dy * ty
-		cross = dx * nx + dy * ny
-		if abs(cross) <= corridor_radius:
-			blob_copy = dict(blob)
-			blob_copy["cross_track"] = cross
-			blob_copy["along_track"] = along
-			result.append(blob_copy)
 	return result
 
 
@@ -1049,107 +883,29 @@ def compute_multiframe_flow(
 ) -> tuple:
 	"""Detect motion at frame N using aligned temporal background subtraction.
 
-	Warps neighboring frames (N-k through N+k, k != 0) into frame N's
-	camera position, builds a robust median background from the aligned
-	stack, then subtracts the background from frame N to reveal moving
-	objects.
-
-	Also computes a raw (uncompensated) single-pair residual as null baseline.
+	Thin back-compat shim over residual_motion.compute_residual_for_frame
+	with return_extras=True. Preserves the historical 4-tuple return order
+	so diagnostic PNG panels keep working unchanged.
 
 	Args:
 		reader: VideoReader instance.
 		frame_index: Center frame index N.
 		scene_transform: SceneTransform for camera compensation.
-		scale_factor: Downsample factor.
+		scale_factor: Downsample factor (<1.0 downsamples before warp).
 		half_window: Offsets on each side (default 4 = 9-frame window).
 
 	Returns:
 		Tuple of (residual_mag, raw_mag_single, validity_mask, display_frame).
-		display_frame is frame N (for PNG overlay).
+		display_frame is frame N (BGR, possibly resized) for PNG overlay.
 	"""
-	# read center frame
-	center_frame = reader.read_frame(frame_index)
-	if center_frame is None:
-		return (None, None, None, None)
-
-	h_orig, w_orig = center_frame.shape[:2]
-	if scale_factor < 1.0:
-		new_w = int(w_orig * scale_factor)
-		new_h = int(h_orig * scale_factor)
-		center_resized = cv2.resize(center_frame, (new_w, new_h))
-	else:
-		new_w = w_orig
-		new_h = h_orig
-		center_resized = center_frame.copy()
-
-	# convert center frame to grayscale float for residual computation
-	gray_center = cv2.cvtColor(center_resized, cv2.COLOR_BGR2GRAY)
-	center_float = gray_center.astype(numpy.float32)
-
-	# collect aligned neighbor frames into a stack for median computation
-	aligned_stack = []
-	for k in range(-half_window, half_window + 1):
-		if k == 0:
-			continue
-		fi_other = frame_index + k
-		if fi_other < 0 or fi_other >= reader.frame_count:
-			continue
-
-		other_frame = reader.read_frame(fi_other)
-		if other_frame is None:
-			continue
-
-		if scale_factor < 1.0:
-			other_frame = cv2.resize(other_frame, (new_w, new_h))
-
-		# warp into frame N's camera position
-		warp_mat = build_warp_matrix(
-			scene_transform, frame_index, fi_other, scale_factor,
-		)
-		warped = cv2.warpAffine(other_frame, warp_mat, (new_w, new_h))
-
-		# validity mask for warped regions
-		pair_validity = compute_validity_mask(warped)
-
-		# convert to grayscale float
-		gray_warped = cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY)
-		warped_float = gray_warped.astype(numpy.float32)
-
-		# set invalid pixels to NaN so median ignores them
-		warped_float[pair_validity == 0] = numpy.nan
-
-		aligned_stack.append(warped_float)
-
-	if len(aligned_stack) < 2:
-		return (None, None, None, None)
-
-	# build median background from aligned stack
-	stack_array = numpy.stack(aligned_stack, axis=0)
-	# suppress All-NaN slice warning; edge pixels may have no valid frames
-	with warnings.catch_warnings():
-		warnings.simplefilter("ignore", RuntimeWarning)
-		median_background = numpy.nanmedian(stack_array, axis=0).astype(numpy.float32)
-
-	# combined validity mask: valid where at least 2 frames contributed
-	valid_count = numpy.sum(~numpy.isnan(stack_array), axis=0)
-	validity_mask = (valid_count >= 2).astype(numpy.uint8) * 255
-
-	# compute residual: absolute difference between frame N and median background
-	residual = numpy.abs(center_float - median_background)
-	residual[validity_mask == 0] = 0.0
-
-	# compute raw single-pair residual as null baseline
-	frame_n1 = reader.read_frame(frame_index + 1)
-	raw_mag = numpy.zeros((new_h, new_w), dtype=numpy.float32)
-	if frame_n1 is not None:
-		if scale_factor < 1.0:
-			frame_n1 = cv2.resize(frame_n1, (new_w, new_h))
-		gray_n1 = cv2.cvtColor(frame_n1, cv2.COLOR_BGR2GRAY)
-		raw_mag = numpy.abs(
-			center_float - gray_n1.astype(numpy.float32)
-		)
-
-	return (residual, raw_mag, validity_mask, center_resized)
+	return residual_motion.compute_residual_for_frame(
+		reader=reader,
+		frame_index=frame_index,
+		scene_transform=scene_transform,
+		half_window=half_window,
+		scale_factor=scale_factor,
+		return_extras=True,
+	)
 
 
 #============================================
@@ -1251,7 +1007,7 @@ def compute_frame_statistics(
 	stats["validity_mask"] = validity_mask
 
 	# extract blobs from center frame
-	center_blobs = extract_frame_blobs(comp_mag, validity_mask, threshold)
+	center_blobs = residual_motion.extract_frame_blobs(comp_mag, validity_mask, threshold)
 	stats["num_blobs"] = len(center_blobs)
 
 	# compute residuals for neighboring frames (for temporal tracking)
@@ -1272,7 +1028,7 @@ def compute_frame_statistics(
 					center_blobs, ref_cx, ref_cy, search_radius
 				)
 			else:
-				filtered = filter_blobs_to_corridor(
+				filtered = residual_motion.filter_blobs_to_corridor(
 					center_blobs, ref_cx, ref_cy, tangent, stats["corridor_radius"]
 				)
 			frame_blobs_list.append(filtered)
@@ -1296,13 +1052,13 @@ def compute_frame_statistics(
 			nb_cx = ref_cx
 			nb_cy = ref_cy
 
-		n_blobs = extract_frame_blobs(n_mag, n_validity, threshold)
+		n_blobs = residual_motion.extract_frame_blobs(n_mag, n_validity, threshold)
 		if pool == "seed" and truth_box is not None:
 			filtered = filter_blobs_near_seed(
 				n_blobs, nb_cx, nb_cy, search_radius
 			)
 		else:
-			filtered = filter_blobs_to_corridor(
+			filtered = residual_motion.filter_blobs_to_corridor(
 				n_blobs, nb_cx, nb_cy, tangent, stats["corridor_radius"]
 			)
 		frame_blobs_list.append(filtered)
@@ -1754,7 +1510,7 @@ def render_diagnostic_png(
 			(10, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.45, overlap_color, 1)
 
 	# top-right: compensated residual heatmap (full frame)
-	panel_tr = colorize_residual(comp_mag)
+	panel_tr = residual_motion.colorize_jet(comp_mag)
 	num_bg_frames = 2 * half_window
 	cv2.putText(panel_tr, f"compensated residual ({num_bg_frames} frames)", (10, 25),
 		cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
@@ -1935,7 +1691,10 @@ def find_weakest_gap_midpoint(
 	Returns:
 		Frame index at the midpoint of the weakest gap.
 	"""
-	usable_statuses = {"visible", "partial"}
+	# only "visible" seeds are reliable positive controls. "partial" seeds
+	# mark that the torso box is clipped by the frame edge or an occluder,
+	# which makes them poor anchors for diagnostic evaluation.
+	usable_statuses = {"visible"}
 	seed_frames = []
 	for seed in seeds_list:
 		if seed.get("status") in usable_statuses:
@@ -2006,7 +1765,7 @@ def render_flow_video(
 		if mag is None:
 			continue
 
-		colored = colorize_residual(mag)
+		colored = residual_motion.colorize_jet(mag)
 
 		# overlay predicted box
 		box = find_trajectory_box(fi, seeds_list, intervals_data)

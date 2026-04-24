@@ -37,14 +37,21 @@ import numpy
 # constants are unchanged.
 BLOB_OBSERVER_VERSION = "v1"
 
-# minimum blob area in pixels to suppress noise specks
+# minimum blob area in pixels to suppress noise specks.
+# TODO(C2): May be a runner-size threshold (C2 violation) or a denoising
+# floor (C2-allowed raster-kernel territory). Empirically verify on a
+# distant-runner interval (torso_h ~15) before deciding: count blobs in
+# the 10-50 px^2 band and inspect whether they are real runner components
+# or scattered speckle. See docs/TODO.md for the evidence-gathering plan.
 MIN_BLOB_AREA = 25
 
 # motion intensity threshold for blob extraction
 DEFAULT_THRESHOLD = 10.0
 
-# half-window for background estimation (2 = 5-frame window)
-DEFAULT_HALF_WINDOW = 2
+# half-window for background estimation (4 = 9-frame window).
+# Value inherited from tools/diagnose_residual_motion.py, which is the
+# reference implementation exercised most heavily by the user.
+DEFAULT_HALF_WINDOW = 4
 
 # ROI multiplier: crop region is this many times the torso box height
 ROI_MULTIPLIER = 8.0
@@ -134,6 +141,33 @@ def compute_validity_mask(
 	kernel = numpy.ones((3, 3), numpy.uint8)
 	mask = cv2.erode(mask, kernel, iterations=1)
 	return mask
+
+
+#============================================
+def colorize_jet(
+	mag: numpy.ndarray,
+	fixed_max: float = 30.0,
+) -> numpy.ndarray:
+	"""Map residual magnitude to a JET BGR image with fixed scale.
+
+	Shared primitive used by the heat-map overlay, the diagnose tool, and
+	the interval-blob funnel diagnostic. Fixed-scale normalization keeps
+	colors comparable across frames and across callers. Default
+	`fixed_max=30.0` matches the long-standing diagnose-tool behavior.
+
+	Args:
+		mag: Residual magnitude array (float32, HxW).
+		fixed_max: Magnitude value mapped to full JET red. Default 30.0.
+
+	Returns:
+		BGR uint8 image of shape (H, W, 3).
+	"""
+	# clip and normalize magnitudes into the 0-255 uint8 range, then apply
+	# OpenCV's JET colormap. Values >= fixed_max saturate to full red; zero
+	# maps to dark blue.
+	normalized = numpy.clip(mag / fixed_max * 255, 0, 255).astype(numpy.uint8)
+	colored = cv2.applyColorMap(normalized, cv2.COLORMAP_JET)
+	return colored
 
 
 #============================================
@@ -308,6 +342,8 @@ def compute_residual_for_frame(
 	half_window: int = DEFAULT_HALF_WINDOW,
 	cache: dict = None,
 	roi: tuple = None,
+	scale_factor: float = 1.0,
+	return_extras: bool = False,
 ) -> tuple:
 	"""Compute residual magnitude and validity mask for one frame.
 
@@ -324,15 +360,42 @@ def compute_residual_for_frame(
 		reader: VideoReader instance.
 		frame_index: Center frame index.
 		scene_transform: SceneTransform instance.
-		half_window: Frames on each side for background (default 2 = 5 frames).
+		half_window: Frames on each side for background (default from
+			DEFAULT_HALF_WINDOW = 4, i.e. 9-frame window).
 		cache: Optional dict for frame caching. Modified in place.
 		roi: Optional (x1, y1, x2, y2) bounds to restrict computation.
 			Blob centroids are returned in ROI coordinates; caller must
 			add roi offsets to restore full-frame coordinates.
+		scale_factor: Downsample factor applied to full frames before
+			warping. Must be 1.0 when roi is set. Default 1.0.
+		return_extras: When True, also returns the uncompensated single-pair
+			null-baseline residual and the (possibly resized) center BGR
+			frame for diagnostic overlays. Not compatible with roi.
 
 	Returns:
-		Tuple of (residual_mag, validity_mask) or (None, None).
+		When return_extras=False: (residual_mag, validity_mask) or
+			(None, None).
+		When return_extras=True: (residual_mag, raw_mag_single,
+			validity_mask, display_frame) or (None, None, None, None).
+		The 4-tuple order matches tools/diagnose_residual_motion.py's
+		historical compute_multiframe_flow contract.
 	"""
+	# guard incompatible option combos
+	if return_extras and roi is not None:
+		raise ValueError("return_extras cannot be combined with roi")
+	if scale_factor < 1.0 and roi is not None:
+		raise ValueError("scale_factor<1.0 cannot be combined with roi")
+
+	# diagnose-compatible code path: read BGR directly, optionally resize,
+	# then compute the residual + null-baseline + display frame. Bypasses
+	# the grayscale cache because the extras need BGR for display.
+	if return_extras or scale_factor < 1.0:
+		return _compute_residual_with_extras(
+			reader, frame_index, scene_transform, half_window,
+			scale_factor, return_extras,
+		)
+
+	# production code path: grayscale cache + optional ROI; no extras.
 	if cache is None:
 		cache = {}
 
@@ -361,8 +424,6 @@ def compute_residual_for_frame(
 	if roi_h <= 0 or roi_w <= 0:
 		return (None, None)
 
-	scale_factor = 1.0
-
 	# collect aligned neighbor frames into a stack for median computation
 	aligned_stack = []
 	for k in range(-half_window, half_window + 1):
@@ -386,7 +447,7 @@ def compute_residual_for_frame(
 
 		# warp full frame into center frame's camera position
 		warp_mat = build_warp_matrix(
-			scene_transform, frame_index, fi_other, scale_factor,
+			scene_transform, frame_index, fi_other, 1.0,
 		)
 		# warp only the ROI region by adjusting output size and offset
 		# translate warp matrix to ROI origin
@@ -425,6 +486,117 @@ def compute_residual_for_frame(
 	residual[validity_mask == 0] = 0.0
 
 	return (residual, validity_mask)
+
+
+#============================================
+def _compute_residual_with_extras(
+	reader: object,
+	frame_index: int,
+	scene_transform: object,
+	half_window: int,
+	scale_factor: float,
+	return_extras: bool,
+) -> tuple:
+	"""Diagnose-compatible residual computation with optional extras.
+
+	Direct port of the body formerly in
+	tools/diagnose_residual_motion.compute_multiframe_flow. Keeps the
+	same frame-read order (BGR -> resize -> cvtColor) so diagnostic PNG
+	output matches the pre-refactor reference byte-for-byte.
+
+	Returns a 4-tuple when return_extras is True:
+		(residual_mag, raw_mag_single, validity_mask, display_frame)
+	or a 2-tuple otherwise:
+		(residual_mag, validity_mask)
+
+	Failure sentinel matches the return shape (all None).
+	"""
+	# read center frame
+	center_frame = reader.read_frame(frame_index)
+	if center_frame is None:
+		return (None, None, None, None) if return_extras else (None, None)
+
+	h_orig, w_orig = center_frame.shape[:2]
+	if scale_factor < 1.0:
+		new_w = int(w_orig * scale_factor)
+		new_h = int(h_orig * scale_factor)
+		center_resized = cv2.resize(center_frame, (new_w, new_h))
+	else:
+		new_w = w_orig
+		new_h = h_orig
+		center_resized = center_frame.copy()
+
+	# convert center frame to grayscale float for residual computation
+	gray_center = cv2.cvtColor(center_resized, cv2.COLOR_BGR2GRAY)
+	center_float = gray_center.astype(numpy.float32)
+
+	# collect aligned neighbor frames into a stack for median computation
+	aligned_stack = []
+	for k in range(-half_window, half_window + 1):
+		if k == 0:
+			continue
+		fi_other = frame_index + k
+		if fi_other < 0 or fi_other >= reader.frame_count:
+			continue
+
+		other_frame = reader.read_frame(fi_other)
+		if other_frame is None:
+			continue
+
+		if scale_factor < 1.0:
+			other_frame = cv2.resize(other_frame, (new_w, new_h))
+
+		# warp into frame N's camera position
+		warp_mat = build_warp_matrix(
+			scene_transform, frame_index, fi_other, scale_factor,
+		)
+		warped = cv2.warpAffine(other_frame, warp_mat, (new_w, new_h))
+
+		# validity mask for warped regions
+		pair_validity = compute_validity_mask(warped)
+
+		# convert to grayscale float
+		gray_warped = cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY)
+		warped_float = gray_warped.astype(numpy.float32)
+
+		# set invalid pixels to NaN so median ignores them
+		warped_float[pair_validity == 0] = numpy.nan
+
+		aligned_stack.append(warped_float)
+
+	if len(aligned_stack) < 2:
+		return (None, None, None, None) if return_extras else (None, None)
+
+	# build median background from aligned stack
+	stack_array = numpy.stack(aligned_stack, axis=0)
+	# suppress All-NaN slice warning; edge pixels may have no valid frames
+	with warnings.catch_warnings():
+		warnings.simplefilter("ignore", RuntimeWarning)
+		median_background = numpy.nanmedian(stack_array, axis=0).astype(numpy.float32)
+
+	# combined validity mask: valid where at least 2 frames contributed
+	valid_count = numpy.sum(~numpy.isnan(stack_array), axis=0)
+	validity_mask = (valid_count >= 2).astype(numpy.uint8) * 255
+
+	# compute residual: absolute difference between frame N and median background
+	residual = numpy.abs(center_float - median_background)
+	residual[validity_mask == 0] = 0.0
+
+	if not return_extras:
+		return (residual, validity_mask)
+
+	# compute raw single-pair residual as null baseline (extras only)
+	frame_n1 = reader.read_frame(frame_index + 1)
+	raw_mag = numpy.zeros((new_h, new_w), dtype=numpy.float32)
+	if frame_n1 is not None:
+		if scale_factor < 1.0:
+			frame_n1 = cv2.resize(frame_n1, (new_w, new_h))
+		gray_n1 = cv2.cvtColor(frame_n1, cv2.COLOR_BGR2GRAY)
+		raw_mag = numpy.abs(
+			center_float - gray_n1.astype(numpy.float32)
+		)
+
+	return (residual, raw_mag, validity_mask, center_resized)
 
 
 #============================================

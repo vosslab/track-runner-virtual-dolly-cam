@@ -354,7 +354,7 @@ def _solve_pre_race_interval(
 
 	Returns:
 		Interval result dict matching the analytical shape per plan §5b:
-		start_frame, end_frame, trajectory, interval_score, fingerprint, source.
+		start_frame, end_frame, blended_path, interval_score, fingerprint, source.
 	"""
 	import interval_fingerprint as ifp
 
@@ -365,8 +365,8 @@ def _solve_pre_race_interval(
 	torso_w = pre_race_reference["torso_w"]
 	torso_h = pre_race_reference["torso_h"]
 
-	# Build trajectory: one frame_state per frame in [start_frame, end_frame]
-	trajectory = []
+	# Build blended_path: one frame_state per frame in [start_frame, end_frame]
+	blended_path = []
 	for t in range(start_frame, end_frame + 1):
 		# Back-project scene-anchored position to pixel space at this frame
 		cx_t, cy_t = scene_transform.scene_to_pixel(
@@ -380,7 +380,7 @@ def _solve_pre_race_interval(
 			"conf": 1.0,
 			"source": "pre_race",
 		}
-		trajectory.append(frame_state)
+		blended_path.append(frame_state)
 
 	# Build interval_score with pre_race tier and consistency=1.0
 	interval_score = {
@@ -400,7 +400,7 @@ def _solve_pre_race_interval(
 	result = {
 		"start_frame": start_frame,
 		"end_frame": end_frame,
-		"trajectory": trajectory,
+		"blended_path": blended_path,
 		"interval_score": interval_score,
 		"fingerprint": fingerprint,
 		"source": "pre_race_reference",
@@ -684,10 +684,10 @@ def execute_interval_work(
 				f"not found in results"
 			)
 
-		# Stage 2: Fine detection on interval trajectory
+		# Stage 2: Fine detection on the race-start interval's blended path.
 		# If this raises, the exception propagates and the assertion below
 		# is skipped, so the real error surfaces instead of an accounting failure.
-		interval_trajectory = interval_result["trajectory"]
+		interval_trajectory = interval_result["blended_path"]
 		final_race_start_frame = race_start.detect_race_start_in_interval(
 			interval_trajectory, context.scene_transform, context.fps,
 			interval_start_frame=interval_low

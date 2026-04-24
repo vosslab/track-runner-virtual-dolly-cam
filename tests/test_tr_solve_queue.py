@@ -246,7 +246,7 @@ def test_pre_race_interval_has_full_diagnostics_shape():
 		_FakeSceneTransform(), fps=30.0,
 	)
 	required_top = {
-		"start_frame", "end_frame", "trajectory", "interval_score",
+		"start_frame", "end_frame", "blended_path", "interval_score",
 		"fingerprint", "source",
 	}
 	required_frame = {"cx", "cy", "w", "h", "conf", "source"}
@@ -256,8 +256,8 @@ def test_pre_race_interval_has_full_diagnostics_shape():
 		"failure_reasons", "warning_flags",
 	}
 	assert required_top.issubset(result)
-	assert required_frame.issubset(result["trajectory"][0])
-	assert required_frame.issubset(result["trajectory"][-1])
+	assert required_frame.issubset(result["blended_path"][0])
+	assert required_frame.issubset(result["blended_path"][-1])
 	assert required_score.issubset(result["interval_score"])
 
 
@@ -268,7 +268,7 @@ def test_pre_race_interval_uses_averaged_dimensions():
 	result = solve_queue._solve_pre_race_interval(
 		_make_seed(0), _make_seed(5), reference, _FakeSceneTransform(), fps=30.0,
 	)
-	for frame_state in result["trajectory"]:
+	for frame_state in result["blended_path"]:
 		assert abs(frame_state["w"] - 40.0) < 0.01
 		assert abs(frame_state["h"] - 80.0) < 0.01
 
@@ -288,7 +288,7 @@ def test_pre_race_interval_scene_anchored_center():
 	result = solve_queue._solve_pre_race_interval(
 		_make_seed(0), _make_seed(5), reference, transform, fps=30.0,
 	)
-	for frame_state in result["trajectory"]:
+	for frame_state in result["blended_path"]:
 		assert abs(frame_state["cx"] - 110.0) < 0.01
 		assert abs(frame_state["cy"] - 70.0) < 0.01
 

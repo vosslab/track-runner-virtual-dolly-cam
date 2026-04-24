@@ -22,9 +22,9 @@ at opacity 1.0; any overlay-level alpha would double-blend because the
 composition already integrates the underlying frame.
 
 ROI geometry matches the solver's own crop window (ROI_MULTIPLIER *
-pred_h, via `residual_motion._compute_roi`). The JET colorization
-mirrors the one in `tools/diagnose_residual_motion.py` and is
-duplicated locally so the GUI has no dependency on the tools/ tree.
+pred_h, via `residual_motion._compute_roi`). JET colorization is
+delegated to `residual_motion.colorize_jet`, which is shared with
+`tools/diagnose_residual_motion.py` and the blob-funnel diagnostic.
 
 Public surface:
   - compute_heat_map_roi(...): returns (bgr_crop, origin) or None.
@@ -39,30 +39,6 @@ import numpy
 
 # local repo modules
 import residual_motion
-
-
-#============================================
-def _colorize_jet(
-	mag: numpy.ndarray,
-	fixed_max: float,
-) -> numpy.ndarray:
-	"""Map residual magnitude to a JET BGR image with fixed scale.
-
-	Duplicate of the colorize_residual helper in
-	`tools/diagnose_residual_motion.py`. Kept local so the GUI has no
-	dependency on the tools/ directory. If a third caller appears this
-	should move to `residual_motion` as a shared primitive.
-
-	Args:
-		mag: Residual magnitude array (float32, HxW).
-		fixed_max: Magnitude value mapped to full JET red.
-
-	Returns:
-		BGR uint8 image of shape (H, W, 3).
-	"""
-	normalized = numpy.clip(mag / fixed_max * 255, 0, 255).astype(numpy.uint8)
-	colored = cv2.applyColorMap(normalized, cv2.COLORMAP_JET)
-	return colored
 
 
 #============================================
@@ -105,7 +81,7 @@ def _compose_overlay(
 		residual_mag: Residual magnitude array (float32, HxW matching
 			frame_roi_bgr's HxW).
 		above_mask: uint8 HxW mask from _build_threshold_mask.
-		fixed_max: Passed through to _colorize_jet.
+		fixed_max: Passed through to residual_motion.colorize_jet.
 		blend_alpha: Mix weight for JET vs color frame in
 			above-threshold pixels. 0 = all frame, 1 = all JET.
 
@@ -123,7 +99,7 @@ def _compose_overlay(
 	mag_above = numpy.where(
 		above_mask > 0, residual_mag, 0.0,
 	).astype(numpy.float32)
-	jet_bgr = _colorize_jet(mag_above, float(fixed_max))
+	jet_bgr = residual_motion.colorize_jet(mag_above, float(fixed_max))
 
 	# above-threshold composite: mix JET with the original color frame.
 	alpha = float(blend_alpha)
