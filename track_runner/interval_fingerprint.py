@@ -18,6 +18,7 @@ into a junk drawer of generic interval utilities.
 import state_io
 import velocity_model
 import residual_motion
+import scoring
 
 
 #============================================
@@ -26,16 +27,37 @@ import residual_motion
 # propagator semantics change. Bump `residual_motion.BLOB_OBSERVER_VERSION`
 # when observer behavior changes. Bump the numeric-constants suffix (the
 # lowercase `a`, `b`, `vf`, `am`, `ms` fragments) when the blob-snap gate
-# or blend constants in velocity_model change.
-SOLVER_FINGERPRINT_TAG = (
-	f"blob_snap/{residual_motion.BLOB_OBSERVER_VERSION}"
-	f"/a{velocity_model.BLOB_SNAP_ALPHA:.3f}"
-	f"/slk{velocity_model.BLOB_SNAP_PATH_SLACK:.3f}"
-	f"/prp{velocity_model.BLOB_SNAP_PATH_PERP_FRACTION:.3f}"
-	f"/vf{velocity_model.BLOB_SNAP_VELOCITY_FLOOR:.3f}"
-	f"/am{velocity_model.BLOB_SNAP_ALPHA_MAX:.3f}"
-	f"/ms{velocity_model.BLOB_SNAP_MAX_SHIFT_FRACTION:.3f}"
-)
+# or blend constants in velocity_model change. Bump
+# `scoring.INTERVAL_SCORE_SCHEMA_VERSION` when the interval_score schema
+# changes.
+
+def build_solver_fingerprint_tag() -> str:
+	"""Build the solver fingerprint tag with current version constants.
+
+	Tests can call this directly to verify schema-version bumps affect
+	the tag. Production code reads the cached module-level constant.
+
+	Returns:
+		Fingerprint tag string.
+	"""
+	# Lazy import to avoid circular dependency with race_start
+	import race_start
+
+	tag = (
+		f"blob_snap/{residual_motion.BLOB_OBSERVER_VERSION}"
+		f"/a{velocity_model.BLOB_SNAP_ALPHA:.3f}"
+		f"/slk{velocity_model.BLOB_SNAP_PATH_SLACK:.3f}"
+		f"/prp{velocity_model.BLOB_SNAP_PATH_PERP_FRACTION:.3f}"
+		f"/vf{velocity_model.BLOB_SNAP_VELOCITY_FLOOR:.3f}"
+		f"/am{velocity_model.BLOB_SNAP_ALPHA_MAX:.3f}"
+		f"/ms{velocity_model.BLOB_SNAP_MAX_SHIFT_FRACTION:.3f}"
+		f"/score_schema/{scoring.INTERVAL_SCORE_SCHEMA_VERSION}"
+		f"/prerace/{race_start.PRE_RACE_REFERENCE_SCHEMA_VERSION}"
+	)
+	return tag
+
+
+SOLVER_FINGERPRINT_TAG = build_solver_fingerprint_tag()
 
 
 #============================================

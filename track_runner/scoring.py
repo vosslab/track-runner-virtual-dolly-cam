@@ -12,6 +12,15 @@ import math
 import numpy
 
 
+# Track-runner schema versions are kept in lockstep across
+# state_io.DIAGNOSTICS_HEADER_VALUE, scoring.INTERVAL_SCORE_SCHEMA_VERSION,
+# and race_start.PRE_RACE_REFERENCE_SCHEMA_VERSION. When any on-disk or
+# cache-visible schema changes, bump ALL THREE together so the user never
+# sees mismatched version numbers across diagnostics files, score dicts,
+# and fingerprint tags.
+INTERVAL_SCORE_SCHEMA_VERSION = 4
+
+
 #============================================
 def _compute_dice_coefficient(
 	box_a: dict,
@@ -293,68 +302,6 @@ def classify_confidence(
 
 
 #============================================
-def score_interval(
-	forward_path: list,
-	backward_path: list,
-	identity_scores: list,
-	competitor_margins: list,
-) -> dict:
-	"""Score an interval using forward/backward interval path evidence.
-
-	Args:
-		forward_path: List of tracking state dicts from forward propagation.
-			Each dict has keys "cx", "cy", "w", "h", "conf", "source".
-		backward_path: List of tracking state dicts from backward propagation.
-			Chronological from propagate_backward_analytical; aligned
-			frame-by-frame with forward_path by shared slot convention.
-		identity_scores: List of per-frame identity match scores (float 0-1).
-		competitor_margins: List of per-frame competitor margin scores (float 0-1).
-
-	Returns:
-		Dict with keys:
-			- "agreement_score": float, forward/backward agreement [0, 1]
-			- "identity_score": float, average identity match [0, 1]
-			- "competitor_margin": float, average competitor separation [0, 1]
-			- "confidence": str, "high", "good", "fair", or "low"
-			- "failure_reasons": list of str
-			- "meeting_point_error": list of per-frame error dicts
-	"""
-	# Compute agreement between forward and backward passes
-	agreement_score = compute_agreement(forward_path, backward_path)
-
-	# Average identity score across frames; default 0.0 if no data
-	if identity_scores:
-		identity_score = float(numpy.mean(identity_scores))
-	else:
-		identity_score = 0.0
-
-	# Average competitor margin across frames; default 0.0 if no data
-	if competitor_margins:
-		competitor_margin = float(numpy.mean(competitor_margins))
-	else:
-		competitor_margin = 0.0
-
-	# Classify confidence from the three aggregate signals
-	confidence, failure_reasons = classify_confidence(
-		agreement_score, identity_score, competitor_margin,
-		interval_length=len(forward_path),
-	)
-
-	# Compute per-frame meeting point errors for diagnostic output
-	meeting_point_error = compute_meeting_point_errors(forward_path, backward_path)
-
-	result = {
-		"agreement_score": agreement_score,
-		"identity_score": identity_score,
-		"competitor_margin": competitor_margin,
-		"confidence": confidence,
-		"failure_reasons": failure_reasons,
-		"meeting_point_error": meeting_point_error,
-	}
-	return result
-
-
-#============================================
 # minimum-real-motion floor for velocity_consistency, in scene units per
 # frame. Prevents the ratio median(|a|) / median(|v|) from blowing up when
 # the runner is nearly stationary. Calibrated to roughly match the
@@ -585,7 +532,7 @@ def score_interval_analytical(
 	else:
 		confidence_tier = "low"
 
-	# tier modifiers
+	# tier modifiers (pre_race tiers are computed separately; no arithmetic applies)
 	tier_order = ["low", "fair", "good", "high"]
 
 	# short intervals (<= 5 frames): promote one tier (never to high)

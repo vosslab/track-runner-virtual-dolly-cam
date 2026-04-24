@@ -37,9 +37,12 @@ SEEDS_HEADER_VALUE = 3
 # Accepted on load, migrated to v3 on write
 SEEDS_ACCEPTED_HEADERS = frozenset({2, 3})
 
-# header key and version for diagnostics JSON files
+# header key and version for diagnostics JSON files.
+# Track-runner schema versions are kept in lockstep across
+# state_io.DIAGNOSTICS_HEADER_VALUE, scoring.INTERVAL_SCORE_SCHEMA_VERSION,
+# and race_start.PRE_RACE_REFERENCE_SCHEMA_VERSION. Bump ALL THREE together.
 DIAGNOSTICS_HEADER_KEY = "track_runner_diagnostics"
-DIAGNOSTICS_HEADER_VALUE = 3
+DIAGNOSTICS_HEADER_VALUE = 4
 
 # header key and version for geometry cache (kept on in-memory dicts
 # for compatibility with existing call sites; not a JSON on-disk
@@ -331,7 +334,7 @@ def load_diagnostics(path: str) -> dict:
 	Function name is retained for callsite compatibility.
 
 	Returns an empty structure if the file does not exist. Accepts
-	legacy header values `2` and `3` and returns a v3-shaped dict.
+	legacy header values `2`, `3`, and current `4`; returns a v4-shaped dict.
 
 	Args:
 		path: Path to the interval_scores.json (or legacy
@@ -343,7 +346,7 @@ def load_diagnostics(path: str) -> dict:
 
 	Raises:
 		RuntimeError: If the file exists but the header version is not
-			in (2, 3).
+			in (2, 3, 4).
 	"""
 	# return empty structure if file does not exist
 	if not os.path.isfile(path):
@@ -352,31 +355,49 @@ def load_diagnostics(path: str) -> dict:
 		data = json.load(fh)
 	if not isinstance(data, dict):
 		raise RuntimeError(f"diagnostics file did not parse as a mapping: {path}")
-	# validate the header key and version: accept both v2 and v3
+	# validate the header key and version: accept v2, v3, and v4
 	header_val = data.get(DIAGNOSTICS_HEADER_KEY)
-	if header_val not in (2, 3):
+	if header_val not in (2, 3, 4):
 		raise RuntimeError(
 			f"diagnostics file header mismatch in {path}: "
-			f"expected {DIAGNOSTICS_HEADER_KEY} in (2, 3), got {header_val}"
+			f"expected {DIAGNOSTICS_HEADER_KEY} in (2, 3, 4), got {header_val}"
 		)
-	# reconstruct interval_score sub-dict from flat on-disk fields (v2 format)
-	# write_solver_diagnostics flattens interval_score to top-level keys,
-	# but consumers expect iv["interval_score"]["confidence"] etc.
-	if header_val == 2:
-		_score_keys = (
-			"agreement_score", "identity_score", "competitor_margin",
-			"confidence", "failure_reasons",
-		)
-		for iv in data.get("intervals", []):
-			if not isinstance(iv, dict):
-				continue
-			if "interval_score" not in iv:
-				score = {}
-				for key in _score_keys:
-					if key in iv:
-						score[key] = iv[key]
-				iv["interval_score"] = score
-	# v3 format stores interval_score as nested dict, no flattening needed
+	# migrate from flat v2 shape to nested v3 shape unconditionally based on
+	# presence of interval_score key (not header version). Header v2 or v3 are
+	# both accepted; migration fires when shape is legacy-flat.
+	for iv in data.get("intervals", []):
+		if not isinstance(iv, dict):
+			continue
+		if "interval_score" not in iv:
+			# v2 flat-shape entry missing nested interval_score.
+			# Migrate to v3 nested structure, preserving numeric fields and
+			# flagging the migration in failure_reasons. Do not silently
+			# fabricate confidence_tier; raise if required flat keys are absent.
+			if "agreement_score" not in iv:
+				# real v2 entries always wrote agreement_score; its absence
+				# signals a stale/corrupt file. Do not allow the load to hide it.
+				start_frame = iv.get("start_frame", "?")
+				end_frame = iv.get("end_frame", "?")
+				raise RuntimeError(
+					f"stale diagnostics for interval ({start_frame}, {end_frame}); "
+					f"delete {path} and re-solve"
+				)
+			iv["interval_score"] = {
+				"agreement": float(iv["agreement_score"]),
+				"velocity_consistency": 0.0,
+				"size_consistency": 0.0,
+				"motion_quality": 0.0,
+				"occlusion_fraction": 0.0,
+				"confidence_tier": "legacy_migrated",
+				"failure_reasons": list(iv.get("failure_reasons", [])) + ["legacy_schema"],
+				"warning_flags": [],
+			}
+	# synthesize pre_race_reference if missing (legacy v2/v3 files do not have it).
+	# v2 and v3 files are shape-migrated to v4 in-memory; missing key -> None.
+	if "pre_race_reference" not in data:
+		data["pre_race_reference"] = None
+	# drop legacy race_phase block; v4 does not use it. discard if present from v3.
+	data.pop("race_phase", None)
 	return data
 
 
@@ -856,40 +877,38 @@ def write_solver_diagnostics(
 			"start_s": round(iv["start_frame"] / max(1.0, fps), 3),
 			"end_s": round(iv["end_frame"] / max(1.0, fps), 3),
 		}
-		# detect analytical (v3) vs legacy (v2) interval scores
+		# v3-only writer: always emit the nested interval_score shape.
+		# When the input score dict lacks confidence_tier (legacy v2 producer
+		# or any non-analytical caller), synthesize an "unsolved" v3 entry
+		# that preserves any present numeric fields and flags the legacy
+		# origin in failure_reasons. The next solve/refine will overwrite it.
 		if "confidence_tier" in score:
-			# analytical interval_score_v2 format
-			entry["interval_score"] = {
-				"agreement": round(float(score.get("agreement", 0.0)), 4),
-				"velocity_consistency": round(
-					float(score.get("velocity_consistency", 0.0)), 4,
-				),
-				"size_consistency": round(
-					float(score.get("size_consistency", 0.0)), 4,
-				),
-				"motion_quality": round(
-					float(score.get("motion_quality", 0.0)), 4,
-				),
-				"occlusion_fraction": round(
-					float(score.get("occlusion_fraction", 0.0)), 4,
-				),
-				"confidence_tier": score.get("confidence_tier", "low"),
-				"failure_reasons": score.get("failure_reasons", []),
-				"warning_flags": score.get("warning_flags", []),
-			}
+			confidence_tier = score.get("confidence_tier", "low")
+			failure_reasons = list(score.get("failure_reasons", []))
 		else:
-			# legacy v2 format (flattened fields for backward compat)
-			entry["agreement_score"] = round(
-				float(score.get("agreement_score", 0.0)), 4,
-			)
-			entry["identity_score"] = round(
-				float(score.get("identity_score", 0.0)), 4,
-			)
-			entry["competitor_margin"] = round(
-				float(score.get("competitor_margin", 0.0)), 4,
-			)
-			entry["confidence"] = score.get("confidence", "low")
-			entry["failure_reasons"] = score.get("failure_reasons", [])
+			confidence_tier = "unsolved"
+			# extend (do not replace) any prior failure reasons
+			failure_reasons = list(score.get("failure_reasons", [])) + ["legacy_schema"]
+		# v2 agreement_score maps 1:1 to v3 agreement; prefer v3 when both present
+		agreement = float(score.get("agreement", score.get("agreement_score", 0.0)))
+		entry["interval_score"] = {
+			"agreement": round(agreement, 4),
+			"velocity_consistency": round(
+				float(score.get("velocity_consistency", 0.0)), 4,
+			),
+			"size_consistency": round(
+				float(score.get("size_consistency", 0.0)), 4,
+			),
+			"motion_quality": round(
+				float(score.get("motion_quality", 0.0)), 4,
+			),
+			"occlusion_fraction": round(
+				float(score.get("occlusion_fraction", 0.0)), 4,
+			),
+			"confidence_tier": confidence_tier,
+			"failure_reasons": failure_reasons,
+			"warning_flags": list(score.get("warning_flags", [])),
+		}
 		intervals_summary.append(entry)
 
 	# preserve cyclical prior if detected
@@ -912,16 +931,23 @@ def write_solver_diagnostics(
 		"intervals": intervals_summary,
 		"cyclical_prior": cyclical_safe,
 	}
-	# preserve race phase detection if present
-	race_phase = diagnostics.get("race_phase")
-	if race_phase is not None:
-		diag_out["race_phase"] = {
-			"race_start_frame": race_phase.get("race_start_frame"),
-			"race_start_s": race_phase.get("race_start_s"),
-			"confidence": round(float(race_phase.get("confidence", 0.0)), 4),
-			"method": race_phase.get("method", ""),
-			"threshold_used": round(float(race_phase.get("threshold_used", 0.0)), 4),
-			"debounce_frames": int(race_phase.get("debounce_frames", 0)),
+	# serialize pre_race_reference if present. The top-level presence check is
+	# an intentional optional (callers that do not have pre-race data simply
+	# omit the key). All inner keys are required by compute_pre_race_reference;
+	# accessing them directly fails loud on a malformed reference rather than
+	# writing zeros silently.
+	pre_race_reference = diagnostics.get("pre_race_reference")
+	if pre_race_reference is not None:
+		diag_out["pre_race_reference"] = {
+			"race_start_frame": int(pre_race_reference["race_start_frame"]),
+			"torso_w": round(float(pre_race_reference["torso_w"]), 4),
+			"torso_h": round(float(pre_race_reference["torso_h"]), 4),
+			"scene_anchor_x": round(float(pre_race_reference["scene_anchor_x"]), 4),
+			"scene_anchor_y": round(float(pre_race_reference["scene_anchor_y"]), 4),
+			"source_frame_indices": list(pre_race_reference["source_frame_indices"]),
+			"source_count": int(pre_race_reference["source_count"]),
+			"method": pre_race_reference["method"],
+			"warnings": list(pre_race_reference["warnings"]),
 		}
 	# preserve video_identity if provided in the input diagnostics
 	video_identity = diagnostics.get("video_identity")

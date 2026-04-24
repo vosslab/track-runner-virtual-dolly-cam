@@ -74,3 +74,19 @@ def test_rank_confidence_tier_orders_ties():
 	)
 	assert sorted_list[0] is iv_low
 	assert sorted_list[-1] is iv_high
+
+
+#============================================
+def test_classify_severity_skips_pre_race():
+	"""classify_interval_severity returns None for pre_race intervals.
+
+	Pre-race intervals are synthesized with perfect consistency metrics
+	and are not quality-ranked. The function must return None to signal
+	callers to skip severity classification for pre_race tiers.
+	"""
+	pre_race_interval = _make_interval(
+		agreement=1.0,
+		confidence_tier="pre_race",
+	)
+	result = review.classify_interval_severity(pre_race_interval, fps=30.0)
+	assert result is None

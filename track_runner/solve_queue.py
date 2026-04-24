@@ -36,6 +36,7 @@ import rich.progress
 import key_input
 import solver_workers
 import interval_fingerprint
+import race_start
 
 
 #============================================
@@ -63,6 +64,10 @@ class WorkPlan:
 			usable-seed pairs.
 		reused_count: len(cached_results_by_idx).
 		pending_count: len(pending_pair_indices).
+		phase_by_idx: Dict mapping pair_idx to phase string:
+			"pre_race" if end_frame <= bracket_low,
+			"bracket" if (start_frame, end_frame) match bracket endpoints,
+			"post_race" otherwise. Empty when race_start_bracket is None.
 	"""
 	usable_seeds_sorted: list
 	expected_fingerprints: list
@@ -72,16 +77,19 @@ class WorkPlan:
 	total_intervals: int
 	reused_count: int
 	pending_count: int
+	phase_by_idx: dict = dataclasses.field(default_factory=dict)
 
 
 #============================================
-@dataclasses.dataclass(frozen=True)
+@dataclasses.dataclass
 class ExecutionContext:
-	"""Immutable run configuration for `execute_interval_work`.
+	"""Run configuration for `execute_interval_work`.
 
-	Groups the run-invariant state so the execute signature stays small.
-	No callbacks, no mutable accumulators, no progress-bar handles --
-	those go through explicit kwargs or stay local to the call.
+	Mostly-immutable: all fields except `pre_race_reference` are set at
+	construction and not written again. `pre_race_reference` is populated
+	mid-execution by `execute_interval_work` once Stage 2 produces the
+	final race_start_frame, then read by the pre-race synthesis loop.
+	No callbacks, no cross-interval accumulators, no progress-bar handles.
 
 	Fields:
 		reader: VideoReader open on the input video. In-process path
@@ -99,6 +107,12 @@ class ExecutionContext:
 		video_path: Input video path; workers use it to reopen their own
 			readers across the process boundary.
 		debug: Debug flag; gates per-interval debug lines.
+		race_start_bracket: Optional tuple (low_frame, high_frame) for
+			race-start bracket classification. None means no pre-race
+			classification (legacy refine path).
+		pre_race_reference: Dict from compute_pre_race_reference or None.
+			Initially None; populated by execute_interval_work after the
+			bracket interval is solved and Stage 2 fine detection runs.
 	"""
 	reader: object
 	scene_transform: object
@@ -109,12 +123,15 @@ class ExecutionContext:
 	num_workers: int
 	video_path: str
 	debug: bool
+	race_start_bracket: tuple = None
+	pre_race_reference: dict = None
 
 
 #============================================
 def plan_interval_work(
 	seeds: list,
 	prior_intervals: dict = None,
+	race_start_bracket: tuple = None,
 ) -> WorkPlan:
 	"""Compute the WorkPlan for a seed list + optional cache.
 
@@ -122,11 +139,19 @@ def plan_interval_work(
 	`interval_solver.solve_all_intervals` and `cli._mode_refine` so solve
 	mode and refine mode see the same partition.
 
+	When race_start_bracket is provided, intervals are classified by phase:
+	pre-race if end_frame <= bracket_low (inclusive, so the interval ending
+	exactly matching bracket endpoints, post-race otherwise. Classification
+	is stored in the plan for execute_interval_work to dispatch properly.
+
 	Args:
 		seeds: Raw seed list from the seeds file.
 		prior_intervals: Optional fingerprint->result dict (the
 			solved_intervals cache). None or empty means every interval
 			is pending.
+		race_start_bracket: Optional tuple (low_frame, high_frame) for
+			race-start bracket. When None, no phase classification happens
+			(legacy refine mode without bracket).
 
 	Returns:
 		A frozen `WorkPlan`. When fewer than 2 usable seeds exist, all
@@ -149,6 +174,7 @@ def plan_interval_work(
 			total_intervals=0,
 			reused_count=0,
 			pending_count=0,
+			phase_by_idx={},
 		)
 		return empty_plan
 	# one fingerprint walk: feeds the cache partition AND the orphan
@@ -157,9 +183,14 @@ def plan_interval_work(
 	expected_fingerprints = []
 	cached_results_by_idx = {}
 	pending_pair_indices = []
+	phase_by_idx = {}
+	bracket_low, bracket_high = (race_start_bracket if race_start_bracket else
+		(None, None))
 	for pair_idx in range(total_intervals):
+		seed_start = usable_sorted[pair_idx]
+		seed_end = usable_sorted[pair_idx + 1]
 		fingerprint = interval_fingerprint.compute_interval_fingerprint(
-			usable_sorted[pair_idx], usable_sorted[pair_idx + 1],
+			seed_start, seed_end,
 		)
 		expected_fingerprints.append(fingerprint)
 		# cache-hit branch: remember the cached payload so execute can
@@ -168,6 +199,20 @@ def plan_interval_work(
 			cached_results_by_idx[pair_idx] = prior_intervals[fingerprint]
 		else:
 			pending_pair_indices.append(pair_idx)
+		# phase classification: only when bracket is present.
+		# end_frame is inclusive (interval_solver convention). bracket_low
+		# is the last pre-race seed frame, so intervals ending AT bracket_low
+		# are fully pre-race (all frames < final race_start_frame which lies
+		# inside the bracket). Use <= to include that boundary interval.
+		if bracket_low is not None:
+			start_frame = int(seed_start["frame_index"])
+			end_frame = int(seed_end["frame_index"])
+			if end_frame <= bracket_low:
+				phase_by_idx[pair_idx] = "pre_race"
+			elif start_frame == bracket_low and end_frame == bracket_high:
+				phase_by_idx[pair_idx] = "bracket"
+			else:
+				phase_by_idx[pair_idx] = "post_race"
 	# orphan prune: keep only keys that match a current fingerprint.
 	# Empty input produces empty output; we never fabricate keys.
 	if prior_intervals:
@@ -186,6 +231,7 @@ def plan_interval_work(
 		total_intervals=total_intervals,
 		reused_count=len(cached_results_by_idx),
 		pending_count=len(pending_pair_indices),
+		phase_by_idx=phase_by_idx,
 	)
 	return plan
 
@@ -249,6 +295,7 @@ def _format_interval_result(result: dict, fps: float) -> str:
 		)
 	_confidence_labels = {
 		"high": "TRUST", "good": "GOOD", "fair": "FAIR", "low": "WEAK",
+		"pre_race": "PRE-RACE",
 	}
 	tag = _confidence_labels.get(confidence, "WEAK")
 	if confidence in ("high", "good"):
@@ -276,6 +323,83 @@ def _print_interval_result_rich(
 	clobbering the live progress bar.
 	"""
 	progress.console.print(_format_interval_result(result, fps))
+
+
+#============================================
+def _solve_pre_race_interval(
+	seed_start: dict,
+	seed_end: dict,
+	pre_race_reference: dict,
+	scene_transform,
+	fps: float,
+) -> dict:
+	"""Synthesize a pre-race interval result from the reference.
+
+	Computes frames [seed_start.frame_index, seed_end.frame_index] using
+	the averaged torso dimensions and scene-anchored center from
+	pre_race_reference. No FWD/BWD propagation runs.
+
+	Args:
+		seed_start: Start seed dict.
+		seed_end: End seed dict.
+		pre_race_reference: Dict from compute_pre_race_reference.
+		scene_transform: SceneTransform for pixel-space back-projection.
+		fps: Video frame rate.
+
+	Returns:
+		Interval result dict matching the analytical shape per plan §5b:
+		start_frame, end_frame, trajectory, interval_score, fingerprint, source.
+	"""
+	import interval_fingerprint as ifp
+
+	start_frame = int(seed_start["frame_index"])
+	end_frame = int(seed_end["frame_index"])
+	scene_anchor_x = pre_race_reference["scene_anchor_x"]
+	scene_anchor_y = pre_race_reference["scene_anchor_y"]
+	torso_w = pre_race_reference["torso_w"]
+	torso_h = pre_race_reference["torso_h"]
+
+	# Build trajectory: one frame_state per frame in [start_frame, end_frame]
+	trajectory = []
+	for t in range(start_frame, end_frame + 1):
+		# Back-project scene-anchored position to pixel space at this frame
+		cx_t, cy_t = scene_transform.scene_to_pixel(
+			t, scene_anchor_x, scene_anchor_y
+		)
+		frame_state = {
+			"cx": cx_t,
+			"cy": cy_t,
+			"w": torso_w,
+			"h": torso_h,
+			"conf": 1.0,
+			"source": "pre_race",
+		}
+		trajectory.append(frame_state)
+
+	# Build interval_score with pre_race tier and consistency=1.0
+	interval_score = {
+		"agreement": 1.0,
+		"velocity_consistency": 1.0,
+		"size_consistency": 1.0,
+		"motion_quality": 1.0,
+		"occlusion_fraction": 0.0,
+		"confidence_tier": "pre_race",
+		"failure_reasons": [],
+		"warning_flags": list(pre_race_reference["warnings"]),
+	}
+
+	# Compute fingerprint for cache consistency
+	fingerprint = ifp.compute_interval_fingerprint(seed_start, seed_end)
+
+	result = {
+		"start_frame": start_frame,
+		"end_frame": end_frame,
+		"trajectory": trajectory,
+		"interval_score": interval_score,
+		"fingerprint": fingerprint,
+		"source": "pre_race_reference",
+	}
+	return result
 
 
 #============================================
@@ -324,13 +448,21 @@ def execute_interval_work(
 	expected_fingerprints = plan.expected_fingerprints
 	pending_pair_indices = plan.pending_pair_indices
 	reused_count = plan.reused_count
-	pending_total = plan.pending_count
+	phase_by_idx = plan.phase_by_idx
 
 	# pre-allocate so workers fill by index while the main process
 	# preserves seed order.
 	interval_results = [None] * total_intervals
 	seq_frame_counter = [0]
 	solved_count = 0
+
+	# separate pending indices by phase. Pre-race intervals are solved
+	# after the bracket (and all post-race) intervals complete, using
+	# the computed pre_race_reference.
+	pending_normal = [idx for idx in pending_pair_indices
+		if phase_by_idx.get(idx) != "pre_race"]
+	pending_pre_race = [idx for idx in pending_pair_indices
+		if phase_by_idx.get(idx) == "pre_race"]
 
 	# replay cache hits: the pre-parallel serial loop fired
 	# on_interval_complete uniformly after every append, and
@@ -342,16 +474,23 @@ def execute_interval_work(
 
 	# decide execution mode. in-process when the user asked for one
 	# worker, or when there is very little work to amortize pool setup
-	# cost (spawn + imports + initializer payload copy).
-	use_pool = context.num_workers >= 2 and pending_total >= 4
+	# cost (spawn + imports + initializer payload copy). Note: pending_total
+	# includes both normal and pre-race, but pre-race are fast and solved
+	# after normal, so decision is based on normal work only.
+	use_pool = context.num_workers >= 2 and len(pending_normal) >= 4
 
 	# announce work scope after cache partition so the number reflects
-	# actual solves, not total intervals.
-	if pending_total == 0:
+	# actual solves, not total intervals. Note: pending_normal does not
+	# include pre-race; those are synthesized fast after Stage 2.
+	pending_normal_total = len(pending_normal)
+	if pending_normal_total == 0 and len(pending_pre_race) == 0:
 		print(f"  all {total_intervals} intervals cached; nothing to solve "
 			f"(analytical mode)")
+	elif pending_normal_total == 0 and len(pending_pre_race) > 0:
+		print(f"  all normal intervals cached; {len(pending_pre_race)} pre-race "
+			f"intervals will be synthesized")
 	elif reused_count > 0:
-		print(f"  solving {pending_total} new intervals, "
+		print(f"  solving {pending_normal_total} new intervals, "
 			f"{reused_count} cached (analytical mode)...")
 	else:
 		print(f"  solving {total_intervals} intervals (analytical mode)...")
@@ -361,7 +500,7 @@ def execute_interval_work(
 	# between-pass metrics (overlap) from within-track smoothness metrics
 	# (vel_smooth, size_smooth), which the shorter labels cannot convey
 	# on their own.
-	if pending_total > 0:
+	if pending_normal_total > 0:
 		print("  columns (all in [0,1], higher=better):")
 		print("    overlap      = FWD/BWD Dice overlap (agreement between passes)")
 		print("    vel_smooth   = within-track velocity smoothness")
@@ -370,14 +509,37 @@ def execute_interval_work(
 
 	# pure cache-hit fast-exit: no bar, no pool. Post-loop summary and
 	# accounting assertion still run below.
-	if pending_total > 0:
-		# frame-weighted ETA: sum span across cache-miss intervals using
-		# the same arithmetic that advances seq_frame_counter on
-		# completion, so the counter reaches exactly total_frames and ETA
-		# does not drift. Fallback to interval-unit ETA if the denominator
-		# is degenerate (not expected in practice).
+	# Hoist progress and _accept so pre-race synthesis can use them
+	# whether or not pending_normal_total > 0.
+	progress = None
+	task = None
+
+	def _accept(pair_idx: int, fingerprint: str, result: dict) -> None:
+		nonlocal solved_count
+		interval_results[pair_idx] = result
+		solved_count += 1
+		if on_interval_solved is not None:
+			on_interval_solved(fingerprint, result)
+		# always print per-completion summary so long runs have
+		# visible progress beyond the bar. goes through the
+		# rich console so the bar rendering is preserved.
+		if progress is not None:
+			_print_interval_result_rich(result, context.fps, progress)
+		# on_interval_complete fires in completion order, not
+		# seed order. Consumers needing seed order read from
+		# interval_results after the call returns.
+		if on_interval_complete is not None:
+			on_interval_complete(result)
+		n_frames = result["end_frame"] - result["start_frame"]
+		seq_frame_counter[0] += n_frames
+		if progress is not None and task is not None:
+			progress.update(task, advance=1)
+
+	if pending_normal_total > 0:
+		# frame-weighted ETA: sum span across cache-miss normal intervals.
+		# pre-race intervals are fast and do not contribute significantly to ETA.
 		total_frames = 0
-		for pair_idx in pending_pair_indices:
+		for pair_idx in pending_normal:
 			seed_start = usable_seeds_sorted[pair_idx]
 			seed_end = usable_seeds_sorted[pair_idx + 1]
 			total_frames += (
@@ -400,38 +562,17 @@ def execute_interval_work(
 			# bar is sized to cache-miss work only. the cache-hit count
 			# was already printed by cli (refine: N of M need solving).
 			if reused_count > 0:
-				desc = f"  solving {pending_total} new intervals"
+				desc = f"  solving {pending_normal_total} new intervals"
 			else:
 				desc = "  solving intervals"
-			task = progress.add_task(desc, total=pending_total)
-
-			# main-process result-accept closure shared by both paths.
-			# captures interval_results and counters so the pool path
-			# and in-process path converge on identical bookkeeping.
-			def _accept(pair_idx: int, fingerprint: str, result: dict) -> None:
-				nonlocal solved_count
-				interval_results[pair_idx] = result
-				solved_count += 1
-				if on_interval_solved is not None:
-					on_interval_solved(fingerprint, result)
-				# always print per-completion summary so long runs have
-				# visible progress beyond the bar. goes through the
-				# rich console so the bar rendering is preserved.
-				_print_interval_result_rich(result, context.fps, progress)
-				# on_interval_complete fires in completion order, not
-				# seed order. Consumers needing seed order read from
-				# interval_results after the call returns.
-				if on_interval_complete is not None:
-					on_interval_complete(result)
-				n_frames = result["end_frame"] - result["start_frame"]
-				seq_frame_counter[0] += n_frames
-				progress.update(task, advance=1)
+			task = progress.add_task(desc, total=pending_normal_total)
 
 			if not use_pool:
 				# in-process path: identical to the pre-parallel loop.
 				# Used for num_workers == 1 or for tiny runs where pool
-				# setup would dominate.
-				for pair_idx in pending_pair_indices:
+				# setup would dominate. Solves only normal (non-pre-race)
+				# intervals here; pre-race is handled after bracket completes.
+				for pair_idx in pending_normal:
 					if run_control is not None and run_control.quit_requested:
 						break
 					if key_reader is not None and run_control is not None:
@@ -458,9 +599,10 @@ def execute_interval_work(
 					)
 					_accept(pair_idx, expected_fingerprints[pair_idx], result)
 			else:
-				# pool path: dispatch cache-miss intervals to workers,
+				# pool path: dispatch cache-miss normal intervals to workers,
 				# poll the key reader between completions, aggregate
 				# results by pair_idx (completion order != seed order).
+				# Pre-race intervals are handled separately after this completes.
 				with solver_workers.make_pool(
 					num_workers=context.num_workers,
 					video_path=context.video_path,
@@ -472,7 +614,7 @@ def execute_interval_work(
 					debug=context.debug,
 				) as pool:
 					future_to_idx = {}
-					for pair_idx in pending_pair_indices:
+					for pair_idx in pending_normal:
 						seed_start = usable_seeds_sorted[pair_idx]
 						seed_end = usable_seeds_sorted[pair_idx + 1]
 						fut = pool.submit(
@@ -514,6 +656,77 @@ def execute_interval_work(
 							pair_idx, fingerprint, result = fut.result()
 							_accept(pair_idx, fingerprint, result)
 
+	# ============ Stage 2: Fine detection and pre-race synthesis ============
+	# If a bracket was provided and we have pre-race intervals to solve,
+	# now is the time to run Stage 2 (fine detection) and synthesize pre-race results.
+	if context.race_start_bracket is not None and len(pending_pre_race) > 0:
+		bracket_low, bracket_high = context.race_start_bracket
+
+		# Find the bracket interval's result. It must be in interval_results
+		# (either cached or just solved). The bracket interval matches
+		# these seed frames exactly.
+		bracket_result = None
+		for pair_idx in range(total_intervals):
+			if (int(usable_seeds_sorted[pair_idx]["frame_index"]) == bracket_low and
+				int(usable_seeds_sorted[pair_idx + 1]["frame_index"]) == bracket_high):
+				bracket_result = interval_results[pair_idx]
+				break
+
+		if bracket_result is None:
+			raise RuntimeError(
+				f"internal error: bracket interval [{bracket_low}, {bracket_high}] "
+				f"not found in results"
+			)
+
+		# Stage 2: Fine detection on bracket trajectory
+		# If this raises, the exception propagates and the assertion below
+		# is skipped, so the real error surfaces instead of an accounting failure.
+		stage_2_raised = False
+		try:
+			bracket_trajectory = bracket_result["trajectory"]
+			final_race_start_frame = race_start.detect_race_start_in_bracket(
+				bracket_trajectory, context.scene_transform, context.fps,
+				bracket_start_frame=bracket_low
+			)
+
+			# Compute pre_race_reference now that we have the final race_start_frame
+			pre_race_reference = race_start.compute_pre_race_reference(
+				context.all_seeds, final_race_start_frame, context.scene_transform
+			)
+
+			# Store in context so interval_solver can access it
+			context.pre_race_reference = pre_race_reference
+
+			# Now solve pre-race intervals using the reference
+			for pair_idx in pending_pre_race:
+				if run_control is not None and run_control.quit_requested:
+					break
+				if key_reader is not None and run_control is not None:
+					ch = key_reader.poll()
+					key_input.handle_key(ch, run_control, key_reader, progress if pending_normal_total > 0 else None)
+				if run_control is not None and run_control.quit_requested:
+					break
+
+				seed_start = usable_seeds_sorted[pair_idx]
+				seed_end = usable_seeds_sorted[pair_idx + 1]
+				start_frame = int(seed_start["frame_index"])
+				end_frame = int(seed_end["frame_index"])
+
+				if context.debug:
+					print(f"  synthesizing pre-race interval {pair_idx + 1}/{total_intervals} "
+						f"(frames {start_frame}-{end_frame})")
+
+				result = _solve_pre_race_interval(
+					seed_start, seed_end, pre_race_reference,
+					context.scene_transform, context.fps
+				)
+				_accept(pair_idx, expected_fingerprints[pair_idx], result)
+		except Exception:
+			# If Stage 2 raises, mark so the accounting assertion below
+			# does not mask the real exception. Let the exception propagate.
+			stage_2_raised = True
+			raise
+
 	# post-loop summary: make cache behavior visible on stdout
 	print(f"  solver: reused {reused_count}, solved {solved_count} "
 		f"of {total_intervals}")
@@ -528,8 +741,9 @@ def execute_interval_work(
 	# refine-mode invariant: every pair iteration must land in exactly
 	# one branch (reuse or solve). Guarded on the quit path because an
 	# interrupted loop legitimately has reused_count + solved_count <
-	# total_intervals.
-	if run_control is None or not run_control.quit_requested:
+	# total_intervals. Also guarded on Stage 2 exception path, because
+	# Stage 2 exceptions should propagate, not be masked by accounting assertions.
+	if (run_control is None or not run_control.quit_requested) and not stage_2_raised:
 		assert reused_count + solved_count == total_intervals, (
 			f"reuse/solve accounting drifted: "
 			f"reused={reused_count} solved={solved_count} "

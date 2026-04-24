@@ -132,14 +132,21 @@ def classify_interval_severity(interval: dict, fps: float) -> str:
 	failure_reasons. For optical-flow (legacy), reconstructs from
 	agreement_score and margin.
 
+	Pre-race intervals are synthesized geometry with perfect consistency
+	metrics and are not quality-ranked; returns None for pre_race tiers
+	so callers can skip severity classification.
+
 	Args:
 		interval: Interval dict with interval_score sub-dict, start_frame, end_frame.
 		fps: Video frame rate for duration calculation.
 
 	Returns:
-		"high", "medium", or "low" severity string.
+		"high", "medium", or "low" severity string, or None for pre-race intervals.
 	"""
 	score = interval["interval_score"]
+	# Pre-race intervals are not quality-ranked; skip severity classification
+	if score.get("confidence_tier") == "pre_race":
+		return None
 	start_frame = int(interval["start_frame"])
 	end_frame = int(interval["end_frame"])
 	interval_frames = end_frame - start_frame
@@ -208,7 +215,7 @@ def classify_interval_severity(interval: dict, fps: float) -> str:
 
 
 # Ascending sort: lower agreement sorts first, confidence tier
-# breaks ties.
+# breaks ties. pre_race is not a quality tier and sorts last.
 _CONFIDENCE_RANK = {"low": 0, "fair": 1, "good": 2, "high": 3}
 
 
@@ -218,6 +225,7 @@ def rank_key(interval: dict) -> tuple:
 
 	Sort ascending: the interval with the lowest agreement sorts
 	first; confidence tier breaks ties (low < fair < good < high).
+	Pre-race intervals are a separate class and sort to the end.
 
 	Args:
 		interval: Interval dict with 'interval_score' sub-dict
@@ -230,6 +238,9 @@ def rank_key(interval: dict) -> tuple:
 	score = interval["interval_score"]
 	agreement = float(score.get("agreement", 0.0))
 	conf = score.get("confidence_tier", "low")
+	# pre_race is not on the quality axis; sort it to the end
+	if conf == "pre_race":
+		return (float('inf'), 999)
 	return (agreement, _CONFIDENCE_RANK[conf])
 
 
@@ -288,6 +299,11 @@ def identify_weak_spans(diagnostics: dict) -> list:
 		end_frame = int(interval["end_frame"])
 		score = interval["interval_score"]
 		confidence = get_confidence_label(score)
+
+		# pre_race intervals are synthesized, not tracked; skip flagging
+		if confidence == "pre_race":
+			continue
+
 		failure_reasons = list(score.get("failure_reasons", []))
 
 		# check for occlusion frames in the blended interval path
@@ -419,12 +435,18 @@ def generate_refinement_targets(
 
 	# build a set of interval frame ranges that pass severity filter
 	# so we can exclude suggestions from intervals below threshold
+	# pre_race intervals are excluded from severity filtering
 	min_rank = _SEVERITY_RANK.get(severity, 0) if severity is not None else 0
 	excluded_intervals = set()
 	if severity is not None:
 		for idx, iv in enumerate(intervals):
 			score = iv["interval_score"]
-			if get_confidence_label(score) in ("high", "good"):
+			confidence = get_confidence_label(score)
+			# pre_race intervals never appear in severity-filtered suggestions
+			if confidence == "pre_race":
+				excluded_intervals.add(idx)
+				continue
+			if confidence in ("high", "good"):
 				continue
 			iv_severity = classify_interval_severity(iv, fps)
 			if _SEVERITY_RANK.get(iv_severity, 0) < min_rank:
@@ -593,8 +615,14 @@ def rank_target_frames_by_severity(
 			agreement = 0.0
 			margin = 0.0
 		else:
+			# pre_race intervals are synthesized and not on the quality axis
+			conf_tier = best_score.get("confidence_tier")
+			if conf_tier == "pre_race":
+				# synthesized intervals sort to the end with a sentinel score
+				agreement = float('inf')
+				margin = 0.0
 			# v3 analytical or v2 legacy metrics
-			if "confidence_tier" in best_score:
+			elif "confidence_tier" in best_score:
 				agreement = float(best_score.get("agreement", 0.0))
 				margin = float(best_score.get("velocity_consistency", 0.0))
 			else:
@@ -658,25 +686,29 @@ def format_review_summary(diagnostics: dict) -> str:
 	lines.append("=== Track Runner Review Summary ===")
 	lines.append(f"Intervals: {len(intervals)}")
 
-	# count intervals by confidence tier
+	# count intervals by confidence tier (pre_race as separate class)
 	from collections import Counter
 	tier_counts = Counter(
 		get_confidence_label(iv["interval_score"])
 		for iv in intervals
 	)
 	need_seed = tier_counts.get("low", 0) + tier_counts.get("fair", 0)
+	pre_race_count = tier_counts.get("pre_race", 0)
+	analytic_count = len(intervals) - pre_race_count
 	lines.append(
 		f"Confidence tiers: "
 		f"{tier_counts.get('high', 0)} high, "
 		f"{tier_counts.get('good', 0)} good, "
 		f"{tier_counts.get('fair', 0)} fair, "
 		f"{tier_counts.get('low', 0)} low"
+		f"{f' ({pre_race_count} pre-race)' if pre_race_count > 0 else ''}"
 	)
-	lines.append(f"Need seeds: {need_seed} / {len(intervals)}")
+	lines.append(f"Need seeds: {need_seed} / {analytic_count}")
 	lines.append("")
 
 	_confidence_labels = {
 		"high": "TRUST", "good": "GOOD", "fair": "FAIR", "low": "WEAK",
+		"pre_race": "SYNTH",
 	}
 	for iv in intervals:
 		start_frame = int(iv["start_frame"])
@@ -688,7 +720,10 @@ def format_review_summary(diagnostics: dict) -> str:
 
 		# format verdict label
 		tag = _confidence_labels.get(confidence, "WEAK")
-		if confidence in ("high", "good"):
+		if confidence == "pre_race":
+			# synthesized pre-race intervals: no failure reasons, just tag
+			verdict = f"[{tag}]"
+		elif confidence in ("high", "good"):
 			verdict = f"[{tag}]"
 		else:
 			reason_str = ", ".join(reasons) if reasons else "low_confidence"

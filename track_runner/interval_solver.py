@@ -19,7 +19,7 @@ import rich.measure
 # local repo modules
 import scoring
 import velocity_model
-import race_phases
+import race_start
 import solve_queue
 import interval_fingerprint
 
@@ -104,14 +104,14 @@ def _stamp_blob_coverage(
 
 #============================================
 class BlockBarColumn(rich.progress.ProgressColumn):
-	"""Progress bar column using block characters for visual prominence.
+	"""Progress bar column using ASCII progress bar characters.
 
-	Renders filled portion with full-block and remaining with light-shade.
-	Expands to fill available terminal width by querying terminal size.
+	Renders filled portion with # and remaining with -. Expands to fill
+	available terminal width by querying terminal size.
 	"""
-	# full block for completed, light shade for remaining
-	FILLED = "\u2588"
-	EMPTY = "\u2591"
+	# # for completed, - for remaining (ASCII-only per PYTHON_STYLE)
+	FILLED = "#"
+	EMPTY = "-"
 	# fixed overhead: task description + percentage + ETA/elapsed text + padding
 	# "  solving intervals" ~20 + "  50%" ~5 + "ETA 3:42  elapsed 1:15" ~24 + spaces ~10
 	_OTHER_COLUMNS_WIDTH = 60
@@ -1089,38 +1089,6 @@ def anchor_to_seeds(
 
 
 #============================================
-def _print_race_phase_summary(race_phase: dict) -> None:
-	"""Print a one-line race-start detection summary.
-
-	Race-start is the boundary that anchors the pre-race reference frames
-	per contract C2. Users should see the detected frame and its
-	confidence so they can spot mis-detections (noisy pre-race footage,
-	stationary warmups, zoom shifts) without digging into diagnostics
-	files.
-
-	Args:
-		race_phase: Dict from race_phases.detect_race_start with
-			race_start_frame, race_start_s, confidence, method,
-			threshold_used.
-	"""
-	start_frame = race_phase.get("race_start_frame")
-	if start_frame is None:
-		# detection failed -- most commonly the runner never becomes
-		# non-stationary in the clip, or the method hit no valid window
-		print(f"  race start: not detected "
-			f"(method={race_phase.get('method')}, "
-			f"confidence={race_phase.get('confidence', 0.0):.2f})")
-		return
-	start_s = race_phase.get("race_start_s")
-	confidence = race_phase.get("confidence", 0.0)
-	method = race_phase.get("method", "unknown")
-	threshold = race_phase.get("threshold_used")
-	thr_str = f"  T_min={threshold:.3f}" if threshold is not None else ""
-	print(f"  race start: frame {start_frame} ({start_s:.2f}s)  "
-		f"confidence={confidence:.2f}  method={method}{thr_str}")
-
-
-#============================================
 def solve_all_intervals(
 	reader: object,
 	seeds: list,
@@ -1197,10 +1165,20 @@ def solve_all_intervals(
 		)
 		all_seeds_scene.append((frame_index, sx, sy, sw, sh))
 
+	# Stage 1: Locate race-start bracket via seed-pair displacement.
+	# Raises RuntimeError if fewer than 2 usable seeds or degenerate cases.
+	race_start_bracket = race_start.locate_race_start_bracket(
+		seeds, scene_transform, fps
+	)
+	bracket_low, bracket_high = race_start_bracket
+
 	# plan_interval_work is the single source of truth for seed filter +
 	# fingerprint computation + cache partition. refine mode also calls
 	# it, so solve and refine agree on every cache key byte-for-byte.
-	plan = solve_queue.plan_interval_work(seeds, prior_intervals)
+	# Pass race_start_bracket for classification.
+	plan = solve_queue.plan_interval_work(
+		seeds, prior_intervals, race_start_bracket=race_start_bracket
+	)
 	if plan.total_intervals == 0:
 		print("  interval_solver: need at least 2 usable seeds to solve intervals")
 		return {"intervals": [], "trajectory": []}
@@ -1219,6 +1197,8 @@ def solve_all_intervals(
 		num_workers=num_workers,
 		video_path=video_path,
 		debug=debug,
+		race_start_bracket=race_start_bracket,
+		pre_race_reference=None,
 	)
 	interval_results = solve_queue.execute_interval_work(
 		plan, context,
@@ -1230,19 +1210,18 @@ def solve_all_intervals(
 
 	# stitch and finalize
 	trajectory = stitch_trajectories(interval_results)
-	# race_phase retained for diagnostics only; no downstream consumers
-	race_phase = race_phases.detect_race_start(trajectory, scene_transform, fps)
-	# surface race-start detection so the user can sanity-check the
-	# pre-race reference (contract C2) without opening diagnostics files
-	_print_race_phase_summary(race_phase)
-
 	trajectory = anchor_to_seeds(trajectory, seeds)
 	trajectory = _stamp_seed_confidence(trajectory, seeds)
 	trajectory = _apply_trajectory_erasure(trajectory, seeds, fps)
 
+	# Surface race-start detection so the user can sanity-check the
+	# pre-race reference (contract C2) without opening diagnostics files.
+	pre_race_reference = context.pre_race_reference
+	race_start.print_race_phase_summary(pre_race_reference)
+
 	output = {
 		"intervals": interval_results,
 		"trajectory": trajectory,
-		"race_phase": race_phase,
+		"pre_race_reference": pre_race_reference,
 	}
 	return output

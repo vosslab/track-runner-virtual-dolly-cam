@@ -187,7 +187,7 @@ def _parse_time_range(time_range_str: str | None) -> tuple | None:
 
 
 #============================================
-def _validate_diagnostics_confidence(diagnostics: dict) -> None:
+def _validate_diagnostics_confidence(diagnostics: dict, diag_path: str) -> None:
 	"""Check that all intervals have confidence data.
 
 	Raises RuntimeError if any interval is missing the confidence
@@ -195,8 +195,15 @@ def _validate_diagnostics_confidence(diagnostics: dict) -> None:
 
 	Args:
 		diagnostics: Dict with "intervals" key.
+		diag_path: Path to the diagnostics file (for error messages).
 	"""
 	for iv in diagnostics.get("intervals", []):
+		if "interval_score" not in iv:
+			start, end = iv.get("start_frame"), iv.get("end_frame")
+			raise RuntimeError(
+				f"stale diagnostics for interval ({start}, {end}); "
+				f"delete {diag_path} and re-solve"
+			)
 		score = iv["interval_score"]
 		# accept legacy "confidence" or analytical "confidence_tier"
 		if "confidence" not in score and "confidence_tier" not in score:
@@ -207,6 +214,33 @@ def _validate_diagnostics_confidence(diagnostics: dict) -> None:
 
 
 #============================================
+def _partition_intervals_by_validity(intervals_list: list) -> tuple:
+	"""Partition intervals into valid and stale based on score structure.
+
+	Valid intervals have nested interval_score with confidence_tier.
+	Stale intervals are missing interval_score or confidence_tier.
+
+	Args:
+		intervals_list: List of interval dicts.
+
+	Returns:
+		(valid_intervals, stale_count) where valid_intervals is a filtered list
+		and stale_count is the number of intervals excluded.
+	"""
+	valid_intervals = []
+	stale_count = 0
+	for iv in intervals_list:
+		if "interval_score" not in iv:
+			stale_count += 1
+			continue
+		score = iv["interval_score"]
+		if "confidence_tier" not in score and "confidence" not in score:
+			stale_count += 1
+			continue
+		valid_intervals.append(iv)
+	return (valid_intervals, stale_count)
+
+
 def _ensure_target_diagnostics(
 	args: argparse.Namespace,
 	cfg: dict,
@@ -222,6 +256,10 @@ def _ensure_target_diagnostics(
 	empty, or stale, this helper runs a fresh solve so the interactive
 	target workflow does not require a separate manual solve step.
 
+	In target mode, stale intervals are skipped with a warning rather than
+	requiring a full re-solve. In other modes (e.g. refine), stale entries
+	trigger a re-solve via the fingerprint-miss path.
+
 	Args:
 		args: Parsed argparse namespace.
 		cfg: Configuration dict.
@@ -231,7 +269,8 @@ def _ensure_target_diagnostics(
 		intervals_path: Path to solved-intervals JSON file.
 
 	Returns:
-		Diagnostics dict with interval confidence data.
+		Diagnostics dict with interval confidence data, filtered for
+		target mode to exclude stale intervals.
 	"""
 	need_solve = False
 	reason = None
@@ -244,12 +283,28 @@ def _ensure_target_diagnostics(
 			need_solve = True
 			reason = "diagnostics file has no intervals"
 		else:
+			# Partition intervals into valid and stale
+			intervals_list = diag_data.get("intervals", [])
+			valid_intervals, stale_count = _partition_intervals_by_validity(
+				intervals_list
+			)
+
+			# In target mode, skip stale intervals with a warning
+			if stale_count > 0:
+				print(
+					f"  warning: {stale_count} intervals had stale scores "
+					f"and were skipped; run 'refine' or re-solve to refresh"
+				)
+				diag_data["intervals"] = valid_intervals
+
+			# Validate the remaining intervals strictly
 			try:
-				_validate_diagnostics_confidence(diag_data)
+				_validate_diagnostics_confidence(diag_data, diag_path)
 				return diag_data
 			except RuntimeError:
 				need_solve = True
 				reason = "diagnostics missing confidence data"
+
 	if need_solve:
 		raise RuntimeError(
 			f"target mode: {reason}. Run 'solve' first, then re-run target."
@@ -268,13 +323,15 @@ def _print_quality_summary(diagnostics: dict, fps: float) -> None:
 	intervals = diagnostics.get("intervals", [])
 	total = len(intervals)
 
-	# count by confidence tier
+	# count by confidence tier (pre_race as separate class)
 	from collections import Counter
 	tier_counts = Counter(
 		review.get_confidence_label(iv["interval_score"])
 		for iv in intervals
 	)
 	need_seed = tier_counts.get("low", 0) + tier_counts.get("fair", 0)
+	pre_race_count = tier_counts.get("pre_race", 0)
+	analytic_count = total - pre_race_count
 
 	print("")
 	print(f"quality summary: "
@@ -282,7 +339,9 @@ def _print_quality_summary(diagnostics: dict, fps: float) -> None:
 		f"{tier_counts.get('good', 0)} good, "
 		f"{tier_counts.get('fair', 0)} fair, "
 		f"{tier_counts.get('low', 0)} low "
-		f"({total} intervals)")
+		f"({analytic_count} tracked"
+		f"{f', {pre_race_count} pre-race' if pre_race_count > 0 else ''}"
+		f")")
 	if review.needs_refinement(diagnostics):
 		print(f"  {need_seed} intervals need seeds (fair + low)")
 		# compute severity breakdown for seed-needing intervals
@@ -394,8 +453,8 @@ def _predictions_from_geometry_cache(
 	the interval_score sub-dict from interval_scores.json by
 	(start_frame, end_frame), and hands the result to
 	_build_predictions_from_diagnostics so review.classify_interval_severity
-	can read interval_score without a KeyError. Missing score entries get
-	an empty dict; downstream code uses dict.get() for individual fields.
+	can read interval_score without a KeyError. All intervals must have
+	corresponding scores in the diagnostics file.
 
 	Args:
 		input_file: Video input path; used to locate the debug interval paths sidecar.
@@ -422,11 +481,15 @@ def _predictions_from_geometry_cache(
 		for scored_iv in score_data.get("intervals", []):
 			key = (int(scored_iv["start_frame"]),
 				int(scored_iv["end_frame"]))
-			scored_by_key[key] = scored_iv.get("interval_score", {})
-	# merge interval_score into every geometry interval, defaulting to {}
+			scored_by_key[key] = scored_iv["interval_score"]
+	# merge interval_score into every geometry interval
 	for iv in intervals_list:
 		key = (int(iv["start_frame"]), int(iv["end_frame"]))
-		iv["interval_score"] = scored_by_key.get(key, {})
+		if key not in scored_by_key:
+			raise RuntimeError(
+				f"missing interval_score for key {key} in diagnostics"
+			)
+		iv["interval_score"] = scored_by_key[key]
 	return _build_predictions_from_diagnostics(
 		{"intervals": intervals_list, "fps": float(fps)}
 	)
@@ -989,6 +1052,7 @@ def _mode_edit(
 			print(f"  loaded predictions for {len(predictions)} frames (from solved intervals)")
 
 	# optionally filter by severity (show only seeds near weak intervals)
+	# pre_race intervals are excluded from severity filtering
 	frame_filter = None
 	severity = getattr(args, "severity", None)
 	if severity is not None and os.path.isfile(diag_path):
@@ -997,9 +1061,14 @@ def _mode_edit(
 		intervals = diag_data.get("intervals", [])
 		# collect frame ranges from weak intervals at the severity threshold
 		weak_frames = set()
+		pre_race_excluded = 0
 		for iv in intervals:
 			score = iv["interval_score"]
 			confidence = review.get_confidence_label(score)
+			# pre_race intervals are synthesized and excluded from severity filtering
+			if confidence == "pre_race":
+				pre_race_excluded += 1
+				continue
 			if confidence in ("high", "good"):
 				continue
 			sev = review.classify_interval_severity(iv, fps)
@@ -1021,10 +1090,15 @@ def _mode_edit(
 						weak_frames.add(fi)
 		if weak_frames:
 			frame_filter = weak_frames
-			print(f"  severity filter: {len(weak_frames)} seeds near "
-				f"{severity}+ severity intervals")
+			msg = f"  severity filter: {len(weak_frames)} seeds near {severity}+ severity intervals"
+			if pre_race_excluded > 0:
+				msg += f" ({pre_race_excluded} pre-race intervals excluded)"
+			print(msg)
 		else:
-			print(f"  no seeds match severity={severity} filter, showing all")
+			msg = f"  no seeds match severity={severity} filter, showing all"
+			if pre_race_excluded > 0:
+				msg += f" ({pre_race_excluded} pre-race intervals excluded)"
+			print(msg)
 
 	# convert --start time to frame index
 	start_frame = None

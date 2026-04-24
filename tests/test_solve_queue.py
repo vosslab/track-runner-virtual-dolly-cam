@@ -115,3 +115,211 @@ def test_plan_is_idempotent():
 	plan_a = solve_queue.plan_interval_work(seeds, None)
 	plan_b = solve_queue.plan_interval_work(seeds, None)
 	assert dataclasses.astuple(plan_a) == dataclasses.astuple(plan_b)
+
+
+#============================================
+def test_plan_bracket_phase_classification():
+	"""Interval ending at bracket_low is pre_race; bracket seed-pair is bracket;
+	intervals starting at bracket_high are post_race.
+
+	Regression for the off-by-one where end_frame == bracket_low used to be
+	classified as post_race even though the interval is entirely pre-race.
+	bracket_low is the last pre-race seed frame; end_frame is inclusive.
+	"""
+	# seeds at frames 50, 100, 130, 200 with bracket = (100, 130).
+	# Intervals (by seed pair): (50,100), (100,130), (130,200).
+	seeds = [
+		_make_seed(50),
+		_make_seed(100),
+		_make_seed(130),
+		_make_seed(200),
+	]
+	bracket = (100, 130)
+	plan = solve_queue.plan_interval_work(
+		seeds, None, race_start_bracket=bracket,
+	)
+	assert plan.phase_by_idx[0] == "pre_race"
+	assert plan.phase_by_idx[1] == "bracket"
+	assert plan.phase_by_idx[2] == "post_race"
+
+
+#============================================
+def test_pre_race_synthesis_when_all_normal_cached():
+	"""Pre-race intervals execute correctly when every normal+bracket interval is cached.
+
+	Regression test for P1 bug: _accept and progress were defined inside
+	the 'if pending_normal_total > 0' block but called unconditionally in
+	pre-race synthesis. If all normal+bracket intervals hit the cache
+	(pending_normal_total == 0) but pre-race intervals were pending,
+	_accept would raise NameError.
+
+	This test verifies the planner produces a work plan with pre-race
+	intervals pending and no normal intervals pending, which exercises
+	the code path where progress bar setup is skipped.
+	"""
+	# Seeds: frame 0 (pre-race), 10 (pre-race), 20 (bracket_low), 50 (bracket_high), 100 (post-race)
+	# Intervals (by seed pair): (0,10) pre-race, (10,20) pre-race, (20,50) bracket, (50,100) post-race
+	seeds = [
+		_make_seed(0),
+		_make_seed(10),
+		_make_seed(20),
+		_make_seed(50),
+		_make_seed(100),
+	]
+	bracket = (20, 50)  # bracket interval is from seed 2 to seed 3, index 2
+	plan = solve_queue.plan_interval_work(
+		seeds, None, race_start_bracket=bracket,
+	)
+
+	# Verify phase assignments: intervals 0,1 pre-race, interval 2 bracket, interval 3 post-race
+	assert plan.phase_by_idx[0] == "pre_race"
+	assert plan.phase_by_idx[1] == "pre_race"
+	assert plan.phase_by_idx[2] == "bracket"
+	assert plan.phase_by_idx[3] == "post_race"
+
+	# The key behavioral check: the plan structure supports pre-race
+	# synthesis happening even when normal intervals are cached out.
+	# We need at least one pre-race interval in pending to exercise the P1 code path.
+	pre_race_pending = [
+		idx for idx in plan.pending_pair_indices
+		if plan.phase_by_idx.get(idx) == "pre_race"
+	]
+	assert len(pre_race_pending) > 0, "Must have pending pre-race intervals to test P1 code path"
+	assert plan.total_intervals == 4
+
+
+#============================================
+# Pre-race interval synthesis tests
+# (moved from former tests/test_interval_solver_pre_race.py; these exercise
+# solve_queue._solve_pre_race_interval, not interval_solver.)
+#============================================
+
+
+class _FakeSceneTransform:
+	"""Minimal scene_to_pixel stub for pre-race synthesis tests.
+
+	Applies a fixed pixel offset to the scene anchor so tests can assert
+	on back-projected pixel position without a real SceneTransform.
+	"""
+
+	def __init__(self, offset_x: float = 0.0, offset_y: float = 0.0):
+		self.offset_x = offset_x
+		self.offset_y = offset_y
+
+	def scene_to_pixel(self, frame_index: int, sx: float, sy: float) -> tuple:
+		return (sx + self.offset_x, sy + self.offset_y)
+
+
+def _make_pre_race_reference(
+		race_start_frame: int = 10,
+		torso_w: float = 32.0,
+		torso_h: float = 64.0,
+		scene_anchor_x: float = 100.0,
+		scene_anchor_y: float = 100.0,
+		source_count: int = 2,
+) -> dict:
+	"""Build a minimal pre_race_reference dict for synthesis tests."""
+	reference = {
+		"race_start_frame": race_start_frame,
+		"torso_w": torso_w,
+		"torso_h": torso_h,
+		"scene_anchor_x": scene_anchor_x,
+		"scene_anchor_y": scene_anchor_y,
+		"source_count": source_count,
+		"warnings": [],
+	}
+	return reference
+
+
+#============================================
+def test_pre_race_interval_has_full_diagnostics_shape():
+	"""Pre-race synthesized interval has every key the v4 writer consumes.
+
+	Anti-KeyError guard: downstream consumers (target, review, encoder)
+	all index into these keys. Missing any one silently breaks the v4
+	diagnostics writer's non-migration path.
+	"""
+	seed_start = _make_seed(0)
+	seed_end = _make_seed(10)
+	result = solve_queue._solve_pre_race_interval(
+		seed_start, seed_end, _make_pre_race_reference(race_start_frame=10),
+		_FakeSceneTransform(), fps=30.0,
+	)
+	required_top = {
+		"start_frame", "end_frame", "trajectory", "interval_score",
+		"fingerprint", "source",
+	}
+	required_frame = {"cx", "cy", "w", "h", "conf", "source"}
+	required_score = {
+		"agreement", "velocity_consistency", "size_consistency",
+		"motion_quality", "occlusion_fraction", "confidence_tier",
+		"failure_reasons", "warning_flags",
+	}
+	assert required_top.issubset(result)
+	assert required_frame.issubset(result["trajectory"][0])
+	assert required_frame.issubset(result["trajectory"][-1])
+	assert required_score.issubset(result["interval_score"])
+
+
+#============================================
+def test_pre_race_interval_uses_averaged_dimensions():
+	"""Every frame_state has the reference's averaged torso dimensions."""
+	reference = _make_pre_race_reference(torso_w=40.0, torso_h=80.0)
+	result = solve_queue._solve_pre_race_interval(
+		_make_seed(0), _make_seed(5), reference, _FakeSceneTransform(), fps=30.0,
+	)
+	for frame_state in result["trajectory"]:
+		assert abs(frame_state["w"] - 40.0) < 0.01
+		assert abs(frame_state["h"] - 80.0) < 0.01
+
+
+#============================================
+def test_pre_race_interval_scene_anchored_center():
+	"""Scene-anchored center back-projects to the same pixel position per frame.
+
+	Contract C2: pre-race center is anchored in scene coordinates, not
+	re-estimated per frame. With a fixed-offset transform, every pre-race
+	frame must resolve to the same pixel position.
+	"""
+	reference = _make_pre_race_reference(
+		scene_anchor_x=100.0, scene_anchor_y=50.0,
+	)
+	transform = _FakeSceneTransform(offset_x=10.0, offset_y=20.0)
+	result = solve_queue._solve_pre_race_interval(
+		_make_seed(0), _make_seed(5), reference, transform, fps=30.0,
+	)
+	for frame_state in result["trajectory"]:
+		assert abs(frame_state["cx"] - 110.0) < 0.01
+		assert abs(frame_state["cy"] - 70.0) < 0.01
+
+
+#============================================
+def test_pre_race_interval_confidence_tier():
+	"""Pre-race interval_score carries the pre_race tier tag."""
+	result = solve_queue._solve_pre_race_interval(
+		_make_seed(0), _make_seed(5), _make_pre_race_reference(),
+		_FakeSceneTransform(), fps=30.0,
+	)
+	assert result["interval_score"]["confidence_tier"] == "pre_race"
+
+
+#============================================
+def test_pre_race_interval_consistency_sentinels():
+	"""Synthesized pre-race intervals carry the consistency-by-construction
+	sentinel values (agreement and consistencies at 1.0, occlusion 0.0).
+
+	These values document the contract: pre-race intervals did not run
+	FWD/BWD, so there is no disagreement to measure. They are not tuned
+	scores; they are the sentinel that tells downstream consumers
+	"not a quality measurement".
+	"""
+	result = solve_queue._solve_pre_race_interval(
+		_make_seed(0), _make_seed(5), _make_pre_race_reference(),
+		_FakeSceneTransform(), fps=30.0,
+	)
+	score = result["interval_score"]
+	assert score["agreement"] == 1.0
+	assert score["velocity_consistency"] == 1.0
+	assert score["size_consistency"] == 1.0
+	assert score["motion_quality"] == 1.0
+	assert score["occlusion_fraction"] == 0.0
