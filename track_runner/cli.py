@@ -857,6 +857,7 @@ def _run_solve(
 				cfg,
 				scene_transform=scene_transform,
 				motion_track=motion_track_data,
+				video_frame_count=video_info["frame_count"],
 				**solve_kwargs,
 			)
 	# restore default signal handler
@@ -1129,6 +1130,82 @@ def _mode_edit(
 
 
 #============================================
+def _generate_race_start_target_frames(
+	diagnostics: dict,
+	fps: float,
+	frame_count: int,
+) -> list:
+	"""Generate target frame list for --race-start mode.
+
+	Args:
+		diagnostics: Loaded diagnostics dict with race_start_interval and
+			race_start_frame in pre_race_reference.
+		fps: Video frame rate.
+		frame_count: Total frame count for clamping.
+
+	Returns:
+		list: Sorted, deduped, clamped frame indices.
+
+	Raises:
+		RuntimeError: If diagnostics lacks required fields.
+	"""
+	pre_race_reference = diagnostics.get("pre_race_reference")
+	if pre_race_reference is None:
+		raise RuntimeError(
+			"diagnostics missing pre_race_reference; "
+			"run 'solve' first to detect race_start_frame"
+		)
+
+	# Check schema version (strict indexing to distinguish missing from old)
+	if "track_runner_diagnostics" not in diagnostics:
+		raise RuntimeError(
+			"diagnostics file missing track_runner_diagnostics header; "
+			"run 'solve' first to generate valid diagnostics"
+		)
+	header = diagnostics["track_runner_diagnostics"]
+	if header < 5:
+		raise RuntimeError(
+			f"diagnostics schema is version {header}, but this tool requires version 5; "
+			"run 'solve' first to regenerate"
+		)
+
+	race_start_frame = int(pre_race_reference["race_start_frame"])
+	race_start_interval = pre_race_reference["race_start_interval"]
+	if len(race_start_interval) != 2:
+		raise RuntimeError(
+			"race_start_interval must have exactly 2 elements; "
+			"run 'solve' first"
+		)
+
+	interval_low = int(race_start_interval[0])
+	interval_high = int(race_start_interval[1])
+
+	# Suggested frames in computation order
+	frames = []
+
+	# Add interval endpoints
+	frames.append(interval_low)
+	frames.append(interval_high)
+
+	# Add offset-derived frames
+	offsets = (-0.5, -0.25, -0.1, 0.1, 0.25, 0.5)
+	for offset in offsets:
+		frame_idx = round(race_start_frame + offset * fps)
+		frames.append(frame_idx)
+
+	# Clamp to valid range
+	clamped_frames = []
+	for f in frames:
+		clamped = max(0, min(f, frame_count - 1))
+		clamped_frames.append(clamped)
+
+	# Deduplicate and sort
+	unique_frames = sorted(set(clamped_frames))
+
+	return unique_frames
+
+
+#============================================
 def _mode_target(
 	args: argparse.Namespace,
 	cfg: dict,
@@ -1166,70 +1243,93 @@ def _mode_target(
 	shutil.copy2(seeds_path, backup_path)
 	print(f"  backup saved to {backup_path}")
 
-	# generate refinement targets with optional severity filter
-	severity = getattr(args, "severity", None)
-	seed_interval = getattr(args, "seed_interval", 10.0)
-	top_n = getattr(args, "top_n", None)
+	# Check for --race-start sub-mode
+	use_race_start_mode = getattr(args, "target_race_start", False)
 
-	# generate target frames
-	target_frames = review.generate_refinement_targets(
-		diag_data,
-		mode="suggested",
-		seed_interval=int(seed_interval * fps),
-		severity=severity,
-	)
+	if use_race_start_mode:
+		# Race-start target mode: fixed frame selection around detected race-start
+		target_frames = _generate_race_start_target_frames(
+			diag_data,
+			fps,
+			video_info["frame_count"],
+		)
+		# Print the contact sheet path
+		import tr_paths
+		contact_sheet_path = tr_paths.default_race_start_contact_sheet_path(
+			args.input_file
+		)
+		print(f"  race-start confirmation: {contact_sheet_path}")
+	else:
+		# Standard target mode: generate refinement targets with optional severity filter
+		severity = getattr(args, "severity", None)
+		seed_interval = getattr(args, "seed_interval", 10.0)
+		top_n = getattr(args, "top_n", None)
 
-	# apply --top slicing if requested
-	if top_n is not None:
-		# extract intervals and filter by severity to match generate_refinement_targets logic
-		intervals = diag_data.get("intervals", [])
-		filtered_intervals = []
-		if severity is not None:
-			# only include intervals matching severity threshold
-			min_rank = review._SEVERITY_RANK.get(severity, 0)
-			for iv in intervals:
-				score = iv["interval_score"]
-				if review.get_confidence_label(score) in ("high", "good"):
-					continue
-				iv_severity = review.classify_interval_severity(iv, fps)
-				if review._SEVERITY_RANK.get(iv_severity, 0) >= min_rank:
-					filtered_intervals.append(iv)
-		else:
-			# no severity filter: include all intervals
-			for iv in intervals:
-				score = iv["interval_score"]
-				if review.get_confidence_label(score) not in ("high", "good"):
-					filtered_intervals.append(iv)
+		# generate target frames
+		target_frames = review.generate_refinement_targets(
+			diag_data,
+			mode="suggested",
+			seed_interval=int(seed_interval * fps),
+			severity=severity,
+		)
 
-		# sort worst-first and slice
-		filtered_intervals.sort(key=review.rank_key)
-		filtered_intervals = filtered_intervals[:top_n]
+		# apply --top slicing if requested
+		if top_n is not None:
+			# extract intervals and filter by severity to match generate_refinement_targets logic
+			intervals = diag_data.get("intervals", [])
+			filtered_intervals = []
+			if severity is not None:
+				# only include intervals matching severity threshold
+				min_rank = review._SEVERITY_RANK.get(severity, 0)
+				for iv in intervals:
+					score = iv["interval_score"]
+					if review.get_confidence_label(score) in ("high", "good"):
+						continue
+					iv_severity = review.classify_interval_severity(iv, fps)
+					if review._SEVERITY_RANK.get(iv_severity, 0) >= min_rank:
+						filtered_intervals.append(iv)
+			else:
+				# no severity filter: include all intervals
+				for iv in intervals:
+					score = iv["interval_score"]
+					if review.get_confidence_label(score) not in ("high", "good"):
+						filtered_intervals.append(iv)
 
-		# re-generate target frames from the top-N intervals only
-		if filtered_intervals:
-			# build a minimal diagnostics dict with just the top intervals
-			top_diag = dict(diag_data)
-			top_diag["intervals"] = filtered_intervals
-			target_frames = review.generate_refinement_targets(
-				top_diag,
-				mode="suggested",
-				seed_interval=int(seed_interval * fps),
-				severity=severity,
-			)
-		else:
-			target_frames = []
+			# sort worst-first and slice
+			filtered_intervals.sort(key=review.rank_key)
+			filtered_intervals = filtered_intervals[:top_n]
 
-		if len(filtered_intervals) < top_n:
-			print(f"  hint: only {len(filtered_intervals)} intervals matched (--top={top_n} requested)")
+			# re-generate target frames from the top-N intervals only
+			if filtered_intervals:
+				# build a minimal diagnostics dict with just the top intervals
+				top_diag = dict(diag_data)
+				top_diag["intervals"] = filtered_intervals
+				target_frames = review.generate_refinement_targets(
+					top_diag,
+					mode="suggested",
+					seed_interval=int(seed_interval * fps),
+					severity=severity,
+				)
+			else:
+				target_frames = []
+
+			if len(filtered_intervals) < top_n:
+				print(f"  hint: only {len(filtered_intervals)} intervals matched (--top={top_n} requested)")
 
 	if not target_frames:
 		sev_label = f" at {severity}+ severity" if severity else ""
-		print(f"  no weak intervals found{sev_label}")
+		if use_race_start_mode:
+			print("  no race-start frames selected")
+		else:
+			print(f"  no weak intervals found{sev_label}")
 		return
 
-	sev_label = f" ({severity}+ severity)" if severity else ""
-	top_label = f" (top {top_n})" if top_n is not None else ""
-	print(f"  {len(target_frames)} target frames from weak intervals{sev_label}{top_label}")
+	if use_race_start_mode:
+		print(f"  {len(target_frames)} race-start target frames")
+	else:
+		sev_label = f" ({severity}+ severity)" if severity else ""
+		top_label = f" (top {top_n})" if top_n is not None else ""
+		print(f"  {len(target_frames)} target frames from weak intervals{sev_label}{top_label}")
 
 	# build FWD/BWD predictions from diagnostics
 	predictions = _build_predictions_from_diagnostics(diag_data)

@@ -18,7 +18,6 @@ into a junk drawer of generic interval utilities.
 import state_io
 import velocity_model
 import residual_motion
-import scoring
 
 
 #============================================
@@ -27,9 +26,8 @@ import scoring
 # propagator semantics change. Bump `residual_motion.BLOB_OBSERVER_VERSION`
 # when observer behavior changes. Bump the numeric-constants suffix (the
 # lowercase `a`, `b`, `vf`, `am`, `ms` fragments) when the blob-snap gate
-# or blend constants in velocity_model change. Bump
-# `scoring.INTERVAL_SCORE_SCHEMA_VERSION` when the interval_score schema
-# changes.
+# or blend constants in velocity_model change. Bump `state_io.SCHEMA_VERSION`
+# when any schema changes (per contract C8, all schemas are unified).
 
 def build_solver_fingerprint_tag() -> str:
 	"""Build the solver fingerprint tag with current version constants.
@@ -40,9 +38,6 @@ def build_solver_fingerprint_tag() -> str:
 	Returns:
 		Fingerprint tag string.
 	"""
-	# Lazy import to avoid circular dependency with race_start
-	import race_start
-
 	tag = (
 		f"blob_snap/{residual_motion.BLOB_OBSERVER_VERSION}"
 		f"/a{velocity_model.BLOB_SNAP_ALPHA:.3f}"
@@ -51,8 +46,7 @@ def build_solver_fingerprint_tag() -> str:
 		f"/vf{velocity_model.BLOB_SNAP_VELOCITY_FLOOR:.3f}"
 		f"/am{velocity_model.BLOB_SNAP_ALPHA_MAX:.3f}"
 		f"/ms{velocity_model.BLOB_SNAP_MAX_SHIFT_FRACTION:.3f}"
-		f"/score_schema/{scoring.INTERVAL_SCORE_SCHEMA_VERSION}"
-		f"/prerace/{race_start.PRE_RACE_REFERENCE_SCHEMA_VERSION}"
+		f"/schema/{state_io.SCHEMA_VERSION}"
 	)
 	return tag
 

@@ -173,6 +173,16 @@ its own module, `solve_queue.py`, which both solve mode and refine mode
 consume so the two call sites cannot drift on fingerprint semantics;
 `solver_workers.py` continues to own only the per-process worker state.
 
+**Race-start confirmation artifact** is a required post-detection PNG contact
+sheet owned jointly by `race_start.py` (frame selection helper
+`choose_race_start_confirmation_frames`) and `race_start_contact_sheet.py`
+(renderer). The artifact is mandatory whenever Stage 2 detects `race_start_frame`
+(in both solve and refine) and aborts the command if PNG write fails. This
+trade-off is intentional: a visual confirmation artifact that occasionally fails
+beats a working command that silently skips the artifact. The target-mode
+sub-mode `--race-start` reuses the frame-selection helper for user-driven
+refinement of race-start seeds without manual seed insertion.
+
 ## Annotation UI principles
 
 ### Fast-pick first

@@ -47,6 +47,10 @@ predictions:
     color: "#FBBF24"
     line_style: dotted
 
+# -- Pre-race reference: torso box from averaged pre-race seeds --
+pre_race_reference:
+  color: "#0D9488"
+
 # -- Tracking source: how the tracker produced a box (debug overlay) --
 tracking_source:
   detection: "#64C896"

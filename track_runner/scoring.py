@@ -12,13 +12,10 @@ import math
 import numpy
 
 
-# Track-runner schema versions are kept in lockstep across
-# state_io.DIAGNOSTICS_HEADER_VALUE, scoring.INTERVAL_SCORE_SCHEMA_VERSION,
-# and race_start.PRE_RACE_REFERENCE_SCHEMA_VERSION. When any on-disk or
-# cache-visible schema changes, bump ALL THREE together so the user never
-# sees mismatched version numbers across diagnostics files, score dicts,
-# and fingerprint tags.
-INTERVAL_SCORE_SCHEMA_VERSION = 4
+# Track-runner schema versions are kept in lockstep per contract C8.
+# Import unified SCHEMA_VERSION; do not maintain independent versions.
+import state_io
+INTERVAL_SCORE_SCHEMA_VERSION = state_io.SCHEMA_VERSION
 
 
 #============================================

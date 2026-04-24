@@ -1104,6 +1104,7 @@ def solve_all_intervals(
 	scene_transform: object = None,
 	motion_track: object = None,
 	video_path: str = None,
+	video_frame_count: int = None,
 ) -> dict:
 	"""Solve all seed-to-seed intervals and stitch into a full trajectory.
 
@@ -1135,6 +1136,9 @@ def solve_all_intervals(
 		motion_track: Optional motion track for scoring.
 		run_control: Optional run control object for quit handling.
 		key_reader: Optional key reader for interactive quit.
+		video_frame_count: Total frame count from mediainfo (required for
+			contact sheet rendering and frame clamping). Must be the
+			authoritative value from cli._probe_video(), not OpenCV.
 
 	Returns:
 		Dict with keys:
@@ -1165,19 +1169,19 @@ def solve_all_intervals(
 		)
 		all_seeds_scene.append((frame_index, sx, sy, sw, sh))
 
-	# Stage 1: Locate race-start bracket via seed-pair displacement.
+	# Stage 1: Locate race-start interval via seed-pair displacement.
 	# Raises RuntimeError if fewer than 2 usable seeds or degenerate cases.
-	race_start_bracket = race_start.locate_race_start_bracket(
+	race_start_interval = race_start.locate_race_start_interval(
 		seeds, scene_transform, fps
 	)
-	bracket_low, bracket_high = race_start_bracket
+	interval_low, interval_high = race_start_interval
 
 	# plan_interval_work is the single source of truth for seed filter +
 	# fingerprint computation + cache partition. refine mode also calls
 	# it, so solve and refine agree on every cache key byte-for-byte.
-	# Pass race_start_bracket for classification.
+	# Pass race_start_interval for classification.
 	plan = solve_queue.plan_interval_work(
-		seeds, prior_intervals, race_start_bracket=race_start_bracket
+		seeds, prior_intervals, race_start_interval=race_start_interval
 	)
 	if plan.total_intervals == 0:
 		print("  interval_solver: need at least 2 usable seeds to solve intervals")
@@ -1196,8 +1200,9 @@ def solve_all_intervals(
 		fps=fps,
 		num_workers=num_workers,
 		video_path=video_path,
+		video_frame_count=video_frame_count,
 		debug=debug,
-		race_start_bracket=race_start_bracket,
+		race_start_interval=race_start_interval,
 		pre_race_reference=None,
 	)
 	interval_results = solve_queue.execute_interval_work(

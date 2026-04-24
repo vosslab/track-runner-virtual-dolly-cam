@@ -13,8 +13,6 @@ hardcoded-constant asserts, no brittle checks on derived schema versions.
 
 # Standard Library
 import json
-import os
-import tempfile
 
 # PIP3 modules
 import pytest

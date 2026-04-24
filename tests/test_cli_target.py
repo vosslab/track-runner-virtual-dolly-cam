@@ -8,9 +8,6 @@ Per docs/PYTHON_STYLE.md PYTEST guidance: behavioral tests only, no
 video decode, no full annotator setup.
 """
 
-# Standard Library
-import json
-
 # PIP3 modules
 import pytest
 
@@ -199,3 +196,122 @@ def test_classify_interval_severity_skips_pre_race():
 	}
 	result = review.classify_interval_severity(pre_race_interval, fps=30.0)
 	assert result is None
+
+
+#============================================
+# Race-start target mode tests
+#============================================
+
+def test_target_race_start_frame_selection():
+	"""Test race-start frame selection with known inputs."""
+	# Build a fake diagnostics dict with known race-start data
+	diagnostics = {
+		"track_runner_diagnostics": 5,
+		"pre_race_reference": {
+			"race_start_frame": 100,
+			"race_start_interval": [50, 150],
+		},
+	}
+
+	fps = 30.0
+	frame_count = 1000
+
+	target_frames = cli._generate_race_start_target_frames(
+		diagnostics, fps, frame_count
+	)
+
+	# Verify properties
+	# Should contain interval endpoints
+	assert 50 in target_frames
+	assert 150 in target_frames
+
+	# Should be sorted
+	assert target_frames == sorted(target_frames)
+
+	# Should have no duplicates
+	assert len(target_frames) == len(set(target_frames))
+
+	# Should have clamped frames (within valid range)
+	assert all(0 <= f < frame_count for f in target_frames)
+
+
+def test_target_race_start_clamped():
+	"""Test clamping when race_start_frame is near the beginning."""
+	# race_start_frame near start; -0.5s offset would go negative
+	diagnostics = {
+		"track_runner_diagnostics": 5,
+		"pre_race_reference": {
+			"race_start_frame": 10,  # Very early
+			"race_start_interval": [5, 50],
+		},
+	}
+
+	fps = 30.0
+	frame_count = 1000
+
+	target_frames = cli._generate_race_start_target_frames(
+		diagnostics, fps, frame_count
+	)
+
+	# Verify no negative frames
+	assert all(f >= 0 for f in target_frames)
+
+	# Verify interval endpoints are still present
+	assert 5 in target_frames
+	assert 50 in target_frames
+
+
+def test_target_race_start_missing_schema_raises():
+	"""Test error when diagnostics schema is outdated."""
+	# Schema version 4 (pre-unification)
+	diagnostics = {
+		"track_runner_diagnostics": 4,
+		"pre_race_reference": {
+			"race_start_frame": 100,
+			"race_start_interval": [50, 150],
+		},
+	}
+
+	fps = 30.0
+	frame_count = 1000
+
+	with pytest.raises(RuntimeError) as exc_info:
+		cli._generate_race_start_target_frames(diagnostics, fps, frame_count)
+
+	assert "schema" in str(exc_info.value).lower()
+	assert "solve" in str(exc_info.value).lower()
+
+
+def test_target_race_start_missing_reference_raises():
+	"""Test error when pre_race_reference is missing entirely."""
+	diagnostics = {
+		"track_runner_diagnostics": 5,
+		# Missing pre_race_reference
+	}
+
+	fps = 30.0
+	frame_count = 1000
+
+	with pytest.raises(RuntimeError) as exc_info:
+		cli._generate_race_start_target_frames(diagnostics, fps, frame_count)
+
+	assert "pre_race_reference" in str(exc_info.value).lower()
+
+
+def test_target_race_start_missing_interval_raises():
+	"""Test error when race_start_interval is missing."""
+	diagnostics = {
+		"track_runner_diagnostics": 5,
+		"pre_race_reference": {
+			"race_start_frame": 100,
+			# Missing race_start_interval
+		},
+	}
+
+	fps = 30.0
+	frame_count = 1000
+
+	with pytest.raises(RuntimeError) as exc_info:
+		cli._generate_race_start_target_frames(diagnostics, fps, frame_count)
+
+	assert "interval" in str(exc_info.value).lower()

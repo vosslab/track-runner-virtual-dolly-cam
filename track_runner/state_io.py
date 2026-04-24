@@ -27,6 +27,17 @@ import tempfile
 import numpy
 
 #============================================
+# Unified schema version per contract C8: single source of truth for all
+# schema versioning across track_runner. This value is bumped when any
+# on-disk or cache-visible schema changes across diagnostics files,
+# score dicts, or fingerprint tags. All schema references must import
+# and use this constant, never independent versions.
+SCHEMA_VERSION = 5
+
+# Aliases for backward-readable code (deprecated, prefer SCHEMA_VERSION)
+DIAGNOSTICS_HEADER_VALUE = SCHEMA_VERSION
+
+#============================================
 
 # header key and version for seeds JSON files
 # v3: canonical four-field schema (frame_index, torso_box, status, pass)
@@ -38,11 +49,8 @@ SEEDS_HEADER_VALUE = 3
 SEEDS_ACCEPTED_HEADERS = frozenset({2, 3})
 
 # header key and version for diagnostics JSON files.
-# Track-runner schema versions are kept in lockstep across
-# state_io.DIAGNOSTICS_HEADER_VALUE, scoring.INTERVAL_SCORE_SCHEMA_VERSION,
-# and race_start.PRE_RACE_REFERENCE_SCHEMA_VERSION. Bump ALL THREE together.
+# Track-runner schema versions are kept in lockstep per contract C8.
 DIAGNOSTICS_HEADER_KEY = "track_runner_diagnostics"
-DIAGNOSTICS_HEADER_VALUE = 4
 
 # header key and version for geometry cache (kept on in-memory dicts
 # for compatibility with existing call sites; not a JSON on-disk
@@ -334,7 +342,7 @@ def load_diagnostics(path: str) -> dict:
 	Function name is retained for callsite compatibility.
 
 	Returns an empty structure if the file does not exist. Accepts
-	legacy header values `2`, `3`, and current `4`; returns a v4-shaped dict.
+	legacy header values `2`, `3`, `4`, and current `5`; returns a v5-shaped dict.
 
 	Args:
 		path: Path to the interval_scores.json (or legacy
@@ -355,12 +363,12 @@ def load_diagnostics(path: str) -> dict:
 		data = json.load(fh)
 	if not isinstance(data, dict):
 		raise RuntimeError(f"diagnostics file did not parse as a mapping: {path}")
-	# validate the header key and version: accept v2, v3, and v4
+	# validate the header key and version: accept v2, v3, v4, and v5
 	header_val = data.get(DIAGNOSTICS_HEADER_KEY)
-	if header_val not in (2, 3, 4):
+	if header_val not in (2, 3, 4, 5):
 		raise RuntimeError(
 			f"diagnostics file header mismatch in {path}: "
-			f"expected {DIAGNOSTICS_HEADER_KEY} in (2, 3, 4), got {header_val}"
+			f"expected {DIAGNOSTICS_HEADER_KEY} in (2, 3, 4, 5), got {header_val}"
 		)
 	# migrate from flat v2 shape to nested v3 shape unconditionally based on
 	# presence of interval_score key (not header version). Header v2 or v3 are
@@ -940,6 +948,7 @@ def write_solver_diagnostics(
 	if pre_race_reference is not None:
 		diag_out["pre_race_reference"] = {
 			"race_start_frame": int(pre_race_reference["race_start_frame"]),
+			"race_start_interval": list(pre_race_reference["race_start_interval"]),
 			"torso_w": round(float(pre_race_reference["torso_w"]), 4),
 			"torso_h": round(float(pre_race_reference["torso_h"]), 4),
 			"scene_anchor_x": round(float(pre_race_reference["scene_anchor_x"]), 4),

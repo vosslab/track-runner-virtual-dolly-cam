@@ -67,6 +67,13 @@ def _validate_palette(palette: dict) -> None:
 		if ls is not None and ls not in _VALID_LINE_STYLES:
 			raise ValueError(f"predictions.{key}.line_style invalid: {ls}")
 
+	# validate pre_race_reference
+	prr = palette.get("pre_race_reference", {})
+	if prr:
+		color = prr.get("color", "")
+		if not _HEX_PATTERN.match(color):
+			raise ValueError(f"pre_race_reference.color invalid: {color}")
+
 	# validate tracking_source (flat hex values)
 	for key, color in palette.get("tracking_source", {}).items():
 		if not _HEX_PATTERN.match(str(color)):
@@ -316,6 +323,20 @@ def get_prediction_style(direction: str) -> dict:
 		"fill_opacity": entry.get("fill_opacity", defaults.get("fill_opacity", 0.06)),
 	}
 	return style
+
+
+#============================================
+def get_pre_race_reference_bgr() -> tuple:
+	"""Get BGR color tuple for pre-race reference box (for cv2).
+
+	Returns:
+		Tuple of (B, G, R) values.
+	"""
+	palette = load_palette()
+	entry = palette.get("pre_race_reference", {})
+	hex_color = entry.get("color", "#0D9488")
+	bgr = hex_to_bgr(hex_color)
+	return bgr
 
 
 #============================================

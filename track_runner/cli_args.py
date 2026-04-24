@@ -172,10 +172,17 @@ def parse_args() -> argparse.Namespace:
 	target_parser = subparsers.add_parser(
 		"target", help="Add seeds at weak interval frames with FWD/BWD overlays.",
 	)
+	# Mutually exclusive group for target sub-modes
+	target_submode_group = target_parser.add_mutually_exclusive_group(required=False)
+	target_submode_group.add_argument(
+		"--race-start", dest="target_race_start", action="store_true",
+		help="Target frames around the detected race-start transition for confirmation."
+	)
 	_add_severity_arg(target_parser, "Minimum severity of weak intervals to target.")
 	_add_top_arg(target_parser)
 	_add_seed_interval_arg(target_parser)
 	base_controller_module.BaseAnnotationController.add_argparse_args(target_parser)
+	target_parser.set_defaults(target_race_start=False)
 
 	# -- solve mode --
 	solve_parser = subparsers.add_parser(

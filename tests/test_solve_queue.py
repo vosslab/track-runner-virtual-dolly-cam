@@ -118,15 +118,15 @@ def test_plan_is_idempotent():
 
 
 #============================================
-def test_plan_bracket_phase_classification():
-	"""Interval ending at bracket_low is pre_race; bracket seed-pair is bracket;
-	intervals starting at bracket_high are post_race.
+def test_plan_interval_phase_classification():
+	"""Interval ending at interval_low is pre_race; interval seed-pair is interval;
+	intervals starting at interval_high are post_race.
 
-	Regression for the off-by-one where end_frame == bracket_low used to be
+	Regression for the off-by-one where end_frame == interval_low used to be
 	classified as post_race even though the interval is entirely pre-race.
-	bracket_low is the last pre-race seed frame; end_frame is inclusive.
+	interval_low is the last pre-race seed frame; end_frame is inclusive.
 	"""
-	# seeds at frames 50, 100, 130, 200 with bracket = (100, 130).
+	# seeds at frames 50, 100, 130, 200 with interval = (100, 130).
 	# Intervals (by seed pair): (50,100), (100,130), (130,200).
 	seeds = [
 		_make_seed(50),
@@ -134,22 +134,22 @@ def test_plan_bracket_phase_classification():
 		_make_seed(130),
 		_make_seed(200),
 	]
-	bracket = (100, 130)
+	interval = (100, 130)
 	plan = solve_queue.plan_interval_work(
-		seeds, None, race_start_bracket=bracket,
+		seeds, None, race_start_interval=interval,
 	)
 	assert plan.phase_by_idx[0] == "pre_race"
-	assert plan.phase_by_idx[1] == "bracket"
+	assert plan.phase_by_idx[1] == "interval"
 	assert plan.phase_by_idx[2] == "post_race"
 
 
 #============================================
 def test_pre_race_synthesis_when_all_normal_cached():
-	"""Pre-race intervals execute correctly when every normal+bracket interval is cached.
+	"""Pre-race intervals execute correctly when every normal+interval is cached.
 
 	Regression test for P1 bug: _accept and progress were defined inside
 	the 'if pending_normal_total > 0' block but called unconditionally in
-	pre-race synthesis. If all normal+bracket intervals hit the cache
+	pre-race synthesis. If all normal+interval intervals hit the cache
 	(pending_normal_total == 0) but pre-race intervals were pending,
 	_accept would raise NameError.
 
@@ -157,8 +157,8 @@ def test_pre_race_synthesis_when_all_normal_cached():
 	intervals pending and no normal intervals pending, which exercises
 	the code path where progress bar setup is skipped.
 	"""
-	# Seeds: frame 0 (pre-race), 10 (pre-race), 20 (bracket_low), 50 (bracket_high), 100 (post-race)
-	# Intervals (by seed pair): (0,10) pre-race, (10,20) pre-race, (20,50) bracket, (50,100) post-race
+	# Seeds: frame 0 (pre-race), 10 (pre-race), 20 (interval_low), 50 (interval_high), 100 (post-race)
+	# Intervals (by seed pair): (0,10) pre-race, (10,20) pre-race, (20,50) interval, (50,100) post-race
 	seeds = [
 		_make_seed(0),
 		_make_seed(10),
@@ -166,15 +166,15 @@ def test_pre_race_synthesis_when_all_normal_cached():
 		_make_seed(50),
 		_make_seed(100),
 	]
-	bracket = (20, 50)  # bracket interval is from seed 2 to seed 3, index 2
+	interval = (20, 50)  # interval is from seed 2 to seed 3, index 2
 	plan = solve_queue.plan_interval_work(
-		seeds, None, race_start_bracket=bracket,
+		seeds, None, race_start_interval=interval,
 	)
 
-	# Verify phase assignments: intervals 0,1 pre-race, interval 2 bracket, interval 3 post-race
+	# Verify phase assignments: intervals 0,1 pre-race, interval 2 interval, interval 3 post-race
 	assert plan.phase_by_idx[0] == "pre_race"
 	assert plan.phase_by_idx[1] == "pre_race"
-	assert plan.phase_by_idx[2] == "bracket"
+	assert plan.phase_by_idx[2] == "interval"
 	assert plan.phase_by_idx[3] == "post_race"
 
 	# The key behavioral check: the plan structure supports pre-race

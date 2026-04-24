@@ -12,7 +12,7 @@ PYTEST guidance.
 # local repo modules
 import interval_fingerprint
 import residual_motion
-import scoring
+import state_io
 
 
 #============================================
@@ -143,55 +143,32 @@ def test_filter_obstructed_requires_torso_box():
 	assert 20 in frames
 
 
-#============================================
-def test_tag_contains_score_schema():
-	"""SOLVER_FINGERPRINT_TAG embeds the score schema version.
 
-	Locks the cache-invalidation contract: the tag string includes
-	the current interval_score schema version so schema bumps
-	invalidate cached intervals.
+
+#============================================
+
+def test_tag_contains_schema_version():
+	"""SOLVER_FINGERPRINT_TAG includes /schema/ version marker.
+
+	Locks the cache-invalidation contract: the tag includes the unified
+	SCHEMA_VERSION so any schema changes invalidate cached intervals.
 	"""
-	assert "score_schema/4" in interval_fingerprint.SOLVER_FINGERPRINT_TAG
-
-
-#============================================
-def test_builder_reflects_score_schema_version(monkeypatch):
-	"""build_solver_fingerprint_tag() reads scoring.INTERVAL_SCORE_SCHEMA_VERSION.
-
-	Verifies the builder refactor allows runtime schema version changes
-	(for testing and potential future runtime toggles).
-	"""
-	# monkeypatch the constant and rebuild
-	monkeypatch.setattr(scoring, "INTERVAL_SCORE_SCHEMA_VERSION", 99)
-	rebuilt_tag = interval_fingerprint.build_solver_fingerprint_tag()
-	assert "score_schema/99" in rebuilt_tag
+	assert "/schema/" in interval_fingerprint.SOLVER_FINGERPRINT_TAG
+	# Verify the numeric segment matches state_io.SCHEMA_VERSION
+	tag = interval_fingerprint.SOLVER_FINGERPRINT_TAG
+	expected = f"/schema/{state_io.SCHEMA_VERSION}"
+	assert expected in tag
 
 
 #============================================
 
-def test_tag_contains_prerace_schema():
-	"""SOLVER_FINGERPRINT_TAG includes /prerace/ version marker.
+def test_builder_reflects_schema_version(monkeypatch):
+	"""build_solver_fingerprint_tag() reads state_io.SCHEMA_VERSION.
 
-	Locks the cache-invalidation contract: the tag includes the
-	PRE_RACE_REFERENCE_SCHEMA_VERSION so pre-race geometry changes
-	invalidate cached intervals.
-	"""
-	assert "/prerace/" in interval_fingerprint.SOLVER_FINGERPRINT_TAG
-	assert "/prerace/4" in interval_fingerprint.SOLVER_FINGERPRINT_TAG
-
-
-#============================================
-
-def test_builder_reflects_prerace_schema_version(monkeypatch):
-	"""build_solver_fingerprint_tag() reads race_start.PRE_RACE_REFERENCE_SCHEMA_VERSION.
-
-	Verifies the builder includes pre-race schema version; bumping the
+	Verifies the builder includes the unified schema version; bumping the
 	constant invalidates cached intervals.
 	"""
-	# Lazy import inside the test to use monkeypatch
-	import race_start
-
 	# monkeypatch the constant and rebuild
-	monkeypatch.setattr(race_start, "PRE_RACE_REFERENCE_SCHEMA_VERSION", 99)
+	monkeypatch.setattr(state_io, "SCHEMA_VERSION", 99)
 	rebuilt_tag = interval_fingerprint.build_solver_fingerprint_tag()
-	assert "/prerace/99" in rebuilt_tag
+	assert "/schema/99" in rebuilt_tag

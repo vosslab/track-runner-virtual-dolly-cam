@@ -3,10 +3,9 @@
 This module owns contract C2 implementation (averaged pre-race torso box,
 scene-anchored center; see TRACK_RUNNER_CONTRACT.md). Implements two-stage
 race-start boundary detection via Stage 1 (seed-pair displacement) and Stage 2
-(fine velocity detector on bracket trajectory).
+(fine velocity detector on interval trajectory).
 
-Exports: PRE_RACE_REFERENCE_SCHEMA_VERSION, PRE_RACE_MOTION_THRESHOLD_PER_S,
-detect_race_start, locate_race_start_bracket, detect_race_start_in_bracket,
+Exports: detect_race_start, locate_race_start_interval, detect_race_start_in_interval,
 compute_pre_race_reference, print_race_phase_summary.
 """
 
@@ -15,17 +14,14 @@ import math
 
 # local repo modules
 import race_phases
+import state_io
 
+# Re-export unified schema version (per contract C8)
+SCHEMA_VERSION = state_io.SCHEMA_VERSION
+# Legacy alias for backward compatibility
+PRE_RACE_REFERENCE_SCHEMA_VERSION = SCHEMA_VERSION
 
-#============================================
-# Track-runner schema versions are kept in lockstep across
-# state_io.DIAGNOSTICS_HEADER_VALUE, scoring.INTERVAL_SCORE_SCHEMA_VERSION,
-# and race_start.PRE_RACE_REFERENCE_SCHEMA_VERSION. Bump ALL THREE together
-# so users never see mismatched schema numbers across diagnostics files,
-# score dicts, and fingerprint tags.
-PRE_RACE_REFERENCE_SCHEMA_VERSION = 4
-
-# Stage-1 bracket detection uses a windowed directional-coherence test
+# Stage-1 interval detection uses a windowed directional-coherence test
 # normalized by a provisional torso width. Pre-race seeds are independent
 # human annotations of a stationary moment: individual pair vectors vary
 # but net direction cancels. Race-start motion is the first window where
@@ -51,6 +47,13 @@ MIN_PRE_RACE_PAIR_DT_S = 0.5
 PRE_RACE_MIN_WINDOW_SEEDS = 3
 PRE_RACE_NET_DISP_THRESHOLD_TORSO_UNITS = 0.75
 PRE_RACE_COHERENCE_THRESHOLD = 0.7
+
+# Frame selection offsets for race-start confirmation contact sheet.
+# 11 tiles arranged in 5/1/5 layout around the detected race_start_frame.
+#TODO: this should be a range function
+CONFIRMATION_OFFSETS_S = (-0.5, -0.4, -0.3, -0.2, -0.1,
+	0.0,
+	0.1, 0.2, 0.3, 0.4, 0.5)
 
 
 #============================================
@@ -95,7 +98,7 @@ def _seed_scene_center(scene_transform, seed: dict) -> tuple:
 
 
 #============================================
-def locate_race_start_bracket(seeds: list, scene_transform, fps: float) -> tuple:
+def locate_race_start_interval(seeds: list, scene_transform, fps: float) -> tuple:
 	"""Stage 1: Localize the interval containing race start via directional
 	coherence over a sliding window, normalized by a provisional pre-race
 	torso width (contract C1).
@@ -105,7 +108,7 @@ def locate_race_start_bracket(seeds: list, scene_transform, fps: float) -> tuple
 	motion is the first window where per-pair vectors align and cumulative
 	displacement accumulates. The first coherent window is found; within it,
 	the largest single pair is identified as the transition and returned as
-	the bracket.
+	the interval.
 
 	Args:
 		seeds: Raw seed list (filtered via filter_usable_seeds_sorted).
@@ -113,7 +116,7 @@ def locate_race_start_bracket(seeds: list, scene_transform, fps: float) -> tuple
 		fps: Video frame rate in frames per second.
 
 	Returns:
-		(low_frame_index, high_frame_index) bracket tuple. low is the last
+		(low_frame_index, high_frame_index) interval tuple. low is the last
 		pre-race seed's frame; high is the first moving seed's frame.
 
 	Raises:
@@ -233,7 +236,7 @@ def locate_race_start_bracket(seeds: list, scene_transform, fps: float) -> tuple
 
 		if transition_low_idx == 0:
 			raise RuntimeError(
-				"cannot identify a pre-race bracket; the first seed pair "
+				"cannot identify a pre-race interval; the first seed pair "
 				"is already the coherent motion transition. Add at least "
 				"one seed before race start.",
 			)
@@ -252,60 +255,65 @@ def locate_race_start_bracket(seeds: list, scene_transform, fps: float) -> tuple
 
 
 #============================================
-def detect_race_start_in_bracket(
-	bracket_trajectory: list,
+def detect_race_start_in_interval(
+	interval_trajectory: list,
 	scene_transform,
 	fps: float,
-	bracket_start_frame: int
+	interval_start_frame: int
 ) -> int:
-	"""Stage 2: Fine-grained race-start detection within a bracket trajectory.
+	"""Stage 2: Fine-grained race-start detection within an interval trajectory.
 
-	Wraps race_phases.detect_race_start on the bracket interval's trajectory.
-	The bracket trajectory is the solved interval from Stage 1 (the crossing
+	Wraps race_phases.detect_race_start on the interval's trajectory.
+	The interval trajectory is the solved interval from Stage 1 (the crossing
 	interval that contains the actual race-start frame).
 
 	Args:
-		bracket_trajectory: Per-frame state list for the bracket interval.
+		interval_trajectory: Per-frame state list for the interval.
 		scene_transform: SceneTransform for pixel-to-scene conversion.
 		fps: Video frame rate in frames per second.
-		bracket_start_frame: Start frame of the bracket (for validation).
+		interval_start_frame: Start frame of the interval (for validation).
 
 	Returns:
 		int: The authoritative race_start_frame.
 
 	Raises:
-		RuntimeError: if detector returns None or a frame outside the bracket.
+		RuntimeError: if detector returns None or a frame outside the interval.
 	"""
 	result = race_phases.detect_race_start(
-		bracket_trajectory, scene_transform, fps
+		interval_trajectory, scene_transform, fps
 	)
 
 	race_start_frame = result["race_start_frame"]
 
 	if race_start_frame is None:
-		bracket_end_frame = bracket_start_frame + len(bracket_trajectory) - 1
+		interval_end_frame = interval_start_frame + len(interval_trajectory) - 1
 		raise RuntimeError(
-			f"fine detector found no velocity onset in bracket frames "
-			f"{bracket_start_frame}-{bracket_end_frame}; add a seed closer to "
+			f"fine detector found no velocity onset in interval frames "
+			f"{interval_start_frame}-{interval_end_frame}; add a seed closer to "
 			f"the actual race start"
 		)
 
-	# Validate the frame is within bracket range
-	bracket_end_frame = bracket_start_frame + len(bracket_trajectory) - 1
-	if not (bracket_start_frame <= race_start_frame <= bracket_end_frame):
+	# Validate the frame is within interval range
+	interval_end_frame = interval_start_frame + len(interval_trajectory) - 1
+	if not (interval_start_frame <= race_start_frame <= interval_end_frame):
 		raise RuntimeError(
 			f"internal bug: detector returned race_start_frame={race_start_frame} "
-			f"outside bracket [{bracket_start_frame}, {bracket_end_frame}]"
+			f"outside interval [{interval_start_frame}, {interval_end_frame}]"
 		)
 
 	return race_start_frame
 
 
 #============================================
+# race_start_interval is a (low_frame, high_frame) tuple of seed
+# frame indices. It is NOT a solver interval result dict; it only
+# names the seed-to-seed range that contains race_start_frame.
+#============================================
 def compute_pre_race_reference(
 	seeds: list,
 	race_start_frame: int,
-	scene_transform
+	scene_transform,
+	race_start_interval: tuple
 ) -> dict:
 	"""Compute averaged pre-race reference from qualifying seeds.
 
@@ -316,10 +324,12 @@ def compute_pre_race_reference(
 		seeds: Raw seed list.
 		race_start_frame: The authoritative race-start boundary.
 		scene_transform: SceneTransform for scene-coordinate operations.
+		race_start_interval: Tuple (low_frame, high_frame) of seed frame indices
+			from Stage 1 race-start interval detection. NOT a solver interval result dict.
 
 	Returns:
-		Dict with keys: race_start_frame, torso_w, torso_h, scene_anchor_x,
-		scene_anchor_y, source_frame_indices, source_count, method, warnings.
+		Dict with keys: race_start_frame, race_start_interval, torso_w, torso_h,
+		scene_anchor_x, scene_anchor_y, source_frame_indices, source_count, method, warnings.
 
 	Raises:
 		RuntimeError: if no visible/partial pre-race seeds with torso_box.
@@ -362,6 +372,7 @@ def compute_pre_race_reference(
 
 	result = {
 		"race_start_frame": race_start_frame,
+		"race_start_interval": list(race_start_interval),
 		"torso_w": torso_w,
 		"torso_h": torso_h,
 		"scene_anchor_x": scene_anchor_x,
@@ -399,3 +410,65 @@ def print_race_phase_summary(pre_race_reference: dict) -> None:
 		warnings_tail = f"; warnings={warnings}"
 
 	print(f"  race start: frame {frame} (source_count={source_count}{warnings_tail})")
+
+
+#============================================
+def choose_race_start_confirmation_frames(
+	race_start_frame: int,
+	fps: float,
+	video_frame_count: int,
+) -> list:
+	"""Select frames for race-start confirmation contact sheet.
+
+	Returns one dict per tile, in row-major order (top row left-to-right,
+	center, bottom row left-to-right).
+
+	Args:
+		race_start_frame: The detected race-start frame index.
+		fps: Video frame rate in frames per second.
+		video_frame_count: Total frames in the video.
+
+	Returns:
+		List of 11 tile dicts in row-major order. Each tile dict contains:
+		- frame_index: Clamped to [0, video_frame_count - 1]
+		- requested_frame_index: Pre-clamp value (may be out of range)
+		- offset_s: Fixed offset in seconds (-0.5 to +0.5)
+		- label: "PRE", "START", or "POST"
+		- row: "top", "center", or "bottom"
+		- clamped: True if frame_index != requested_frame_index
+	"""
+	tiles = []
+
+	for offset_s in CONFIRMATION_OFFSETS_S:
+		requested_frame = round(race_start_frame + offset_s * fps)
+		frame_index = max(0, min(requested_frame, video_frame_count - 1))
+		clamped = (frame_index != requested_frame)
+
+		# Determine label based on offset
+		if offset_s < 0:
+			label = "PRE"
+		elif offset_s > 0:
+			label = "POST"
+		else:
+			label = "START"
+
+		# Determine row based on position in CONFIRMATION_OFFSETS_S
+		idx_in_offsets = CONFIRMATION_OFFSETS_S.index(offset_s)
+		if idx_in_offsets < 5:
+			row = "top"
+		elif idx_in_offsets == 5:
+			row = "center"
+		else:
+			row = "bottom"
+
+		tile = {
+			"frame_index": frame_index,
+			"requested_frame_index": requested_frame,
+			"offset_s": offset_s,
+			"label": label,
+			"row": row,
+			"clamped": clamped,
+		}
+		tiles.append(tile)
+
+	return tiles

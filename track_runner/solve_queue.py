@@ -37,6 +37,8 @@ import key_input
 import solver_workers
 import interval_fingerprint
 import race_start
+import race_start_contact_sheet
+import tr_paths
 
 
 #============================================
@@ -65,9 +67,9 @@ class WorkPlan:
 		reused_count: len(cached_results_by_idx).
 		pending_count: len(pending_pair_indices).
 		phase_by_idx: Dict mapping pair_idx to phase string:
-			"pre_race" if end_frame <= bracket_low,
-			"bracket" if (start_frame, end_frame) match bracket endpoints,
-			"post_race" otherwise. Empty when race_start_bracket is None.
+			"pre_race" if end_frame <= interval_low,
+			"interval" if (start_frame, end_frame) match interval endpoints,
+			"post_race" otherwise. Empty when race_start_interval is None.
 	"""
 	usable_seeds_sorted: list
 	expected_fingerprints: list
@@ -106,13 +108,16 @@ class ExecutionContext:
 			to in-process if pending_count is tiny.
 		video_path: Input video path; workers use it to reopen their own
 			readers across the process boundary.
+		video_frame_count: Total frame count from mediainfo (for correct
+			frame clamping in contact sheet rendering). Must be the
+			authoritative value from cli._probe_video(), not OpenCV.
 		debug: Debug flag; gates per-interval debug lines.
-		race_start_bracket: Optional tuple (low_frame, high_frame) for
-			race-start bracket classification. None means no pre-race
+		race_start_interval: Optional tuple (low_frame, high_frame) for
+			race-start interval classification. None means no pre-race
 			classification (legacy refine path).
 		pre_race_reference: Dict from compute_pre_race_reference or None.
 			Initially None; populated by execute_interval_work after the
-			bracket interval is solved and Stage 2 fine detection runs.
+			interval is solved and Stage 2 fine detection runs.
 	"""
 	reader: object
 	scene_transform: object
@@ -122,8 +127,9 @@ class ExecutionContext:
 	fps: float
 	num_workers: int
 	video_path: str
+	video_frame_count: int
 	debug: bool
-	race_start_bracket: tuple = None
+	race_start_interval: tuple = None
 	pre_race_reference: dict = None
 
 
@@ -131,7 +137,7 @@ class ExecutionContext:
 def plan_interval_work(
 	seeds: list,
 	prior_intervals: dict = None,
-	race_start_bracket: tuple = None,
+	race_start_interval: tuple = None,
 ) -> WorkPlan:
 	"""Compute the WorkPlan for a seed list + optional cache.
 
@@ -139,9 +145,9 @@ def plan_interval_work(
 	`interval_solver.solve_all_intervals` and `cli._mode_refine` so solve
 	mode and refine mode see the same partition.
 
-	When race_start_bracket is provided, intervals are classified by phase:
-	pre-race if end_frame <= bracket_low (inclusive, so the interval ending
-	exactly matching bracket endpoints, post-race otherwise. Classification
+	When race_start_interval is provided, intervals are classified by phase:
+	pre-race if end_frame <= interval_low (inclusive, so the interval ending
+	exactly matching interval endpoints, post-race otherwise. Classification
 	is stored in the plan for execute_interval_work to dispatch properly.
 
 	Args:
@@ -149,9 +155,9 @@ def plan_interval_work(
 		prior_intervals: Optional fingerprint->result dict (the
 			solved_intervals cache). None or empty means every interval
 			is pending.
-		race_start_bracket: Optional tuple (low_frame, high_frame) for
-			race-start bracket. When None, no phase classification happens
-			(legacy refine mode without bracket).
+		race_start_interval: Optional tuple (low_frame, high_frame) for
+			race-start interval. When None, no phase classification happens
+			(legacy refine mode without interval).
 
 	Returns:
 		A frozen `WorkPlan`. When fewer than 2 usable seeds exist, all
@@ -184,7 +190,7 @@ def plan_interval_work(
 	cached_results_by_idx = {}
 	pending_pair_indices = []
 	phase_by_idx = {}
-	bracket_low, bracket_high = (race_start_bracket if race_start_bracket else
+	interval_low, interval_high = (race_start_interval if race_start_interval else
 		(None, None))
 	for pair_idx in range(total_intervals):
 		seed_start = usable_sorted[pair_idx]
@@ -199,18 +205,18 @@ def plan_interval_work(
 			cached_results_by_idx[pair_idx] = prior_intervals[fingerprint]
 		else:
 			pending_pair_indices.append(pair_idx)
-		# phase classification: only when bracket is present.
-		# end_frame is inclusive (interval_solver convention). bracket_low
-		# is the last pre-race seed frame, so intervals ending AT bracket_low
+		# phase classification: only when interval is present.
+		# end_frame is inclusive (interval_solver convention). interval_low
+		# is the last pre-race seed frame, so intervals ending AT interval_low
 		# are fully pre-race (all frames < final race_start_frame which lies
-		# inside the bracket). Use <= to include that boundary interval.
-		if bracket_low is not None:
+		# inside the interval). Use <= to include that boundary interval.
+		if interval_low is not None:
 			start_frame = int(seed_start["frame_index"])
 			end_frame = int(seed_end["frame_index"])
-			if end_frame <= bracket_low:
+			if end_frame <= interval_low:
 				phase_by_idx[pair_idx] = "pre_race"
-			elif start_frame == bracket_low and end_frame == bracket_high:
-				phase_by_idx[pair_idx] = "bracket"
+			elif start_frame == interval_low and end_frame == interval_high:
+				phase_by_idx[pair_idx] = "interval"
 			else:
 				phase_by_idx[pair_idx] = "post_race"
 	# orphan prune: keep only keys that match a current fingerprint.
@@ -657,75 +663,97 @@ def execute_interval_work(
 							_accept(pair_idx, fingerprint, result)
 
 	# ============ Stage 2: Fine detection and pre-race synthesis ============
-	# If a bracket was provided and we have pre-race intervals to solve,
+	# If an interval was provided and we have pre-race intervals to solve,
 	# now is the time to run Stage 2 (fine detection) and synthesize pre-race results.
-	if context.race_start_bracket is not None and len(pending_pre_race) > 0:
-		bracket_low, bracket_high = context.race_start_bracket
+	if context.race_start_interval is not None and len(pending_pre_race) > 0:
+		interval_low, interval_high = context.race_start_interval
 
-		# Find the bracket interval's result. It must be in interval_results
-		# (either cached or just solved). The bracket interval matches
+		# Find the interval's result. It must be in interval_results
+		# (either cached or just solved). The interval matches
 		# these seed frames exactly.
-		bracket_result = None
+		interval_result = None
 		for pair_idx in range(total_intervals):
-			if (int(usable_seeds_sorted[pair_idx]["frame_index"]) == bracket_low and
-				int(usable_seeds_sorted[pair_idx + 1]["frame_index"]) == bracket_high):
-				bracket_result = interval_results[pair_idx]
+			if (int(usable_seeds_sorted[pair_idx]["frame_index"]) == interval_low and
+				int(usable_seeds_sorted[pair_idx + 1]["frame_index"]) == interval_high):
+				interval_result = interval_results[pair_idx]
 				break
 
-		if bracket_result is None:
+		if interval_result is None:
 			raise RuntimeError(
-				f"internal error: bracket interval [{bracket_low}, {bracket_high}] "
+				f"internal error: interval [{interval_low}, {interval_high}] "
 				f"not found in results"
 			)
 
-		# Stage 2: Fine detection on bracket trajectory
+		# Stage 2: Fine detection on interval trajectory
 		# If this raises, the exception propagates and the assertion below
 		# is skipped, so the real error surfaces instead of an accounting failure.
-		stage_2_raised = False
-		try:
-			bracket_trajectory = bracket_result["trajectory"]
-			final_race_start_frame = race_start.detect_race_start_in_bracket(
-				bracket_trajectory, context.scene_transform, context.fps,
-				bracket_start_frame=bracket_low
+		interval_trajectory = interval_result["trajectory"]
+		final_race_start_frame = race_start.detect_race_start_in_interval(
+			interval_trajectory, context.scene_transform, context.fps,
+			interval_start_frame=interval_low
+		)
+
+		# Compute pre_race_reference now that we have the final race_start_frame
+		pre_race_reference = race_start.compute_pre_race_reference(
+			context.all_seeds, final_race_start_frame, context.scene_transform,
+			race_start_interval=context.race_start_interval
+		)
+
+		# Store in context so interval_solver can access it
+		context.pre_race_reference = pre_race_reference
+
+		# Render the race-start confirmation contact sheet
+		# This is a required artifact whenever Stage 2 computes race_start_frame.
+		tiles = race_start.choose_race_start_confirmation_frames(
+			final_race_start_frame, context.fps, context.video_frame_count
+		)
+		contact_sheet_path = tr_paths.default_race_start_contact_sheet_path(
+			context.video_path
+		)
+		race_start_contact_sheet.render_race_start_contact_sheet(
+			context.video_path,
+			context.fps,
+			context.video_frame_count,
+			tiles,
+			pre_race_reference,
+			context.scene_transform,
+			contact_sheet_path,
+		)
+		print(f"  race-start confirmation: {contact_sheet_path}")
+
+		# Now solve pre-race intervals using the reference
+		for pair_idx in pending_pre_race:
+			if run_control is not None and run_control.quit_requested:
+				break
+			if key_reader is not None and run_control is not None:
+				ch = key_reader.poll()
+				key_input.handle_key(ch, run_control, key_reader, progress if pending_normal_total > 0 else None)
+			if run_control is not None and run_control.quit_requested:
+				break
+
+			seed_start = usable_seeds_sorted[pair_idx]
+			seed_end = usable_seeds_sorted[pair_idx + 1]
+			start_frame = int(seed_start["frame_index"])
+			end_frame = int(seed_end["frame_index"])
+
+			if context.debug:
+				print(f"  synthesizing pre-race interval {pair_idx + 1}/{total_intervals} "
+					f"(frames {start_frame}-{end_frame})")
+
+			result = _solve_pre_race_interval(
+				seed_start, seed_end, pre_race_reference,
+				context.scene_transform, context.fps
 			)
+			_accept(pair_idx, expected_fingerprints[pair_idx], result)
 
-			# Compute pre_race_reference now that we have the final race_start_frame
-			pre_race_reference = race_start.compute_pre_race_reference(
-				context.all_seeds, final_race_start_frame, context.scene_transform
+		# Stage 2 and pre-race synthesis completed successfully
+		# Verify accounting only when not interrupted by quit
+		if run_control is None or not run_control.quit_requested:
+			assert reused_count + solved_count == total_intervals, (
+				f"reuse/solve accounting drifted: "
+				f"reused={reused_count} solved={solved_count} "
+				f"total={total_intervals}"
 			)
-
-			# Store in context so interval_solver can access it
-			context.pre_race_reference = pre_race_reference
-
-			# Now solve pre-race intervals using the reference
-			for pair_idx in pending_pre_race:
-				if run_control is not None and run_control.quit_requested:
-					break
-				if key_reader is not None and run_control is not None:
-					ch = key_reader.poll()
-					key_input.handle_key(ch, run_control, key_reader, progress if pending_normal_total > 0 else None)
-				if run_control is not None and run_control.quit_requested:
-					break
-
-				seed_start = usable_seeds_sorted[pair_idx]
-				seed_end = usable_seeds_sorted[pair_idx + 1]
-				start_frame = int(seed_start["frame_index"])
-				end_frame = int(seed_end["frame_index"])
-
-				if context.debug:
-					print(f"  synthesizing pre-race interval {pair_idx + 1}/{total_intervals} "
-						f"(frames {start_frame}-{end_frame})")
-
-				result = _solve_pre_race_interval(
-					seed_start, seed_end, pre_race_reference,
-					context.scene_transform, context.fps
-				)
-				_accept(pair_idx, expected_fingerprints[pair_idx], result)
-		except Exception:
-			# If Stage 2 raises, mark so the accounting assertion below
-			# does not mask the real exception. Let the exception propagate.
-			stage_2_raised = True
-			raise
 
 	# post-loop summary: make cache behavior visible on stdout
 	print(f"  solver: reused {reused_count}, solved {solved_count} "
@@ -738,17 +766,6 @@ def execute_interval_work(
 		print(f"  solver: WARNING 0 of {len(plan.pruned_prior)} prior intervals "
 			f"reused -- possible fingerprint mismatch "
 			f"(check seed filter / rounding)")
-	# refine-mode invariant: every pair iteration must land in exactly
-	# one branch (reuse or solve). Guarded on the quit path because an
-	# interrupted loop legitimately has reused_count + solved_count <
-	# total_intervals. Also guarded on Stage 2 exception path, because
-	# Stage 2 exceptions should propagate, not be masked by accounting assertions.
-	if (run_control is None or not run_control.quit_requested) and not stage_2_raised:
-		assert reused_count + solved_count == total_intervals, (
-			f"reuse/solve accounting drifted: "
-			f"reused={reused_count} solved={solved_count} "
-			f"total={total_intervals}"
-		)
 
 	if run_control is not None and run_control.quit_requested:
 		done = len([r for r in interval_results if r is not None])

@@ -1,7 +1,15 @@
-"""Video I/O classes for reading and writing video frames.
+"""Basic video I/O helpers.
 
-Provides VideoReader for reading frames via OpenCV VideoCapture,
-and VideoWriter for encoding frames via ffmpeg subprocess pipe.
+This module is suitable for simple sequential frame reads and
+ffmpeg-backed video writing. It intentionally uses OpenCV for
+lightweight access.
+
+Do not use VideoReader when exact metadata or reliable random frame
+access is required. OpenCV-reported metadata and seeking can be
+unreliable for some MOV/HEVC files. For scattered frame reads,
+contact sheets, or anything that depends on exact frame numbers, use
+common_tools.frame_reader.FrameReader with the MediaInfo-backed
+metadata path instead.
 """
 
 # Standard Library

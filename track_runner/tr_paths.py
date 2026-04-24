@@ -189,3 +189,22 @@ def default_motion_cache_path(input_file: str) -> str:
 	"""
 	motion_path = _data_file_path(input_file, ".track_runner.camera_motion.npz")
 	return motion_path
+
+#============================================
+
+def default_race_start_contact_sheet_path(input_file: str) -> str:
+	"""Return the default race-start contact sheet PNG path for a given input file.
+
+	The contact sheet is a visual confirmation artifact written alongside the
+	source video (not in tr_config) to match the encoded output location
+	convention.
+
+	Args:
+		input_file: Input media file path.
+
+	Returns:
+		str: Contact sheet PNG path like {stem}.track_runner.race_start_check.png.
+	"""
+	stem, ext = os.path.splitext(input_file)
+	contact_sheet_path = f"{stem}.track_runner.race_start_check.png"
+	return contact_sheet_path

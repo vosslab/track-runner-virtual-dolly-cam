@@ -7,9 +7,6 @@ Tests core pre-race frame range analysis and race-start boundary detection:
 - Contract C2 implementation (averaged geometry for pre-race frames)
 """
 
-# Standard Library
-import math
-
 # PIP3 modules
 import pytest
 
@@ -126,17 +123,17 @@ class FakeSceneTransform:
 
 
 #============================================
-# Stage 1: bracket detection tests
+# Stage 1: interval detection tests
 #============================================
 
-def test_locate_bracket_picks_coherent_transition():
+def test_locate_interval_picks_coherent_transition():
 	"""Stationary cluster followed by coherent motion -> bracket is the
 	transition pair.
 
 	Seeds @30,60,90 stationary; seeds @120,150 moving in one direction.
 	The first confirmed coherent window is [usable[2..4]] = @90,@120,@150;
 	its next window [@120,@150,@180] is also coherent. Transition pair is
-	the largest in the first window = (@90, @120). Bracket = (90, 120).
+	the largest in the first window = (@90, @120). Interval = (90, 120).
 	"""
 	seeds = [
 		_mk_seed(30, cx=100.0),
@@ -147,11 +144,11 @@ def test_locate_bracket_picks_coherent_transition():
 		_mk_seed(180, cx=1300.0),
 	]
 	transform = FakeSceneTransform(pan_rate=0.0)
-	bracket = race_start.locate_race_start_bracket(seeds, transform, fps=30.0)
-	assert bracket == (90, 120)
+	interval = race_start.locate_race_start_interval(seeds, transform, fps=30.0)
+	assert interval == (90, 120)
 
 
-def test_locate_dense_pre_race_cluster_not_triggered():
+def test_locate_interval_dense_pre_race_cluster_not_triggered():
 	"""Adjacent-frame pre-race seeds are debounced (total annotation noise
 	across a cluster stays below the motion threshold); bracket is found at
 	the first post-cluster coherent motion.
@@ -169,14 +166,14 @@ def test_locate_dense_pre_race_cluster_not_triggered():
 		_mk_seed(180, cx=1300.0),
 	]
 	transform = FakeSceneTransform(pan_rate=0.0)
-	bracket = race_start.locate_race_start_bracket(seeds, transform, fps=60.0)
+	interval = race_start.locate_race_start_interval(seeds, transform, fps=60.0)
 	# First coherent window is [@3, @60, @120]; transition pair is the
-	# largest disp in that window = (@3, @60). Bracket endpoints are the
+	# largest disp in that window = (@3, @60). Interval endpoints are the
 	# last pre-race seed and the first moving seed.
-	assert bracket == (3, 60)
+	assert interval == (3, 60)
 
 
-def test_locate_oneoff_jump_not_triggered():
+def test_locate_interval_oneoff_jump_not_triggered():
 	"""A single big annotation jump followed by return is rejected by the
 	next-window confirmation step.
 
@@ -193,10 +190,10 @@ def test_locate_oneoff_jump_not_triggered():
 	]
 	transform = FakeSceneTransform(pan_rate=0.0)
 	with pytest.raises(RuntimeError):
-		race_start.locate_race_start_bracket(seeds, transform, fps=30.0)
+		race_start.locate_race_start_interval(seeds, transform, fps=30.0)
 
 
-def test_locate_torso_scale_invariance():
+def test_locate_interval_torso_scale_invariance():
 	"""Same absolute scene displacement triggers for a small torso but not
 	for a large torso, since the threshold is in torso widths (C1).
 
@@ -213,7 +210,7 @@ def test_locate_torso_scale_invariance():
 			_mk_seed(180, cx=190.0, w=w),
 		]
 		transform = FakeSceneTransform(pan_rate=0.0)
-		return race_start.locate_race_start_bracket(seeds, transform, fps=30.0)
+		return race_start.locate_race_start_interval(seeds, transform, fps=30.0)
 	# Small torso (w=10): 30 px = 3 torso widths >> 0.75 threshold. Triggers.
 	assert _run(10.0) == (90, 120)
 	# Large torso (w=200): 30 px = 0.15 torso widths << 0.75 threshold. No trigger.
@@ -221,15 +218,15 @@ def test_locate_torso_scale_invariance():
 		_run(200.0)
 
 
-def test_locate_all_stationary_raises():
+def test_locate_interval_all_stationary_raises():
 	"""All seeds at same scene position -> RuntimeError (no coherent window)."""
 	seeds = [_mk_seed(i * 30, cx=100.0) for i in range(6)]
 	transform = FakeSceneTransform(pan_rate=0.0)
 	with pytest.raises(RuntimeError):
-		race_start.locate_race_start_bracket(seeds, transform, fps=30.0)
+		race_start.locate_race_start_interval(seeds, transform, fps=30.0)
 
 
-def test_locate_all_moving_raises():
+def test_locate_interval_all_moving_raises():
 	"""First seed pair already moving (no pre-race seed) -> RuntimeError.
 
 	Every seed pair is a big directional step, so the first window triggers
@@ -243,16 +240,16 @@ def test_locate_all_moving_raises():
 	]
 	transform = FakeSceneTransform(pan_rate=0.0)
 	with pytest.raises(RuntimeError):
-		race_start.locate_race_start_bracket(seeds, transform, fps=30.0)
+		race_start.locate_race_start_interval(seeds, transform, fps=30.0)
 
 
-def test_locate_fewer_than_min_window_seeds_raises():
+def test_locate_interval_fewer_than_min_window_seeds_raises():
 	"""Fewer usable seeds than window size -> RuntimeError."""
 	transform = FakeSceneTransform(pan_rate=0.0)
 	with pytest.raises(RuntimeError):
-		race_start.locate_race_start_bracket([_mk_seed(0)], transform, fps=30.0)
+		race_start.locate_race_start_interval([_mk_seed(0)], transform, fps=30.0)
 	with pytest.raises(RuntimeError):
-		race_start.locate_race_start_bracket(
+		race_start.locate_race_start_interval(
 			[_mk_seed(0), _mk_seed(30)], transform, fps=30.0,
 		)
 
@@ -270,6 +267,7 @@ def test_compute_pre_race_reference_averages_w_and_h():
 	]
 	ref = race_start.compute_pre_race_reference(
 		seeds, race_start_frame=50, scene_transform=FakeSceneTransform(0.0),
+		race_start_interval=(0, 50),
 	)
 	assert abs(ref["torso_w"] - 32.0) < 0.5
 	assert abs(ref["torso_h"] - 62.0) < 0.5
@@ -284,6 +282,7 @@ def test_compute_pre_race_reference_excludes_approximate():
 	]
 	ref = race_start.compute_pre_race_reference(
 		seeds, race_start_frame=50, scene_transform=FakeSceneTransform(0.0),
+		race_start_interval=(0, 50),
 	)
 	assert ref["source_count"] == 1
 	assert abs(ref["torso_w"] - 30.0) < 0.5
@@ -310,6 +309,7 @@ def test_compute_pre_race_reference_excludes_post_boundary_seeds():
 	]
 	ref = race_start.compute_pre_race_reference(
 		seeds, race_start_frame=50, scene_transform=FakeSceneTransform(0.0),
+		race_start_interval=(0, 50),
 	)
 	assert ref["source_count"] == 1
 	assert abs(ref["torso_w"] - 30.0) < 0.5
@@ -326,7 +326,7 @@ def test_compute_pre_race_reference_raises_when_no_qualifying():
 
 	with pytest.raises(RuntimeError) as exc_info:
 		race_start.compute_pre_race_reference(
-			seeds, race_start_frame, transform
+			seeds, race_start_frame, transform, race_start_interval=(0, 50)
 		)
 	assert "visible or partial" in str(exc_info.value).lower()
 
@@ -339,37 +339,129 @@ def test_compute_pre_race_reference_scene_anchored():
 	]
 	ref = race_start.compute_pre_race_reference(
 		seeds, race_start_frame=50, scene_transform=FakeSceneTransform(0.0),
+		race_start_interval=(0, 50),
 	)
 	# pan_rate=0 so scene == pixel; anchor = (100, 200)
 	assert abs(ref["scene_anchor_x"] - 100.0) < 0.5
 	assert abs(ref["scene_anchor_y"] - 200.0) < 0.5
 
 
+def test_compute_pre_race_reference_includes_interval():
+	"""race_start_interval is persisted when provided."""
+	seeds = [
+		_mk_seed(0, w=30.0, h=60.0),
+		_mk_seed(10, w=32.0, h=62.0),
+		_mk_seed(20, w=34.0, h=64.0),
+	]
+	interval = (10, 20)
+	ref = race_start.compute_pre_race_reference(
+		seeds, race_start_frame=25, scene_transform=FakeSceneTransform(0.0),
+		race_start_interval=interval,
+	)
+	assert ref["race_start_interval"] == [10, 20]
+
+
 #============================================
-# Detect race start in bracket (Stage 2)
+# Detect race start in interval (Stage 2)
 #============================================
 
-def test_detect_race_start_in_bracket_raises_on_none():
-	"""Detector returns None for bracket trajectory -> RuntimeError."""
-	# Build a bracket trajectory with no clear motion onset
+def test_detect_race_start_in_interval_raises_on_none():
+	"""Detector returns None for interval trajectory -> RuntimeError."""
+	# Build an interval trajectory with no clear motion onset
 	# (all frames stationary). The detector should return None
 	# and we should raise RuntimeError.
-	bracket_trajectory = [
+	interval_trajectory = [
 		{"cx": 100.0, "cy": 100.0, "w": 30.0, "h": 60.0}
 		for _ in range(10)
 	]
 	transform = FakeSceneTransform(pan_rate=0.0)
 	fps = 30.0
-	bracket_start_frame = 0
+	interval_start_frame = 0
 
 	# This test depends on race_phases.detect_race_start returning None
 	# when there is no motion. We trust that contract and expect RuntimeError.
 	with pytest.raises(RuntimeError) as exc_info:
-		race_start.detect_race_start_in_bracket(
-			bracket_trajectory, transform, fps, bracket_start_frame
+		race_start.detect_race_start_in_interval(
+			interval_trajectory, transform, fps, interval_start_frame
 		)
 	assert "velocity onset" in str(exc_info.value).lower() or \
-		   "none" in str(exc_info.value).lower()
+	"none" in str(exc_info.value).lower()
+
+
+#============================================
+# Frame selection for confirmation contact sheet
+#============================================
+
+def test_choose_confirmation_frames_fixed_offsets():
+	"""Tiles span full offset range with center at START."""
+	tiles = race_start.choose_race_start_confirmation_frames(
+		race_start_frame=100, fps=30.0, video_frame_count=200
+	)
+	# Behavioral property: tiles exist with specific offset values
+	offsets = [t["offset_s"] for t in tiles]
+	assert -0.5 in offsets
+	assert 0.0 in offsets
+	assert 0.5 in offsets
+	# Center tile (offset=0.0) has label START
+	center_tiles = [t for t in tiles if t["offset_s"] == 0.0]
+	assert len(center_tiles) == 1
+	assert center_tiles[0]["label"] == "START"
+
+
+def test_choose_confirmation_frames_clamping():
+	"""Clamping at frame boundary sets clamped=True, frame_index clamped."""
+	tiles = race_start.choose_race_start_confirmation_frames(
+		race_start_frame=10, fps=30.0, video_frame_count=200
+	)
+	# Behavioral property: when requested_frame_index would go negative,
+	# it's clamped to 0 and clamped=True is set
+	clamped_tiles = [t for t in tiles if t["clamped"]]
+	assert len(clamped_tiles) > 0
+	for t in clamped_tiles:
+		# Clamped frame index must be >= 0
+		assert t["frame_index"] >= 0
+
+
+def test_choose_confirmation_frames_labels():
+	"""Labels are PRE/START/POST based on offset sign."""
+	tiles = race_start.choose_race_start_confirmation_frames(
+		race_start_frame=100, fps=30.0, video_frame_count=200
+	)
+	# Behavioral property: offset sign determines label
+	pre_tiles = [t for t in tiles if t["offset_s"] < 0]
+	start_tiles = [t for t in tiles if t["offset_s"] == 0.0]
+	post_tiles = [t for t in tiles if t["offset_s"] > 0]
+
+	# All PRE tiles (offset < 0) have label PRE
+	for t in pre_tiles:
+		assert t["label"] == "PRE"
+	# Center tile (offset == 0) has label START
+	assert len(start_tiles) == 1
+	assert start_tiles[0]["label"] == "START"
+	# All POST tiles (offset > 0) have label POST
+	for t in post_tiles:
+		assert t["label"] == "POST"
+
+
+def test_choose_confirmation_frames_rows():
+	"""Rows are top/center/bottom based on label."""
+	tiles = race_start.choose_race_start_confirmation_frames(
+		race_start_frame=100, fps=30.0, video_frame_count=200
+	)
+	# Behavioral property: label determines row
+	pre_tiles = [t for t in tiles if t["label"] == "PRE"]
+	start_tiles = [t for t in tiles if t["label"] == "START"]
+	post_tiles = [t for t in tiles if t["label"] == "POST"]
+
+	# All PRE tiles have row = top
+	for t in pre_tiles:
+		assert t["row"] == "top"
+	# All START tiles have row = center
+	for t in start_tiles:
+		assert t["row"] == "center"
+	# All POST tiles have row = bottom
+	for t in post_tiles:
+		assert t["row"] == "bottom"
 
 
 #============================================
