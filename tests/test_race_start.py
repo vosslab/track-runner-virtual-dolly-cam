@@ -189,8 +189,7 @@ def test_locate_interval_oneoff_jump_not_triggered():
 		_mk_seed(150, cx=100.0),
 	]
 	transform = FakeSceneTransform(pan_rate=0.0)
-	with pytest.raises(RuntimeError):
-		race_start.locate_race_start_interval(seeds, transform, fps=30.0)
+	assert race_start.locate_race_start_interval(seeds, transform, fps=30.0) is None
 
 
 def test_locate_interval_torso_scale_invariance():
@@ -214,23 +213,22 @@ def test_locate_interval_torso_scale_invariance():
 	# Small torso (w=10): 30 px = 3 torso widths >> 0.75 threshold. Triggers.
 	assert _run(10.0) == (90, 120)
 	# Large torso (w=200): 30 px = 0.15 torso widths << 0.75 threshold. No trigger.
-	with pytest.raises(RuntimeError):
-		_run(200.0)
+	assert _run(200.0) is None
 
 
-def test_locate_interval_all_stationary_raises():
-	"""All seeds at same scene position -> RuntimeError (no coherent window)."""
+def test_locate_interval_all_stationary_returns_none():
+	"""All seeds at same scene position -> None (no coherent window)."""
 	seeds = [_mk_seed(i * 30, cx=100.0) for i in range(6)]
 	transform = FakeSceneTransform(pan_rate=0.0)
-	with pytest.raises(RuntimeError):
-		race_start.locate_race_start_interval(seeds, transform, fps=30.0)
+	assert race_start.locate_race_start_interval(seeds, transform, fps=30.0) is None
 
 
-def test_locate_interval_all_moving_raises():
-	"""First seed pair already moving (no pre-race seed) -> RuntimeError.
+def test_locate_interval_all_moving_returns_none():
+	"""First seed pair already moving (no pre-race seed) -> None.
 
 	Every seed pair is a big directional step, so the first window triggers
-	at i=0 and the transition pair is (usable[0], usable[1]).
+	at i=0 and the transition pair is (usable[0], usable[1]); without a
+	pre-race seed the detector reports no pre-race phase.
 	"""
 	seeds = [
 		_mk_seed(0, cx=100.0),
@@ -239,19 +237,17 @@ def test_locate_interval_all_moving_raises():
 		_mk_seed(90, cx=1300.0),
 	]
 	transform = FakeSceneTransform(pan_rate=0.0)
-	with pytest.raises(RuntimeError):
-		race_start.locate_race_start_interval(seeds, transform, fps=30.0)
+	assert race_start.locate_race_start_interval(seeds, transform, fps=30.0) is None
 
 
-def test_locate_interval_fewer_than_min_window_seeds_raises():
-	"""Fewer usable seeds than window size -> RuntimeError."""
+def test_locate_interval_too_few_seeds():
+	"""Fewer than 2 seeds raises; 2 seeds (below window size) returns None."""
 	transform = FakeSceneTransform(pan_rate=0.0)
 	with pytest.raises(RuntimeError):
 		race_start.locate_race_start_interval([_mk_seed(0)], transform, fps=30.0)
-	with pytest.raises(RuntimeError):
-		race_start.locate_race_start_interval(
-			[_mk_seed(0), _mk_seed(30)], transform, fps=30.0,
-		)
+	assert race_start.locate_race_start_interval(
+		[_mk_seed(0), _mk_seed(30)], transform, fps=30.0,
+	) is None
 
 
 #============================================
@@ -296,6 +292,7 @@ def test_compute_pre_race_reference_excludes_not_in_frame():
 	]
 	ref = race_start.compute_pre_race_reference(
 		seeds, race_start_frame=50, scene_transform=FakeSceneTransform(0.0),
+		race_start_interval=(0, 50),
 	)
 	assert ref["source_count"] == 1
 

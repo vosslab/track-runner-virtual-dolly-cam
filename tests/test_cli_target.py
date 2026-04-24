@@ -311,7 +311,9 @@ def test_target_race_start_missing_interval_raises():
 	fps = 30.0
 	frame_count = 1000
 
-	with pytest.raises(RuntimeError) as exc_info:
+	# Strict indexing: a schema-5 diagnostics dict without race_start_interval
+	# is an internal invariant violation and surfaces as KeyError.
+	with pytest.raises((KeyError, RuntimeError)) as exc_info:
 		cli._generate_race_start_target_frames(diagnostics, fps, frame_count)
 
 	assert "interval" in str(exc_info.value).lower()

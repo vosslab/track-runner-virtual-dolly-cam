@@ -1170,11 +1170,11 @@ def solve_all_intervals(
 		all_seeds_scene.append((frame_index, sx, sy, sw, sh))
 
 	# Stage 1: Locate race-start interval via seed-pair displacement.
-	# Raises RuntimeError if fewer than 2 usable seeds or degenerate cases.
+	# Returns None when no pre-race phase can be identified; downstream code
+	# treats that case as "skip Stage 2 and pre-race synthesis."
 	race_start_interval = race_start.locate_race_start_interval(
 		seeds, scene_transform, fps
 	)
-	interval_low, interval_high = race_start_interval
 
 	# plan_interval_work is the single source of truth for seed filter +
 	# fingerprint computation + cache partition. refine mode also calls

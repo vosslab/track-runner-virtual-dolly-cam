@@ -136,11 +136,10 @@ def locate_race_start_interval(seeds: list, scene_transform, fps: float) -> tupl
 		raise RuntimeError(
 			"fewer than 2 usable seeds; cannot solve as a track clip",
 		)
+	# Return None when there are too few seeds to evaluate pre-race coherence.
+	# Downstream code treats None as "no pre-race phase" and skips Stage 2.
 	if len(usable) < PRE_RACE_MIN_WINDOW_SEEDS:
-		raise RuntimeError(
-			f"fewer than {PRE_RACE_MIN_WINDOW_SEEDS} usable seeds; cannot "
-			f"evaluate directional coherence for race-start detection",
-		)
+		return None
 
 	# Precompute scene-space centers once; the loop reuses them.
 	scene_centers = [_seed_scene_center(scene_transform, s) for s in usable]
@@ -234,24 +233,18 @@ def locate_race_start_interval(seeds: list, scene_transform, fps: float) -> tupl
 		transition_low_idx = i + max_pair_offset
 		transition_high_idx = transition_low_idx + 1
 
+		# If the transition is at the very first seed pair there is no
+		# pre-race seed to anchor to; treat as "no pre-race phase."
 		if transition_low_idx == 0:
-			raise RuntimeError(
-				"cannot identify a pre-race interval; the first seed pair "
-				"is already the coherent motion transition. Add at least "
-				"one seed before race start.",
-			)
+			return None
 
 		return (
 			usable[transition_low_idx]["frame_index"],
 			usable[transition_high_idx]["frame_index"],
 		)
 
-	# No confirmed coherent window.
-	raise RuntimeError(
-		"cannot identify race start; no confirmed coherent motion window "
-		"found in seeds. Add a seed after the race starts, or check that "
-		"pre-race annotations are not too sparse.",
-	)
+	# No confirmed coherent window; treat as "no pre-race phase."
+	return None
 
 
 #============================================
