@@ -5,3 +5,4 @@ report_*.txt
 *.mkv
 *.avi
 *.mov
+output_smoke/

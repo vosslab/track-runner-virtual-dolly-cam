@@ -147,28 +147,52 @@ def test_filter_obstructed_requires_torso_box():
 
 #============================================
 
-def test_tag_contains_schema_version():
-	"""SOLVER_FINGERPRINT_TAG includes /schema/ version marker.
+def test_geometry_tag_excludes_schema():
+	"""GEOMETRY_TAG (the cache-key suffix) must NOT contain /schema/.
 
-	Locks the cache-invalidation contract: the tag includes the unified
-	SCHEMA_VERSION so any schema changes invalidate cached intervals.
+	Policy: schema bumps are metadata-only per contract C8 and must not
+	invalidate solved-geometry cache keys. Only blob_snap geometry
+	constants belong in GEOMETRY_TAG.
 	"""
-	assert "/schema/" in interval_fingerprint.SOLVER_FINGERPRINT_TAG
-	# Verify the numeric segment matches state_io.SCHEMA_VERSION
-	tag = interval_fingerprint.SOLVER_FINGERPRINT_TAG
-	expected = f"/schema/{state_io.SCHEMA_VERSION}"
-	assert expected in tag
+	assert "/schema/" not in interval_fingerprint.GEOMETRY_TAG
+	assert "blob_snap/" in interval_fingerprint.GEOMETRY_TAG
 
 
 #============================================
 
-def test_builder_reflects_schema_version(monkeypatch):
-	"""build_solver_fingerprint_tag() reads state_io.SCHEMA_VERSION.
+def test_solver_fingerprint_tag_includes_schema():
+	"""SOLVER_FINGERPRINT_TAG (telemetry) includes the schema version.
 
-	Verifies the builder includes the unified schema version; bumping the
-	constant invalidates cached intervals.
+	The informational tag is used for diagnostics headers, so schema
+	version must be visible there even though it is NOT in the cache key.
 	"""
-	# monkeypatch the constant and rebuild
-	monkeypatch.setattr(state_io, "SCHEMA_VERSION", 99)
-	rebuilt_tag = interval_fingerprint.build_solver_fingerprint_tag()
-	assert "/schema/99" in rebuilt_tag
+	tag = interval_fingerprint.SOLVER_FINGERPRINT_TAG
+	expected = f"/schema/{state_io.SCHEMA_VERSION}"
+	assert expected in tag
+	assert tag.startswith(interval_fingerprint.GEOMETRY_TAG)
+
+
+#============================================
+
+def test_cache_key_is_stable_across_schema_bump(monkeypatch):
+	"""Bumping state_io.SCHEMA_VERSION must NOT change cache keys.
+
+	This locks the geometry/schema split: cache keys depend only on
+	geometry-affecting constants, so metadata-only schema bumps leave
+	existing caches valid.
+	"""
+	seed_a = {"frame_index": 10, "cx": 1.0, "cy": 2.0, "w": 3.0, "h": 4.0}
+	seed_b = {"frame_index": 20, "cx": 5.0, "cy": 6.0, "w": 7.0, "h": 8.0}
+	key_before = interval_fingerprint.compute_interval_fingerprint(seed_a, seed_b)
+	monkeypatch.setattr(state_io, "SCHEMA_VERSION", 999)
+	# GEOMETRY_TAG is a module constant captured at import time; rebuild
+	# to simulate what a fresh process would do after a schema bump.
+	# The rebuilt geometry tag must NOT reference the bumped schema.
+	rebuilt_geom = interval_fingerprint.build_geometry_tag()
+	assert "/schema/" not in rebuilt_geom
+	assert "999" not in rebuilt_geom
+	# The telemetry tag, by contrast, MUST reflect the bump.
+	rebuilt_full = interval_fingerprint.build_solver_fingerprint_tag()
+	assert "/schema/999" in rebuilt_full
+	key_after = interval_fingerprint.compute_interval_fingerprint(seed_a, seed_b)
+	assert key_before == key_after

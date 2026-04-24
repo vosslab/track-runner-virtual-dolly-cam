@@ -17,3 +17,11 @@ fi
 # Set Python environment optimizations
 export PYTHONUNBUFFERED=1
 export PYTHONDONTWRITEBYTECODE=1
+
+# Put repo root on PYTHONPATH so `common_tools` (and other repo-root packages)
+# are importable from scripts under tools/, track_runner/, tests/, etc.
+_REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
+if [ -n "$_REPO_ROOT" ]; then
+	export PYTHONPATH="$_REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}"
+fi
+unset _REPO_ROOT

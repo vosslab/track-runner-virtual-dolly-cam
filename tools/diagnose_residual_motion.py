@@ -113,7 +113,7 @@ def load_all_data(input_file: str) -> tuple:
 	# load camera motion cache
 	# cache files use a computed key, not a fixed path; glob for matching npz
 	basename = os.path.basename(input_file)
-	cache_pattern = os.path.join(tr_paths.DATA_DIR, f"{basename}_*.npz")
+	cache_pattern = os.path.join(tr_paths.DATA_DIR, f"{basename}.*.npz")
 	cache_files = sorted(glob.glob(cache_pattern))
 	motion_track = None
 	cache_path = None

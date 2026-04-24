@@ -35,6 +35,7 @@ import scoring
 import seed_editor
 import setup_mode
 import interval_solver
+import interval_fingerprint
 import solve_queue
 import review
 import tr_crop
@@ -580,6 +581,18 @@ def _load_prior_results(intervals_path: str, diag_path: str) -> tuple:
 	"""
 	intervals_file = state_io.load_geometry_cache(intervals_path)
 	solved = intervals_file.get("solved_intervals", {})
+	# One-time migration of geometry-compatible legacy cache keys. This
+	# rewrites on-disk fingerprints that predate the geometry/schema tag
+	# split (e.g. tails carrying `/schema/5` or `/score_schema/4/prerace/4`)
+	# into the current `GEOMETRY_TAG`, so schema bumps no longer force
+	# full re-solves. If anything migrated, persist the rewrite so the
+	# next load is free.
+	solved, migrated_count = interval_fingerprint.migrate_legacy_fingerprints(solved)
+	if migrated_count > 0:
+		intervals_file["solved_intervals"] = solved
+		state_io.write_geometry_cache(intervals_path, intervals_file)
+		print(f"  cache: migrated {migrated_count} legacy fingerprint(s) "
+			f"to current geometry tag")
 	# merge prior interval_score back onto each geometry entry.
 	# key on (start_frame, end_frame) because interval_scores.json does
 	# not carry fingerprints.
@@ -1473,6 +1486,18 @@ def _mode_refine(
 	# refine mode both call it so cache keys match byte-for-byte.
 	intervals_file = state_io.load_geometry_cache(intervals_path)
 	solved_intervals = intervals_file.get("solved_intervals", {})
+	# Migrate geometry-compatible legacy cache keys so refine can reuse
+	# them. Write-back is gated on migrated_count > 0; if nothing
+	# changed, we preserve the zero-write guarantee of unchanged-seed
+	# refine.
+	solved_intervals, migrated_count = interval_fingerprint.migrate_legacy_fingerprints(
+		solved_intervals,
+	)
+	if migrated_count > 0:
+		intervals_file["solved_intervals"] = solved_intervals
+		state_io.write_geometry_cache(intervals_path, intervals_file)
+		print(f"  cache: migrated {migrated_count} legacy fingerprint(s) "
+			f"to current geometry tag")
 	plan = solve_queue.plan_interval_work(seeds, solved_intervals)
 	total_expected = plan.total_intervals
 
