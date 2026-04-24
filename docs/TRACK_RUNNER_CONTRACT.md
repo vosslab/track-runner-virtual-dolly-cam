@@ -127,6 +127,8 @@ Allowed:
 - this is forbidden: 3 for ITEM_SCHEMA_VERSION and 4 for OBJECT_SCHEMA_VERSION
 - C8 does not mean every metadata-only schema change must invalidate solved geometry caches.
 - Use one SCHEMA_VERSION value everywhere schema is recorded. 
+- Keep a log of the SCHEMA_VERSIONs in a docs/TR_SCHEMA_VERSION_HISTORY.md
+- in some cases schema 1 might be the same as schema 8, but it keeps us from having mixed numbers
 
 ## Relationship to other docs
 
