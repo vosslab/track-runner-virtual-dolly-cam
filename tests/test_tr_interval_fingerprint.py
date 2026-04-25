@@ -158,7 +158,12 @@ def test_geometry_tag_excludes_schema_metadata():
 	"""
 	assert "/schema/" not in interval_fingerprint.GEOMETRY_TAG
 	assert "geometry_schema_v" in interval_fingerprint.GEOMETRY_TAG
-	# Legacy parallel-version constant must not return.
+
+
+#============================================
+
+def test_geometry_tag_drops_legacy_blob_snap_prefix():
+	"""Legacy parallel-version constant must not return."""
 	assert "blob_snap/" not in interval_fingerprint.GEOMETRY_TAG
 
 

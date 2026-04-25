@@ -20,9 +20,10 @@ import re
 
 # local repo modules
 import pytest
+import git_file_utils
 
 
-REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+REPO_ROOT = git_file_utils.get_repo_root()
 PRODUCTION_DIRS = [
 	os.path.join(REPO_ROOT, "track_runner"),
 	os.path.join(REPO_ROOT, "common_tools"),
@@ -79,7 +80,7 @@ def _scan_python_files() -> list:
 			filepath = os.path.join(directory, filename)
 			if not os.path.isfile(filepath):
 				continue
-			with open(filepath, "r") as fh:
+			with open(filepath, "r", encoding="utf-8") as fh:
 				lines = fh.read().split("\n")
 			for line_no, line in enumerate(lines, start=1):
 				results.append((filepath, line_no, line))

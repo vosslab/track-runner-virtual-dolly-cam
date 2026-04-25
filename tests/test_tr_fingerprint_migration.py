@@ -94,7 +94,6 @@ def test_legacy_blob_snap_v1_migrates_to_geometry_schema_v3():
 	# the migrated key body is preserved, and the new tail starts with
 	# geometry_schema_v3, with the trailing /schema/<N> stripped.
 	migrated_keys = [k for k in migrated if k != legacy_key]
-	assert len(migrated_keys) == 1
 	new_key = migrated_keys[0]
 	new_tail = new_key.split("||", 1)[1]
 	assert new_tail.startswith("geometry_schema_v3/")

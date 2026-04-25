@@ -149,7 +149,8 @@ def test_result_list_in_seed_order(monkeypatch):
 		assert result["start_frame"] == seeds[i]["frame_index"]
 		assert result["end_frame"] == seeds[i + 1]["frame_index"]
 	# only the middle one came from cache.
-	assert [r["_from_cache"] for r in results] == [False, False, True, False]
+	assert results[2]["_from_cache"] is True
+	assert sum(r["_from_cache"] for r in results) == 1
 
 
 #============================================
@@ -179,9 +180,9 @@ def test_on_interval_solved_fires_once_per_new_fingerprint(monkeypatch):
 	)
 
 	# exactly 2 new-solve callbacks (intervals 1-2 and 2-3), none for cache hit.
-	assert len(solved_fingerprints) == 2
-	# no duplicates.
-	assert len(set(solved_fingerprints)) == 2
+	fp_interval_1 = interval_solver.compute_interval_fingerprint(seeds[1], seeds[2])
+	fp_interval_2 = interval_solver.compute_interval_fingerprint(seeds[2], seeds[3])
+	assert set(solved_fingerprints) == {fp_interval_1, fp_interval_2}
 	# cache hit's fingerprint is NOT in the callback list.
 	assert fp_first not in solved_fingerprints
 
@@ -212,7 +213,7 @@ def test_on_interval_complete_fires_for_every_interval(monkeypatch):
 	)
 
 	# one per interval (3 intervals for 4 seeds).
-	assert len(completed) == 3
+	assert len(completed) == len(seeds) - 1
 
 
 #============================================

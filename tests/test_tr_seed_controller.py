@@ -1,12 +1,12 @@
 """Tests for seed controller navigation behavior."""
 
 # PIP3 modules
-from PySide6.QtCore import Qt
+import PySide6.QtCore
 
 # local repo modules (bare imports resolved by conftest.py)
-import ui.seed_controller as seed_controller_module
+import ui.seed_controller
 
-SeedController = seed_controller_module.SeedController
+SeedController = ui.seed_controller.SeedController
 
 
 #============================================
@@ -77,8 +77,8 @@ def test_plain_arrow_keys_scrub_at_fit_zoom() -> None:
 	controller._current_frame = 200
 	controller._scrub_step_frames = 4
 
-	controller.handle_key_press(Qt.Key.Key_Left)
+	controller.handle_key_press(PySide6.QtCore.Qt.Key.Key_Left)
 	assert controller._current_frame == 196
 
-	controller.handle_key_press(Qt.Key.Key_Right)
+	controller.handle_key_press(PySide6.QtCore.Qt.Key.Key_Right)
 	assert controller._current_frame == 200

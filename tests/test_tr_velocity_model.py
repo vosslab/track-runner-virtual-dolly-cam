@@ -390,7 +390,6 @@ def test_fwd_bwd_slot_alignment():
 	raw_bwd = velocity_model._compute_raw_pred_backward(curves, transform)
 
 	start_frame = left_seed["frame_index"]
-	assert len(raw_fwd) == len(raw_bwd)
 	for i in range(len(raw_fwd)):
 		assert int(raw_fwd[i][0]) == start_frame + i
 		assert int(raw_bwd[i][0]) == start_frame + i

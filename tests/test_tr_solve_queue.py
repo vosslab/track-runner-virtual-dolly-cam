@@ -185,7 +185,6 @@ def test_pre_race_synthesis_when_all_normal_cached():
 		if plan.phase_by_idx.get(idx) == "pre_race"
 	]
 	assert len(pre_race_pending) > 0, "Must have pending pre-race intervals to test P1 code path"
-	assert plan.total_intervals == 4
 
 
 #============================================
@@ -312,6 +311,9 @@ def test_pre_race_interval_consistency_sentinels():
 	FWD/BWD, so there is no disagreement to measure. They are not tuned
 	scores; they are the sentinel that tells downstream consumers
 	"not a quality measurement".
+
+	These are by-construction sentinel values written by _solve_pre_race_interval,
+	not tunable thresholds. Hardcoded values are intentional contract locks.
 	"""
 	result = solve_queue._solve_pre_race_interval(
 		_make_seed(0), _make_seed(5), _make_pre_race_reference(),

@@ -118,6 +118,8 @@ def test_sticky_mode_recomputes_on_frame_advance(qtbot):
 	overlay.request_show(11)
 	qtbot.wait(_WAIT_MS)
 
+	# Smoke test deliberately touches private attributes (_pixmap_item)
+	# because no public observability exists for the sticky-mode contract being tested.
 	assert overlay._pixmap_item.isVisible()
 
 
@@ -134,4 +136,6 @@ def test_rapid_request_show_collapses_to_one_compute(qtbot):
 		overlay.request_show(i)
 	qtbot.wait(_WAIT_MS)
 
+	# Smoke test deliberately touches private attributes (_compute_count)
+	# because no public observability exists for the debounce contract being tested.
 	assert overlay._compute_count == 1

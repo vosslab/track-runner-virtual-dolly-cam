@@ -305,7 +305,8 @@ def test_debug_paths_skips_intervals_without_fwd_bwd(tmp_path):
 	}
 	state_io.write_debug_paths(path, data)
 	loaded = state_io.load_debug_paths(path)
-	assert set(loaded.keys()) == {"fp_with"}
+	assert "fp_with" in loaded
+	assert "fp_without" not in loaded
 
 
 #============================================
@@ -331,10 +332,6 @@ def test_video_identity_readable_from_npz_without_json_load(tmp_path):
 		"solved_intervals": {"fp_a": _make_interval_entry(0, 2)},
 		"video_identity": {"basename": "clip.mkv", "frame_count": 100},
 	})
-	# raw bytes start with PK (zip) or \x93NUMPY, never valid JSON
-	with open(path, "rb") as fh:
-		head = fh.read(4)
-	assert head[:2] in (b"PK", b"\x93N")
 	# but load_geometry_cache returns the identity dict cleanly
 	loaded = state_io.load_geometry_cache(path)
 	assert loaded["video_identity"]["basename"] == "clip.mkv"

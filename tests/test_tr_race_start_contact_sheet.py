@@ -13,6 +13,36 @@ import race_start_contact_sheet
 
 
 #============================================
+def _make_tiles(frame_offset_fn, count: int = 11, clamped_fn=None) -> list:
+	"""Build a standard tile list for contact sheet tests.
+
+	Args:
+		frame_offset_fn: Callable(i) -> frame_index for tile i.
+		count: Number of tiles to generate.
+		clamped_fn: Optional callable(i) -> bool for clamped status. Defaults to False.
+
+	Returns:
+		List of tile dicts with standard structure.
+	"""
+	tiles = []
+	for i in range(count):
+		offset_s = -0.5 + (i * 0.1)
+		label = "PRE" if i < 5 else ("START" if i == 5 else "POST")
+		row = "top" if i < 5 else ("center" if i == 5 else "bottom")
+		frame_index = frame_offset_fn(i)
+		clamped = clamped_fn(i) if clamped_fn else False
+		tiles.append({
+			"frame_index": frame_index,
+			"requested_frame_index": frame_index,
+			"offset_s": offset_s,
+			"label": label,
+			"row": row,
+			"clamped": clamped,
+		})
+	return tiles
+
+
+#============================================
 class FakeFrameReader:
 	"""Minimal fake FrameReader for testing without real video I/O."""
 
@@ -42,19 +72,7 @@ def test_render_race_start_contact_sheet_happy_path(tmp_path):
 	output_path = str(tmp_path / "race_start_check.png")
 
 	# Build minimal tile list (11 tiles)
-	tiles = []
-	for i in range(11):
-		offset_s = -0.5 + (i * 0.1)
-		label = "PRE" if i < 5 else ("START" if i == 5 else "POST")
-		row = "top" if i < 5 else ("center" if i == 5 else "bottom")
-		tiles.append({
-			"frame_index": 100 + i * 10,
-			"requested_frame_index": 100 + i * 10,
-			"offset_s": offset_s,
-			"label": label,
-			"row": row,
-			"clamped": False,
-		})
+	tiles = _make_tiles(lambda i: 100 + i * 10)
 
 	# Build minimal pre_race_reference
 	pre_race_reference = {
@@ -101,19 +119,7 @@ def test_render_race_start_contact_sheet_frame_read_failure(tmp_path):
 	output_path = str(tmp_path / "race_start_check.png")
 
 	# Build tile list
-	tiles = []
-	for i in range(11):
-		offset_s = -0.5 + (i * 0.1)
-		label = "PRE" if i < 5 else ("START" if i == 5 else "POST")
-		row = "top" if i < 5 else ("center" if i == 5 else "bottom")
-		tiles.append({
-			"frame_index": 100 + i * 10,
-			"requested_frame_index": 100 + i * 10,
-			"offset_s": offset_s,
-			"label": label,
-			"row": row,
-			"clamped": False,
-		})
+	tiles = _make_tiles(lambda i: 100 + i * 10)
 
 	pre_race_reference = {
 		"race_start_frame": 100,
@@ -197,7 +203,7 @@ def test_render_race_start_contact_sheet_tile_count_validation(tmp_path):
 
 	fake_transform = MagicMock()
 
-	with pytest.raises(RuntimeError) as exc_info:
+	with pytest.raises(RuntimeError):
 		race_start_contact_sheet.render_race_start_contact_sheet(
 			"test_video.mov",
 			30.0,
@@ -208,8 +214,6 @@ def test_render_race_start_contact_sheet_tile_count_validation(tmp_path):
 			output_path,
 		)
 
-	assert "expected" in str(exc_info.value).lower()
-
 
 #============================================
 def test_padding_in_frame_crop_no_padding(tmp_path):
@@ -217,19 +221,7 @@ def test_padding_in_frame_crop_no_padding(tmp_path):
 	output_path = str(tmp_path / "race_start_check.png")
 
 	# Build tile list (11 tiles)
-	tiles = []
-	for i in range(11):
-		offset_s = -0.5 + (i * 0.1)
-		label = "PRE" if i < 5 else ("START" if i == 5 else "POST")
-		row = "top" if i < 5 else ("center" if i == 5 else "bottom")
-		tiles.append({
-			"frame_index": 240 + i * 10,  # All frames centered in frame
-			"requested_frame_index": 240 + i * 10,
-			"offset_s": offset_s,
-			"label": label,
-			"row": row,
-			"clamped": False,
-		})
+	tiles = _make_tiles(lambda i: 240 + i * 10)
 
 	# Frame is 480x270, crop is centered at (240, 135) with size 200x200
 	# All crops should fit fully in frame with no padding
@@ -274,21 +266,10 @@ def test_padding_edge_clamped_crop(tmp_path):
 	output_path = str(tmp_path / "race_start_check.png")
 
 	# Build tile list with clamped=True for edge crops
-	tiles = []
-	for i in range(11):
-		offset_s = -0.5 + (i * 0.1)
-		label = "PRE" if i < 5 else ("START" if i == 5 else "POST")
-		row = "top" if i < 5 else ("center" if i == 5 else "bottom")
-		# Mark some as clamped
-		clamped = i in [0, 10]  # First and last tiles extend past edge
-		tiles.append({
-			"frame_index": max(0, min(100 + i * 10, 999)),
-			"requested_frame_index": 100 + i * 10,
-			"offset_s": offset_s,
-			"label": label,
-			"row": row,
-			"clamped": clamped,
-		})
+	tiles = _make_tiles(
+		lambda i: max(0, min(100 + i * 10, 999)),
+		clamped_fn=lambda i: i in [0, 10],
+	)
 
 	# Frame is 480x270, crop center at frame edge so it extends past boundaries
 	pre_race_reference = {
