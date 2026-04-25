@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Diagnose pre-race (Stage 1 + Stage 2) race-start detection.
+"""Diagnose pre-race race-start detection.
 
 Vocabulary:
 	- interval: a single seed-to-seed range (two adjacent seeds, the
@@ -9,21 +9,27 @@ Vocabulary:
 		PRE_RACE_MIN_WINDOW_SEEDS (= 3) seeds = 2 adjacent intervals to
 		compute coherence.
 
-Read-only evidence gatherer. Runs the same directional-coherence math
-used in production (race_start.compute_window_metrics) and also
-computes candidate signals that are NOT yet in the solver:
-	- per-pair scene displacement stats (min, max, stdev)
+Read-only evidence gatherer. Computes a diagnostic race_start_frame
+using the production Stage 1 coherence math
+(race_start.locate_race_start_interval + pick_race_start_frame_midpoint),
+then concentrates its output around that frame so the user can see
+which signals are actually informative.
+
+Per-window candidate signals (NOT yet in the solver):
 	- per-pair heading angle variance
 	- torso-size trend (mean width and linear slope)
 	- camera pan velocity from motion_track
 	- residual-motion energy at the window's center frame
 
-Emits a per-window table (one row per sliding 3-seed window) preceded by
-a column legend, an optional Stage 2 replay over the accepted window's
-blended_path, and three PNG diagnostics:
+PNG diagnostics:
 	- <stem>.track_runner.pre_race_diag.seed_timeline.png
+	      Scene x/y of every seed; race_start_frame marked.
 	- <stem>.track_runner.pre_race_diag.window_metrics.png
-	- <stem>.track_runner.pre_race_diag.stage2_velocity.png (optional)
+	      Per-window metric curves zoomed to the windows immediately
+	      around race_start_frame (so the eye can pick out the signal).
+	- <stem>.track_runner.pre_race_diag.torso_residual.png
+	      Per-frame median residual-motion magnitude inside the
+	      projected pre-race torso box, around race_start_frame.
 
 Does not modify any on-disk artifact. Does not change production
 thresholds.
@@ -52,7 +58,6 @@ import matplotlib.pyplot as plt
 # local repo modules
 import camera_motion
 import interval_fingerprint
-import race_phases
 import race_start
 import residual_motion
 import scene_coords
@@ -65,7 +70,7 @@ import video_io
 def parse_args() -> argparse.Namespace:
 	"""Parse command-line arguments."""
 	parser = argparse.ArgumentParser(
-		description="Diagnose pre-race (Stage 1 + Stage 2) detection signals",
+		description="Diagnose pre-race race-start detection signals",
 	)
 	parser.add_argument(
 		"-i", "--input", dest="input_file", required=True,
@@ -120,15 +125,9 @@ def load_all_data(input_file: str) -> tuple:
 	seeds_list = seeds_data["seeds"]
 	print(f"  seeds: {len(seeds_list)} loaded from {seeds_path}")
 
-	# Geometry cache is optional; enables Stage 2 replay when present.
+	# Geometry cache is no longer consumed by this tool. Returning None
+	# keeps the load_all_data signature stable for any future caller.
 	intervals_data = None
-	intervals_path = tr_paths.default_intervals_path(input_file)
-	if os.path.exists(intervals_path):
-		intervals_data = state_io.load_geometry_cache(intervals_path)
-		n_solved = len(intervals_data["solved_intervals"])
-		print(f"  solved intervals: {n_solved}")
-	else:
-		print(f"  solved intervals: (none; {intervals_path} missing)")
 
 	result = (reader, motion_track, scene_transform, seeds_list,
 		intervals_data)
@@ -486,20 +485,31 @@ def format_table(rows: list, accepted_idx: int) -> str:
 
 
 #============================================
-def summarize_acceptance(rows: list, accepted_idx: int, usable: list) -> str:
-	"""Return a one-line verdict (ACCEPTED / REJECTED + reason)."""
+def pick_diagnostic_race_start_frame(rows: list, usable: list, fps: float) -> tuple:
+	"""Pick race_start_frame the same way production does.
+
+	Production: find Stage 1 interval (locate_race_start_interval),
+	then take ceil((interval_low + interval_high) / 2) via
+	pick_race_start_frame_midpoint.
+
+	Returns:
+		Tuple (race_start_frame, source, accepted_window_idx,
+			interval_low_frame, interval_high_frame). race_start_frame
+			is None when no production-accepted window exists; in that
+			case `source` says why.
+	"""
+	accepted_idx = mark_accepted_window(rows)
 	if accepted_idx < 0:
-		return (
-			"REJECTED: no sliding window passes (dt>=min, triggers_now, "
-			"triggers_next). Consider lowering PRE_RACE_* thresholds or "
-			"adding more pre-race seeds."
-		)
+		return (None, "no production-accepted window", -1, None, None)
+
+	# Find the transition pair (largest per-interval scene displacement)
+	# inside the accepted window, same logic as production.
 	row = rows[accepted_idx]
 	window_size = race_start.PRE_RACE_MIN_WINDOW_SEEDS
 	pair_disps_scene = []
 	for j in range(row["win_idx"], row["win_idx"] + window_size - 1):
-		ux, uy = _scene_center_cached(usable, j)
-		vx, vy = _scene_center_cached(usable, j + 1)
+		ux, uy = usable[j]["_scene"]
+		vx, vy = usable[j + 1]["_scene"]
 		pair_disps_scene.append(math.hypot(vx - ux, vy - uy))
 	transition_offset = max(
 		range(len(pair_disps_scene)),
@@ -509,98 +519,63 @@ def summarize_acceptance(rows: list, accepted_idx: int, usable: list) -> str:
 	t_hi_idx = t_low_idx + 1
 	t_low_frame = usable[t_low_idx]["frame_index"]
 	t_hi_frame = usable[t_hi_idx]["frame_index"]
+
 	if t_low_idx == 0:
 		return (
-			f"ACCEPTED window={accepted_idx} but transition pair is at "
-			f"seed index 0; production would return None (no pre-race "
-			f"seed to anchor). race_start_interval = ({t_low_frame}, "
-			f"{t_hi_frame})"
+			None,
+			"transition pair at seed index 0 (no pre-race seed)",
+			accepted_idx, t_low_frame, t_hi_frame,
 		)
-	return (
-		f"ACCEPTED window={accepted_idx} seed_lo=frame {t_low_frame} "
-		f"seed_hi=frame {t_hi_frame}"
+
+	# ceil((low + high) / 2) -- same as race_start.pick_race_start_frame_midpoint
+	rsf = race_start.pick_race_start_frame_midpoint(t_low_frame, t_hi_frame)
+	source = (
+		f"Stage 1 interval ({t_low_frame}, {t_hi_frame}); "
+		f"midpoint = ceil(({t_low_frame}+{t_hi_frame})/2)"
 	)
-
-
-_SCENE_CACHE: dict = {}
-def _scene_center_cached(usable: list, idx: int) -> tuple:
-	"""Lookup helper for summarize_acceptance; scene centers are
-	precomputed in main() and attached to usable seeds under the
-	`_scene` key so summarize doesn't need its own transform copy.
-	"""
-	return usable[idx]["_scene"]
+	_ = fps
+	return (rsf, source, accepted_idx, t_low_frame, t_hi_frame)
 
 
 #============================================
-def find_interval_blended_path(
-	intervals_data: dict,
-	t_low_frame: int,
-	t_hi_frame: int,
-) -> list:
-	"""Locate the solved interval whose start_frame == t_low_frame and
-	end_frame == t_hi_frame and return its blended_path. Returns None
-	when no match exists (cache may predate the Stage 1 result or the
-	fingerprint differs).
-	"""
-	if intervals_data is None:
-		return None
-	for _fp, entry in intervals_data["solved_intervals"].items():
-		if entry["start_frame"] == t_low_frame and entry["end_frame"] == t_hi_frame:
-			return entry["blended_path"]
-	return None
-
-
-#============================================
-def run_stage2_replay(
-	blended_path: list,
+def compute_pre_race_anchor(
+	usable: list,
+	race_start_frame: int,
 	scene_transform,
-	fps: float,
-	t_low_frame: int,
 ) -> dict:
-	"""Run the Stage 2 velocity-onset detector over a crossing interval's
-	blended_path and return the detector's full result dict.
+	"""Mean scene-anchored center and torso size from seeds before
+	race_start_frame. Same math as race_start.compute_pre_race_reference
+	but operates on the diagnostic's `usable` list (which already has
+	`_scene` cached) and is pure -- no warnings, no schema fields.
+
+	Returns dict with scene_anchor_x, scene_anchor_y, torso_w, torso_h.
 	"""
-	result = race_phases.detect_race_start(blended_path, scene_transform, fps)
-	return result
-
-
-#============================================
-def per_frame_scene_velocity(
-	blended_path: list,
-	start_frame: int,
-	scene_transform,
-	fps: float,
-) -> tuple:
-	"""Return (frames_list, scene_velocity_list) for plotting.
-
-	Velocity is per-frame scene displacement magnitude in scene units *
-	fps (units per second). blended_path entries have shape
-	{"cx", "cy", "w", "h"} (no frame_index); position k corresponds to
-	video frame `start_frame + k`.
-	"""
-	frames = []
-	vels = []
-	prev_scene = None
-	for k, entry in enumerate(blended_path):
-		if entry is None:
-			frames.append(None)
-			vels.append(float("nan"))
-			prev_scene = None
-			continue
-		fi = start_frame + k
-		cx = entry["cx"]
-		cy = entry["cy"]
-		w = entry["w"]
-		h = entry["h"]
-		sx, sy, _sw, _sh = scene_transform.pixel_box_to_scene(fi, cx, cy, w, h)
-		if prev_scene is None:
-			vels.append(float("nan"))
-		else:
-			d = math.hypot(sx - prev_scene[0], sy - prev_scene[1])
-			vels.append(d * fps)
-		frames.append(fi)
-		prev_scene = (sx, sy)
-	return (frames, vels)
+	qualifying = [
+		s for s in usable
+		if s["status"] in ("visible", "partial")
+		and s["frame_index"] < race_start_frame
+	]
+	if not qualifying:
+		raise RuntimeError(
+			"no visible/partial pre-race seeds; cannot anchor torso box",
+		)
+	torso_w = sum(s["w"] for s in qualifying) / len(qualifying)
+	torso_h = sum(s["h"] for s in qualifying) / len(qualifying)
+	sxs = []
+	sys_ = []
+	for s in qualifying:
+		sx, sy, _sw, _sh = scene_transform.pixel_box_to_scene(
+			s["frame_index"], s["cx"], s["cy"], s["w"], s["h"],
+		)
+		sxs.append(sx)
+		sys_.append(sy)
+	return {
+		"scene_anchor_x": sum(sxs) / len(sxs),
+		"scene_anchor_y": sum(sys_) / len(sys_),
+		"torso_w": torso_w,
+		"torso_h": torso_h,
+		"source_count": len(qualifying),
+	}
 
 
 #============================================
@@ -620,9 +595,12 @@ def png_path(input_file: str, png_dir: str, suffix: str) -> str:
 def plot_seed_timeline(
 	usable: list,
 	accepted_idx: int,
+	race_start_frame: int,
 	output_path: str,
 ) -> None:
-	"""Plot seed scene x/y vs frame with window boundaries highlighted."""
+	"""Plot seed scene x/y vs frame, with the accepted window shaded
+	and the chosen race_start_frame marked.
+	"""
 	frames = [s["frame_index"] for s in usable]
 	xs = [s["_scene"][0] for s in usable]
 	ys = [s["_scene"][1] for s in usable]
@@ -642,7 +620,12 @@ def plot_seed_timeline(
 		for ax in axes:
 			ax.axvspan(lo, hi, alpha=0.2, color="tab:green",
 				label="accepted window")
-			ax.legend(loc="upper right")
+	if race_start_frame is not None:
+		for ax in axes:
+			ax.axvline(race_start_frame, color="tab:red", linestyle="--",
+				label=f"race_start_frame={race_start_frame}")
+	for ax in axes:
+		ax.legend(loc="upper right")
 
 	fig.suptitle(os.path.basename(output_path))
 	fig.tight_layout()
@@ -654,13 +637,24 @@ def plot_seed_timeline(
 #============================================
 def plot_window_metrics(
 	rows: list,
+	zoom_lo: int,
+	zoom_hi: int,
+	race_start_frame: int,
 	output_path: str,
 ) -> None:
-	"""Plot per-window metric curves with production thresholds marked."""
-	xs = [r["win_idx"] for r in rows]
+	"""Plot per-window metric curves over windows [zoom_lo, zoom_hi]
+	(inclusive) with production thresholds marked. The zoom range is
+	chosen to surround race_start_frame so the eye can isolate which
+	signals discriminate motion from jitter; on long videos the full
+	curves are visually flat outside this band.
+	"""
+	zoom_rows = [r for r in rows if zoom_lo <= r["win_idx"] <= zoom_hi]
+	if not zoom_rows:
+		zoom_rows = rows
+	xs = [r["win_idx"] for r in zoom_rows]
 
 	def col(name):
-		return [r[name] for r in rows]
+		return [r[name] for r in zoom_rows]
 
 	fig, axes = plt.subplots(5, 1, figsize=(10, 11), sharex=True)
 
@@ -704,6 +698,19 @@ def plot_window_metrics(
 	axes[4].set_xlabel("window index")
 	axes[4].grid(True, alpha=0.3)
 
+	# Mark race_start_frame on every panel by mapping it to the
+	# nearest window index visible in the zoom range.
+	if race_start_frame is not None:
+		nearest = min(
+			zoom_rows,
+			key=lambda r: abs(r["frame_lo"] - race_start_frame),
+		)
+		for ax in axes:
+			ax.axvline(nearest["win_idx"], color="tab:red", linestyle="--",
+				alpha=0.6,
+				label=f"race_start near win={nearest['win_idx']}")
+		axes[0].legend(loc="upper left")
+
 	fig.suptitle(os.path.basename(output_path))
 	fig.tight_layout()
 	fig.savefig(output_path, dpi=120)
@@ -712,40 +719,103 @@ def plot_window_metrics(
 
 
 #============================================
-def plot_stage2_velocity(
-	frames: list,
-	vels: list,
-	stage2_result: dict,
-	t_low_frame: int,
-	t_hi_frame: int,
+def torso_residual_at_frame(
+	reader,
+	scene_transform,
+	anchor: dict,
+	frame_index: int,
+	scale_factor: float,
+) -> float:
+	"""Compute the median residual-motion magnitude inside the projected
+	pre-race torso box at `frame_index`.
+
+	The pre-race scene anchor (scene_anchor_x, scene_anchor_y, torso_w,
+	torso_h) is the contract-C2 reference: where the runner WAS before
+	race start. Projecting it back to pixel space at each frame using
+	scene_transform.scene_box_to_pixel gives the rectangle the runner
+	would still occupy if the race had not started. When the race
+	starts, the runner moves out of this box, the residual map shows
+	high foreground there (the runner's old silhouette is now exposed
+	background, and the runner appears nearby), and the median magnitude
+	rises sharply.
+
+	Returns NaN when the residual map cannot be computed (edge of video)
+	or when the projected box is fully off-frame.
+	"""
+	residual_mag, _raw_single, validity_mask, _disp = (
+		residual_motion.compute_residual_for_frame(
+			reader, frame_index, scene_transform,
+			half_window=residual_motion.DEFAULT_HALF_WINDOW,
+			scale_factor=scale_factor,
+			return_extras=True,
+		)
+	)
+	if residual_mag is None or validity_mask is None:
+		return float("nan")
+
+	# project the scene-anchored torso box to pixel coordinates at this frame
+	pcx, pcy, pw, ph = scene_transform.scene_box_to_pixel(
+		frame_index,
+		anchor["scene_anchor_x"], anchor["scene_anchor_y"],
+		anchor["torso_w"], anchor["torso_h"],
+	)
+	# residual_mag is at scale_factor relative to native pixel resolution
+	pcx *= scale_factor
+	pcy *= scale_factor
+	pw *= scale_factor
+	ph *= scale_factor
+	x1 = int(round(pcx - pw / 2.0))
+	x2 = int(round(pcx + pw / 2.0))
+	y1 = int(round(pcy - ph / 2.0))
+	y2 = int(round(pcy + ph / 2.0))
+	rh, rw = residual_mag.shape[:2]
+	x1 = max(0, x1)
+	y1 = max(0, y1)
+	x2 = min(rw, x2)
+	y2 = min(rh, y2)
+	if x2 <= x1 or y2 <= y1:
+		return float("nan")
+	box = residual_mag[y1:y2, x1:x2]
+	box_valid = validity_mask[y1:y2, x1:x2] > 0
+	if not numpy.any(box_valid):
+		return float("nan")
+	return float(numpy.median(box[box_valid]))
+
+
+#============================================
+def plot_torso_residual_intensity(
+	reader,
+	scene_transform,
+	anchor: dict,
+	race_start_frame: int,
+	frame_lo: int,
+	frame_hi: int,
 	output_path: str,
 ) -> None:
-	"""Plot per-frame scene velocity over the crossing interval with the
-	detector's chosen race_start_frame marked.
+	"""Per-frame median residual-motion magnitude inside the projected
+	pre-race torso box, plotted across [frame_lo, frame_hi]. The
+	expected signal: low and flat before race_start_frame (runner still
+	occupying the box, no residual), then rising as the runner exits
+	the box and is replaced by background.
 	"""
-	valid_frames = [f for f in frames if f is not None]
-	valid_vels = [v for v, f in zip(vels, frames) if f is not None]
+	frames = list(range(frame_lo, frame_hi + 1))
+	medians = []
+	scale_factor = 0.5
+	for f in frames:
+		medians.append(
+			torso_residual_at_frame(
+				reader, scene_transform, anchor, f, scale_factor,
+			),
+		)
+		if (len(medians) % 20 == 0) or (len(medians) == len(frames)):
+			print(f"    residual {len(medians)}/{len(frames)}", flush=True)
 
 	fig, ax = plt.subplots(1, 1, figsize=(10, 4))
-	ax.plot(valid_frames, valid_vels, marker="o", color="tab:blue",
-		linewidth=1)
-
-	rs_frame = stage2_result.get("race_start_frame")
-	if rs_frame is not None:
-		ax.axvline(rs_frame, color="tab:green", linestyle="--",
-			label=f"race_start_frame={rs_frame}")
-	ax.axvline(t_low_frame, color="gray", linestyle=":",
-		label=f"interval lo={t_low_frame}")
-	ax.axvline(t_hi_frame, color="gray", linestyle=":",
-		label=f"interval hi={t_hi_frame}")
-
-	thr = stage2_result.get("threshold_used")
-	if thr is not None:
-		ax.axhline(thr, color="black", linestyle="--", alpha=0.5,
-			label=f"threshold={thr:.2f}")
-
+	ax.plot(frames, medians, marker="o", color="tab:brown", linewidth=1)
+	ax.axvline(race_start_frame, color="tab:green", linestyle="--",
+		label=f"race_start_frame={race_start_frame}")
 	ax.set_xlabel("frame index")
-	ax.set_ylabel("scene velocity (units/s)")
+	ax.set_ylabel("median residual magnitude\nin projected torso box")
 	ax.grid(True, alpha=0.3)
 	ax.legend(loc="upper left")
 	fig.suptitle(os.path.basename(output_path))
@@ -756,11 +826,15 @@ def plot_stage2_velocity(
 
 
 #============================================
+ZOOM_WINDOWS_PER_SIDE = 12
+RESIDUAL_FRAMES_PER_SIDE_S = 1.0
+
+
 def main() -> None:
 	args = parse_args()
 
 	(reader, motion_track, scene_transform, seeds_list,
-		intervals_data) = load_all_data(args.input_file)
+		_intervals_data) = load_all_data(args.input_file)
 	fps = reader.fps
 
 	usable = interval_fingerprint.filter_usable_seeds_sorted(
@@ -788,76 +862,68 @@ def main() -> None:
 		usable, scene_centers, fps, motion_track, reader, scene_transform,
 	)
 
-	accepted_idx = mark_accepted_window(rows)
+	# Pick race_start_frame the production way (Stage 1 + midpoint).
+	race_start_frame, source, accepted_idx, t_low_frame, t_hi_frame = (
+		pick_diagnostic_race_start_frame(rows, usable, fps)
+	)
 
 	if not args.quiet:
 		print()
 		print(_legend_text())
 		print(format_table(rows, accepted_idx))
 		print()
-	print(summarize_acceptance(rows, accepted_idx, usable))
 
-	# Stage 2 replay if we can find a blended_path for the accepted pair.
-	stage2_done = False
-	if accepted_idx >= 0 and intervals_data is not None:
-		# locate transition pair inside accepted window (largest per-pair disp)
-		pair_disps_scene = []
-		win_size = race_start.PRE_RACE_MIN_WINDOW_SEEDS
-		for j in range(accepted_idx, accepted_idx + win_size - 1):
-			ux, uy = scene_centers[j]
-			vx, vy = scene_centers[j + 1]
-			pair_disps_scene.append(math.hypot(vx - ux, vy - uy))
-		transition_offset = max(
-			range(len(pair_disps_scene)),
-			key=lambda k: pair_disps_scene[k],
-		)
-		t_low_idx = accepted_idx + transition_offset
-		t_hi_idx = t_low_idx + 1
-		t_low_frame = usable[t_low_idx]["frame_index"]
-		t_hi_frame = usable[t_hi_idx]["frame_index"]
-
-		blended_path = find_interval_blended_path(
-			intervals_data, t_low_frame, t_hi_frame,
-		)
-		if blended_path is not None:
-			print()
-			print(f"Stage 2 replay over interval "
-				f"({t_low_frame}, {t_hi_frame}):")
-			stage2_result = run_stage2_replay(
-				blended_path, scene_transform, fps, t_low_frame,
-			)
-			for k, v in stage2_result.items():
-				print(f"  {k}: {v}")
-
-			pf_frames, pf_vels = per_frame_scene_velocity(
-				blended_path, t_low_frame, scene_transform, fps,
-			)
-			vel_path = png_path(
-				args.input_file, args.png_dir, "stage2_velocity",
-			)
-			plot_stage2_velocity(
-				pf_frames, pf_vels, stage2_result,
-				t_low_frame, t_hi_frame, vel_path,
-			)
-			stage2_done = True
-		else:
-			print(
-				f"  (no solved interval matches "
-				f"({t_low_frame},{t_hi_frame}); Stage 2 replay skipped)",
-			)
+	print()
+	print("=" * 60)
+	if race_start_frame is not None:
+		print(f"RACE_START_FRAME = {race_start_frame}")
+		print(f"  source: {source}")
+		print(f"  Stage 1 interval: ({t_low_frame}, {t_hi_frame})")
+	else:
+		print("RACE_START_FRAME = (not picked)")
+		print(f"  reason: {source}")
+	print("=" * 60)
 
 	# PNGs
 	print()
 	print("writing diagnostic PNGs...")
 	timeline_path = png_path(args.input_file, args.png_dir, "seed_timeline")
-	plot_seed_timeline(usable, accepted_idx, timeline_path)
+	plot_seed_timeline(usable, accepted_idx, race_start_frame, timeline_path)
 
+	# Zoomed window metrics: ZOOM_WINDOWS_PER_SIDE on each side of the
+	# accepted window. When no acceptance, fall back to first 50 windows.
+	if accepted_idx >= 0:
+		zoom_lo = max(0, accepted_idx - ZOOM_WINDOWS_PER_SIDE)
+		zoom_hi = min(len(rows) - 1, accepted_idx + ZOOM_WINDOWS_PER_SIDE)
+	else:
+		zoom_lo = 0
+		zoom_hi = min(len(rows) - 1, 50)
 	metrics_path = png_path(args.input_file, args.png_dir, "window_metrics")
-	plot_window_metrics(rows, metrics_path)
+	plot_window_metrics(
+		rows, zoom_lo, zoom_hi, race_start_frame, metrics_path,
+	)
 
-	if not stage2_done:
-		print("  (stage2_velocity.png not written; no solved interval or "
-			"no accepted window)")
+	# Torso-residual intensity around race_start_frame.
+	if race_start_frame is not None:
+		anchor = compute_pre_race_anchor(
+			usable, race_start_frame, scene_transform,
+		)
+		print(f"  pre-race anchor: scene=({anchor['scene_anchor_x']:.1f}, "
+			f"{anchor['scene_anchor_y']:.1f}) "
+			f"torso=({anchor['torso_w']:.1f}, {anchor['torso_h']:.1f}) "
+			f"from {anchor['source_count']} pre-race seeds")
+		span = max(2, int(round(RESIDUAL_FRAMES_PER_SIDE_S * fps)))
+		f_lo = max(0, race_start_frame - span)
+		f_hi = min(reader.frame_count - 1, race_start_frame + span)
+		residual_path = png_path(
+			args.input_file, args.png_dir, "torso_residual",
+		)
+		plot_torso_residual_intensity(
+			reader, scene_transform, anchor,
+			race_start_frame, f_lo, f_hi, residual_path,
+		)
+	else:
+		print("  (torso_residual.png not written; no race_start_frame)")
 
 
 #============================================

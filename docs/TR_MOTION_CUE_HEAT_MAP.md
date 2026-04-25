@@ -91,6 +91,11 @@ For one frame at `frame_index`:
 6. Compute `residual = abs(target - median)`. Zero-out invalid
    pixels. Return `(residual, validity_mask)`.
 
+The returned residual is the input to a downstream DoG band-pass step
+inside both `observe_blob_at` (production observer) and
+`compute_heat_map_roi` (GUI overlay). See [the DoG band-pass pre-filter
+subsection below](#dog-band-pass-pre-filter).
+
 If fewer than two aligned neighbors could be collected, the function
 returns `(None, None)`.
 
@@ -118,6 +123,35 @@ or occlusion boundaries -- produces distinct ROI tuples and the two
 passes each compute their own residual. This keeps the two passes
 independent in exactly the regimes where divergence matters, at a
 bounded cache-miss cost.
+
+## DoG band-pass pre-filter
+
+Before connected-component extraction, the residual magnitude image is
+band-pass filtered by `dog_filter_blob_scale(mag, diameter, k=3.0)`
+(in [track_runner/residual_motion.py](../track_runner/residual_motion.py)).
+This step is applied unconditionally inside both `observe_blob_at`
+(production observer) and `compute_heat_map_roi` (GUI overlay) so the
+solver and the user-visible overlay see the same magnitude landscape.
+
+The target blob diameter is the predicted torso width. Sigma sizing
+follows the Laplacian-of-Gaussian peak-radius relation
+(Yoshioka et al. 2009, DoG Picker, eq. 4):
+
+- `r = diameter / 2`
+- `sigma_1 = r / sqrt(2)`
+- `sigma_2 = k * sigma_1`
+- `dog = blur(mag, sigma_1) - blur(mag, sigma_2)`
+- negative-lobe response is clipped to zero
+
+Effect: blobs whose size matches the runner torso are enhanced; both
+sub-torso speckle (mis-registered background pixels) and larger
+structures (ground texture, crowd silhouettes) are suppressed. The
+threshold downstream is then `threshold` per `extract_frame_blobs`,
+applied to the DoG-filtered map.
+
+The k-factor default of 3.0 was chosen empirically on this project's
+residuals (k=1.1 is too tight; k=5 is also strong; the diagnose tool's
+`-k` flag exposes the knob for sweeps but production does not).
 
 ## Blob extraction from the heat map
 
@@ -341,8 +375,30 @@ caller and invalidates geometry caches.
 
 ## Version tag
 
-`BLOB_OBSERVER_VERSION` in `residual_motion.py` is a semantic tag
-bumped on every behavior-changing edit to the observer API
-(new gate, changed corridor geometry, changed scoring terms). The
-tag is folded into the interval-solver fingerprint so refine-mode
-caches invalidate cleanly even if numeric constants are unchanged.
+Per contract C9 there is exactly one schema-version authority:
+`tr_schema.SCHEMA_VERSION` in
+[track_runner/tr_schema.py](../track_runner/tr_schema.py). Cache
+invalidation for observer-behavior changes (new gate, changed corridor
+geometry, changed scoring terms, the DoG band-pass step) flows through
+two coordinated structures inside `tr_schema`:
+
+- `SCHEMA_VERSION` -- bumped whenever any artifact written to disk
+  records a new schema (geometry-affecting or metadata-only).
+- `GEOMETRY_AFFECTING_SCHEMAS` -- the set of schema versions that
+  altered solved-geometry semantics. The interval-solver fingerprint
+  (`interval_fingerprint.build_geometry_tag`) embeds the highest
+  member of this set <= `SCHEMA_VERSION` as `geometry_schema_v<N>`.
+  Metadata-only bumps slide through unchanged; geometry-affecting
+  bumps invalidate cached entries naturally.
+- `SUPPORTED_ARTIFACT_SCHEMAS` -- per-artifact compatibility windows
+  used by loaders so older readable artifacts are not rejected on a
+  schema bump.
+
+There is intentionally no separate `BLOB_OBSERVER_VERSION` constant or
+similar parallel authority. To bump observer behavior in a way that
+invalidates geometry caches, increment `SCHEMA_VERSION` and add the
+new version to `GEOMETRY_AFFECTING_SCHEMAS`. The legacy `blob_snap/v1`
+fingerprint format produced before this unification is migrated to
+`geometry_schema_v3` at load time by
+`interval_fingerprint.migrate_legacy_fingerprints` (see
+[docs/TR_SCHEMA_VERSION_HISTORY.md](TR_SCHEMA_VERSION_HISTORY.md)).

@@ -204,7 +204,7 @@ class SeedController(BaseAnnotationController):
 		"""
 		hints = (
 			"Shift+LR=frames  LR=pan  []=step  SPACE=skip  N=not-in-frame  "
-			"F=avg  P=part  A=approx  V=hide preds  Z=zoom"
+			"F=avg  P=part  A=approx  V=hide preds  H=heat  Z=zoom"
 		)
 		# add ENTER hint if suggestion available
 		if self._suggestion is not None:

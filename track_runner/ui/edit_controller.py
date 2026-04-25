@@ -263,7 +263,7 @@ class EditController(BaseAnnotationController):
 		hints = (
 			"SPACE/R=keep  LEFT=prev  D=del  Y=yolo  F=avg  "
 			"[/]=jump  L=low  U=add  P=part  A=approx  "
-			"V=hide preds  Z=zoom  ESC=done"
+			"V=hide preds  H=heat  Z=zoom  ESC=done"
 		)
 		return hints
 

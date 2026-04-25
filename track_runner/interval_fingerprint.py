@@ -18,47 +18,53 @@ into a junk drawer of generic interval utilities.
 import re
 
 # local repo modules
+import tr_schema
 import state_io
 import velocity_model
-import residual_motion
 
 
 #============================================
 # Fingerprint tags.
 #
-# Two related-but-distinct tags exist on purpose:
+# Two related-but-distinct tags exist on purpose, both keyed off a
+# single source of truth (tr_schema.SCHEMA_VERSION) per contract C9:
 #
 # * GEOMETRY_TAG -- the cache-key suffix. Encodes everything that, when
-#   changed, produces different solved geometry: blob-observer version
-#   and the numeric blob-snap gate/blend constants. This is what goes
-#   into solved-intervals cache keys. Schema version is deliberately NOT
-#   here: per contract C8, schema bumps may be metadata-only and those
-#   must not invalidate solved geometry. Migration handles legacy tails
-#   that predate this split (see `migrate_legacy_fingerprints`).
+#   changed, produces different solved geometry: the latest
+#   geometry-affecting schema (from tr_schema.GEOMETRY_AFFECTING_SCHEMAS)
+#   and the numeric blob-snap gate/blend constants. Metadata-only
+#   schema bumps slide through unchanged because they are absent from
+#   GEOMETRY_AFFECTING_SCHEMAS, so old solved geometry stays reusable.
+#   Migration handles legacy tails (see `migrate_legacy_fingerprints`).
 #
 # * SOLVER_FINGERPRINT_TAG -- the informational/telemetry tag. Same as
 #   GEOMETRY_TAG plus `/schema/<SCHEMA_VERSION>`. Used for diagnostics
 #   headers and log lines. NEVER used as a cache key.
 #
-# Bump `residual_motion.BLOB_OBSERVER_VERSION` when observer behavior
-# changes. Bump the numeric constants (`a`, `slk`, `prp`, `vf`, `am`,
-# `ms`) when blob-snap gate/blend behavior changes. Either of those is a
-# legitimate cache invalidator. Bumping `state_io.SCHEMA_VERSION` alone
-# is not.
+# Cache invalidation rules:
+#   - Adding a version to GEOMETRY_AFFECTING_SCHEMAS (e.g. for an
+#     observer or solver algorithm change) bumps the geometry tag.
+#   - Bumping the numeric blob-snap constants (`a`, `slk`, `prp`, `vf`,
+#     `am`, `ms`) bumps the geometry tag.
+#   - Bumping SCHEMA_VERSION alone (without adding to the affecting
+#     set) is metadata-only and does not invalidate.
+# Per contract C9, do NOT introduce parallel version constants
+# (BLOB_OBSERVER_VERSION, etc.) to bypass this scheme.
 
 def build_geometry_tag() -> str:
 	"""Build the geometry-only cache-key tag.
 
-	Includes blob-observer version and blob-snap numeric constants. Does
-	NOT include `/schema/` -- schema version is metadata and is tracked
-	separately via `SOLVER_FINGERPRINT_TAG`.
+	Includes the latest geometry-affecting schema version and blob-snap
+	numeric constants. Does NOT include `/schema/<SCHEMA_VERSION>` --
+	that goes only into `SOLVER_FINGERPRINT_TAG` for telemetry.
 
 	Returns:
 		Geometry tag string used as `solver_tag` to
 		`state_io.interval_fingerprint` when forming cache keys.
 	"""
+	geom_v = tr_schema.latest_geometry_affecting_schema()
 	tag = (
-		f"blob_snap/{residual_motion.BLOB_OBSERVER_VERSION}"
+		f"geometry_schema_v{geom_v}"
 		f"/a{velocity_model.BLOB_SNAP_ALPHA:.3f}"
 		f"/slk{velocity_model.BLOB_SNAP_PATH_SLACK:.3f}"
 		f"/prp{velocity_model.BLOB_SNAP_PATH_PERP_FRACTION:.3f}"
@@ -99,6 +105,18 @@ COMPATIBLE_LEGACY_TAILS = frozenset({
 
 # Matches any pure `schema/<int>` suffix, e.g. `schema/5`, `schema/12`.
 _SCHEMA_ONLY_SUFFIX_RE = re.compile(r"^schema/\d+$")
+
+# Matches the legacy blob_snap/v1 prefix from before the SCHEMA_VERSION
+# unification (contract C9). The numeric constants captured here are
+# what was current when blob_snap/v1 ruled; we rewrite them into the
+# unified `geometry_schema_v3/...` namespace.
+# Legacy blob_snap/v1 entries were produced under the schema-3 geometry
+# semantics (the analytical solver's initial geometry contract).
+# Rewrite them into the unified geometry-schema namespace before
+# comparing to the current geometry tag. After migration these v3-era
+# entries will fail the v6 (or later) match and be re-solved, which is
+# correct because v6 is geometry-affecting.
+_LEGACY_BLOB_SNAP_PREFIX_RE = re.compile(r"^blob_snap/v1/")
 
 
 #============================================
@@ -176,6 +194,24 @@ def migrate_legacy_fingerprints(solved: dict) -> tuple:
 				migrated[body + "||" + GEOMETRY_TAG] = value
 				count += 1
 				continue
+		# Legacy blob_snap/v1 entries from before the SCHEMA_VERSION
+		# unification: rewrite to geometry_schema_v3 (the schema
+		# version that was current when blob_snap/v1 was active).
+		# After this rewrite the migrated keys will fail the current
+		# geometry tag match if the current schema is v6 or later --
+		# which is correct, because v6 is geometry-affecting and the
+		# old v1-era geometry should be re-solved.
+		if _LEGACY_BLOB_SNAP_PREFIX_RE.match(tail):
+			migrated_tail = "geometry_schema_v3" + tail[len("blob_snap/v1"):]
+			# strip any trailing /schema/<N> suffix (metadata-only) so
+			# the rewritten key is in the same namespace as current
+			# geometry tags, even though it will not match v6.
+			migrated_tail = re.sub(
+				r"/schema/\d+$", "", migrated_tail,
+			)
+			migrated[body + "||" + migrated_tail] = value
+			count += 1
+			continue
 		# unknown or geometry-incompatible tail: leave as-is, will
 		# fall through as a cache miss.
 		migrated[key] = value

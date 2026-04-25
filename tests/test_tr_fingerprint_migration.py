@@ -59,22 +59,64 @@ def test_current_tag_is_unchanged():
 
 #============================================
 def test_geometry_incompatible_tail_is_left_alone():
-	"""Keys whose blob_snap prefix differs from current must not migrate.
+	"""Keys with an unknown tail prefix must not migrate.
 
-	A geometry change (e.g. new blob-snap alpha) is a real cache
-	invalidator, and we must not paper over it by rewriting the tag.
+	A tag from a future or foreign code path that we do not recognize
+	must be left as-is; the cache miss is the correct outcome.
 	"""
 	body = _make_body()
-	# bogus blob_snap portion: different alpha
-	foreign_tail = (
-		"blob_snap/v1/a0.999/slk0.500/prp0.750"
-		"/vf1.500/am0.500/ms0.500/schema/5"
-	)
+	# completely unrecognized prefix that is not blob_snap or geometry_schema
+	foreign_tail = "unknown_tag/zz9/foo/schema/5"
 	foreign_key = body + "||" + foreign_tail
 	solved = {foreign_key: {"start_frame": 100, "end_frame": 200}}
 	migrated, count = interval_fingerprint.migrate_legacy_fingerprints(solved)
 	assert count == 0
 	assert foreign_key in migrated
+
+
+#============================================
+def test_legacy_blob_snap_v1_migrates_to_geometry_schema_v3():
+	"""Legacy blob_snap/v1 entries are rewritten to geometry_schema_v3.
+
+	Locks the C9 unification migration: pre-unification keys land in
+	the unified namespace at the schema version that was current when
+	blob_snap/v1 ruled.
+	"""
+	body = _make_body()
+	legacy_tail = (
+		"blob_snap/v1/a0.600/slk0.500/prp0.750"
+		"/vf1.500/am0.500/ms0.500/schema/5"
+	)
+	legacy_key = body + "||" + legacy_tail
+	solved = {legacy_key: {"start_frame": 100, "end_frame": 200}}
+	migrated, count = interval_fingerprint.migrate_legacy_fingerprints(solved)
+	assert count == 1
+	# the migrated key body is preserved, and the new tail starts with
+	# geometry_schema_v3, with the trailing /schema/<N> stripped.
+	migrated_keys = [k for k in migrated if k != legacy_key]
+	assert len(migrated_keys) == 1
+	new_key = migrated_keys[0]
+	new_tail = new_key.split("||", 1)[1]
+	assert new_tail.startswith("geometry_schema_v3/")
+	assert "/schema/" not in new_tail
+
+
+#============================================
+def test_migrated_v3_entry_does_not_match_current_tag():
+	"""A migrated v3 entry does NOT collide with the current geometry tag.
+
+	v6 is geometry-affecting; the migrated v3-era key must fall through
+	as a cache miss so the interval is re-solved under DoG.
+	"""
+	body = _make_body()
+	legacy_tail = "blob_snap/v1/a0.600/slk0.500/prp0.750/vf1.500/am0.500/ms0.500"
+	legacy_key = body + "||" + legacy_tail
+	solved = {legacy_key: {"start_frame": 100, "end_frame": 200}}
+	migrated, _ = interval_fingerprint.migrate_legacy_fingerprints(solved)
+	# the migrated key must not equal any key produced by the current
+	# fingerprint helper for the same seed pair.
+	for key in migrated:
+		assert not key.endswith("||" + interval_fingerprint.GEOMETRY_TAG)
 
 
 #============================================

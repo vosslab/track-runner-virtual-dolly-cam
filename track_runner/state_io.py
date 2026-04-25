@@ -26,13 +26,15 @@ import tempfile
 # PIP3 modules
 import numpy
 
+# local repo modules
+import tr_schema
+
 #============================================
-# Unified schema version per contract C8: single source of truth for all
-# schema versioning across track_runner. This value is bumped when any
-# on-disk or cache-visible schema changes across diagnostics files,
-# score dicts, or fingerprint tags. All schema references must import
-# and use this constant, never independent versions.
-SCHEMA_VERSION = 5
+# Unified schema version per contract C9: single source of truth for all
+# schema versioning across track_runner. This value lives in tr_schema;
+# the re-export below preserves back-compat for callers that still
+# import state_io.SCHEMA_VERSION. Never assign a different value here.
+SCHEMA_VERSION = tr_schema.SCHEMA_VERSION
 
 # Aliases for backward-readable code (deprecated, prefer SCHEMA_VERSION)
 DIAGNOSTICS_HEADER_VALUE = SCHEMA_VERSION
@@ -60,8 +62,11 @@ DIAGNOSTICS_HEADER_KEY = "track_runner_diagnostics"
 INTERVALS_HEADER_KEY = "track_runner_intervals"
 INTERVALS_HEADER_VALUE = 2
 
-# NPZ schema version key for geometry_cache.npz files
-GEOMETRY_CACHE_SCHEMA_VERSION = 2
+# Schema stamp written into geometry_cache.npz files. Per contract C9
+# this is an alias of the unified tr_schema.SCHEMA_VERSION, NOT an
+# independent cache-schema authority. Loaders accept any readable
+# version via tr_schema.is_supported_artifact_schema("geometry_cache").
+GEOMETRY_CACHE_SCHEMA_VERSION = tr_schema.SCHEMA_VERSION
 
 # valid mode values for seed entries
 # Retained for VALID_SEED_MODES import compatibility even though `mode` is
@@ -341,8 +346,11 @@ def load_diagnostics(path: str) -> dict:
 	responsibility; this loader accepts either filename via the caller.
 	Function name is retained for callsite compatibility.
 
-	Returns an empty structure if the file does not exist. Accepts
-	legacy header values `2`, `3`, `4`, and current `5`; returns a v5-shaped dict.
+	Returns an empty structure if the file does not exist. Accepts any
+	header version listed in
+	`tr_schema.SUPPORTED_ARTIFACT_SCHEMAS["diagnostics"]` and returns a
+	dict shaped under the current schema. The supported set may grow on
+	each schema bump; refer to that table for the authoritative list.
 
 	Args:
 		path: Path to the interval_scores.json (or legacy
@@ -354,7 +362,7 @@ def load_diagnostics(path: str) -> dict:
 
 	Raises:
 		RuntimeError: If the file exists but the header version is not
-			in (2, 3, 4).
+			in `tr_schema.SUPPORTED_ARTIFACT_SCHEMAS["diagnostics"]`.
 	"""
 	# return empty structure if file does not exist
 	if not os.path.isfile(path):
@@ -363,12 +371,16 @@ def load_diagnostics(path: str) -> dict:
 		data = json.load(fh)
 	if not isinstance(data, dict):
 		raise RuntimeError(f"diagnostics file did not parse as a mapping: {path}")
-	# validate the header key and version: accept v2, v3, v4, and v5
+	# Validate the header key and version against the central
+	# compatibility table per contract C9.
 	header_val = data.get(DIAGNOSTICS_HEADER_KEY)
-	if header_val not in (2, 3, 4, 5):
+	if not isinstance(header_val, int) or not tr_schema.is_supported_artifact_schema(
+		"diagnostics", header_val,
+	):
+		supported = sorted(tr_schema.SUPPORTED_ARTIFACT_SCHEMAS["diagnostics"])
 		raise RuntimeError(
 			f"diagnostics file header mismatch in {path}: "
-			f"expected {DIAGNOSTICS_HEADER_KEY} in (2, 3, 4, 5), got {header_val}"
+			f"expected {DIAGNOSTICS_HEADER_KEY} in {supported}, got {header_val}"
 		)
 	# migrate from flat v2 shape to nested v3 shape unconditionally based on
 	# presence of interval_score key (not header version). Header v2 or v3 are
@@ -486,12 +498,19 @@ def load_geometry_cache(path: str) -> dict:
 		}
 	with numpy.load(path, allow_pickle=False) as npz:
 		schema_version = int(npz["schema_version"])
-		if schema_version != GEOMETRY_CACHE_SCHEMA_VERSION:
+		# Per contract C9, validate against the central compatibility
+		# table. Older entries whose interval fingerprints encode
+		# geometry-affecting tags from a prior schema will fall through
+		# as cache misses at `migrate_legacy_fingerprints` /
+		# `plan_interval_work` time -- that is the right place for
+		# invalidation, not here.
+		if not tr_schema.is_supported_artifact_schema(
+			"geometry_cache", schema_version,
+		):
+			supported = sorted(tr_schema.SUPPORTED_ARTIFACT_SCHEMAS["geometry_cache"])
 			raise RuntimeError(
-				f"geometry cache schema mismatch in {path}: "
-				f"expected schema_version={GEOMETRY_CACHE_SCHEMA_VERSION}, "
-				f"got {schema_version}. Run tools/_migrate_tr_config.py "
-				f"to archive old caches; the next solve will regenerate."
+				f"geometry cache schema unsupported in {path}: "
+				f"expected schema_version in {supported}, got {schema_version}."
 			)
 		# manifest is a 0-d bytes array containing JSON
 		manifest_bytes = bytes(npz["manifest"])
@@ -624,8 +643,11 @@ def write_geometry_cache(path: str, cache_data: dict) -> None:
 
 #============================================
 
-# NPZ schema version key for debug_paths.npz sidecar files
-DEBUG_PATHS_SCHEMA_VERSION = 2
+# Schema stamp written into debug_paths.npz sidecar files. Per
+# contract C9 this is an alias of the unified tr_schema.SCHEMA_VERSION,
+# NOT an independent debug-paths authority. Loaders accept any
+# readable version via tr_schema.is_supported_artifact_schema("debug_paths").
+DEBUG_PATHS_SCHEMA_VERSION = tr_schema.SCHEMA_VERSION
 
 
 def _write_npz_atomic(path: str, arrays: dict) -> None:
@@ -751,11 +773,14 @@ def load_debug_paths(path: str) -> dict:
 	result = {}
 	with numpy.load(path, allow_pickle=False) as npz:
 		schema_version = int(npz["schema_version"])
-		if schema_version != DEBUG_PATHS_SCHEMA_VERSION:
+		# C9: validate against the central compatibility table.
+		if not tr_schema.is_supported_artifact_schema(
+			"debug_paths", schema_version,
+		):
+			supported = sorted(tr_schema.SUPPORTED_ARTIFACT_SCHEMAS["debug_paths"])
 			raise RuntimeError(
-				f"debug interval paths schema mismatch in {path}: expected "
-				f"schema_version={DEBUG_PATHS_SCHEMA_VERSION}, got "
-				f"{schema_version}"
+				f"debug interval paths schema unsupported in {path}: "
+				f"expected schema_version in {supported}, got {schema_version}"
 			)
 		manifest_bytes = bytes(npz["manifest"])
 		manifest = json.loads(manifest_bytes.decode("utf-8"))

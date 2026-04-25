@@ -29,12 +29,13 @@ import math
 
 # local repo modules
 import race_phases
-import state_io
+import tr_schema
 
-# Re-export unified schema version (per contract C8)
-SCHEMA_VERSION = state_io.SCHEMA_VERSION
-# Legacy alias for backward compatibility
-PRE_RACE_REFERENCE_SCHEMA_VERSION = SCHEMA_VERSION
+# Re-export unified schema version (per contract C9). All aliases must
+# point directly at tr_schema.SCHEMA_VERSION, never chain through
+# state_io, so the single authority is visible.
+SCHEMA_VERSION = tr_schema.SCHEMA_VERSION
+PRE_RACE_REFERENCE_SCHEMA_VERSION = tr_schema.SCHEMA_VERSION
 
 # Stage-1 interval detection uses a windowed directional-coherence test
 # normalized by a provisional torso width. Pre-race seeds are independent

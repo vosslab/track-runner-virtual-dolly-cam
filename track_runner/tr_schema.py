@@ -1,0 +1,87 @@
+"""Single source of truth for track-runner schema version and policy.
+
+Everything related to "what version is this artifact" or "does this
+version affect solved geometry" lives here. Per contract C9, there is
+exactly one SCHEMA_VERSION authority in the codebase; this module is
+that authority. Do not introduce parallel version constants in any
+other module (no BLOB_OBSERVER_VERSION, no CACHE_VERSION, no
+OBSERVER_VERSION). If a stored artifact needs versioning, it goes
+under SCHEMA_VERSION here.
+
+Public surface:
+  - SCHEMA_VERSION: the unified version constant.
+  - GEOMETRY_AFFECTING_SCHEMAS: set of schema versions that altered
+    solved-geometry semantics.
+  - latest_geometry_affecting_schema(): helper for fingerprint code.
+  - SUPPORTED_ARTIFACT_SCHEMAS: per-artifact compatibility table.
+  - is_supported_artifact_schema(artifact, version): central readability
+    check; loaders ask this rather than testing == current.
+"""
+
+#============================================
+# the one and only schema version constant
+SCHEMA_VERSION = 6
+
+#============================================
+# Schema versions that altered solved-geometry semantics. Membership is
+# the contract: present = a bump that requires invalidating geometry
+# from before this version; absent = metadata-only bump, geometry caches
+# stay valid across this version line. v4 and v5 are intentionally
+# absent because they were metadata-only (see TR_SCHEMA_VERSION_HISTORY).
+# v6 enters the set because the DoG band-pass added to observe_blob_at
+# changes the magnitude landscape extract_frame_blobs sees.
+GEOMETRY_AFFECTING_SCHEMAS: set = {3, 6}
+
+
+#============================================
+def latest_geometry_affecting_schema() -> int:
+	"""Highest geometry-affecting schema <= SCHEMA_VERSION.
+
+	Used by the geometry-cache fingerprint so that metadata-only schema
+	bumps slide past the fingerprint check and old solved geometry stays
+	reusable. Geometry-affecting bumps invalidate cached entries
+	naturally because the returned integer changes.
+
+	Returns:
+		The largest member of GEOMETRY_AFFECTING_SCHEMAS that is
+		<= SCHEMA_VERSION.
+	"""
+	return max(v for v in GEOMETRY_AFFECTING_SCHEMAS if v <= SCHEMA_VERSION)
+
+
+#============================================
+# Per-artifact readability table. A schema bump records which schema
+# wrote the artifact, but does NOT automatically make older artifacts
+# unusable -- C9 explicitly states this. The set per artifact lists
+# every schema version whose on-disk layout this code can still read
+# (with migration applied where shape differs). Adding the new
+# SCHEMA_VERSION to each artifact's set is the deliberate "we
+# considered the layout impact" step on every bump.
+SUPPORTED_ARTIFACT_SCHEMAS: dict = {
+	# diagnostics JSON: shape was migrated from flat (v2) to nested
+	# (v3+) at load time; v3-v6 share the nested shape.
+	"diagnostics": {2, 3, 4, 5, 6},
+	# geometry_cache.npz: array layout has been stable since v2.
+	"geometry_cache": {2, 3, 4, 5, 6},
+	# debug_paths.npz: introduced at v2; layout stable through v6.
+	"debug_paths": {2, 3, 4, 5, 6},
+}
+
+
+def is_supported_artifact_schema(artifact: str, version: int) -> bool:
+	"""Return True iff `version` is a readable schema for `artifact`.
+
+	Loaders should call this instead of testing equality against
+	SCHEMA_VERSION. A bump that only changes semantics (not on-disk
+	layout) should add the new version to the artifact's set so older
+	files keep loading; a bump that changes layout adds the new version
+	and may drop unsupported older versions in the same change.
+
+	Args:
+		artifact: One of the keys of SUPPORTED_ARTIFACT_SCHEMAS.
+		version: Integer schema version read from the artifact.
+
+	Returns:
+		True if the version is in the artifact's supported set.
+	"""
+	return version in SUPPORTED_ARTIFACT_SCHEMAS[artifact]

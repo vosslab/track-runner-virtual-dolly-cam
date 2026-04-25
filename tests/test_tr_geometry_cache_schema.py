@@ -24,6 +24,7 @@ import pytest
 
 # local repo modules
 import state_io
+import tr_schema
 
 
 #============================================
@@ -259,15 +260,15 @@ def test_debug_paths_round_trip(tmp_path):
 #============================================
 
 
-def test_debug_paths_schema_version_is_two(tmp_path):
-	"""Writer emits schema_version=2 on disk (chronological BWD slots)."""
+def test_debug_paths_schema_version_matches_unified(tmp_path):
+	"""Writer emits the unified schema version stamp (C9)."""
 	path = str(tmp_path / "debug.npz")
 	state_io.write_debug_paths(path, {
 		"solved_intervals": {"fp_a": _make_entry_with_fwd_bwd(0, 2)},
 	})
 	with numpy.load(path, allow_pickle=False) as npz:
-		assert int(npz["schema_version"]) == 2
-	assert state_io.DEBUG_PATHS_SCHEMA_VERSION == 2
+		assert int(npz["schema_version"]) == tr_schema.SCHEMA_VERSION
+	assert state_io.DEBUG_PATHS_SCHEMA_VERSION == tr_schema.SCHEMA_VERSION
 
 
 #============================================

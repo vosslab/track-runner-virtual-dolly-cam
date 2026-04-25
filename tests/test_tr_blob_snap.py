@@ -393,8 +393,8 @@ def test_coverage_split_reports_per_pass():
 
 
 #============================================
-def test_solver_fingerprint_includes_blob_snap_tag():
-	"""The fingerprint wrapper appends SOLVER_FINGERPRINT_TAG so refine busts on upgrade."""
+def test_solver_fingerprint_includes_geometry_schema_tag():
+	"""The fingerprint wrapper appends GEOMETRY_TAG so refine busts on upgrade."""
 	seed_a = {"frame_index": 0, "cx": 0.0, "cy": 0.0, "w": 40.0, "h": 60.0}
 	seed_b = {"frame_index": 100, "cx": 100.0, "cy": 0.0, "w": 40.0, "h": 60.0}
 
@@ -402,7 +402,7 @@ def test_solver_fingerprint_includes_blob_snap_tag():
 	tagged = interval_solver.compute_interval_fingerprint(seed_a, seed_b)
 	assert tagged != plain
 	assert tagged.startswith(plain)
-	assert "blob_snap/" in tagged
+	assert "geometry_schema_v" in tagged
 
 
 #============================================

@@ -12,13 +12,16 @@ over per-frame correction directly.
 Public surface:
   - observe_blob_at(...): primary API; returns BlobObservation or None.
   - BlobObservation: dataclass carrying a single per-frame measurement.
-  - BLOB_OBSERVER_VERSION: semantic version tag for fingerprint bumping.
   - compute_residual_for_frame(...): low-level residual + validity mask.
   - dog_filter_blob_scale(...): DoG band-pass tuned to a target blob diameter.
   - extract_frame_blobs(...): connected-component extraction from a residual.
   - filter_blobs_to_corridor(...): cross-track corridor filter.
   - compute_trajectory_tangent(...): local tangent from a solved trajectory.
   - compute_cue_confidence(...): scalar cue score per blob.
+
+Cache invalidation for observe_blob_at semantic changes is handled by
+the unified SCHEMA_VERSION model in tr_schema.py (see contract C9).
+There is intentionally no per-module BLOB_OBSERVER_VERSION constant.
 """
 
 # Standard Library
@@ -30,13 +33,6 @@ import cv2
 import numpy
 
 # === Tunable constants ===
-
-# Observer version tag. Bumped on every semantic change to the stateless
-# per-frame observer API (new gate, reordered scoring, changed corridor
-# geometry). Included in the interval-solver fingerprint so refine cache
-# invalidates correctly when observer semantics change, even if numeric
-# constants are unchanged.
-BLOB_OBSERVER_VERSION = "v1"
 
 # minimum blob area in pixels to suppress noise specks.
 # TODO(C2): May be a runner-size threshold (C2 violation) or a denoising
@@ -884,7 +880,17 @@ def observe_blob_at(
 			# negative-result entry avoids re-attempts; holds no decisions
 			residual_cache[cache_key] = {"raw_blobs": []}
 			return None
-		raw_blobs = extract_frame_blobs(residual, validity_mask, threshold)
+		# DoG band-pass tuned to the predicted torso width. The ROI
+		# residual is in the same pixel space as pred_w (full-frame
+		# observer; ROIs do not downsample), so the diameter argument
+		# lands in residual pixel space directly. The filter peaks on
+		# torso-scale blobs and suppresses sub-torso speckle that would
+		# otherwise survive the threshold gate.
+		dog_residual = dog_filter_blob_scale(
+			residual, pred_w, k=DOG_K_FACTOR_DEFAULT,
+		)
+		dog_residual[validity_mask == 0] = 0.0
+		raw_blobs = extract_frame_blobs(dog_residual, validity_mask, threshold)
 		# restore full-frame coords so downstream math is in pixel space
 		roi_x1 = roi[0]
 		roi_y1 = roi[1]

@@ -12,10 +12,11 @@ import math
 import numpy
 
 
-# Track-runner schema versions are kept in lockstep per contract C8.
-# Import unified SCHEMA_VERSION; do not maintain independent versions.
-import state_io
-INTERVAL_SCORE_SCHEMA_VERSION = state_io.SCHEMA_VERSION
+# Track-runner schema versions are kept in lockstep per contract C9.
+# Alias directly to tr_schema.SCHEMA_VERSION (the single authority);
+# do not chain through state_io.
+import tr_schema
+INTERVAL_SCORE_SCHEMA_VERSION = tr_schema.SCHEMA_VERSION
 
 
 #============================================

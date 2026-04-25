@@ -5,13 +5,17 @@ Thin wrapper over the residual-motion compute primitive in
 suitable for overlay in a Qt scene. No Qt imports live here; this
 module is headless-testable.
 
-Three conceptually separate layers, each with its own helper:
+Four conceptually separate layers:
 
   1. Residual calculation (`residual_motion.compute_residual_for_frame`
      delegated, ROI-scoped).
-  2. Threshold mask (`_build_threshold_mask`): binary per-pixel flag
-     for "this pixel has enough motion to be interesting".
-  3. Display composition (`_compose_overlay`): builds the final BGR
+  2. DoG band-pass tuned to the torso width
+     (`residual_motion.dog_filter_blob_scale`) so the overlay shows
+     the same magnitude landscape the production observer sees.
+  3. Threshold mask (`_build_threshold_mask`): binary per-pixel flag
+     for "this pixel has enough motion to be interesting", computed
+     against the DoG-filtered residual.
+  4. Display composition (`_compose_overlay`): builds the final BGR
      image. Below-threshold pixels render as grayscale of the source
      frame (luminance preserved, color removed). Above-threshold
      pixels render as a JET-colorized residual blended with the color
@@ -173,6 +177,7 @@ def compute_heat_map_roi(
 		return None
 
 	pred_cx, pred_cy = float(pred_center[0]), float(pred_center[1])
+	pred_w = float(pred_box[0])
 	pred_h = float(pred_box[1])
 
 	# stage 0: build the ROI using the solver's exact crop rule
@@ -194,9 +199,19 @@ def compute_heat_map_roi(
 		reader, frame_index, scene_transform,
 		half_window=half_window, cache=None, roi=roi,
 	)
-	residual_mag, _validity = residual_result
+	residual_mag, validity_mask = residual_result
 	if residual_mag is None:
 		return None
+
+	# stage 1c: DoG band-pass tuned to the torso width so the overlay
+	# shows the same magnitude landscape the production observer sees.
+	# Sub-torso speckle is suppressed; torso-scale blobs are enhanced.
+	residual_mag = residual_motion.dog_filter_blob_scale(
+		residual_mag, pred_w,
+		k=residual_motion.DOG_K_FACTOR_DEFAULT,
+	)
+	if validity_mask is not None:
+		residual_mag[validity_mask == 0] = 0.0
 
 	# stage 2: threshold mask.
 	above_mask = _build_threshold_mask(residual_mag, threshold)
