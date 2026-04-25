@@ -1222,7 +1222,7 @@ def solve_all_intervals(
 	# Surface race-start detection so the user can sanity-check the
 	# pre-race reference (contract C2) without opening diagnostics files.
 	pre_race_reference = context.pre_race_reference
-	race_start.print_race_phase_summary(pre_race_reference)
+	race_start.print_race_phase_summary(pre_race_reference, fps=fps)
 
 	output = {
 		"intervals": interval_results,

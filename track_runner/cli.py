@@ -1187,7 +1187,10 @@ def _generate_race_start_target_frames(
 			f"run 'solve' first to regenerate"
 		)
 
-	race_start_frame = int(pre_race_reference["race_start_frame"])
+	# Validate race_start_frame is present (fail loud on missing key);
+	# the actual frame is not needed for selection -- the interval
+	# bounds drive it.
+	_ = int(pre_race_reference["race_start_frame"])
 	race_start_interval = pre_race_reference["race_start_interval"]
 	if len(race_start_interval) != 2:
 		raise RuntimeError(
@@ -1197,19 +1200,31 @@ def _generate_race_start_target_frames(
 
 	interval_low = int(race_start_interval[0])
 	interval_high = int(race_start_interval[1])
+	width = interval_high - interval_low
+	if width < 1:
+		raise RuntimeError(
+			f"race_start_interval ({interval_low}, {interval_high}) has "
+			f"non-positive width; run 'solve' first to regenerate"
+		)
 
-	# Suggested frames in computation order
+	# Frame selection scales with interval width so each refine pass
+	# converges. Previously used fixed-second offsets (+/- 0.1, 0.25,
+	# 0.5 s); on a 4-frame interval those span ~60x the interval and
+	# the same far-away frames were proposed every pass. With width-
+	# fraction offsets, every proposed frame lies inside
+	# [interval_low, interval_high]:
+	#   interval_low (last stationary seed)
+	#   interval_low + 1/8 * width
+	#   interval_low + 1/4 * width
+	#   interval_low + 1/2 * width  (= race_start_frame midpoint)
+	#   interval_low + 3/4 * width
+	#   interval_low + 7/8 * width
+	#   interval_high (first moving seed)
+	# Dedupe + sort handles short intervals where fractions collapse.
+	fractions = (0.0, 0.125, 0.25, 0.5, 0.75, 0.875, 1.0)
 	frames = []
-
-	# Add interval endpoints
-	frames.append(interval_low)
-	frames.append(interval_high)
-
-	# Add offset-derived frames
-	offsets = (-0.5, -0.25, -0.1, 0.1, 0.25, 0.5)
-	for offset in offsets:
-		frame_idx = round(race_start_frame + offset * fps)
-		frames.append(frame_idx)
+	for f in fractions:
+		frames.append(interval_low + round(width * f))
 
 	# Clamp to valid range
 	clamped_frames = []

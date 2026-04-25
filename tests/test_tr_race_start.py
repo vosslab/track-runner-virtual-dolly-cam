@@ -490,12 +490,24 @@ def test_print_race_phase_summary_none():
 	race_start.print_race_phase_summary(None)
 
 
-def test_print_race_phase_summary_with_result():
-	"""print_race_phase_summary prints frame and source count."""
+def test_print_race_phase_summary_with_result(capsys):
+	"""print_race_phase_summary renders a multi-line block with the
+	race_start_frame, the Stage 1 interval, the pre-race anchor,
+	and -- when fps is given -- a timestamp.
+	"""
 	result = {
 		"race_start_frame": 120,
+		"race_start_interval": [115, 125],
 		"source_count": 3,
+		"torso_w": 60.0,
+		"torso_h": 100.0,
 		"warnings": [],
 	}
-	# Should not raise
-	race_start.print_race_phase_summary(result)
+	race_start.print_race_phase_summary(result, fps=60.0)
+	captured = capsys.readouterr().out
+	assert "RACE-START DETECTION" in captured
+	assert "race_start_frame: 120" in captured
+	assert "(115, 125)" in captured
+	assert "10 frames" in captured
+	# fps=60.0 -> 120/60 = 2.000 s timestamp
+	assert "2.000 s" in captured

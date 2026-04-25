@@ -472,30 +472,56 @@ def compute_pre_race_reference(
 
 
 #============================================
-def print_race_phase_summary(pre_race_reference: dict) -> None:
-	"""Print a single-line summary of race-start detection.
+def print_race_phase_summary(
+	pre_race_reference: dict,
+	fps: float = None,
+) -> None:
+	"""Print a multi-line summary of race-start detection at the end of solve.
 
-	Reads race_start_frame, source_count, and warnings from the
-	pre_race_reference dict (output of compute_pre_race_reference or loaded
-	from diagnostics).
+	Reads race_start_frame, race_start_interval, source_count, torso
+	dimensions, and warnings from the pre_race_reference dict (output
+	of compute_pre_race_reference or loaded from diagnostics). Prints
+	4-5 lines giving the user a self-contained verdict without having
+	to inspect the diagnostics JSON or the contact sheet PNG.
 
 	Args:
-		pre_race_reference: Dict from compute_pre_race_reference or None if
-			no pre-race window exists.
+		pre_race_reference: Dict from compute_pre_race_reference, or
+			None if no pre-race phase was detected.
+		fps: Video frame rate; used to render race_start_frame as a
+			timestamp in seconds. Optional; the timestamp line is
+			omitted when fps is None.
 	"""
+	print()
+	print("=" * 60)
+	print("RACE-START DETECTION")
+
 	if pre_race_reference is None:
-		print("  race start: not detected")
+		print("  result: NOT DETECTED (no pre-race phase found)")
+		print("=" * 60)
 		return
 
 	frame = pre_race_reference["race_start_frame"]
+	interval = pre_race_reference["race_start_interval"]
 	source_count = pre_race_reference["source_count"]
+	torso_w = pre_race_reference["torso_w"]
+	torso_h = pre_race_reference["torso_h"]
 	warnings = pre_race_reference["warnings"]
 
-	warnings_tail = ""
-	if warnings:
-		warnings_tail = f"; warnings={warnings}"
+	low = int(interval[0])
+	high = int(interval[1])
+	width = high - low
 
-	print(f"  race start: frame {frame} (source_count={source_count}{warnings_tail})")
+	timestamp_tail = ""
+	if fps is not None and fps > 0:
+		timestamp_tail = f" ({frame / fps:.3f} s)"
+
+	print(f"  race_start_frame: {frame}{timestamp_tail}")
+	print(f"  Stage 1 interval: ({low}, {high}) -- width {width} frames")
+	print(f"  pre-race anchor:  {source_count} seeds, "
+		f"torso {torso_w:.1f}x{torso_h:.1f} px")
+	if warnings:
+		print(f"  warnings: {warnings}")
+	print("=" * 60)
 
 
 #============================================

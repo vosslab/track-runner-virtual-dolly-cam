@@ -235,6 +235,31 @@ def test_target_race_start_frame_selection():
 	assert all(0 <= f < frame_count for f in target_frames)
 
 
+def test_target_race_start_converges_on_tiny_interval():
+	"""On a 4-frame interval, every proposed frame must lie inside the
+	interval. Earlier fixed-second offsets (+/-0.5 s) produced frames
+	60+ frames outside a 4-frame interval, defeating refinement.
+	"""
+	diagnostics = {
+		"track_runner_diagnostics": 5,
+		"pre_race_reference": {
+			"race_start_frame": 102,
+			"race_start_interval": [100, 104],
+		},
+	}
+	target_frames = cli._generate_race_start_target_frames(
+		diagnostics, fps=60.0, frame_count=10000,
+	)
+	assert all(100 <= f <= 104 for f in target_frames)
+	# endpoints always present; with width=4, distinct frames span the full interval
+	assert 100 in target_frames
+	assert 104 in target_frames
+	# strictly inside the interval (refinement must offer at least one
+	# choice that is not already a seed at an endpoint)
+	inside = [f for f in target_frames if 100 < f < 104]
+	assert len(inside) >= 1
+
+
 def test_target_race_start_clamped():
 	"""Test clamping when race_start_frame is near the beginning."""
 	# race_start_frame near start; -0.5s offset would go negative
