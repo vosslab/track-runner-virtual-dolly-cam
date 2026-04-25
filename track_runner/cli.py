@@ -1169,17 +1169,22 @@ def _generate_race_start_target_frames(
 			"run 'solve' first to detect race_start_frame"
 		)
 
-	# Check schema version (strict indexing to distinguish missing from old)
+	# Check schema version. race_start_interval was added in schema 5
+	# (pre-unification); any version >= 5 is readable here per contract
+	# C9 (older schemas remain readable when safe). The current
+	# SCHEMA_VERSION may be higher but the field set we read is stable.
 	if "track_runner_diagnostics" not in diagnostics:
 		raise RuntimeError(
 			"diagnostics file missing track_runner_diagnostics header; "
 			"run 'solve' first to generate valid diagnostics"
 		)
 	header = diagnostics["track_runner_diagnostics"]
-	if header < 5:
+	min_required = 5
+	if header < min_required:
 		raise RuntimeError(
-			f"diagnostics schema is version {header}, but this tool requires version 5; "
-			"run 'solve' first to regenerate"
+			f"diagnostics schema is version {header}, but target --race-start "
+			f"requires at least version {min_required} (race_start_interval); "
+			f"run 'solve' first to regenerate"
 		)
 
 	race_start_frame = int(pre_race_reference["race_start_frame"])

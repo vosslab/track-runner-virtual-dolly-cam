@@ -682,8 +682,11 @@ def execute_interval_work(
 		# Store in context so interval_solver can access it
 		context.pre_race_reference = pre_race_reference
 
-		# Render the race-start confirmation contact sheet
-		# This is a required artifact whenever Stage 2 computes race_start_frame.
+		# Render the race-start confirmation contact sheet -- a required
+		# artifact whenever pre-race intervals are synthesized. It is the
+		# user-facing visual check that the chosen race_start_frame is
+		# correct, and it is the artifact `target --race-start` points
+		# the user at.
 		tiles = race_start.choose_race_start_confirmation_frames(
 			final_race_start_frame, context.fps, context.video_frame_count
 		)
