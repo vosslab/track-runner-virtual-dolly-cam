@@ -5,8 +5,23 @@ scene-anchored center; see TRACK_RUNNER_CONTRACT.md). Implements two-stage
 race-start boundary detection via Stage 1 (seed-pair displacement) and Stage 2
 (fine velocity detector on interval trajectory).
 
-Exports: detect_race_start, locate_race_start_interval, detect_race_start_in_interval,
-compute_pre_race_reference, print_race_phase_summary.
+Vocabulary used here and across the project:
+	- interval: a single seed-to-seed range (two adjacent seeds, the
+		frames strictly between them). Per contract C5.
+	- window:   a sliding group of N consecutive seeds (= N-1 adjacent
+		intervals). Stage 1 uses windows of PRE_RACE_MIN_WINDOW_SEEDS
+		(= 3) seeds = 2 adjacent intervals to compute coherence.
+
+Stage 2 (the velocity-onset detector in race_phases.detect_race_start)
+is DEACTIVATED in production. Production picks race_start_frame as the
+deterministic midpoint of Stage 1's interval via
+pick_race_start_frame_midpoint. Stage 2 code is preserved for
+diagnostic use only; see docs/TODO.md "Stage 2 race-start refinement".
+
+Exports: detect_race_start, compute_window_metrics, window_triggers,
+locate_race_start_interval, pick_race_start_frame_midpoint,
+detect_race_start_in_interval, compute_pre_race_reference,
+print_race_phase_summary.
 """
 
 # Standard Library
@@ -98,6 +113,61 @@ def _seed_scene_center(scene_transform, seed: dict) -> tuple:
 
 
 #============================================
+def compute_window_metrics(
+	scene_centers: list,
+	start_idx: int,
+	window_size: int,
+	torso_scale: float,
+) -> tuple:
+	"""Compute the Stage 1 directional-coherence metrics for one
+	sliding seed-window (a group of `window_size` consecutive seeds =
+	`window_size - 1` adjacent intervals).
+
+	Pulled out of locate_race_start_interval so diagnostic tools can call
+	the same math without duplicating the formula.
+
+	Args:
+		scene_centers: List of (scene_cx, scene_cy) tuples, one per seed.
+		start_idx: Index of the window's first seed inside scene_centers.
+		window_size: Number of seeds in the window (production uses
+			PRE_RACE_MIN_WINDOW_SEEDS = 3 = 2 adjacent intervals).
+		torso_scale: Provisional torso width in scene units. Must be > 0.
+
+	Returns:
+		Tuple (net_disp_torso, coherence, pair_disps):
+			net_disp_torso: first-to-last scene displacement / torso_scale
+			coherence: net_disp / path_len (0 jitter, ~1 aligned motion)
+			pair_disps: list of raw per-interval scene distances inside
+				the window (not torso units)
+	"""
+	ax, ay = scene_centers[start_idx]
+	bx, by = scene_centers[start_idx + window_size - 1]
+	net_disp = math.hypot(bx - ax, by - ay)
+	net_torso = net_disp / torso_scale
+	disps = []
+	path_len = 0.0
+	for j in range(start_idx, start_idx + window_size - 1):
+		ux, uy = scene_centers[j]
+		vx, vy = scene_centers[j + 1]
+		d = math.hypot(vx - ux, vy - uy)
+		disps.append(d)
+		path_len += d
+	path_torso = path_len / torso_scale
+	coherence_val = net_torso / max(path_torso, 1e-6)
+	return (net_torso, coherence_val, disps)
+
+
+#============================================
+def window_triggers(net_torso: float, coherence_val: float) -> bool:
+	"""Return True if a window's metrics pass the production thresholds."""
+	triggered = (
+		net_torso >= PRE_RACE_NET_DISP_THRESHOLD_TORSO_UNITS
+		and coherence_val >= PRE_RACE_COHERENCE_THRESHOLD
+	)
+	return triggered
+
+
+#============================================
 def locate_race_start_interval(seeds: list, scene_transform, fps: float) -> tuple:
 	"""Stage 1: Localize the interval containing race start via directional
 	coherence over a sliding window, normalized by a provisional pre-race
@@ -146,35 +216,6 @@ def locate_race_start_interval(seeds: list, scene_transform, fps: float) -> tupl
 
 	window_size = PRE_RACE_MIN_WINDOW_SEEDS
 
-	def _window_metrics(
-		start_idx: int, torso_scale: float,
-	) -> tuple:
-		"""Return (net_disp_torso, coherence, pair_disps) for a window.
-
-		pair_disps is a list of raw per-pair scene distances in the window.
-		"""
-		ax, ay = scene_centers[start_idx]
-		bx, by = scene_centers[start_idx + window_size - 1]
-		net_disp = math.hypot(bx - ax, by - ay)
-		net_torso = net_disp / torso_scale
-		disps = []
-		path_len = 0.0
-		for j in range(start_idx, start_idx + window_size - 1):
-			ux, uy = scene_centers[j]
-			vx, vy = scene_centers[j + 1]
-			d = math.hypot(vx - ux, vy - uy)
-			disps.append(d)
-			path_len += d
-		path_torso = path_len / torso_scale
-		coherence_val = net_torso / max(path_torso, 1e-6)
-		return (net_torso, coherence_val, disps)
-
-	def _window_triggers(net_torso: float, coherence_val: float) -> bool:
-		return (
-			net_torso >= PRE_RACE_NET_DISP_THRESHOLD_TORSO_UNITS
-			and coherence_val >= PRE_RACE_COHERENCE_THRESHOLD
-		)
-
 	# Slide a window of PRE_RACE_MIN_WINDOW_SEEDS seeds. Skip windows whose
 	# total duration is below the debounce threshold (dense pre-race
 	# annotation clusters, not motion). The first window that triggers AND
@@ -210,8 +251,10 @@ def locate_race_start_interval(seeds: list, scene_transform, fps: float) -> tupl
 				"motion window. Add a visible pre-race seed.",
 			)
 
-		net_torso, coherence, pair_disps = _window_metrics(i, torso_scale)
-		if not _window_triggers(net_torso, coherence):
+		net_torso, coherence, pair_disps = compute_window_metrics(
+			scene_centers, i, window_size, torso_scale,
+		)
+		if not window_triggers(net_torso, coherence):
 			continue
 
 		# Confirmation: the next window must also trigger. This rejects
@@ -221,8 +264,10 @@ def locate_race_start_interval(seeds: list, scene_transform, fps: float) -> tupl
 		# normally have many more.
 		if i >= last_window_idx:
 			continue
-		next_net, next_coh, _ = _window_metrics(i + 1, torso_scale)
-		if not _window_triggers(next_net, next_coh):
+		next_net, next_coh, _ = compute_window_metrics(
+			scene_centers, i + 1, window_size, torso_scale,
+		)
+		if not window_triggers(next_net, next_coh):
 			continue
 
 		# Accepted. Transition pair inside the window is the pair with the
@@ -248,6 +293,42 @@ def locate_race_start_interval(seeds: list, scene_transform, fps: float) -> tupl
 
 
 #============================================
+def pick_race_start_frame_midpoint(
+	interval_low_frame: int,
+	interval_high_frame: int,
+) -> int:
+	"""Return the deterministic race-start frame from a Stage 1 interval.
+
+	Production picks `ceil((low + high) / 2)` as race_start_frame: the
+	midpoint between the last stationary seed (interval_low) and the
+	first moving seed (interval_high). Seed-aligned and crash-free,
+	replacing the velocity-onset Stage 2 detector which had two failure
+	modes (short interval -> baseline window underflow; ambiguous
+	velocity -> None). Stage 2 code (`detect_race_start_in_interval`,
+	`race_phases.detect_race_start`) is preserved for diagnostic use and
+	a future redesign; see [docs/TODO.md](TODO.md) Stage 2 entry.
+
+	Args:
+		interval_low_frame: Last stationary seed frame (Stage 1 low).
+		interval_high_frame: First moving seed frame (Stage 1 high).
+
+	Returns:
+		int in [interval_low_frame + 1, interval_high_frame].
+	"""
+	if interval_high_frame <= interval_low_frame:
+		raise ValueError(
+			f"interval_high_frame ({interval_high_frame}) must be greater "
+			f"than interval_low_frame ({interval_low_frame})"
+		)
+	return -(-(interval_low_frame + interval_high_frame) // 2)
+
+
+#============================================
+# DEPRECATED: Stage 2 is deactivated in production. Kept for diagnostic
+# tools (tools/diagnose_pre_race.py stage2_velocity.png) and a future
+# redesign. Production now calls pick_race_start_frame_midpoint instead.
+# See docs/TODO.md "Stage 2 race-start refinement" for the redesign brief.
+#============================================
 def detect_race_start_in_interval(
 	interval_trajectory: list,
 	scene_transform,
@@ -267,27 +348,38 @@ def detect_race_start_in_interval(
 		interval_start_frame: Start frame of the interval (for validation).
 
 	Returns:
-		int: The authoritative race_start_frame.
+		int: The authoritative race_start_frame. Falls back to the
+			interval's end frame (Stage 1's first-moving seed) with a
+			printed warning when the velocity-onset detector cannot
+			produce a result -- e.g., the interval is shorter than the
+			detector's pre-window. Stage 1's interval boundary is a more
+			trustworthy fallback than crashing the solve.
 
 	Raises:
-		RuntimeError: if detector returns None or a frame outside the interval.
+		RuntimeError: if the detector returns a frame outside the interval.
 	"""
 	result = race_phases.detect_race_start(
 		interval_trajectory, scene_transform, fps
 	)
 
 	race_start_frame = result["race_start_frame"]
+	interval_end_frame = interval_start_frame + len(interval_trajectory) - 1
 
 	if race_start_frame is None:
-		interval_end_frame = interval_start_frame + len(interval_trajectory) - 1
-		raise RuntimeError(
-			f"fine detector found no velocity onset in interval frames "
-			f"{interval_start_frame}-{interval_end_frame}; add a seed closer to "
-			f"the actual race start"
+		# Stage 2 produced no onset (typically because the interval is
+		# too short for the detector's PRE_WINDOW_S baseline). Fall back
+		# to the interval's high frame -- Stage 1's "first moving seed"
+		# -- so solve continues with a defensible boundary.
+		print(
+			f"  WARNING: velocity-onset detector found no onset in "
+			f"interval {interval_start_frame}-{interval_end_frame} "
+			f"(length={len(interval_trajectory)} frames); "
+			f"falling back to Stage 1 interval end frame "
+			f"{interval_end_frame} as race_start_frame."
 		)
+		return interval_end_frame
 
 	# Validate the frame is within interval range
-	interval_end_frame = interval_start_frame + len(interval_trajectory) - 1
 	if not (interval_start_frame <= race_start_frame <= interval_end_frame):
 		raise RuntimeError(
 			f"internal bug: detector returned race_start_frame={race_start_frame} "

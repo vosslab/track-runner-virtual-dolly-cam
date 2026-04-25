@@ -14,6 +14,7 @@ Public surface:
   - BlobObservation: dataclass carrying a single per-frame measurement.
   - BLOB_OBSERVER_VERSION: semantic version tag for fingerprint bumping.
   - compute_residual_for_frame(...): low-level residual + validity mask.
+  - dog_filter_blob_scale(...): DoG band-pass tuned to a target blob diameter.
   - extract_frame_blobs(...): connected-component extraction from a residual.
   - filter_blobs_to_corridor(...): cross-track corridor filter.
   - compute_trajectory_tangent(...): local tangent from a solved trajectory.
@@ -47,6 +48,19 @@ MIN_BLOB_AREA = 25
 
 # motion intensity threshold for blob extraction
 DEFAULT_THRESHOLD = 10.0
+
+# DoG k-factor default (sigma_2 / sigma_1) for the band-pass filter.
+# Paper default is 1.1 (DoG Picker, Yoshioka et al. 2009); 1.6 is the
+# SIFT/blob-detection classic. Empirically, on residual-motion heat
+# maps from this project's running-subject footage, values in 2-5 give
+# much stronger response than 1.1-1.6 -- the tight-band paper settings
+# leave the torso blob too dim relative to sub-torso speckle. Default
+# bumped to 3.0 as the middle of the useful range.
+DOG_K_FACTOR_DEFAULT = 3.0
+
+# Minimum target diameter (pixels) below which the DoG kernel collapses.
+# Callers passing smaller diameters get the input array unchanged.
+DOG_MIN_DIAMETER = 4.0
 
 # half-window for background estimation (4 = 9-frame window).
 # Value inherited from tools/diagnose_residual_motion.py, which is the
@@ -168,6 +182,48 @@ def colorize_jet(
 	normalized = numpy.clip(mag / fixed_max * 255, 0, 255).astype(numpy.uint8)
 	colored = cv2.applyColorMap(normalized, cv2.COLORMAP_JET)
 	return colored
+
+
+#============================================
+def dog_filter_blob_scale(
+	mag: numpy.ndarray,
+	diameter: float,
+	k: float = DOG_K_FACTOR_DEFAULT,
+) -> numpy.ndarray:
+	"""Difference-of-Gaussians band-pass tuned to a target blob diameter.
+
+	Enhances image-plane blobs of the given diameter and suppresses both
+	smaller speckle and larger structures. The sigma selection follows
+	the Laplacian-of-Gaussian peak-radius relation r = sqrt(2) * sigma
+	(DoG Picker, Yoshioka et al. 2009, eq. 4).
+
+	Args:
+		mag: Input image (float32, HxW). Not modified.
+		diameter: Target blob diameter in pixels of `mag`.
+		k: DoG k-factor (sigma_2 / sigma_1). 1.1 is the paper default
+			(tight band, most LoG-faithful); 1.6 is SIFT classic (wider
+			band, stronger response); ~5 is human-visual-system wide.
+
+	Returns:
+		Float32 band-pass filtered array of the same shape as `mag`,
+		with negative-lobe response clipped to 0. If `diameter` is
+		below `DOG_MIN_DIAMETER`, returns `mag` unchanged.
+	"""
+	# guard against tiny target sizes where the kernel would collapse
+	if diameter < DOG_MIN_DIAMETER:
+		return mag
+	# LoG peaks at r = sqrt(2) * sigma; set sigma_1 so the filter's
+	# zero-crossing radius matches the target blob radius
+	radius = diameter / 2.0
+	sigma_1 = radius / numpy.sqrt(2.0)
+	sigma_2 = k * sigma_1
+	# real-space Gaussian blurs; OpenCV derives ksize from sigma when 0,0
+	blur_1 = cv2.GaussianBlur(mag, (0, 0), sigmaX=sigma_1, sigmaY=sigma_1)
+	blur_2 = cv2.GaussianBlur(mag, (0, 0), sigmaX=sigma_2, sigmaY=sigma_2)
+	# positive-center DoG; negative lobes are not useful for blob picking
+	dog = blur_1 - blur_2
+	dog = numpy.clip(dog, 0.0, None).astype(numpy.float32)
+	return dog
 
 
 #============================================

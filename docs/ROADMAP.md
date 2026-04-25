@@ -4,6 +4,23 @@ Planned work, priorities, and what is intentionally not started.
 
 ## Planned
 
+### Stage 2 race-start refinement (deactivated; needs redesign)
+
+Production currently picks `race_start_frame` as the deterministic
+midpoint of Stage 1's seed-to-seed interval. The original Stage 2
+velocity-onset detector
+([track_runner/race_phases.py](../track_runner/race_phases.py)
+`detect_race_start`) is preserved but not called -- it required a
+45-frame trailing baseline window that does not fit short Stage 1
+intervals, and produced None on ambiguous velocity profiles.
+
+A reworked Stage 2 should refine race_start_frame inside Stage 1's
+interval to sub-seed precision using the motion-cue heat map
+([track_runner/residual_motion.py](../track_runner/residual_motion.py)
+`compute_residual_for_frame`, 9-frame aligned-background window) --
+not a 45-frame velocity baseline. Full redesign brief in
+[docs/TODO.md](TODO.md) "Stage 2 race-start refinement".
+
 ### Detect race end frame during solve
 
 The solver should automatically identify when the race ends (runner crosses finish

@@ -87,6 +87,12 @@ def parse_args() -> argparse.Namespace:
 		"-w", "--window", dest="half_window", type=int, default=4,
 		help="Half-window for background estimation (default: 4 = 9 frames)"
 	)
+	parser.add_argument(
+		"-k", "--k-factor", dest="k_factor", type=float,
+		default=residual_motion.DOG_K_FACTOR_DEFAULT,
+		help="DoG k-factor (sigma_2 / sigma_1). 1.1=paper tight, 1.6=SIFT, "
+			"3-5 works well on this project's residuals (default: 3.0)"
+	)
 	args = parser.parse_args()
 	return args
 
@@ -460,7 +466,15 @@ def draw_box_on_frame(
 	y1 = int(cy - h / 2)
 	x2 = int(cx + w / 2)
 	y2 = int(cy + h / 2)
-	cv2.rectangle(frame, (x1, y1), (x2, y2), color, thickness)
+	# thickness reduced by 1 px from the caller-supplied value for a
+	# lighter overlay; floor at 1
+	thin = max(1, thickness - 1)
+	# blend the rectangle over the frame so underlying pixels still read
+	# through; 0.7 alpha keeps the outline crisp but slightly translucent
+	overlay = frame.copy()
+	cv2.rectangle(overlay, (x1, y1), (x2, y2), color, thin)
+	alpha = 0.7
+	cv2.addWeighted(overlay, alpha, frame, 1.0 - alpha, 0.0, frame)
 	if label:
 		cv2.putText(frame, label, (x1, y1 - 5),
 			cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
@@ -919,6 +933,7 @@ def compute_frame_statistics(
 	threshold: float,
 	scale_factor: float,
 	half_window: int,
+	k_factor: float,
 ) -> dict:
 	"""Compute per-frame motion statistics using temporal blob tracking.
 
@@ -1001,13 +1016,33 @@ def compute_frame_statistics(
 		stats["no_data"] = True
 		return stats
 
+	# DoG band-pass tuned to the per-frame torso width as the target
+	# blob diameter. ref_w is already in scaled-image pixel space
+	# (multiplied by scale_factor at capture), matching the residual map.
+	# Both raw and DoG maps flow through so PNG panels can show
+	# before/after and stats report both blob counts; blob extraction and
+	# downstream temporal tracking run on the DoG-filtered map.
+	comp_mag_dog = residual_motion.dog_filter_blob_scale(
+		comp_mag, ref_w, k=k_factor,
+	)
+	comp_mag_dog[validity_mask == 0] = 0.0
+
 	stats["display_frame"] = display_frame
 	stats["comp_mag"] = comp_mag
+	stats["comp_mag_dog"] = comp_mag_dog
 	stats["raw_mag"] = raw_mag
 	stats["validity_mask"] = validity_mask
 
-	# extract blobs from center frame
-	center_blobs = residual_motion.extract_frame_blobs(comp_mag, validity_mask, threshold)
+	# before/after blob counts at the same threshold
+	raw_blobs = residual_motion.extract_frame_blobs(
+		comp_mag, validity_mask, threshold,
+	)
+	stats["num_blobs_raw"] = len(raw_blobs)
+
+	# extract blobs from center frame on the DoG-filtered map
+	center_blobs = residual_motion.extract_frame_blobs(
+		comp_mag_dog, validity_mask, threshold,
+	)
 	stats["num_blobs"] = len(center_blobs)
 
 	# compute residuals for neighboring frames (for temporal tracking)
@@ -1043,16 +1078,28 @@ def compute_frame_statistics(
 			frame_blobs_list.append([])
 			continue
 
-		# get reference point for this frame (may shift slightly)
+		# get reference point for this frame (may shift slightly).
+		# Use each neighbor's own torso width for DoG sigma sizing so the
+		# filter stays C2-compliant as the runner scales across the 5-frame
+		# window. Fall back to the center frame's torso width only when
+		# the blended path doesn't cover the neighbor.
 		neighbor_box = find_trajectory_box(fi, seeds_list, intervals_data)
 		if neighbor_box is not None:
 			nb_cx = float(neighbor_box["cx"]) * scale_factor
 			nb_cy = float(neighbor_box["cy"]) * scale_factor
+			nb_w = float(neighbor_box["w"]) * scale_factor
 		else:
 			nb_cx = ref_cx
 			nb_cy = ref_cy
+			nb_w = ref_w
 
-		n_blobs = residual_motion.extract_frame_blobs(n_mag, n_validity, threshold)
+		# DoG-filter the neighbor's residual using its own torso width
+		# as the target diameter (per-frame C2-compliant scaling).
+		n_mag_dog = residual_motion.dog_filter_blob_scale(
+			n_mag, nb_w, k=k_factor,
+		)
+		n_mag_dog[n_validity == 0] = 0.0
+		n_blobs = residual_motion.extract_frame_blobs(n_mag_dog, n_validity, threshold)
 		if pool == "seed" and truth_box is not None:
 			filtered = filter_blobs_near_seed(
 				n_blobs, nb_cx, nb_cy, search_radius
@@ -1398,8 +1445,9 @@ def render_diagnostic_png(
 	pool = stats["pool"]
 	display_frame = stats.get("display_frame")
 	comp_mag = stats.get("comp_mag")
+	comp_mag_dog = stats.get("comp_mag_dog")
 
-	if display_frame is None or comp_mag is None:
+	if display_frame is None or comp_mag is None or comp_mag_dog is None:
 		return
 
 	# top-left: original frame with annotations
@@ -1553,6 +1601,33 @@ def render_diagnostic_png(
 	cv2.putText(panel_tr, trk_info, (10, panel_tr.shape[0] - 10),
 		cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
 
+	# top-far-right: DoG-filtered residual heatmap (full frame).
+	# Same JET colormap and fixed_max as the raw panel so intensities are
+	# visually comparable. Light overlays only: corridor/box, no track clutter.
+	panel_tr_dog = residual_motion.colorize_jet(comp_mag_dog)
+	num_blobs_raw = stats.get("num_blobs_raw", 0)
+	num_blobs_dog = stats.get("num_blobs", 0)
+	cv2.putText(panel_tr_dog,
+		f"DoG-filtered residual  raw_blobs={num_blobs_raw}  dog_blobs={num_blobs_dog}",
+		(10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 2)
+	if pool == "gap":
+		blended_path_d, blended_offset_d, _ = find_blended_path_for_frame(
+			frame_index, intervals_data
+		)
+		if blended_path_d is not None:
+			curve_pts_d = get_blended_path_positions(
+				blended_path_d, blended_offset_d, scale_factor
+			)
+			tangent_d = stats.get("tangent", (1, 0, 0, 1))
+			c_radius_d = stats.get("corridor_radius", 50)
+			draw_corridor_on_frame(panel_tr_dog, curve_pts_d, tangent_d, c_radius_d,
+				(200, 200, 200))
+	elif ref_cx is not None:
+		ref_w_val = stats.get("ref_w", 0)
+		ref_h_val_draw = stats.get("ref_h", 0)
+		draw_box_on_frame(panel_tr_dog, ref_cx, ref_cy, ref_w_val, ref_h_val_draw,
+			(255, 255, 255), 2)
+
 	# bottom-left: thresholded motion mask (full frame)
 	motion_mask = (comp_mag > threshold).astype(numpy.uint8) * 255
 	panel_bl = cv2.cvtColor(motion_mask, cv2.COLOR_GRAY2BGR)
@@ -1578,14 +1653,43 @@ def render_diagnostic_png(
 	if cand_x is not None:
 		draw_crosshair(panel_bl, cand_x, cand_y)
 
+	# bottom-far-right: DoG thresholded motion mask (full frame).
+	# Same threshold as raw mask so the difference in components is
+	# attributable to the DoG filter alone.
+	motion_mask_dog = (comp_mag_dog > threshold).astype(numpy.uint8) * 255
+	panel_bl_dog = cv2.cvtColor(motion_mask_dog, cv2.COLOR_GRAY2BGR)
+	cv2.putText(panel_bl_dog, f"DoG motion mask (t={threshold:.1f})", (10, 25),
+		cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 2)
+	if pool == "gap":
+		blended_path_m, blended_offset_m, _ = find_blended_path_for_frame(
+			frame_index, intervals_data
+		)
+		if blended_path_m is not None:
+			curve_pts_m = get_blended_path_positions(
+				blended_path_m, blended_offset_m, scale_factor
+			)
+			tangent_m = stats.get("tangent", (1, 0, 0, 1))
+			c_radius_m = stats.get("corridor_radius", 50)
+			draw_corridor_on_frame(panel_bl_dog, curve_pts_m, tangent_m, c_radius_m,
+				(0, 200, 200))
+	elif ref_cx is not None:
+		ref_w_val2 = stats.get("ref_w", 0)
+		ref_h_val2 = stats.get("ref_h", 0)
+		draw_box_on_frame(panel_bl_dog, ref_cx, ref_cy, ref_w_val2, ref_h_val2,
+			(0, 255, 0), 2)
+	if cand_x is not None:
+		draw_crosshair(panel_bl_dog, cand_x, cand_y)
+
 	# bottom-right: original frame without annotations (clean reference)
 	panel_br = display_frame.copy()
 	cv2.putText(panel_br, f"original frame {frame_index}", (10, 25),
 		cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
 
-	# assemble full-frame 2x2 grid
-	top_row = numpy.hstack([panel_tl, panel_tr])
-	bottom_row = numpy.hstack([panel_bl, panel_br])
+	# assemble full-frame 2x3 grid:
+	#   top:    original-with-overlays | raw residual JET | DoG residual JET
+	#   bottom: clean original         | raw motion mask  | DoG motion mask
+	top_row = numpy.hstack([panel_tl, panel_tr, panel_tr_dog])
+	bottom_row = numpy.hstack([panel_br, panel_bl, panel_bl_dog])
 	grid_full = numpy.vstack([top_row, bottom_row])
 
 	# save full-frame PNG
@@ -1608,15 +1712,19 @@ def render_diagnostic_png(
 	if crop_cx is not None and ref_h_val > 0:
 		crop_tl = crop_square_around_point(panel_tl, crop_cx, crop_cy, ref_h_val)
 		crop_tr = crop_square_around_point(panel_tr, crop_cx, crop_cy, ref_h_val)
+		crop_tr_dog = crop_square_around_point(panel_tr_dog, crop_cx, crop_cy, ref_h_val)
 		crop_bl = crop_square_around_point(panel_bl, crop_cx, crop_cy, ref_h_val)
+		crop_bl_dog = crop_square_around_point(panel_bl_dog, crop_cx, crop_cy, ref_h_val)
 		crop_br = crop_square_around_point(panel_br, crop_cx, crop_cy, ref_h_val)
 		# resize all crops to the same size for grid assembly
 		crop_size = crop_tl.shape[0]
 		crop_tr = cv2.resize(crop_tr, (crop_size, crop_size))
+		crop_tr_dog = cv2.resize(crop_tr_dog, (crop_size, crop_size))
 		crop_bl = cv2.resize(crop_bl, (crop_size, crop_size))
+		crop_bl_dog = cv2.resize(crop_bl_dog, (crop_size, crop_size))
 		crop_br = cv2.resize(crop_br, (crop_size, crop_size))
-		crop_top = numpy.hstack([crop_tl, crop_tr])
-		crop_bot = numpy.hstack([crop_bl, crop_br])
+		crop_top = numpy.hstack([crop_tl, crop_tr, crop_tr_dog])
+		crop_bot = numpy.hstack([crop_br, crop_bl, crop_bl_dog])
 		grid_crop = numpy.vstack([crop_top, crop_bot])
 		crop_path = os.path.join(output_dir,
 			f"{pool}_frame_{frame_index:06d}_crop.png")
@@ -1802,7 +1910,7 @@ def print_statistics_table(all_stats: list) -> None:
 	print(f"{'frame':>7} {'pool':>5} {'tier':>6} "
 		f"{'trk_ln':>6} {'raw_d':>7} {'blob_d':>7} {'corr':>6} "
 		f"{'cross':>7} {'along':>7} "
-		f"{'strnth':>7} {'c/r':>5} {'#cand':>5} {'#blob':>5} "
+		f"{'strnth':>7} {'c/r':>5} {'#cand':>5} {'raw/dog':>9} "
 		f"{'score':>6} {'v_agr':>5} {'b_con':>5} {'revw?':>5}")
 	print("-" * line_w)
 
@@ -1821,6 +1929,8 @@ def print_statistics_table(all_stats: list) -> None:
 		cvr = stats.get("comp_vs_raw")
 		n_cand = stats.get("num_corridor_candidates", 0)
 		n_blob = stats.get("num_blobs", 0)
+		n_blob_raw = stats.get("num_blobs_raw", 0)
+		blob_pair = f"{n_blob_raw:>4}/{n_blob:<4}"
 		score = stats.get("track_score", 0.0)
 		va = stats.get("visual_agreement", 0.0)
 		bc = stats.get("blob_track_confidence", 0.0)
@@ -1839,7 +1949,7 @@ def print_statistics_table(all_stats: list) -> None:
 		print(f"{frame_idx:>7} {pool:>5} {tier:>6} "
 			f"{trk_len:>6} {rd_s} {bd_s} {cm_s} "
 			f"{cr_s} {al_s} "
-			f"{st_s} {cv_s} {n_cand:>5} {n_blob:>5} "
+			f"{st_s} {cv_s} {n_cand:>5} {blob_pair:>9} "
 			f"{score:>6.2f} {va:>5.2f} {bc:>5.2f} {el_s}")
 
 	print("=" * line_w)
@@ -2014,6 +2124,8 @@ def main() -> None:
 	print(f"  settings: threshold={args.threshold}px, "
 		f"scale={args.scale}, "
 		f"window={num_frames_in_window} frames (half={args.half_window})")
+	print(f"  dog_filter: torso-scale band-pass active (k={args.k_factor:.2f}); "
+		f"blob-extraction threshold -t applies to DoG output")
 
 	# load all data
 	result = load_all_data(args.input_file)
@@ -2040,7 +2152,7 @@ def main() -> None:
 		stats = compute_frame_statistics(
 			frame_info, reader, scene_transform, intervals_data,
 			diagnostics, seeds_list, args.threshold, args.scale,
-			args.half_window,
+			args.half_window, args.k_factor,
 		)
 		if stats.get("no_data") or stats.get("no_reference"):
 			print(f"  warning: no data/reference for frame {frame_index}")

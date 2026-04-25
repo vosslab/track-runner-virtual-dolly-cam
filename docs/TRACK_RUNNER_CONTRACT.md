@@ -125,14 +125,23 @@ Allowed:
 - a separate output-only corrected track, if added later, provided it is
     not used for FWD/BWD agreement scoring
 
-## C9. keep SCHEMA_VERSION in sync
+## C9. Keep `SCHEMA_VERSION` unified
 
-- do not use multiple SCHEMA_VERSIONs
-- this is forbidden: 3 for ITEM_SCHEMA_VERSION and 4 for OBJECT_SCHEMA_VERSION
-- C8 does not mean every metadata-only schema change must invalidate solved geometry caches.
-- Use one SCHEMA_VERSION value everywhere schema is recorded.
-- Keep a log of the SCHEMA_VERSIONs in a docs/TR_SCHEMA_VERSION_HISTORY.md
-- in some cases schema 1 might be the same as schema 8, but it keeps us from having mixed numbers
+- Do not use multiple schema version constants.
+- This is forbidden: `ITEM_SCHEMA_VERSION = 3` and `OBJECT_SCHEMA_VERSION = 4`.
+- Use one `SCHEMA_VERSION` value everywhere schema is recorded.
+- A `SCHEMA_VERSION` bump means an artifact was written under a new schema contract.
+  It does not mean older schema versions are automatically invalid.
+- Older schema versions should remain readable or migratable when safe.
+- Metadata-only schema changes must not invalidate derived artifacts or caches by default.
+- Only schema changes that affect the meaning, structure, or computation of a derived artifact
+  should invalidate that artifact.
+- Do not create separate version constants, such as observer or cache versions, to bypass `SCHEMA_VERSION`.
+- If a stored artifact needs versioning, that versioning belongs under the unified `SCHEMA_VERSION` contract.
+- Keep a history of `SCHEMA_VERSION` changes in `docs/TR_SCHEMA_VERSION_HISTORY.md`.
+- In some cases, schema 1 might be byte-identical to schema 8.
+  The version still changes to avoid mixed numbers across outputs and
+  prevent silent mismatches in cached or derived artifacts.
 
 ## Relationship to other docs
 

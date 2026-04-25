@@ -5,6 +5,68 @@ claimed, refined, or closed independently.
 
 ## Solver
 
+### Stage 2 race-start refinement (currently deactivated)
+
+Stage 2 was the velocity-onset detector in
+[track_runner/race_phases.py](../track_runner/race_phases.py)
+`detect_race_start`, intended to pick the exact race-start frame
+**inside** Stage 1's seed-to-seed crossing interval. As of
+2026-04-24 it is disabled in production:
+[track_runner/solve_queue.py](../track_runner/solve_queue.py) now uses
+`race_start.pick_race_start_frame_midpoint(low, high)` =
+`ceil((low + high) / 2)` instead.
+
+Why deactivated:
+
+- The detector requires a 45-frame trailing baseline window
+  (`PRE_WINDOW_S * fps` at 60 fps). When Stage 1's crossing interval is
+  shorter than that (a common case with dense pre-race seeds), the scan
+  loop body in
+  [track_runner/race_phases.py:170-216](../track_runner/race_phases.py)
+  never executes and returns `(None, 0.0)`.
+- Even when the scan runs, on ambiguous velocity profiles it returns
+  None and the wrapper used to crash solve. Diagnosed via
+  [tools/diagnose_pre_race.py](../tools/diagnose_pre_race.py) on
+  `Hononega-Orion_600m-IMG_3702.mkv` (interval 340-357, 18 frames,
+  baseline window 45 frames -> no scan).
+
+What is preserved (do not delete):
+
+- `race_phases.detect_race_start` -- the velocity-onset detector itself.
+- `race_start.detect_race_start_in_interval` -- the wrapper.
+- The diagnostic tool's `stage2_velocity.png` plot which calls the
+  detector for visualization.
+
+Redesign brief for whoever picks this up:
+
+- Goal: pick race_start_frame to sub-seed precision inside Stage 1's
+  interval. Current midpoint is correct on average but wrong by up to
+  ~half the interval width on individual clips.
+- Constraint: must work on intervals as short as 2-3 frames (no
+  baseline window assumption). The old detector demanded 45 frames of
+  trailing baseline at 60 fps to start scanning, which is absurd
+  given Stage 1's intervals can be a single frame and the rest of the
+  pipeline already computes a useful per-frame motion signal from a
+  9-frame window.
+- **Recommended basis: the motion-cue heat map** in
+  [track_runner/residual_motion.py](../track_runner/residual_motion.py).
+  `compute_residual_for_frame` uses `DEFAULT_HALF_WINDOW = 4` -> a
+  9-frame aligned-background-subtraction window and produces a
+  per-frame residual magnitude map. Run it across the Stage 1 interval
+  (plus a few neighbor frames so the 9-frame window stays populated
+  even when the interval itself is short) and pick the first frame
+  where residual energy at the runner's expected location crosses a
+  torso-relative threshold. The diagnostic in
+  [tools/diagnose_pre_race.py](../tools/diagnose_pre_race.py) already
+  samples this signal in its `res_e` column; use it to calibrate the
+  threshold before wiring the redesign into solve.
+- Per-frame scene velocity (the old Stage 2 input) and camera pan
+  velocity remain available as cross-checks, but neither needs a
+  multi-second baseline.
+- Acceptance: a reworked detector must not crash solve under any
+  Stage 1 interval length. Falling back to the midpoint when
+  uncertain is acceptable.
+
 ### Verify whether `MIN_BLOB_AREA` is a C2 violation or a denoising floor
 
 `track_runner/residual_motion.py` defines `MIN_BLOB_AREA = 25` (pixels^2)

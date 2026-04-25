@@ -662,35 +662,15 @@ def execute_interval_work(
 							pair_idx, fingerprint, result = fut.result()
 							_accept(pair_idx, fingerprint, result)
 
-	# ============ Stage 2: Fine detection and pre-race synthesis ============
-	# If an interval was provided and we have pre-race intervals to solve,
-	# now is the time to run Stage 2 (fine detection) and synthesize pre-race results.
+	# ============ Race-start frame selection and pre-race synthesis ============
+	# Stage 2 (velocity-onset detector in race_phases) is deactivated;
+	# see docs/TODO.md "Stage 2 race-start refinement". Production picks
+	# race_start_frame as the deterministic midpoint of Stage 1's
+	# interval -- seed-aligned and crash-free.
 	if context.race_start_interval is not None and len(pending_pre_race) > 0:
 		interval_low, interval_high = context.race_start_interval
-
-		# Find the interval's result. It must be in interval_results
-		# (either cached or just solved). The interval matches
-		# these seed frames exactly.
-		interval_result = None
-		for pair_idx in range(total_intervals):
-			if (int(usable_seeds_sorted[pair_idx]["frame_index"]) == interval_low and
-				int(usable_seeds_sorted[pair_idx + 1]["frame_index"]) == interval_high):
-				interval_result = interval_results[pair_idx]
-				break
-
-		if interval_result is None:
-			raise RuntimeError(
-				f"internal error: interval [{interval_low}, {interval_high}] "
-				f"not found in results"
-			)
-
-		# Stage 2: Fine detection on the race-start interval's blended path.
-		# If this raises, the exception propagates and the assertion below
-		# is skipped, so the real error surfaces instead of an accounting failure.
-		interval_trajectory = interval_result["blended_path"]
-		final_race_start_frame = race_start.detect_race_start_in_interval(
-			interval_trajectory, context.scene_transform, context.fps,
-			interval_start_frame=interval_low
+		final_race_start_frame = race_start.pick_race_start_frame_midpoint(
+			interval_low, interval_high,
 		)
 
 		# Compute pre_race_reference now that we have the final race_start_frame

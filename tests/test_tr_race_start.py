@@ -359,30 +359,49 @@ def test_compute_pre_race_reference_includes_interval():
 
 
 #============================================
-# Detect race start in interval (Stage 2)
+# Race-start frame selection (production: midpoint, deactivated Stage 2)
 #============================================
 
-def test_detect_race_start_in_interval_raises_on_none():
-	"""Detector returns None for interval trajectory -> RuntimeError."""
-	# Build an interval trajectory with no clear motion onset
-	# (all frames stationary). The detector should return None
-	# and we should raise RuntimeError.
+def test_pick_race_start_frame_midpoint_even_span():
+	# even span: ceil((10 + 20) / 2) == 15
+	assert race_start.pick_race_start_frame_midpoint(10, 20) == 15
+
+
+def test_pick_race_start_frame_midpoint_odd_span():
+	# odd span: ceil((10 + 21) / 2) == 16, not 15
+	assert race_start.pick_race_start_frame_midpoint(10, 21) == 16
+
+
+def test_pick_race_start_frame_midpoint_rejects_inverted_interval():
+	with pytest.raises(ValueError):
+		race_start.pick_race_start_frame_midpoint(20, 10)
+	with pytest.raises(ValueError):
+		race_start.pick_race_start_frame_midpoint(20, 20)
+
+
+def test_detect_race_start_in_interval_falls_back_when_detector_none(capsys):
+	"""Detector returns None for interval trajectory -> fall back to
+	the interval's high frame (Stage 1's first-moving seed) instead of
+	crashing solve. Stage 1's boundary is more trustworthy than the
+	velocity-onset detector when the interval is shorter than the
+	detector's pre-window.
+	"""
 	interval_trajectory = [
 		{"cx": 100.0, "cy": 100.0, "w": 30.0, "h": 60.0}
 		for _ in range(10)
 	]
 	transform = FakeSceneTransform(pan_rate=0.0)
 	fps = 30.0
-	interval_start_frame = 0
+	interval_start_frame = 5
 
-	# This test depends on race_phases.detect_race_start returning None
-	# when there is no motion. We trust that contract and expect RuntimeError.
-	with pytest.raises(RuntimeError) as exc_info:
-		race_start.detect_race_start_in_interval(
-			interval_trajectory, transform, fps, interval_start_frame
-		)
-	assert "velocity onset" in str(exc_info.value).lower() or \
-	"none" in str(exc_info.value).lower()
+	result = race_start.detect_race_start_in_interval(
+		interval_trajectory, transform, fps, interval_start_frame,
+	)
+	# Fallback: interval_start_frame + len(interval_trajectory) - 1 == 14
+	assert result == 14
+	captured = capsys.readouterr()
+	assert "WARNING" in captured.out
+	assert "velocity-onset" in captured.out
 
 
 #============================================
