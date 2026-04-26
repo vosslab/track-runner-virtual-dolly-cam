@@ -143,6 +143,12 @@ Allowed:
   The version still changes to avoid mixed numbers across outputs and
   prevent silent mismatches in cached or derived artifacts.
 
+## C10. Torso box information should be solved and stored for all frames
+
+- when targeting frames for seeds in 'target' mode, predicted torso boxes should
+  be display or the interval should be consider 'unsolved'. 'solved' intervals 
+  have torso boxes
+  
 ## Relationship to other docs
 
 - [TRACK_RUNNER_DESIGN.md](TRACK_RUNNER_DESIGN.md): reasoning and
