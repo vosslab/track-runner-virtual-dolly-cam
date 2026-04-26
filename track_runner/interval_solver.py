@@ -271,6 +271,76 @@ class FrameETAColumn(rich.progress.ProgressColumn):
 
 
 #============================================
+class TaskETAColumn(rich.progress.ProgressColumn):
+	"""ETA + elapsed column driven by task.completed / task.total.
+
+	Sibling of FrameETAColumn for callers that tick once per unit of work
+	(per interval, per phase) rather than per frame. Output format matches
+	FrameETAColumn exactly so all solve progress bars look identical:
+	`ETA M:SS  elapsed M:SS` (or H:MM:SS when long-running).
+	"""
+
+	def __init__(self):
+		super().__init__()
+		self.start_time = time.time()
+		self._last_text = "ETA --:--  elapsed --:--"
+		self._last_update = 0.0
+
+	def render(self, task) -> rich.text.Text:
+		now = time.time()
+		elapsed = now - self.start_time
+		# throttle to match FrameETAColumn
+		if now - self._last_update < 2.0 and self._last_update > 0.0:
+			return rich.text.Text(self._last_text)
+		self._last_update = now
+		elapsed_str = FrameETAColumn._format_duration(elapsed)
+		done = int(task.completed)
+		total = int(task.total) if task.total else 0
+		if elapsed < 1.0 or done < 1 or total < 1:
+			self._last_text = f"ETA --:--  elapsed {elapsed_str}"
+			return rich.text.Text(self._last_text)
+		rate = done / elapsed
+		remaining = total - done
+		eta_s = math.ceil(max(0, remaining / rate))
+		eta_str = FrameETAColumn._format_duration(eta_s)
+		self._last_text = f"ETA {eta_str}  elapsed {elapsed_str}"
+		return rich.text.Text(self._last_text)
+
+
+#============================================
+def make_solve_progress(
+	eta_column: "rich.progress.ProgressColumn | None" = None,
+) -> rich.progress.Progress:
+	"""Build a rich Progress bar with the canonical solve column layout.
+
+	Single source of truth for solve-mode progress bars. Stage 3
+	(solve_queue) passes a FrameETAColumn for frame-weighted ETA;
+	Stage 4 (_dispatch_blob_pass) and other tick-per-unit callers use
+	the default TaskETAColumn. All bars render text, block bar, M/N,
+	percent, then `ETA M:SS  elapsed M:SS`.
+
+	Args:
+		eta_column: Optional rich ProgressColumn for the ETA. If None,
+			a fresh TaskETAColumn is used.
+
+	Returns:
+		An unstarted Progress. Use as a context manager and call
+		add_task(description, total=N) on it.
+	"""
+	if eta_column is None:
+		eta_column = TaskETAColumn()
+	progress = rich.progress.Progress(
+		rich.progress.TextColumn("{task.description}"),
+		BlockBarColumn(),
+		rich.progress.MofNCompleteColumn(),
+		rich.progress.TaskProgressColumn(),
+		eta_column,
+		refresh_per_second=2,
+	)
+	return progress
+
+
+#============================================
 # Agreement tolerance: Dice coefficient threshold for FWD/BWD agreement.
 # Any overlap is meaningful for this method, so a low threshold is used.
 AGREE_DICE_THRESHOLD = 0.3
@@ -1187,72 +1257,102 @@ def _dispatch_blob_pass(
 	use_pool = num_workers >= 2 and len(tasks) >= 4
 
 	if len(tasks) > 0:
-		if not use_pool:
-			# in-process blob pass
-			for pair_idx, seed_start, seed_end, blob_snap_enabled in tasks:
-				if run_control is not None and run_control.quit_requested:
-					break
-				result_blob = solve_interval_analytical(
-					seed_start, seed_end, context.scene_transform,
-					context.all_seeds_scene, context.fps,
-					blob_snap_enabled=True,
-					debug=debug,
-					motion_track=context.motion_track,
-					all_seeds=context.all_seeds,
-					reader=context.reader,
-				)
-				# overwrite Stage 3 result with blob result
-				fingerprint = compute_interval_fingerprint(
-					seed_start, seed_end,
-				)
-				if on_interval_solved is not None:
-					on_interval_solved(fingerprint, result_blob)
-				interval_results[pair_idx] = result_blob
-		else:
-			# pool blob pass
-			import solver_workers
-			with solver_workers.make_pool(
-				num_workers=num_workers,
-				video_path=video_path,
-				scene_transform=context.scene_transform,
-				motion_track=context.motion_track,
-				all_seeds_scene=context.all_seeds_scene,
-				all_seeds=context.all_seeds,
-				fps=context.fps,
-				debug=debug,
-			) as pool:
-				futures = {}
+		# Frame-weighted ETA: blob cost is roughly proportional to interval
+		# length, so summing frame spans across promoted intervals gives a
+		# better remaining-time estimate than per-interval ticks. The
+		# counter is a list wrapper (incremented in the dispatch loop) so
+		# FrameETAColumn reads it lock-free in this single-process driver.
+		total_frames_blob = sum(
+			int(seed_end["frame_index"]) - int(seed_start["frame_index"])
+			for _, seed_start, seed_end, _ in tasks
+		)
+		blob_frame_counter = [0]
+		with make_solve_progress(
+			FrameETAColumn(blob_frame_counter, total_frames_blob),
+		) as progress:
+			task_id = progress.add_task(
+				f"  {stage_name}: blob pass", total=len(tasks),
+			)
+			if not use_pool:
+				# in-process blob pass
 				for pair_idx, seed_start, seed_end, blob_snap_enabled in tasks:
-					fut = pool.submit(
-						solver_workers._solve_interval_worker,
-						(pair_idx, seed_start, seed_end, blob_snap_enabled),
-					)
-					futures[fut] = pair_idx
-
-				pending = set(futures.keys())
-				while pending:
 					if run_control is not None and run_control.quit_requested:
 						break
-					done, pending = concurrent.futures.wait(
-						pending,
-						timeout=0.25,
-						return_when=concurrent.futures.FIRST_COMPLETED,
+					result_blob = solve_interval_analytical(
+						seed_start, seed_end, context.scene_transform,
+						context.all_seeds_scene, context.fps,
+						blob_snap_enabled=True,
+						debug=debug,
+						motion_track=context.motion_track,
+						all_seeds=context.all_seeds,
+						reader=context.reader,
 					)
-					for fut in done:
-						pair_idx, fingerprint, result_blob = fut.result()
-						if on_interval_solved is not None:
-							on_interval_solved(fingerprint, result_blob)
-						interval_results[pair_idx] = result_blob
+					# overwrite Stage 3 result with blob result
+					fingerprint = compute_interval_fingerprint(
+						seed_start, seed_end,
+					)
+					if on_interval_solved is not None:
+						on_interval_solved(fingerprint, result_blob)
+					interval_results[pair_idx] = result_blob
+					blob_frame_counter[0] += (
+						int(seed_end["frame_index"])
+						- int(seed_start["frame_index"])
+					)
+					progress.update(task_id, advance=1)
+			else:
+				# pool blob pass
+				import solver_workers
+				with solver_workers.make_pool(
+					num_workers=num_workers,
+					video_path=video_path,
+					scene_transform=context.scene_transform,
+					motion_track=context.motion_track,
+					all_seeds_scene=context.all_seeds_scene,
+					all_seeds=context.all_seeds,
+					fps=context.fps,
+					debug=debug,
+				) as pool:
+					# Frame span lookup keyed by pair_idx so the pool's
+					# completion order doesn't matter for ETA accuracy.
+					span_by_pair = {
+						pair_idx: int(seed_end["frame_index"])
+							- int(seed_start["frame_index"])
+						for pair_idx, seed_start, seed_end, _ in tasks
+					}
+					futures = {}
+					for pair_idx, seed_start, seed_end, blob_snap_enabled in tasks:
+						fut = pool.submit(
+							solver_workers._solve_interval_worker,
+							(pair_idx, seed_start, seed_end, blob_snap_enabled),
+						)
+						futures[fut] = pair_idx
 
-				# on quit, cancel pending and drain
-				if run_control is not None and run_control.quit_requested:
-					for fut in list(pending):
-						fut.cancel()
-					for fut in concurrent.futures.as_completed(pending):
-						if fut.cancelled():
-							continue
-						pair_idx, fingerprint, result_blob = fut.result()
-						interval_results[pair_idx] = result_blob
+					pending = set(futures.keys())
+					while pending:
+						if run_control is not None and run_control.quit_requested:
+							break
+						done, pending = concurrent.futures.wait(
+							pending,
+							timeout=0.25,
+							return_when=concurrent.futures.FIRST_COMPLETED,
+						)
+						for fut in done:
+							pair_idx, fingerprint, result_blob = fut.result()
+							if on_interval_solved is not None:
+								on_interval_solved(fingerprint, result_blob)
+							interval_results[pair_idx] = result_blob
+							blob_frame_counter[0] += span_by_pair[pair_idx]
+							progress.update(task_id, advance=1)
+
+					# on quit, cancel pending and drain
+					if run_control is not None and run_control.quit_requested:
+						for fut in list(pending):
+							fut.cancel()
+						for fut in concurrent.futures.as_completed(pending):
+							if fut.cancelled():
+								continue
+							pair_idx, fingerprint, result_blob = fut.result()
+							interval_results[pair_idx] = result_blob
 
 	stage_elapsed = time.time() - stage_start
 	print(f"  {stage_name} complete: {len(pair_indices)} intervals, "

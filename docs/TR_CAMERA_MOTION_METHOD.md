@@ -278,14 +278,39 @@ defines the snap targets for the zoom-jump detector.
 
 ## Performance and progress
 
-- Stage 1 is single-threaded and runs in the driver process.
+- Stage 1 dispatches per-pair measurement to a chunked
+  `concurrent.futures.ProcessPoolExecutor`. The frame-pair range
+  `[1, total_frames)` is split into `n_chunks` contiguous ranges
+  (one frame of read-overlap at each chunk boundary) and each
+  worker reopens its own `video_io.VideoReader` to walk its slice
+  sequentially. Workers return raw-pair arrays; merge and serial
+  post-processing (median filter, discrete-zoom jump detector) run
+  once on the merged data in the driver. The post-processing block
+  is shared between the serial and parallel paths so the two cannot
+  drift.
+- Chunk count is picked automatically by `_pick_chunk_count`:
+  `min(os.cpu_count(), 8)` for typical videos, capped at 8 because
+  per-worker decode I/O saturates beyond that, and forced to `1`
+  (serial fallback) when `total_frames < 200` so pool startup does
+  not exceed the work it would parallelize.
 - Cost is dominated by `cv2.cvtColor` on each frame plus one
   `cv2.phaseCorrelate` per consecutive pair. Discrete and continuous
   estimators add a `cv2.warpPolar` plus a second `phaseCorrelate` per
   pair.
-- A `rich.progress` bar labeled `  camera motion` is shown at 1 Hz
-  refresh (`_make_motion_progress`, lines 25-43). Total work is
-  `frame_count - 1` pairs.
+- The discrete-zoom 5-frame jump detector and `cumulative_scale`
+  snapping stay serial. Only the per-pair raw-scale measurement
+  parallelizes; the cross-frame stateful logic is unchanged.
+- A `rich.progress` bar labeled `  camera motion` lives in the
+  parent process at 1 Hz refresh (`_make_motion_progress`). Workers
+  never write to stdout. Total work is `frame_count - 1` pairs;
+  in the parallel path the bar advances by chunk completion.
+- Worker pool uses `max_tasks_per_child=1` so each chunk runs in a
+  fresh process that exits afterward. Per-worker memory growth is
+  hard-bounded; this matches the established solver-pool pattern
+  (CHANGELOG 2026-04-25 entry on `max_tasks_per_child=1`).
+- Worker exceptions abort the parallel dispatch and propagate.
+  There is no silent fallback to the serial path, which would
+  hide real decode, pickling, or chunk-boundary bugs.
 - On a cache hit, no progress bar is shown. The cli prints only the
   Stage 1 elapsed-time line.
 

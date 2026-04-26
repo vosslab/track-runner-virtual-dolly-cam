@@ -671,15 +671,8 @@ def execute_interval_work(
 				seq_frame_counter, total_frames,
 			)
 		else:
-			eta_column = rich.progress.TimeRemainingColumn()
-		with rich.progress.Progress(
-			rich.progress.TextColumn("{task.description}"),
-			interval_solver.BlockBarColumn(),
-			rich.progress.MofNCompleteColumn(),
-			rich.progress.TaskProgressColumn(),
-			eta_column,
-			refresh_per_second=2,
-		) as progress:
+			eta_column = None
+		with interval_solver.make_solve_progress(eta_column) as progress:
 			# bar is sized to cache-miss work only. the cache-hit count
 			# was already printed by cli (refine: N of M need solving).
 			if reused_count > 0:

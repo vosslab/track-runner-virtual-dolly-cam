@@ -262,6 +262,96 @@ def test_load_motion_cache_nonexistent_file(tmp_path):
 
 
 #============================================
+def test_split_pair_range_covers_all_pairs():
+	"""Every pair in [1, total_frames) is covered exactly once across chunks."""
+	total = 50
+	for n_chunks in (1, 2, 4, 7, 8):
+		ranges = camera_motion._split_pair_range(total, n_chunks)
+		# reconstruct the union of half-open ranges as a set of indices
+		covered = set()
+		for start, end in ranges:
+			for idx in range(start, end):
+				assert idx not in covered, "ranges overlap"
+				covered.add(idx)
+		expected = set(range(1, total))
+		assert covered == expected
+
+
+#============================================
+def test_measure_pairs_chunked_matches_whole_range():
+	"""Splitting a measurement range and concatenating reproduces the whole.
+
+	Guards the chunking arithmetic that the parallel driver relies on.
+	"""
+	reader = SyntheticFrameReader(total_frames=24, pan_speed=3.0)
+	whole = camera_motion._measure_pairs_in_range(
+		reader, 1, 24, camera_motion.MOTION_MODEL_FIXED,
+	)
+	# split into 4 chunks; each call needs a fresh reader anchor
+	# because read_frame() is stateful via _next_frame in real readers
+	chunks = []
+	for start, end in camera_motion._split_pair_range(24, 4):
+		chunk = camera_motion._measure_pairs_in_range(
+			SyntheticFrameReader(total_frames=24, pan_speed=3.0),
+			start, end, camera_motion.MOTION_MODEL_FIXED,
+		)
+		chunks.append(chunk)
+	merged_dx = numpy.concatenate([c[0] for c in chunks])
+	merged_dy = numpy.concatenate([c[1] for c in chunks])
+	merged_scale = numpy.concatenate([c[2] for c in chunks])
+	merged_quality = numpy.concatenate([c[3] for c in chunks])
+	# same OpenCV calls on identical synthetic frames must produce
+	# bit-identical float32 output regardless of how the range was split
+	assert numpy.array_equal(merged_dx, whole[0])
+	assert numpy.array_equal(merged_dy, whole[1])
+	assert numpy.array_equal(merged_scale, whole[2])
+	assert numpy.array_equal(merged_quality, whole[3])
+
+
+#============================================
+def test_measure_pairs_continuous_chunked_matches_whole():
+	"""Same chunking guarantee holds for the continuous-zoom log-polar path."""
+	reader = SyntheticFrameReader(total_frames=20, pan_speed=2.0)
+	whole = camera_motion._measure_pairs_in_range(
+		reader, 1, 20, camera_motion.MOTION_MODEL_CONTINUOUS,
+	)
+	chunks = []
+	for start, end in camera_motion._split_pair_range(20, 3):
+		chunk = camera_motion._measure_pairs_in_range(
+			SyntheticFrameReader(total_frames=20, pan_speed=2.0),
+			start, end, camera_motion.MOTION_MODEL_CONTINUOUS,
+		)
+		chunks.append(chunk)
+	for axis in range(4):
+		merged = numpy.concatenate([c[axis] for c in chunks])
+		assert numpy.array_equal(merged, whole[axis])
+
+
+#============================================
+def test_cache_round_trip_serial_to_new_loader(tmp_path):
+	"""A camera_motion.npz written today loads intact via load_motion_cache.
+
+	Guards the on-disk compatibility boundary independent of any
+	estimator code path: serial-saved caches must keep working as the
+	measurement pipeline evolves.
+	"""
+	cache_path = str(tmp_path / "motion.npz")
+	original = _make_motion_track([1.0, 1.5, 2.0, 1.5, 1.0])
+	camera_motion.save_motion_cache(
+		original, cache_path,
+		motion_model=camera_motion.MOTION_MODEL_DISCRETE,
+		video_identity=_dummy_identity(frame_count=5),
+		config_hash="abc12345",
+	)
+	loaded = camera_motion.load_motion_cache(cache_path, "abc12345")
+	assert loaded is not None
+	assert numpy.array_equal(loaded.dx, original.dx)
+	assert numpy.array_equal(loaded.dy, original.dy)
+	assert numpy.array_equal(loaded.scale, original.scale)
+	assert numpy.array_equal(loaded.quality, original.quality)
+
+
+#============================================
 def test_scene_transform_zoom_jump():
 	"""Test SceneTransform with zoom jump in motion track.
 

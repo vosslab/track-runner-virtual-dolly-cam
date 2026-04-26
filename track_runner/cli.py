@@ -497,14 +497,24 @@ def _predictions_from_torso_box_coords(
 			key = (int(scored_iv["start_frame"]),
 				int(scored_iv["end_frame"]))
 			scored_by_key[key] = scored_iv["interval_score"]
-	# merge interval_score into every geometry interval
+	# Merge interval_score into every geometry interval. Per C10, torso
+	# boxes are the source of truth; scores are advisory. If an interval
+	# has geometry but no score (e.g. solve was interrupted before
+	# diagnostics were rewritten), render with an empty score rather
+	# than crash.
+	missing_score_count = 0
 	for iv in intervals_list:
 		key = (int(iv["start_frame"]), int(iv["end_frame"]))
 		if key not in scored_by_key:
-			raise RuntimeError(
-				f"missing interval_score for key {key} in diagnostics"
-			)
-		iv["interval_score"] = scored_by_key[key]
+			missing_score_count += 1
+			iv["interval_score"] = {}
+		else:
+			iv["interval_score"] = scored_by_key[key]
+	if missing_score_count > 0:
+		print(
+			f"  warning: {missing_score_count} intervals have torso boxes "
+			f"but no score (likely interrupted solve); rendering anyway"
+		)
 	return _build_predictions_from_solved_intervals(
 		{"intervals": intervals_list, "fps": float(fps)}
 	)
@@ -1532,6 +1542,33 @@ def _mode_refine(
 		state_io.write_torso_box_coords(intervals_path, intervals_file)
 		print(f"  cache: migrated {migrated_count} legacy fingerprint(s) "
 			f"to current geometry tag")
+	# Drop entries with geometry but no matching score (interrupted prior
+	# solve left npz and interval_scores.json out of sync). These need to
+	# be re-solved to make scoring consistent. Geometry-without-score is
+	# treated as not-solved for refine partitioning.
+	scored_keys = set()
+	if os.path.isfile(diag_path):
+		score_data = state_io.load_diagnostics(diag_path)
+		for scored_iv in score_data.get("intervals", []):
+			scored_keys.add((
+				int(scored_iv["start_frame"]),
+				int(scored_iv["end_frame"]),
+			))
+	unscored_fps = [
+		fp for fp, iv in solved_intervals.items()
+		if (int(iv["start_frame"]), int(iv["end_frame"])) not in scored_keys
+	]
+	if unscored_fps:
+		for fp in unscored_fps:
+			del solved_intervals[fp]
+		# Persist the trimmed npz so _run_solve (which re-reads from
+		# disk) sees the same partition the plan was built from.
+		intervals_file["solved_intervals"] = solved_intervals
+		state_io.write_torso_box_coords(intervals_path, intervals_file)
+		print(
+			f"  cache: dropped {len(unscored_fps)} intervals with "
+			f"geometry but no score (interrupted solve); will re-solve"
+		)
 	plan = solve_queue.plan_interval_work(seeds, solved_intervals)
 	total_expected = plan.total_intervals
 
