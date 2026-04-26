@@ -1462,9 +1462,12 @@ def _mode_solve(
 		prior_count = len(intervals_file.get("solved_intervals", {}))
 		if prior_complete and prior_count > 0:
 			print(f"  prior solve completed ({prior_count} intervals)")
-			if getattr(args, "assume_yes", False):
+			if args.assume_yes:
 				answer = "y"
 				print("  clear and re-solve from scratch? [y/N] y (-y)")
+			elif args.keep_prior:
+				answer = "n"
+				print("  clear and re-solve from scratch? [y/N] n (--keep)")
 			else:
 				answer = input(
 					"  clear and re-solve from scratch? [y/N] "

@@ -38,25 +38,41 @@ PROMOTION_TIERS = frozenset({"low", "fair"})
 
 
 #============================================
-def select_promoted_intervals(interval_results: list) -> list:
+def select_promoted_intervals(
+	interval_results: list,
+	candidate_indices: "list | None" = None,
+) -> list:
 	"""Select intervals from Stage 3 results whose confidence_tier warrants promotion to Stage 4.
 
 	Filters for post-race intervals (not pre-race) whose Stage 3 confidence_tier is in
 	PROMOTION_TIERS. Pre-race intervals are never promoted, by contract C4 (they are
 	stationary and scene-anchored, not Hermite-propagated or blob-corrected).
 
+	When `candidate_indices` is supplied, only those pair_idx values are
+	considered. Refine mode passes `plan.pending_pair_indices` so cached
+	(reused) intervals from prior runs are not re-promoted -- contract
+	C6 says refine must not touch already-solved intervals.
+
 	Args:
 		interval_results: List of interval result dicts from Stage 3, each with
 			an 'interval_score' dict containing 'confidence_tier' and (if present)
 			a 'source' field that may be 'pre_race_reference'.
+		candidate_indices: Optional list of pair_idx values to consider. When
+			None, every interval in interval_results is a candidate (solve
+			mode default).
 
 	Returns:
 		List of pair_idx integers (0-based position in interval_results) for
 		intervals eligible for promotion.
 	"""
+	candidate_set = (
+		None if candidate_indices is None else set(candidate_indices)
+	)
 	promoted = []
 	for pair_idx, result in enumerate(interval_results):
 		if result is None:
+			continue
+		if candidate_set is not None and pair_idx not in candidate_set:
 			continue
 		# Skip pre-race intervals: contract C4
 		if result.get("source") == "pre_race_reference":
@@ -1531,8 +1547,14 @@ def solve_all_intervals(
 				video_path,
 			)
 		else:
-			# Stage 4 (default): blob promotion pass on promoted intervals only
-			promoted_indices = select_promoted_intervals(interval_results)
+			# Stage 4 (default): blob promotion pass on promoted intervals only.
+			# Restrict to intervals that were freshly solved this run (per
+			# contract C6: refine must not re-touch already-solved intervals).
+			# In a clean solve, plan.pending_pair_indices == every interval,
+			# so behavior is unchanged for the no-cache path.
+			promoted_indices = select_promoted_intervals(
+				interval_results, plan.pending_pair_indices,
+			)
 			stage_4_promoted_count = len(promoted_indices)
 			_dispatch_blob_pass(
 				"Stage 4: blob promotion pass",

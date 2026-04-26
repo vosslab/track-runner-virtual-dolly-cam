@@ -188,11 +188,23 @@ def parse_args() -> argparse.Namespace:
 	solve_parser = subparsers.add_parser(
 		"solve", help="Full re-solve: clears prior results and solves all intervals fresh.",
 	)
-	solve_parser.add_argument(
+	# Auto-answer for the 'clear and re-solve from scratch?' prompt.
+	# Mutually exclusive: -y forces yes (re-solve), --keep forces no
+	# (skip if prior complete). Both are scripted-run friendly.
+	solve_prompt_group = solve_parser.add_mutually_exclusive_group(required=False)
+	solve_prompt_group.add_argument(
 		"-y", "--yes", dest="assume_yes", action="store_true",
 		help=(
 			"Auto-confirm the 'clear and re-solve from scratch?' "
 			"prompt. Use this for scripted re-solve runs."
+		),
+	)
+	solve_prompt_group.add_argument(
+		"--keep", dest="keep_prior", action="store_true",
+		help=(
+			"Auto-decline the 'clear and re-solve from scratch?' prompt. "
+			"Skip videos that already have a complete solve. Use this "
+			"for scripted runs that should only solve missing videos."
 		),
 	)
 	# Stage control flags: mutually exclusive group
@@ -205,8 +217,8 @@ def parse_args() -> argparse.Namespace:
 		"-H", "--hermite-only", dest="hermite_only", action="store_true",
 		help="Stop after Stage 3: Hermite-only solve (fast diagnostics).",
 	)
-	solve_parser.set_defaults(assume_yes=False, full_solve=False,
-		hermite_only=False)
+	solve_parser.set_defaults(assume_yes=False, keep_prior=False,
+		full_solve=False, hermite_only=False)
 
 	# -- refine mode --
 	refine_parser = subparsers.add_parser(
