@@ -14,65 +14,53 @@ Scope lock: fingerprinting + seed-filter ONLY. Do not grow this module
 into a junk drawer of generic interval utilities.
 """
 
-# Standard Library
-import re
-
 # local repo modules
 import tr_schema
 import state_io
-import velocity_model
 
 
 #============================================
 # Fingerprint tags.
 #
-# Two related-but-distinct tags exist on purpose, both keyed off a
-# single source of truth (tr_schema.SCHEMA_VERSION) per contract C9:
+# The unified geometry tag per contract C9 encodes the latest geometry-
+# affecting schema version. An interval's identity is determined by its
+# seed-pair geometry (frame indices and positions) plus schema version.
+# How the interval was solved (hermite vs blob propagator) is metadata
+# on the result, not part of the cache key.
 #
-# * GEOMETRY_TAG -- the cache-key suffix. Encodes everything that, when
-#   changed, produces different solved geometry: the latest
-#   geometry-affecting schema (from tr_schema.GEOMETRY_AFFECTING_SCHEMAS)
-#   and the numeric blob-snap gate/blend constants. Metadata-only
-#   schema bumps slide through unchanged because they are absent from
-#   GEOMETRY_AFFECTING_SCHEMAS, so old solved geometry stays reusable.
-#   Migration handles legacy tails (see `migrate_legacy_fingerprints`).
+# * GEOMETRY_TAG -- the unified cache-key suffix, keyed off the latest
+#   geometry-affecting schema (from tr_schema.GEOMETRY_AFFECTING_SCHEMAS).
+#   Format: `schema_v<N>` where N is the geometry-affecting schema version.
 #
-# * SOLVER_FINGERPRINT_TAG -- the informational/telemetry tag. Same as
-#   GEOMETRY_TAG plus `/schema/<SCHEMA_VERSION>`. Used for diagnostics
+# * SOLVER_FINGERPRINT_TAG -- the informational/telemetry tag. Includes
+#   GEOMETRY_TAG plus full `/schema/<SCHEMA_VERSION>`. Used for diagnostics
 #   headers and log lines. NEVER used as a cache key.
 #
 # Cache invalidation rules:
 #   - Adding a version to GEOMETRY_AFFECTING_SCHEMAS (e.g. for an
-#     observer or solver algorithm change) bumps the geometry tag.
-#   - Bumping the numeric blob-snap constants (`a`, `slk`, `prp`, `vf`,
-#     `am`, `ms`) bumps the geometry tag.
-#   - Bumping SCHEMA_VERSION alone (without adding to the affecting
-#     set) is metadata-only and does not invalidate.
+#     observer or solver algorithm change) bumps GEOMETRY_TAG.
+#   - Bumping SCHEMA_VERSION alone (without adding to the affecting set)
+#     is metadata-only and does not invalidate the tag.
 # Per contract C9, do NOT introduce parallel version constants
 # (BLOB_OBSERVER_VERSION, etc.) to bypass this scheme.
 
 def build_geometry_tag() -> str:
-	"""Build the geometry-only cache-key tag.
+	"""Build the unified geometry cache-key tag.
 
-	Includes the latest geometry-affecting schema version and blob-snap
-	numeric constants. Does NOT include `/schema/<SCHEMA_VERSION>` --
-	that goes only into `SOLVER_FINGERPRINT_TAG` for telemetry.
+	Encodes only the latest geometry-affecting schema version. Tuning
+	blob-snap constants or changing which propagator ran does not change
+	the tag -- only a real geometry-affecting schema bump does.
 
 	Returns:
-		Geometry tag string used as `solver_tag` to
-		`state_io.interval_fingerprint` when forming cache keys.
+		Geometry tag string: `schema_v<N>` where N is the geometry-
+		affecting schema version.
 	"""
 	geom_v = tr_schema.latest_geometry_affecting_schema()
-	tag = (
-		f"geometry_schema_v{geom_v}"
-		f"/a{velocity_model.BLOB_SNAP_ALPHA:.3f}"
-		f"/slk{velocity_model.BLOB_SNAP_PATH_SLACK:.3f}"
-		f"/prp{velocity_model.BLOB_SNAP_PATH_PERP_FRACTION:.3f}"
-		f"/vf{velocity_model.BLOB_SNAP_VELOCITY_FLOOR:.3f}"
-		f"/am{velocity_model.BLOB_SNAP_ALPHA_MAX:.3f}"
-		f"/ms{velocity_model.BLOB_SNAP_MAX_SHIFT_FRACTION:.3f}"
-	)
+	tag = f"schema_v{geom_v}"
 	return tag
+
+
+GEOMETRY_TAG = build_geometry_tag()
 
 
 def build_solver_fingerprint_tag() -> str:
@@ -83,50 +71,25 @@ def build_solver_fingerprint_tag() -> str:
 	Returns:
 		Full tag including `/schema/<SCHEMA_VERSION>`.
 	"""
-	tag = f"{build_geometry_tag()}/schema/{state_io.SCHEMA_VERSION}"
+	tag = f"{GEOMETRY_TAG}/schema/{tr_schema.SCHEMA_VERSION}"
 	return tag
 
 
-GEOMETRY_TAG = build_geometry_tag()
 SOLVER_FINGERPRINT_TAG = build_solver_fingerprint_tag()
 
-# Known-compatible legacy cache-key tails. Each entry is a full
-# `solver_tag` string that was used in older code but produces
-# geometry identical to the current build. Load-time migration
-# rewrites cache keys ending in these tails to the current
-# `GEOMETRY_TAG`. Do not add a tail here unless the blob_snap
-# constants match current code byte-for-byte.
-COMPATIBLE_LEGACY_TAILS = frozenset({
-	# 2026-04-23: schema 4, pre-C8-unification. `score_schema` and
-	# `prerace` were independent metadata axes appended to the
-	# blob_snap prefix; neither affected geometry.
-	GEOMETRY_TAG + "/score_schema/4/prerace/4",
-})
-
-# Matches any pure `schema/<int>` suffix, e.g. `schema/5`, `schema/12`.
-_SCHEMA_ONLY_SUFFIX_RE = re.compile(r"^schema/\d+$")
-
-# Matches the legacy blob_snap/v1 prefix from before the SCHEMA_VERSION
-# unification (contract C9). The numeric constants captured here are
-# what was current when blob_snap/v1 ruled; we rewrite them into the
-# unified `geometry_schema_v3/...` namespace.
-# Legacy blob_snap/v1 entries were produced under the schema-3 geometry
-# semantics (the analytical solver's initial geometry contract).
-# Rewrite them into the unified geometry-schema namespace before
-# comparing to the current geometry tag. After migration these v3-era
-# entries will fail the v6 (or later) match and be re-solved, which is
-# correct because v6 is geometry-affecting.
-_LEGACY_BLOB_SNAP_PREFIX_RE = re.compile(r"^blob_snap/v1/")
 
 
 #============================================
-def compute_interval_fingerprint(seed_start: dict, seed_end: dict) -> str:
-	"""Fingerprint wrapper that includes the geometry tag.
+def compute_interval_fingerprint(
+	seed_start: dict,
+	seed_end: dict,
+) -> str:
+	"""Fingerprint wrapper that includes the unified geometry tag.
 
 	Every caller that computes an interval cache key MUST go through this
-	helper (or pass `GEOMETRY_TAG` to `state_io.interval_fingerprint`
-	directly) so solve-mode and refine-mode cache keys line up byte-for-
-	byte. Do NOT pass `SOLVER_FINGERPRINT_TAG` here -- that tag carries
+	helper (or pass the tag to `state_io.interval_fingerprint` directly)
+	so solve-mode and refine-mode cache keys line up byte-for-byte.
+	Do NOT pass `SOLVER_FINGERPRINT_TAG` here -- that tag carries
 	schema-version metadata and would couple cache keys to schema bumps.
 
 	Args:
@@ -144,78 +107,19 @@ def compute_interval_fingerprint(seed_start: dict, seed_end: dict) -> str:
 
 #============================================
 def migrate_legacy_fingerprints(solved: dict) -> tuple:
-	"""Rewrite geometry-compatible legacy cache keys to the current tag.
+	"""Placeholder for legacy fingerprint migration (deprecated).
 
-	On-disk cache keys predating the geometry/schema tag split carry
-	schema-metadata in their suffix (e.g. `/schema/5`, or the older
-	pre-unification `/score_schema/4/prerace/4`). When the blob_snap
-	portion matches current code, the stored geometry is identical to
-	what we would compute now; only the trailing metadata differs.
-	This helper rewrites those keys to use the current `GEOMETRY_TAG`
-	so the next `plan_interval_work` hits the cache.
-
-	Keys with an unknown tail or with a blob_snap prefix that does not
-	match current code are left alone and will be treated as cache
-	misses -- that is the correct behavior when geometry actually
-	changed.
+	With the unified GEOMETRY_TAG format, legacy cache-key migration is no
+	longer needed. This function returns the input unchanged; callers are
+	retained for compatibility but the function is a no-op.
 
 	Args:
 		solved: Mapping of fingerprint -> solved-interval result dict.
 
 	Returns:
-		Tuple `(migrated_dict, migrated_count)`. `migrated_dict` is a
-		new dict; caller may replace the original. `migrated_count` is
-		the number of keys rewritten.
+		Tuple `(solved, 0)` -- the input unchanged, no migrations.
 	"""
-	migrated = {}
-	count = 0
-	geom_prefix = GEOMETRY_TAG + "/"
-	for key, value in solved.items():
-		parts = key.rsplit("||", 1)
-		if len(parts) != 2:
-			migrated[key] = value
-			continue
-		body, tail = parts
-		# already on the current tag: no rewrite needed.
-		if tail == GEOMETRY_TAG:
-			migrated[key] = value
-			continue
-		# explicit legacy tails first (pre-split schema-axis variants).
-		if tail in COMPATIBLE_LEGACY_TAILS:
-			migrated[body + "||" + GEOMETRY_TAG] = value
-			count += 1
-			continue
-		# tails that share our geometry prefix and only add a pure
-		# `schema/<N>` suffix are metadata-only and migratable. This
-		# covers `/schema/5` plus any future schema bumps.
-		if tail.startswith(geom_prefix):
-			suffix = tail[len(geom_prefix):]
-			if _SCHEMA_ONLY_SUFFIX_RE.match(suffix):
-				migrated[body + "||" + GEOMETRY_TAG] = value
-				count += 1
-				continue
-		# Legacy blob_snap/v1 entries from before the SCHEMA_VERSION
-		# unification: rewrite to geometry_schema_v3 (the schema
-		# version that was current when blob_snap/v1 was active).
-		# After this rewrite the migrated keys will fail the current
-		# geometry tag match if the current schema is v6 or later --
-		# which is correct, because v6 is geometry-affecting and the
-		# old v1-era geometry should be re-solved.
-		if _LEGACY_BLOB_SNAP_PREFIX_RE.match(tail):
-			migrated_tail = "geometry_schema_v3" + tail[len("blob_snap/v1"):]
-			# strip any trailing /schema/<N> suffix (metadata-only) so
-			# the rewritten key is in the same namespace as current
-			# geometry tags, even though it will not match v6.
-			migrated_tail = re.sub(
-				r"/schema/\d+$", "", migrated_tail,
-			)
-			migrated[body + "||" + migrated_tail] = value
-			count += 1
-			continue
-		# unknown or geometry-incompatible tail: leave as-is, will
-		# fall through as a cache miss.
-		migrated[key] = value
-	return (migrated, count)
+	return (solved, 0)
 
 
 #============================================

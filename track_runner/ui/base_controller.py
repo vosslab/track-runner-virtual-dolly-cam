@@ -906,7 +906,7 @@ class BaseAnnotationController(QObject):
 
 		The cache lives at
 		`<video>.track_runner.camera_motion.npz`, resolved via
-		tr_paths.default_motion_cache_path. If the file loads
+		tr_paths.default_camera_motion_path. If the file loads
 		successfully it becomes the basis for a real SceneTransform;
 		otherwise we return an identity transform so the GUI still
 		opens on fresh videos.
@@ -920,7 +920,7 @@ class BaseAnnotationController(QObject):
 		motion_track = None
 		video_path = getattr(self._reader, "video_path", None)
 		if video_path is not None:
-			cache_path = tr_paths.default_motion_cache_path(video_path)
+			cache_path = tr_paths.default_camera_motion_path(video_path)
 			motion_track = camera_motion.load_motion_cache(cache_path)
 		if motion_track is not None:
 			transform = scene_coords.SceneTransform(motion_track)

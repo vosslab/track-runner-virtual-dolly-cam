@@ -20,7 +20,7 @@ Public surface:
 
 #============================================
 # the one and only schema version constant
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 8
 
 #============================================
 # Schema versions that altered solved-geometry semantics. Membership is
@@ -30,7 +30,12 @@ SCHEMA_VERSION = 6
 # absent because they were metadata-only (see TR_SCHEMA_VERSION_HISTORY).
 # v6 enters the set because the DoG band-pass added to observe_blob_at
 # changes the magnitude landscape extract_frame_blobs sees.
-GEOMETRY_AFFECTING_SCHEMAS: set = {3, 6}
+# v7 enters the set because the cache namespace split by stage
+# invalidates the unified v6 cache; no legacy migration path is provided
+# (Hermite recompute is cheap and avoids fingerprint ambiguity).
+# v8 enters the set because the unified torso_box_coords.npz artifact
+# replaces the separate geometry_cache.npz and debug_paths.npz files.
+GEOMETRY_AFFECTING_SCHEMAS: set = {3, 6, 7, 8}
 
 
 #============================================
@@ -59,12 +64,11 @@ def latest_geometry_affecting_schema() -> int:
 # considered the layout impact" step on every bump.
 SUPPORTED_ARTIFACT_SCHEMAS: dict = {
 	# diagnostics JSON: shape was migrated from flat (v2) to nested
-	# (v3+) at load time; v3-v6 share the nested shape.
-	"diagnostics": {2, 3, 4, 5, 6},
-	# geometry_cache.npz: array layout has been stable since v2.
-	"geometry_cache": {2, 3, 4, 5, 6},
-	# debug_paths.npz: introduced at v2; layout stable through v6.
-	"debug_paths": {2, 3, 4, 5, 6},
+	# (v3+) at load time; v3-v8 share the nested shape.
+	"diagnostics": {2, 3, 4, 5, 6, 7, 8},
+	# torso_box_coords.npz: unified artifact (v8) replacing separate
+	# geometry_cache and debug_paths. Layout stable from v8 onward.
+	"torso_box_coords": {8},
 }
 
 

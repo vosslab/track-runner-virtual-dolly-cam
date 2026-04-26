@@ -589,7 +589,7 @@ def main() -> None:
 	seeds_path = args.seeds_file
 	if seeds_path is None:
 		seeds_path = tr_paths.default_seeds_path(args.input_file)
-	motion_path = tr_paths.default_motion_cache_path(args.input_file)
+	motion_path = tr_paths.default_camera_motion_path(args.input_file)
 
 	# load seeds
 	seeds_data = state_io.load_seeds(seeds_path)

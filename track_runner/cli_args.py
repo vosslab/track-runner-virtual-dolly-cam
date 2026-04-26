@@ -195,23 +195,34 @@ def parse_args() -> argparse.Namespace:
 			"prompt. Use this for scripted re-solve runs."
 		),
 	)
-	solve_parser.add_argument(
-		"--debug-paths", dest="debug_paths", action="store_true",
-		help=(
-			"Also write <video>.track_runner.debug_paths.npz with "
-			"forward/backward propagation tracks for every solved "
-			"interval. Required input for the FWD/BWD debug overlay "
-			"in later encode/analyze --debug runs. Solve-only: "
-			"refine intentionally does not touch the sidecar so a "
-			"partial re-solve cannot clobber a complete sidecar."
-		),
+	# Stage control flags: mutually exclusive group
+	solve_stage_group = solve_parser.add_mutually_exclusive_group(required=False)
+	solve_stage_group.add_argument(
+		"-f", "--full", dest="full_solve", action="store_true",
+		help="Run Stage 5: blob pass on every post-race interval (slow).",
 	)
-	solve_parser.set_defaults(assume_yes=False, debug_paths=False)
+	solve_stage_group.add_argument(
+		"-H", "--hermite-only", dest="hermite_only", action="store_true",
+		help="Stop after Stage 3: Hermite-only solve (fast diagnostics).",
+	)
+	solve_parser.set_defaults(assume_yes=False, full_solve=False,
+		hermite_only=False)
 
 	# -- refine mode --
-	subparsers.add_parser(
+	refine_parser = subparsers.add_parser(
 		"refine", help="Re-solve only changed/new intervals, reuse prior results.",
 	)
+	# Stage control flags: mutually exclusive group (same as solve mode)
+	refine_stage_group = refine_parser.add_mutually_exclusive_group(required=False)
+	refine_stage_group.add_argument(
+		"-f", "--full", dest="full_solve", action="store_true",
+		help="Run Stage 5: blob pass on every interval refine touches (slow).",
+	)
+	refine_stage_group.add_argument(
+		"-H", "--hermite-only", dest="hermite_only", action="store_true",
+		help="Stop after Stage 3: Hermite-only refine (fast diagnostics).",
+	)
+	refine_parser.set_defaults(full_solve=False, hermite_only=False)
 
 	# -- encode mode --
 	encode_parser = subparsers.add_parser(

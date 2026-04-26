@@ -99,13 +99,13 @@ def test_fingerprint_stable_across_migration(tmp_path):
 		"w": 44.0,
 		"h": 64.0,
 	}
-	fp_before = state_io.interval_fingerprint(seed_v2, seed_v2_end, stage="blob")
+	fp_before = state_io.interval_fingerprint(seed_v2, seed_v2_end)
 	# write, load, re-fingerprint
 	path = str(tmp_path / "seeds.json")
 	state_io.write_seeds(path, v2)
 	loaded = state_io.load_seeds(path)
 	seed_v3 = loaded["seeds"][0]
-	fp_after = state_io.interval_fingerprint(seed_v3, seed_v2_end, stage="blob")
+	fp_after = state_io.interval_fingerprint(seed_v3, seed_v2_end)
 	assert fp_before == fp_after
 
 

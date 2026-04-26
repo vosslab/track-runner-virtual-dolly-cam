@@ -54,19 +54,13 @@ SEEDS_ACCEPTED_HEADERS = frozenset({2, 3})
 # Track-runner schema versions are kept in lockstep per contract C8.
 DIAGNOSTICS_HEADER_KEY = "track_runner_diagnostics"
 
-# header key and version for geometry cache (kept on in-memory dicts
-# for compatibility with existing call sites; not a JSON on-disk
+# header key and version for in-memory interval dicts (kept for
+# compatibility with existing call sites; not a JSON on-disk
 # header -- the NPZ file carries `schema_version` as its own key).
 # v1 = legacy JSON intervals.json (no longer written). v2 = NPZ
-# geometry_cache.npz (current).
+# geometry_cache.npz and torso_box_coords.npz (current).
 INTERVALS_HEADER_KEY = "track_runner_intervals"
 INTERVALS_HEADER_VALUE = 2
-
-# Schema stamp written into geometry_cache.npz files. Per contract C9
-# this is an alias of the unified tr_schema.SCHEMA_VERSION, NOT an
-# independent cache-schema authority. Loaders accept any readable
-# version via tr_schema.is_supported_artifact_schema("geometry_cache").
-GEOMETRY_CACHE_SCHEMA_VERSION = tr_schema.SCHEMA_VERSION
 
 # valid mode values for seed entries
 # Retained for VALID_SEED_MODES import compatibility even though `mode` is
@@ -449,211 +443,10 @@ def write_diagnostics(path: str, diagnostics_data: dict) -> None:
 
 #============================================
 
-def load_geometry_cache(path: str) -> dict:
-	"""Load a geometry_cache.npz file into the legacy in-memory shape.
-
-	Returns a dict shaped like the old `load_intervals` output so that
-	call sites iterate unchanged:
-
-		{
-			"track_runner_intervals": 2,
-			"solved_intervals": {
-				"<fingerprint>": {
-					"start_frame": int,
-					"end_frame": int,
-					"blended_path": [
-						{"cx": float, "cy": float, "w": float, "h": float},
-						...
-					],
-				},
-				...
-			},
-			"video_identity": {...},
-			"solve_complete": bool,
-		}
-
-	On disk the NPZ stores a JSON manifest mapping fingerprint to an
-	`array_index` plus four float32 arrays per interval
-	(`i<k>_cx`, `i<k>_cy`, `i<k>_w`, `i<k>_h`). The loader reassembles
-	the list-of-dicts shape so downstream iteration is unchanged.
-
-	Returns an empty skeleton if the file does not exist. Raises if the
-	file exists but has a different or missing schema_version.
-
-	Args:
-		path: Path to the geometry_cache.npz file.
-
-	Returns:
-		dict with the shape described above.
-
-	Raises:
-		RuntimeError: If the schema version is not recognized or a
-			declared per-interval array is missing.
-	"""
-	# return empty structure if file does not exist
-	if not os.path.isfile(path):
-		return {
-			INTERVALS_HEADER_KEY: INTERVALS_HEADER_VALUE,
-			"solved_intervals": {},
-		}
-	with numpy.load(path, allow_pickle=False) as npz:
-		schema_version = int(npz["schema_version"])
-		# Per contract C9, validate against the central compatibility
-		# table. Older entries whose interval fingerprints encode
-		# geometry-affecting tags from a prior schema will fall through
-		# as cache misses at `migrate_legacy_fingerprints` /
-		# `plan_interval_work` time -- that is the right place for
-		# invalidation, not here.
-		if not tr_schema.is_supported_artifact_schema(
-			"geometry_cache", schema_version,
-		):
-			supported = sorted(tr_schema.SUPPORTED_ARTIFACT_SCHEMAS["geometry_cache"])
-			raise RuntimeError(
-				f"geometry cache schema unsupported in {path}: "
-				f"expected schema_version in {supported}, got {schema_version}."
-			)
-		# manifest is a 0-d bytes array containing JSON
-		manifest_bytes = bytes(npz["manifest"])
-		manifest = json.loads(manifest_bytes.decode("utf-8"))
-		# video_identity is optional; same encoding
-		video_identity = None
-		if "video_identity" in npz.files:
-			vid_bytes = bytes(npz["video_identity"])
-			video_identity = json.loads(vid_bytes.decode("utf-8"))
-		solve_complete = False
-		if "solve_complete" in npz.files:
-			solve_complete = bool(npz["solve_complete"])
-		# rebuild the solved_intervals dict from indexed arrays
-		solved = {}
-		for entry in manifest:
-			fingerprint = entry["fingerprint"]
-			idx = int(entry["array_index"])
-			start_frame = int(entry["start_frame"])
-			end_frame = int(entry["end_frame"])
-			# read the four per-frame arrays for this interval
-			cx_key = f"i{idx}_cx"
-			cy_key = f"i{idx}_cy"
-			w_key = f"i{idx}_w"
-			h_key = f"i{idx}_h"
-			for key in (cx_key, cy_key, w_key, h_key):
-				if key not in npz.files:
-					raise RuntimeError(
-						f"geometry cache missing array {key} in {path}"
-					)
-			cx_arr = npz[cx_key]
-			cy_arr = npz[cy_key]
-			w_arr = npz[w_key]
-			h_arr = npz[h_key]
-			# reassemble list-of-dicts for in-memory consumers
-			blended_path = [
-				{
-					"cx": float(cx_arr[i]),
-					"cy": float(cy_arr[i]),
-					"w": float(w_arr[i]),
-					"h": float(h_arr[i]),
-				}
-				for i in range(len(cx_arr))
-			]
-			solved[fingerprint] = {
-				"start_frame": start_frame,
-				"end_frame": end_frame,
-				"blended_path": blended_path,
-			}
-	result = {
-		INTERVALS_HEADER_KEY: INTERVALS_HEADER_VALUE,
-		"solved_intervals": solved,
-		"solve_complete": solve_complete,
-	}
-	if video_identity is not None:
-		result["video_identity"] = video_identity
-	return result
-
-
-#============================================
-
-def write_geometry_cache(path: str, cache_data: dict) -> None:
-	"""Write a geometry cache as NPZ with a JSON manifest.
-
-	Extracts `blended_path` (blended interval path) cx/cy/w/h arrays from
-	each solved interval and writes them as float32 NPZ arrays. The
-	manifest maps each fingerprint to an `array_index`, `start_frame`,
-	and `end_frame` so the loader can reassemble the in-memory shape.
-
-	Does not persist `interval_score`, `forward_path`, `backward_path`,
-	or any per-frame extras. Scoring lives in `interval_scores.json`
-	(see `write_solver_diagnostics`, which writes to that file;
-	function name is retained for callsite compatibility). Forward and
-	backward interval paths live in the opt-in `debug_paths.npz` sidecar
-	when solve runs with `--debug-paths`.
-
-	Atomic write via a sibling temp file and `os.replace`.
-
-	Args:
-		path: Output NPZ file path.
-		cache_data: Dict shaped like `load_geometry_cache` returns --
-			at minimum `{"solved_intervals": {fp: {start_frame,
-			end_frame, blended_path: [dicts]}}}`. Unknown top-level keys
-			are tolerated; only `video_identity` and `solve_complete`
-			are persisted beyond the manifest and per-interval arrays.
-	"""
-	solved_intervals = cache_data.get("solved_intervals", {}) or {}
-	manifest = []
-	arrays = {}
-	for idx, (fingerprint, entry) in enumerate(solved_intervals.items()):
-		start_frame = int(entry["start_frame"])
-		end_frame = int(entry["end_frame"])
-		blended_path = entry.get("blended_path") or []
-		# extract columnar arrays from list-of-dicts
-		cx = numpy.asarray(
-			[float(s["cx"]) for s in blended_path], dtype=numpy.float32
-		)
-		cy = numpy.asarray(
-			[float(s["cy"]) for s in blended_path], dtype=numpy.float32
-		)
-		w = numpy.asarray(
-			[float(s["w"]) for s in blended_path], dtype=numpy.float32
-		)
-		h = numpy.asarray(
-			[float(s["h"]) for s in blended_path], dtype=numpy.float32
-		)
-		arrays[f"i{idx}_cx"] = cx
-		arrays[f"i{idx}_cy"] = cy
-		arrays[f"i{idx}_w"] = w
-		arrays[f"i{idx}_h"] = h
-		manifest.append({
-			"fingerprint": fingerprint,
-			"start_frame": start_frame,
-			"end_frame": end_frame,
-			"array_index": idx,
-		})
-	# top-level small metadata
-	arrays["schema_version"] = numpy.asarray(
-		GEOMETRY_CACHE_SCHEMA_VERSION, dtype=numpy.int32
-	)
-	manifest_json = json.dumps(manifest).encode("utf-8")
-	arrays["manifest"] = numpy.frombuffer(manifest_json, dtype=numpy.uint8)
-	video_identity = cache_data.get("video_identity")
-	if video_identity is not None:
-		vid_json = json.dumps(video_identity).encode("utf-8")
-		arrays["video_identity"] = numpy.frombuffer(vid_json, dtype=numpy.uint8)
-	solve_complete = cache_data.get("solve_complete", False)
-	arrays["solve_complete"] = numpy.asarray(bool(solve_complete))
-	_write_npz_atomic(path, arrays)
-
-
-#============================================
-
-# Schema stamp written into debug_paths.npz sidecar files. Per
-# contract C9 this is an alias of the unified tr_schema.SCHEMA_VERSION,
-# NOT an independent debug-paths authority. Loaders accept any
-# readable version via tr_schema.is_supported_artifact_schema("debug_paths").
-DEBUG_PATHS_SCHEMA_VERSION = tr_schema.SCHEMA_VERSION
-
-
 def _write_npz_atomic(path: str, arrays: dict) -> None:
 	"""Write a dict of numpy arrays to an NPZ file atomically.
 
-	Shared helper used by write_geometry_cache and write_debug_paths.
+	Shared helper used by write_torso_box_coords.
 
 	Args:
 		path: Target NPZ file path.
@@ -678,41 +471,203 @@ def _write_npz_atomic(path: str, arrays: dict) -> None:
 
 #============================================
 
-def write_debug_paths(path: str, cache_data: dict) -> None:
-	"""Write forward/backward interval path arrays as an NPZ debug sidecar.
+def load_torso_box_coords(path: str) -> dict:
+	"""Load a unified torso_box_coords.npz file with all three paths merged.
 
-	Only called when solve runs with `--debug-paths`. Accepts the same
-	in-memory shape produced by solve_all_intervals, picks out each
-	interval's `forward_path` and `backward_path` (list-of-dicts with
-	cx/cy/w/h, the forward and backward interval paths), and writes two
-	sets of four float32 arrays per
-	interval: `i<k>_fwd_{cx,cy,w,h}` and `i<k>_bwd_{cx,cy,w,h}`.
+	The unified artifact contains per-frame torso boxes (cx/cy/w/h) for all
+	three interval paths: forward (FWD), backward (BWD), and blended (the
+	production trajectory). Per-interval keys in the NPZ follow the pattern:
+	`i<k>_{fwd,bwd,blended}_{cx,cy,w,h}` (float32 arrays).
 
-	Intervals without forward_path/backward_path are silently skipped
-	(e.g. when solve was interrupted mid-interval).
+	Pre-race intervals (synthesized, scene-anchored per C4) write only the
+	blended arrays; forward and backward keys are absent. The loader
+	reconstructs `forward_path = None` and `backward_path = None` for those
+	intervals so downstream code can detect pre-race intervals and skip them
+	from FWD/BWD scoring logic via the same code path as the endpoint case.
 
-	The sidecar's manifest mirrors the geometry cache's manifest so the
-	debug overlay can intersect fingerprint sets on load.
+	Returns a dict with the unified three-path shape:
+
+		{
+			"track_runner_intervals": 2,
+			"solved_intervals": {
+				"<fingerprint>": {
+					"start_frame": int,
+					"end_frame": int,
+					"forward_path": [...] or None,
+					"backward_path": [...] or None,
+					"blended_path": [...],
+				},
+				...
+			},
+			"video_identity": {...},
+			"solve_complete": bool,
+		}
+
+	Returns an empty skeleton if the file does not exist. Raises if the file
+	exists but has a different or missing schema_version.
 
 	Args:
-		path: Target NPZ file path (typically
-			`<video>.track_runner.debug_paths.npz`).
-		cache_data: Dict shaped like `load_geometry_cache` output --
-			`{"solved_intervals": {fp: {start_frame, end_frame,
-			forward_path: [...], backward_path: [...]}}}`.
+		path: Path to the torso_box_coords.npz file.
+
+	Returns:
+		dict with the shape described above.
+
+	Raises:
+		RuntimeError: If the schema version is not recognized or a declared
+			per-interval array is missing.
+	"""
+	# return empty structure if file does not exist
+	if not os.path.isfile(path):
+		return {
+			INTERVALS_HEADER_KEY: INTERVALS_HEADER_VALUE,
+			"solved_intervals": {},
+		}
+	with numpy.load(path, allow_pickle=False) as npz:
+		schema_version = int(npz["schema_version"])
+		# Per contract C9, validate against the central compatibility table.
+		if not tr_schema.is_supported_artifact_schema(
+			"torso_box_coords", schema_version,
+		):
+			supported = sorted(tr_schema.SUPPORTED_ARTIFACT_SCHEMAS["torso_box_coords"])
+			raise RuntimeError(
+				f"torso_box_coords schema unsupported in {path}: "
+				f"expected schema_version in {supported}, got {schema_version}"
+			)
+		# manifest is a 0-d bytes array containing JSON
+		manifest_bytes = bytes(npz["manifest"])
+		manifest = json.loads(manifest_bytes.decode("utf-8"))
+		# video_identity is optional; same encoding
+		video_identity = None
+		if "video_identity" in npz.files:
+			vid_bytes = bytes(npz["video_identity"])
+			video_identity = json.loads(vid_bytes.decode("utf-8"))
+		solve_complete = False
+		if "solve_complete" in npz.files:
+			solve_complete = bool(npz["solve_complete"])
+		# rebuild the solved_intervals dict from indexed arrays
+		solved = {}
+		for entry in manifest:
+			fingerprint = entry["fingerprint"]
+			idx = int(entry["array_index"])
+			start_frame = int(entry["start_frame"])
+			end_frame = int(entry["end_frame"])
+			# blended arrays are always present
+			blended_path = None
+			cx_key = f"i{idx}_blended_cx"
+			cy_key = f"i{idx}_blended_cy"
+			w_key = f"i{idx}_blended_w"
+			h_key = f"i{idx}_blended_h"
+			if all(key in npz.files for key in (cx_key, cy_key, w_key, h_key)):
+				cx_arr = npz[cx_key]
+				cy_arr = npz[cy_key]
+				w_arr = npz[w_key]
+				h_arr = npz[h_key]
+				blended_path = [
+					{
+						"cx": float(cx_arr[i]),
+						"cy": float(cy_arr[i]),
+						"w": float(w_arr[i]),
+						"h": float(h_arr[i]),
+					}
+					for i in range(len(cx_arr))
+				]
+			# forward and backward arrays are optional (pre-race intervals only have blended)
+			forward_path = None
+			fwd_keys = (
+				f"i{idx}_fwd_cx", f"i{idx}_fwd_cy",
+				f"i{idx}_fwd_w", f"i{idx}_fwd_h"
+			)
+			if all(key in npz.files for key in fwd_keys):
+				cx_arr = npz[fwd_keys[0]]
+				cy_arr = npz[fwd_keys[1]]
+				w_arr = npz[fwd_keys[2]]
+				h_arr = npz[fwd_keys[3]]
+				forward_path = [
+					{
+						"cx": float(cx_arr[i]),
+						"cy": float(cy_arr[i]),
+						"w": float(w_arr[i]),
+						"h": float(h_arr[i]),
+					}
+					for i in range(len(cx_arr))
+				]
+			backward_path = None
+			bwd_keys = (
+				f"i{idx}_bwd_cx", f"i{idx}_bwd_cy",
+				f"i{idx}_bwd_w", f"i{idx}_bwd_h"
+			)
+			if all(key in npz.files for key in bwd_keys):
+				cx_arr = npz[bwd_keys[0]]
+				cy_arr = npz[bwd_keys[1]]
+				w_arr = npz[bwd_keys[2]]
+				h_arr = npz[bwd_keys[3]]
+				backward_path = [
+					{
+						"cx": float(cx_arr[i]),
+						"cy": float(cy_arr[i]),
+						"w": float(w_arr[i]),
+						"h": float(h_arr[i]),
+					}
+					for i in range(len(cx_arr))
+				]
+			solved[fingerprint] = {
+				"start_frame": start_frame,
+				"end_frame": end_frame,
+				"forward_path": forward_path,
+				"backward_path": backward_path,
+				"blended_path": blended_path,
+			}
+	result = {
+		INTERVALS_HEADER_KEY: INTERVALS_HEADER_VALUE,
+		"solved_intervals": solved,
+		"solve_complete": solve_complete,
+	}
+	if video_identity is not None:
+		result["video_identity"] = video_identity
+	return result
+
+
+#============================================
+
+def write_torso_box_coords(path: str, cache_data: dict) -> None:
+	"""Write unified torso box coordinates to an NPZ file.
+
+	Extracts forward_path, backward_path, and blended_path (list-of-dicts
+	with cx/cy/w/h) from each solved interval and writes three sets of
+	four float32 arrays per interval when all three paths are present:
+	- `i<k>_fwd_{cx,cy,w,h}` for forward interval path
+	- `i<k>_bwd_{cx,cy,w,h}` for backward interval path
+	- `i<k>_blended_{cx,cy,w,h}` for blended interval path
+
+	Pre-race intervals (per C4) write only the blended arrays; forward and
+	backward arrays are omitted. The loader reconstructs forward_path = None
+	and backward_path = None for such intervals.
+
+	The manifest maps each fingerprint to an array_index, start_frame, and
+	end_frame so the loader can reassemble the in-memory shape and
+	distinguish pre-race from post-race intervals.
+
+	Atomic write via a sibling temp file and `os.replace`.
+
+	Args:
+		path: Output NPZ file path.
+		cache_data: Dict shaped like `load_torso_box_coords` returns --
+			at minimum `{"solved_intervals": {fp: {start_frame, end_frame,
+			forward_path, backward_path, blended_path}}}`. Unknown top-level
+			keys are tolerated; only `video_identity` and `solve_complete`
+			are persisted beyond the manifest and per-interval arrays.
 	"""
 	solved_intervals = cache_data.get("solved_intervals", {}) or {}
 	manifest = []
 	arrays = {}
 	for idx, (fingerprint, entry) in enumerate(solved_intervals.items()):
-		fwd = entry.get("forward_path")
-		bwd = entry.get("backward_path")
-		# skip intervals with no debug interval paths attached
-		if not fwd or not bwd:
-			continue
 		start_frame = int(entry["start_frame"])
 		end_frame = int(entry["end_frame"])
-		for direction, track in (("fwd", fwd), ("bwd", bwd)):
+		fwd = entry.get("forward_path")
+		bwd = entry.get("backward_path")
+		blended = entry.get("blended_path") or []
+		# always write blended path
+		for direction_tag, track in (("blended", blended),):
 			cx = numpy.asarray(
 				[float(s["cx"]) for s in track], dtype=numpy.float32
 			)
@@ -725,91 +680,48 @@ def write_debug_paths(path: str, cache_data: dict) -> None:
 			h = numpy.asarray(
 				[float(s["h"]) for s in track], dtype=numpy.float32
 			)
-			arrays[f"i{idx}_{direction}_cx"] = cx
-			arrays[f"i{idx}_{direction}_cy"] = cy
-			arrays[f"i{idx}_{direction}_w"] = w
-			arrays[f"i{idx}_{direction}_h"] = h
+			arrays[f"i{idx}_{direction_tag}_cx"] = cx
+			arrays[f"i{idx}_{direction_tag}_cy"] = cy
+			arrays[f"i{idx}_{direction_tag}_w"] = w
+			arrays[f"i{idx}_{direction_tag}_h"] = h
+		# write forward and backward only if both present (post-race intervals)
+		if fwd is not None and bwd is not None:
+			for direction_tag, track in (("fwd", fwd), ("bwd", bwd)):
+				cx = numpy.asarray(
+					[float(s["cx"]) for s in track], dtype=numpy.float32
+				)
+				cy = numpy.asarray(
+					[float(s["cy"]) for s in track], dtype=numpy.float32
+				)
+				w = numpy.asarray(
+					[float(s["w"]) for s in track], dtype=numpy.float32
+				)
+				h = numpy.asarray(
+					[float(s["h"]) for s in track], dtype=numpy.float32
+				)
+				arrays[f"i{idx}_{direction_tag}_cx"] = cx
+				arrays[f"i{idx}_{direction_tag}_cy"] = cy
+				arrays[f"i{idx}_{direction_tag}_w"] = w
+				arrays[f"i{idx}_{direction_tag}_h"] = h
 		manifest.append({
 			"fingerprint": fingerprint,
 			"start_frame": start_frame,
 			"end_frame": end_frame,
 			"array_index": idx,
 		})
+	# top-level metadata
 	arrays["schema_version"] = numpy.asarray(
-		DEBUG_PATHS_SCHEMA_VERSION, dtype=numpy.int32
+		tr_schema.SCHEMA_VERSION, dtype=numpy.int32
 	)
 	manifest_json = json.dumps(manifest).encode("utf-8")
 	arrays["manifest"] = numpy.frombuffer(manifest_json, dtype=numpy.uint8)
+	video_identity = cache_data.get("video_identity")
+	if video_identity is not None:
+		vid_json = json.dumps(video_identity).encode("utf-8")
+		arrays["video_identity"] = numpy.frombuffer(vid_json, dtype=numpy.uint8)
+	solve_complete = cache_data.get("solve_complete", False)
+	arrays["solve_complete"] = numpy.asarray(bool(solve_complete))
 	_write_npz_atomic(path, arrays)
-
-
-#============================================
-
-def load_debug_paths(path: str) -> dict:
-	"""Load a debug_paths.npz sidecar into an in-memory dict.
-
-	Returns a dict keyed by fingerprint, shape:
-		{
-			"<fingerprint>": {
-				"start_frame": int,
-				"end_frame": int,
-				"forward_path": [{cx, cy, w, h}, ...],
-				"backward_path": [{cx, cy, w, h}, ...],
-			},
-			...
-		}
-
-	Returns an empty dict if the file does not exist. Raises on
-	unknown schema version.
-
-	Args:
-		path: Path to the debug_paths.npz sidecar.
-
-	Returns:
-		dict mapping fingerprint to per-direction track dicts.
-	"""
-	if not os.path.isfile(path):
-		return {}
-	result = {}
-	with numpy.load(path, allow_pickle=False) as npz:
-		schema_version = int(npz["schema_version"])
-		# C9: validate against the central compatibility table.
-		if not tr_schema.is_supported_artifact_schema(
-			"debug_paths", schema_version,
-		):
-			supported = sorted(tr_schema.SUPPORTED_ARTIFACT_SCHEMAS["debug_paths"])
-			raise RuntimeError(
-				f"debug interval paths schema unsupported in {path}: "
-				f"expected schema_version in {supported}, got {schema_version}"
-			)
-		manifest_bytes = bytes(npz["manifest"])
-		manifest = json.loads(manifest_bytes.decode("utf-8"))
-		for entry in manifest:
-			fingerprint = entry["fingerprint"]
-			idx = int(entry["array_index"])
-			tracks = {}
-			for direction in ("fwd", "bwd"):
-				cx = npz[f"i{idx}_{direction}_cx"]
-				cy = npz[f"i{idx}_{direction}_cy"]
-				w = npz[f"i{idx}_{direction}_w"]
-				h = npz[f"i{idx}_{direction}_h"]
-				track_records = [
-					{
-						"cx": float(cx[i]),
-						"cy": float(cy[i]),
-						"w": float(w[i]),
-						"h": float(h[i]),
-					}
-					for i in range(len(cx))
-				]
-				key = "forward_path" if direction == "fwd" else "backward_path"
-				tracks[key] = track_records
-			result[fingerprint] = {
-				"start_frame": int(entry["start_frame"]),
-				"end_frame": int(entry["end_frame"]),
-				**tracks,
-			}
-	return result
 
 
 #============================================
@@ -831,12 +743,17 @@ def interval_fingerprint(
 	Both `solve_all_intervals` and `cli._mode_refine` MUST pass the same
 	solver_tag for cache hits to work.
 
+	The unified `solver_tag` encodes the geometry-affecting schema version
+	only (format: `schema_v<N>`). How an interval was solved (hermite vs
+	blob propagator) is metadata on the result, not part of the cache key.
+
 	Args:
 		seed_start: Seed state dict at the start of the interval.
 		seed_end: Seed state dict at the end of the interval.
-		solver_tag: Optional short string identifying the solver version and
-			its blob-snap configuration. When empty, no tag is appended
-			(legacy behavior).
+		solver_tag: Optional short string identifying the geometry-affecting
+			schema version. When empty, no tag is appended (legacy behavior).
+			Current standard is `schema_v<N>` where N is the geometry-
+			affecting schema version.
 
 	Returns:
 		String fingerprint. With solver_tag, the suffix is included.
@@ -1104,36 +1021,6 @@ if __name__ == "__main__":
 	# frame 10 must be the original, not overwritten
 	frame_10 = next(s for s in merged if s["frame_index"] == 10)
 	assert frame_10["mode"] == "initial"
-
-	# test geometry-cache NPZ round-trip
-	fingerprint = "100|1731.50|629.50|39.00|59.00|450|1700.00|600.00|38.00|58.00"
-	intervals_data = {
-		"solved_intervals": {
-			fingerprint: {
-				"start_frame": 100,
-				"end_frame": 101,
-				"blended_path": [
-					{"cx": 100.0, "cy": 200.0, "w": 40.0, "h": 60.0},
-					{"cx": 101.5, "cy": 200.5, "w": 40.0, "h": 60.0},
-				],
-			},
-		},
-		"solve_complete": True,
-		"video_identity": {"basename": "self_check.mov"},
-	}
-	with tempfile.NamedTemporaryFile(suffix=".npz", delete=False) as tmp:
-		tmp_path = tmp.name
-	write_geometry_cache(tmp_path, intervals_data)
-	loaded_iv = load_geometry_cache(tmp_path)
-	assert loaded_iv[INTERVALS_HEADER_KEY] == INTERVALS_HEADER_VALUE
-	assert len(loaded_iv["solved_intervals"]) == 1
-	reloaded = loaded_iv["solved_intervals"][fingerprint]
-	assert reloaded["start_frame"] == 100
-	assert len(reloaded["blended_path"]) == 2
-	assert reloaded["blended_path"][0]["cx"] == 100.0
-	assert loaded_iv["solve_complete"] is True
-	assert loaded_iv["video_identity"]["basename"] == "self_check.mov"
-	os.unlink(tmp_path)
 
 	# test interval_fingerprint determinism
 	seed_a = {"frame_index": 100, "cx": 1731.5, "cy": 629.5, "w": 39.0, "h": 59.0}

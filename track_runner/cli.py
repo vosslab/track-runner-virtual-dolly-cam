@@ -44,6 +44,7 @@ import key_input
 import encode_analysis
 import regime_classifier
 import camera_motion
+import race_start
 import scene_coords
 import common_tools.frame_filters as frame_filters
 
@@ -145,11 +146,11 @@ def _check_identity_mismatch(label: str, path: str) -> None:
 		return
 	if not os.path.isfile(path):
 		return
-	# NPZ files (geometry_cache.npz) carry video_identity as
+	# NPZ files (torso_box_coords.npz) carry video_identity as
 	# JSON-encoded bytes; JSON files carry it as a top-level key.
 	if path.endswith(".npz"):
-		cache_data = state_io.load_geometry_cache(path)
-		stored = cache_data.get("video_identity")
+		coords_data = state_io.load_torso_box_coords(path)
+		stored = coords_data.get("video_identity")
 	else:
 		with open(path, "r") as fh:
 			data = json.load(fh)
@@ -377,7 +378,7 @@ def _print_quality_summary(diagnostics: dict, fps: float) -> None:
 
 
 #============================================
-def _build_predictions_from_diagnostics(diagnostics: dict) -> dict:
+def _build_predictions_from_solved_intervals(solved_data: dict) -> dict:
 	"""Build frame-indexed prediction dict with overlays and interval metadata.
 
 	Each frame entry includes FWD/BWD/blended/consensus boxes plus interval-level
@@ -385,21 +386,20 @@ def _build_predictions_from_diagnostics(diagnostics: dict) -> dict:
 	can display why an interval was flagged.
 
 	Args:
-		diagnostics: Dict from solve_all_intervals() with in-memory interval data.
+		solved_data: Dict with "intervals" and "fps" keys, shaped like
+			solve_all_intervals() output with per-interval geometry (forward_path,
+			backward_path, blended_path) and scoring (interval_score) merged in.
 
 	Returns:
 		Dict mapping frame_index (int) to prediction dict with box data and
 		an "interval_info" sub-dict for quality display.
 	"""
-	fps = float(diagnostics.get("fps", 30.0))
+	fps = float(solved_data.get("fps", 30.0))
 	predictions = {}
-	for iv in diagnostics.get("intervals", []):
+	for interval_idx, iv in enumerate(solved_data.get("intervals", [])):
 		fwd_track = iv.get("forward_path")
 		bwd_track = iv.get("backward_path")
 		blended_path = iv.get("blended_path")
-		if fwd_track is None or bwd_track is None:
-			# stored intervals may lack per-direction tracks
-			continue
 
 		# build interval quality metadata once per interval
 		score = iv.get("interval_score", {})
@@ -422,63 +422,70 @@ def _build_predictions_from_diagnostics(diagnostics: dict) -> dict:
 		}
 
 		start_frame = int(iv["start_frame"])
-		n = min(len(fwd_track), len(bwd_track))
-		for i in range(n):
-			frame_index = start_frame + i
-			frame_preds = {
-				"forward": fwd_track[i],
-				"backward": bwd_track[i],
-				"interval_info": interval_info,
-			}
-			# add blended interval path (refined second-pass) if available
-			if blended_path is not None and i < len(blended_path):
-				frame_preds["blended"] = blended_path[i]
-			# compute consensus as average of FWD and BWD
-			fwd_box = fwd_track[i]
-			bwd_box = bwd_track[i]
-			consensus = {
-				"cx": (float(fwd_box["cx"]) + float(bwd_box["cx"])) / 2.0,
-				"cy": (float(fwd_box["cy"]) + float(bwd_box["cy"])) / 2.0,
-				"w": (float(fwd_box["w"]) + float(bwd_box["w"])) / 2.0,
-				"h": (float(fwd_box["h"]) + float(bwd_box["h"])) / 2.0,
-			}
-			frame_preds["consensus"] = consensus
-			predictions[frame_index] = frame_preds
+
+		# case 1: FWD and BWD both present -> use them
+		if fwd_track is not None and bwd_track is not None:
+			n = min(len(fwd_track), len(bwd_track))
+			for i in range(n):
+				frame_index = start_frame + i
+				frame_preds = {
+					"forward": fwd_track[i],
+					"backward": bwd_track[i],
+					"interval_info": interval_info,
+				}
+				# add blended interval path (refined second-pass) if available
+				if blended_path is not None and i < len(blended_path):
+					frame_preds["blended"] = blended_path[i]
+				# compute consensus as average of FWD and BWD
+				fwd_box = fwd_track[i]
+				bwd_box = bwd_track[i]
+				consensus = {
+					"cx": (float(fwd_box["cx"]) + float(bwd_box["cx"])) / 2.0,
+					"cy": (float(fwd_box["cy"]) + float(bwd_box["cy"])) / 2.0,
+					"w": (float(fwd_box["w"]) + float(bwd_box["w"])) / 2.0,
+					"h": (float(fwd_box["h"]) + float(bwd_box["h"])) / 2.0,
+				}
+				frame_preds["consensus"] = consensus
+				predictions[frame_index] = frame_preds
+		# case 2: FWD/BWD missing but blended present -> render blended only
+		elif blended_path is not None:
+			for i in range(len(blended_path)):
+				frame_index = start_frame + i
+				frame_preds = {
+					"blended": blended_path[i],
+					"interval_info": interval_info,
+				}
+				predictions[frame_index] = frame_preds
+		# case 3: all paths missing -> skip silently; caller falls back
+		# to the geometry cache + sidecar path which has populated paths
+
 	return predictions
 
 
 #============================================
-def _predictions_from_geometry_cache(
-	input_file: str,
-	intervals_path: str,
+def _predictions_from_torso_box_coords(
+	torso_box_coords_path: str,
 	diag_path: str,
 	fps: float,
 ) -> dict:
-	"""Build predictions from the geometry cache with scores merged in.
+	"""Build predictions from unified torso_box_coords with scores merged in.
 
-	Geometry cache stores no scoring fields (interval_score lives in the
-	interval-scores JSON since WP-C2). This helper loads the cache, merges
-	the interval_score sub-dict from interval_scores.json by
-	(start_frame, end_frame), and hands the result to
-	_build_predictions_from_diagnostics so review.classify_interval_severity
-	can read interval_score without a KeyError. All intervals must have
-	corresponding scores in the diagnostics file.
+	Loads the unified torso_box_coords.npz artifact which contains all three
+	interval paths (forward, backward, blended) pre-merged. Merges the
+	interval_score sub-dict from interval_scores.json by (start_frame, end_frame),
+	and hands the result to _build_predictions_from_solved_intervals so
+	review.classify_interval_severity can read interval_score without a KeyError.
 
 	Args:
-		input_file: Video input path; used to locate the debug interval paths sidecar.
-		intervals_path: Path to the geometry_cache.npz file.
+		torso_box_coords_path: Path to the torso_box_coords.npz file.
 		diag_path: Path to the interval_scores.json file (may be absent).
 		fps: Video frame rate.
 
 	Returns:
 		Frame-indexed prediction dict, or empty dict when no intervals.
 	"""
-	intervals_file = state_io.load_geometry_cache(intervals_path)
+	intervals_file = state_io.load_torso_box_coords(torso_box_coords_path)
 	solved_intervals = intervals_file.get("solved_intervals", {})
-	_merge_debug_paths(
-		solved_intervals,
-		tr_paths.default_debug_paths_path(input_file),
-	)
 	if not solved_intervals:
 		return {}
 	intervals_list = list(solved_intervals.values())
@@ -498,80 +505,21 @@ def _predictions_from_geometry_cache(
 				f"missing interval_score for key {key} in diagnostics"
 			)
 		iv["interval_score"] = scored_by_key[key]
-	return _build_predictions_from_diagnostics(
+	return _build_predictions_from_solved_intervals(
 		{"intervals": intervals_list, "fps": float(fps)}
 	)
-
-
-#============================================
-# tracks whether we already warned the user about a missing debug
-# sidecar in the current process; keeps the log output quiet across
-# multiple debug-overlay consumers in the same invocation
-_WARNED_MISSING_DEBUG_SIDECAR = False
-
-
-def _merge_debug_paths(solved_intervals: dict, sidecar_path: str) -> None:
-	"""Merge forward and backward interval paths from a debug sidecar in place.
-
-	If the sidecar exists, every interval whose fingerprint matches an
-	entry in both the geometry cache and the sidecar gains
-	`forward_path` and `backward_path` keys on its in-memory dict so
-	downstream debug-overlay code paths (which use `iv.get(
-	"forward_path")`) render correctly. Fingerprints that appear in
-	only one side are left alone; sidecar entries that do not match
-	the current geometry cache are counted and reported but not
-	applied.
-
-	If the sidecar is absent, prints a single "run with
-	--debug-paths to regenerate" message per process and returns.
-
-	Args:
-		solved_intervals: Dict of fingerprint -> in-memory interval
-			dict (mutated in place).
-		sidecar_path: Path to the debug_paths.npz sidecar.
-	"""
-	global _WARNED_MISSING_DEBUG_SIDECAR
-	if not os.path.isfile(sidecar_path):
-		if not _WARNED_MISSING_DEBUG_SIDECAR:
-			_WARNED_MISSING_DEBUG_SIDECAR = True
-			print(
-				"  fwd/bwd debug overlay unavailable "
-				"(run solve with --debug-paths to regenerate)"
-			)
-		return
-	debug_data = state_io.load_debug_paths(sidecar_path)
-	if not debug_data:
-		return
-	matched = 0
-	stale = 0
-	for fingerprint, tracks in debug_data.items():
-		if fingerprint in solved_intervals:
-			solved_intervals[fingerprint]["forward_path"] = tracks[
-				"forward_path"
-			]
-			solved_intervals[fingerprint]["backward_path"] = tracks[
-				"backward_path"
-			]
-			matched += 1
-		else:
-			stale += 1
-	if stale > 0:
-		print(
-			f"  debug interval paths: {matched} intervals matched, "
-			f"{stale} sidecar entries stale (re-run --debug-paths "
-			f"to refresh)"
-		)
 
 
 #============================================
 def _load_prior_results(intervals_path: str, diag_path: str) -> tuple:
 	"""Load previously solved intervals and build a write-through callback.
 
-	Geometry (`blended_path`, the blended interval path) comes from `geometry_cache.npz`. Scoring
-	(interval_score) comes from `interval_scores.json`. This helper
-	merges the two so every prior interval returned carries both its
-	trajectory AND its score, matching the shape `write_solver_diagnostics`
-	expects when it later rewrites the scoring file.
+	Geometry (forward_path, backward_path, blended_path) comes from
+	`torso_box_coords.npz`. Scoring (interval_score) comes from
+	`interval_scores.json`. This helper merges the two so every prior
+	interval returned carries both its trajectory AND its score, matching
+	the shape `write_solver_diagnostics` expects when it later rewrites
+	the scoring file.
 
 	Scores are matched to intervals by (start_frame, end_frame) because
 	that pair is what `interval_scores.json` stores. A prior interval
@@ -580,13 +528,13 @@ def _load_prior_results(intervals_path: str, diag_path: str) -> tuple:
 	re-score it if needed.
 
 	Args:
-		intervals_path: Path to the geometry cache NPZ.
+		intervals_path: Path to the torso_box_coords NPZ (unified artifact).
 		diag_path: Path to the interval_scores JSON.
 
 	Returns:
 		Tuple (prior_results_dict, on_interval_solved_callback).
 	"""
-	intervals_file = state_io.load_geometry_cache(intervals_path)
+	intervals_file = state_io.load_torso_box_coords(intervals_path)
 	solved = intervals_file.get("solved_intervals", {})
 	# One-time migration of geometry-compatible legacy cache keys. This
 	# rewrites on-disk fingerprints that predate the geometry/schema tag
@@ -597,7 +545,7 @@ def _load_prior_results(intervals_path: str, diag_path: str) -> tuple:
 	solved, migrated_count = interval_fingerprint.migrate_legacy_fingerprints(solved)
 	if migrated_count > 0:
 		intervals_file["solved_intervals"] = solved
-		state_io.write_geometry_cache(intervals_path, intervals_file)
+		state_io.write_torso_box_coords(intervals_path, intervals_file)
 		print(f"  cache: migrated {migrated_count} legacy fingerprint(s) "
 			f"to current geometry tag")
 	# merge prior interval_score back onto each geometry entry.
@@ -620,7 +568,7 @@ def _load_prior_results(intervals_path: str, diag_path: str) -> tuple:
 		# embed video identity in each write
 		if VIDEO_IDENTITY is not None:
 			intervals_file["video_identity"] = VIDEO_IDENTITY
-		state_io.write_geometry_cache(intervals_path, intervals_file)
+		state_io.write_torso_box_coords(intervals_path, intervals_file)
 
 	return (solved, _on_interval_solved)
 
@@ -637,10 +585,10 @@ def _invalidate_intervals_for_frames(
 	frame index appears in changed_frames.
 
 	Args:
-		intervals_path: Path to the solved-intervals JSON file.
+		intervals_path: Path to the torso_box_coords NPZ file.
 		changed_frames: Set of frame_index ints that were modified.
 	"""
-	intervals_file = state_io.load_geometry_cache(intervals_path)
+	intervals_file = state_io.load_torso_box_coords(intervals_path)
 	solved = intervals_file.get("solved_intervals", {})
 	if not solved:
 		return
@@ -662,7 +610,7 @@ def _invalidate_intervals_for_frames(
 	intervals_file["solved_intervals"] = solved
 	if VIDEO_IDENTITY is not None:
 		intervals_file["video_identity"] = VIDEO_IDENTITY
-	state_io.write_geometry_cache(intervals_path, intervals_file)
+	state_io.write_torso_box_coords(intervals_path, intervals_file)
 	remaining = len(solved)
 	print(f"  invalidated {len(keys_to_remove)} solved intervals "
 		f"({remaining} remaining)")
@@ -836,16 +784,35 @@ def _run_solve(
 	print("  (press Q to quit, P to pause)")
 	t_solve_start = time.time()
 	prior_ivs, on_solved_cb = _load_prior_results(intervals_path, diag_path)
+
+	# Detect first-run cold-cache condition: check if new hermite/blob
+	# cache namespaces are populated. Non-blocking warning only.
+	cache_dir = tr_paths.ensure_data_dir()
+	hermite_cache_dir = os.path.join(cache_dir, "intervals", "hermite")
+	blob_cache_dir = os.path.join(cache_dir, "intervals", "blob")
+	hermite_exists = os.path.isdir(hermite_cache_dir) and any(
+		os.scandir(hermite_cache_dir)
+	)
+	blob_exists = os.path.isdir(blob_cache_dir) and any(os.scandir(blob_cache_dir))
+	if not hermite_exists and not blob_exists:
+		print("first run after solve restructure: full recompute expected")
+
 	# build solver kwargs
 	solve_kwargs = {
 		"num_workers": num_workers,
 		"debug": args.debug,
 		"prior_intervals": prior_ivs,
 		"on_interval_solved": on_solved_cb,
+		"hermite_only": args.hermite_only,
+		"full_solve": args.full_solve,
 	}
 	if on_interval_complete is not None:
 		solve_kwargs["on_interval_complete"] = on_interval_complete
 
+	# Stage 1: camera motion precompute
+	print()
+	print("Stage 1: camera motion")
+	t_stage1_start = time.time()
 	# Precompute camera motion for scene coordinate transformation
 	print("precomputing camera motion...")
 	cache_dir = tr_paths.ensure_data_dir()
@@ -858,6 +825,52 @@ def _run_solve(
 	# pass the video path through so workers can reopen it in their own
 	# process; VideoReader instances cannot cross the process boundary.
 	solve_kwargs["video_path"] = args.input_file
+	t_stage1_elapsed = time.time() - t_stage1_start
+	print(f"  (Stage 1 complete, {t_stage1_elapsed:.1f}s)")
+
+	# Stage 2: race-start interval identification. Locate the seed pair
+	# spanning race_start_frame so Stage 3 can classify intervals as
+	# pre-race vs post-race up front. Returns None when no pre-race phase
+	# is identifiable; downstream code treats that as "skip pre-race
+	# synthesis."
+	print()
+	print("Stage 2: race-start identification")
+	t_stage2_start = time.time()
+	race_start_interval = race_start.locate_race_start_interval(
+		seeds, scene_transform, fps,
+	)
+	solve_kwargs["race_start_interval"] = race_start_interval
+	t_stage2_elapsed = time.time() - t_stage2_start
+	if race_start_interval is None:
+		print(f"  (no pre-race phase detected, {t_stage2_elapsed:.1f}s)")
+	else:
+		rs_a, rs_b = race_start_interval
+		print(
+			f"  race-start interval: seeds {rs_a}-{rs_b} "
+			f"({t_stage2_elapsed:.1f}s)"
+		)
+
+		# Compute race-start frame and pre-race reference immediately after Stage 2
+		# (before Stage 3 dispatches). These use only Stage 2 output.
+		final_race_start_frame = race_start.pick_race_start_frame_midpoint(
+			rs_a, rs_b,
+		)
+		pre_race_reference = race_start.compute_pre_race_reference(
+			seeds, final_race_start_frame, scene_transform,
+			race_start_interval=race_start_interval
+		)
+		print()
+		print("RACE-START DETECTION")
+		print(f"  race_start_frame: {final_race_start_frame}")
+		print(f"  pre-race reference: torso {pre_race_reference['torso_w']:.0f}x{pre_race_reference['torso_h']:.0f} "
+			f"at scene ({pre_race_reference['scene_anchor_x']:.0f}, {pre_race_reference['scene_anchor_y']:.0f})")
+		# Store in solve_kwargs so M4 fast-path can reuse it
+		solve_kwargs["pre_race_reference"] = pre_race_reference
+
+	# Stage 3: Hermite-only analytical solve on all post-race intervals
+	print()
+	print("Stage 3: Hermite pass (analytical solver)")
+	t_stage3_start = time.time()
 
 	# set up keyboard controls and signal handler
 	rc = key_input.RunControl()
@@ -882,29 +895,45 @@ def _run_solve(
 			)
 	# restore default signal handler
 	key_input.restore_default_sigint()
+	t_stage3_elapsed = time.time() - t_stage3_start
+	print()
+	print(f"Stage 3 complete ({t_stage3_elapsed:.1f}s)")
 	diagnostics["fps"] = fps
+	# Record the solve mode: default (1-4), hermite_only (1-3), or full (1-5)
+	hermite_only = solve_kwargs["hermite_only"]
+	full_solve = solve_kwargs["full_solve"]
+	if hermite_only:
+		solve_mode = "hermite_only"
+	elif full_solve:
+		solve_mode = "full"
+	else:
+		solve_mode = "default"
+	diagnostics["solve_mode"] = solve_mode
+	# solve_stage reflects the final stage completed in this run.
+	# hermite_only stops after Stage 3; default stops after Stage 4;
+	# full continues through Stage 5. For consistency, record the stage
+	# that completed, not hardcoded "hermite".
+	if hermite_only:
+		diagnostics["solve_stage"] = "stage_3_hermite"
+	elif full_solve:
+		diagnostics["solve_stage"] = "stage_5_blob_all"
+	else:
+		diagnostics["solve_stage"] = "stage_4_promoted"
 	t_solve_elapsed = time.time() - t_solve_start
 	# mark whether the solve completed or was interrupted
-	intervals_file = state_io.load_geometry_cache(intervals_path)
+	# use the unified torso_box_coords artifact which includes all three paths
+	intervals_path_unified = tr_paths.default_intervals_path(args.input_file)
+	torso_box_coords_data = {"solved_intervals": prior_ivs}
 	if rc.quit_requested:
-		intervals_file["solve_complete"] = False
+		torso_box_coords_data["solve_complete"] = False
 		print(f"  solve interrupted ({t_solve_elapsed:.1f}s)")
 	else:
-		intervals_file["solve_complete"] = True
+		torso_box_coords_data["solve_complete"] = True
 		print(f"  solve complete ({t_solve_elapsed:.1f}s)")
 	if VIDEO_IDENTITY is not None:
-		intervals_file["video_identity"] = VIDEO_IDENTITY
-	state_io.write_geometry_cache(intervals_path, intervals_file)
-	# opt-in debug-paths sidecar: uses the in-memory prior_ivs dict,
-	# which still carries forward_path/backward_path for every
-	# newly-solved interval because _on_interval_solved stored the full
-	# result before write_geometry_cache stripped them. Skipped when
-	# --debug-paths was not passed; no file produced in that case.
-	if getattr(args, "debug_paths", False):
-		debug_paths_path = tr_paths.default_debug_paths_path(args.input_file)
-		debug_cache_shape = {"solved_intervals": prior_ivs}
-		state_io.write_debug_paths(debug_paths_path, debug_cache_shape)
-		print(f"  debug interval paths sidecar written to {debug_paths_path}")
+		torso_box_coords_data["video_identity"] = VIDEO_IDENTITY
+	state_io.write_torso_box_coords(intervals_path_unified, torso_box_coords_data)
+	print(f"  torso box coordinates written to {intervals_path_unified}")
 	# write diagnostics to disk
 	if VIDEO_IDENTITY is not None:
 		diagnostics["video_identity"] = VIDEO_IDENTITY
@@ -966,31 +995,16 @@ def _mode_seed(
 		pass_number = max(existing_passes) + 1
 	else:
 		pass_number = 1
-	# load predictions from diagnostics or solved intervals if available
+	# load predictions from solved intervals with scores merged in
 	predictions = None
 	diag_path = tr_paths.default_diagnostics_path(args.input_file)
 	intervals_path = tr_paths.default_intervals_path(args.input_file)
-	if os.path.isfile(diag_path):
-		diag_data = state_io.load_diagnostics(diag_path)
-		if diag_data.get("intervals"):
-			predictions = _build_predictions_from_diagnostics(diag_data)
-			if predictions:
-				print(f"  loaded predictions for {len(predictions)} frames")
-	if not predictions and os.path.isfile(intervals_path):
-		intervals_file = state_io.load_geometry_cache(intervals_path)
-		solved_intervals = intervals_file.get("solved_intervals", {})
-		_merge_debug_paths(
-			solved_intervals,
-			tr_paths.default_debug_paths_path(args.input_file),
+	if os.path.isfile(intervals_path):
+		predictions = _predictions_from_torso_box_coords(
+			intervals_path, diag_path, video_info["fps"],
 		)
-		if solved_intervals:
-			intervals_list = list(solved_intervals.values())
-			predictions = _build_predictions_from_diagnostics(
-				{"intervals": intervals_list}
-			)
-			if predictions:
-				print(f"  loaded predictions for {len(predictions)} frames "
-					"(from solved intervals)")
+		if predictions:
+			print(f"  loaded predictions for {len(predictions)} frames")
 
 	# convert --start time to frame index
 	start_frame = None
@@ -1047,16 +1061,11 @@ def _mode_edit(
 	shutil.copy2(seeds_path, backup_path)
 	print(f"  backup saved to {backup_path}")
 
-	# build predictions and seed confidences from diagnostics if available
-	predictions = None
+	# compute seed confidence scores from diagnostics if available
 	seed_confidences = None
 	if os.path.isfile(diag_path):
 		diag_data = state_io.load_diagnostics(diag_path)
-		# try diagnostics file first (may lack per-frame tracks)
 		if diag_data.get("intervals"):
-			predictions = _build_predictions_from_diagnostics(diag_data)
-			if predictions:
-				print(f"  loaded predictions for {len(predictions)} frames")
 			# compute seed confidence scores from interval diagnostics
 			seed_confidences = scoring.compute_seed_confidences(
 				seeds, diag_data.get("intervals", []),
@@ -1064,13 +1073,14 @@ def _mode_edit(
 			if seed_confidences:
 				print(f"  computed confidence for {len(seed_confidences)} seeds")
 
-	# fallback: load predictions from solved intervals (has per-frame tracks)
-	if not predictions and os.path.isfile(intervals_path):
-		predictions = _predictions_from_geometry_cache(
-			args.input_file, intervals_path, diag_path, video_info["fps"],
+	# load predictions from solved intervals (has per-frame tracks and merged scores)
+	predictions = None
+	if os.path.isfile(intervals_path):
+		predictions = _predictions_from_torso_box_coords(
+			intervals_path, diag_path, video_info["fps"],
 		)
 		if predictions:
-			print(f"  loaded predictions for {len(predictions)} frames (from solved intervals)")
+			print(f"  loaded predictions for {len(predictions)} frames")
 
 	# optionally filter by severity (show only seeds near weak intervals)
 	# pre_race intervals are excluded from severity filtering
@@ -1371,13 +1381,10 @@ def _mode_target(
 		top_label = f" (top {top_n})" if top_n is not None else ""
 		print(f"  {len(target_frames)} target frames from weak intervals{sev_label}{top_label}")
 
-	# build FWD/BWD predictions from diagnostics
-	predictions = _build_predictions_from_diagnostics(diag_data)
-	# fallback to solved intervals if diagnostics lack per-frame tracks
-	if not predictions and os.path.isfile(intervals_path):
-		predictions = _predictions_from_geometry_cache(
-			args.input_file, intervals_path, diag_path, fps,
-		)
+	# build FWD/BWD predictions from solved intervals with scores merged in
+	predictions = _predictions_from_torso_box_coords(
+		intervals_path, diag_path, fps,
+	)
 	if predictions:
 		print(f"  loaded predictions for {len(predictions)} frames")
 
@@ -1440,7 +1447,7 @@ def _mode_solve(
 	# only clear intervals if a prior solve completed successfully;
 	# if the prior solve was interrupted, resume from saved intervals
 	if os.path.isfile(intervals_path):
-		intervals_file = state_io.load_geometry_cache(intervals_path)
+		intervals_file = state_io.load_torso_box_coords(intervals_path)
 		prior_complete = intervals_file.get("solve_complete", False)
 		prior_count = len(intervals_file.get("solved_intervals", {}))
 		if prior_complete and prior_count > 0:
@@ -1511,7 +1518,7 @@ def _mode_refine(
 	# plan_interval_work is the single source of truth for the seed
 	# filter, fingerprint walk, and orphan prune -- solve mode and
 	# refine mode both call it so cache keys match byte-for-byte.
-	intervals_file = state_io.load_geometry_cache(intervals_path)
+	intervals_file = state_io.load_torso_box_coords(intervals_path)
 	solved_intervals = intervals_file.get("solved_intervals", {})
 	# Migrate geometry-compatible legacy cache keys so refine can reuse
 	# them. Write-back is gated on migrated_count > 0; if nothing
@@ -1522,7 +1529,7 @@ def _mode_refine(
 	)
 	if migrated_count > 0:
 		intervals_file["solved_intervals"] = solved_intervals
-		state_io.write_geometry_cache(intervals_path, intervals_file)
+		state_io.write_torso_box_coords(intervals_path, intervals_file)
 		print(f"  cache: migrated {migrated_count} legacy fingerprint(s) "
 			f"to current geometry tag")
 	plan = solve_queue.plan_interval_work(seeds, solved_intervals)
@@ -1551,7 +1558,7 @@ def _mode_refine(
 	pruned_count = before - len(plan.pruned_prior)
 	if pruned_count > 0:
 		intervals_file["solved_intervals"] = dict(plan.pruned_prior)
-		state_io.write_geometry_cache(intervals_path, intervals_file)
+		state_io.write_torso_box_coords(intervals_path, intervals_file)
 		print(f"  cache: pruned {pruned_count} stale intervals "
 			f"({before} -> {len(plan.pruned_prior)})")
 
@@ -1720,7 +1727,7 @@ def _mode_analyze(
 			f"no solved intervals found at {intervals_path}; "
 			f"run 'solve' first"
 		)
-	intervals_file = state_io.load_geometry_cache(intervals_path)
+	intervals_file = state_io.load_torso_box_coords(intervals_path)
 	solved = intervals_file.get("solved_intervals", {})
 	if not solved:
 		raise RuntimeError(
@@ -1848,16 +1855,11 @@ def _mode_encode(
 			f"no solved intervals found at {intervals_path}; "
 			f"run 'solve' first"
 		)
-	intervals_file = state_io.load_geometry_cache(intervals_path)
+	intervals_file = state_io.load_torso_box_coords(intervals_path)
 	solved = intervals_file.get("solved_intervals", {})
 	if not solved:
 		raise RuntimeError(
 			"solved intervals file contains no interval data"
-		)
-	# merge optional debug sidecar (fwd/bwd tracks) when debug is on
-	if args.debug:
-		_merge_debug_paths(
-			solved, tr_paths.default_debug_paths_path(args.input_file),
 		)
 	# sort interval results by start_frame for stitching
 	interval_results = sorted(

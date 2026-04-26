@@ -6,6 +6,7 @@ stitches results into a full trajectory.
 """
 
 # Standard Library
+import concurrent.futures
 import math
 import time
 
@@ -29,6 +30,42 @@ import interval_fingerprint
 SOLVER_FINGERPRINT_TAG = interval_fingerprint.SOLVER_FINGERPRINT_TAG
 compute_interval_fingerprint = interval_fingerprint.compute_interval_fingerprint
 filter_usable_seeds_sorted = interval_fingerprint.filter_usable_seeds_sorted
+
+# Stage 4 promotion: intervals with confidence_tier in this set are promoted
+# to blob-snap re-solve. Internal constant; not exposed on CLI (per argparse
+# minimalism in docs/PYTHON_STYLE.md).
+PROMOTION_TIERS = frozenset({"low", "fair"})
+
+
+#============================================
+def select_promoted_intervals(interval_results: list) -> list:
+	"""Select intervals from Stage 3 results whose confidence_tier warrants promotion to Stage 4.
+
+	Filters for post-race intervals (not pre-race) whose Stage 3 confidence_tier is in
+	PROMOTION_TIERS. Pre-race intervals are never promoted, by contract C4 (they are
+	stationary and scene-anchored, not Hermite-propagated or blob-corrected).
+
+	Args:
+		interval_results: List of interval result dicts from Stage 3, each with
+			an 'interval_score' dict containing 'confidence_tier' and (if present)
+			a 'source' field that may be 'pre_race_reference'.
+
+	Returns:
+		List of pair_idx integers (0-based position in interval_results) for
+		intervals eligible for promotion.
+	"""
+	promoted = []
+	for pair_idx, result in enumerate(interval_results):
+		if result is None:
+			continue
+		# Skip pre-race intervals: contract C4
+		if result.get("source") == "pre_race_reference":
+			continue
+		interval_score = result["interval_score"]
+		tier = interval_score["confidence_tier"]
+		if tier in PROMOTION_TIERS:
+			promoted.append(pair_idx)
+	return promoted
 
 
 #============================================
@@ -344,6 +381,7 @@ def solve_interval_analytical(
 	scene_transform: object,
 	all_seeds_scene: list,
 	fps: float,
+	blob_snap_enabled: bool,
 	debug: bool = False,
 	motion_track: object = None,
 	all_seeds: list = None,
@@ -362,6 +400,8 @@ def solve_interval_analytical(
 		all_seeds_scene: List of all seeds as (frame, sx, sy, sw, sh) tuples
 			in scene coordinates.
 		fps: Video frame rate for duration thresholds.
+		blob_snap_enabled: Required bool. When False, skip blob observer.
+			When True, behavior is byte-identical to prior code.
 		debug: If True, print diagnostic information.
 
 	Returns:
@@ -371,6 +411,7 @@ def solve_interval_analytical(
 			- forward_path: forward interval path (for diagnostics)
 			- backward_path: backward interval path (for diagnostics)
 			- interval_score: interval_score_v2 dict from score_interval_analytical
+			- propagator_path: str indicator of which path produced result ("hermite" or "blob")
 	"""
 	start_frame = int(seed_start["frame_index"])
 	end_frame = int(seed_end["frame_index"])
@@ -397,17 +438,17 @@ def solve_interval_analytical(
 	# FWD and BWD so raw residuals are computed once per frame, but holds
 	# image-derived data only (no accepted blobs, no gate decisions).
 	# Cleared at the end of this function.
-	residual_cache = {} if reader is not None else None
+	residual_cache = {} if reader is not None and blob_snap_enabled else None
 
 	# propagate forward (backward-looking slopes)
 	forward_path_scene = velocity_model.propagate_forward_analytical(
-		interval_curves, scene_transform,
+		interval_curves, scene_transform, blob_snap_enabled,
 		reader=reader, residual_cache=residual_cache,
 	)
 
 	# propagate backward (forward-looking slopes)
 	backward_path_scene = velocity_model.propagate_backward_analytical(
-		interval_curves, scene_transform,
+		interval_curves, scene_transform, blob_snap_enabled,
 		reader=reader, residual_cache=residual_cache,
 	)
 
@@ -447,6 +488,7 @@ def solve_interval_analytical(
 	# intervals (mostly "absent") are not unfairly penalized.
 	_stamp_blob_coverage(interval_score, forward_path, backward_path)
 
+	propagator_path = "blob" if blob_snap_enabled else "hermite"
 	result = {
 		"start_frame": start_frame,
 		"end_frame": end_frame,
@@ -454,6 +496,7 @@ def solve_interval_analytical(
 		"forward_path": forward_path,
 		"backward_path": backward_path,
 		"interval_score": interval_score,
+		"propagator_path": propagator_path,
 	}
 
 	# in debug mode, capture per-frame agreement records for investigation.
@@ -1089,6 +1132,134 @@ def anchor_to_seeds(
 
 
 #============================================
+def _dispatch_blob_pass(
+	stage_name: str,
+	pair_indices: list,
+	interval_results: list,
+	seeds: list,
+	context: object,
+	num_workers: int,
+	debug: bool,
+	run_control: object,
+	on_interval_solved: object,
+	video_path: str,
+) -> None:
+	"""Dispatch a blob-coupled re-solve on selected post-race intervals.
+
+	Shared by Stage 4 (promotion-selected) and Stage 5 (full pass) dispatch.
+	Modifies interval_results in-place, overwriting each selected interval's
+	Stage 3 result with a Stage 4/5 blob result. Hermite is recomputed (cheap);
+	the expensive blob observer runs once per selected interval.
+
+	Args:
+		stage_name: Either "Stage 4" or "Stage 5" for log/banner purposes.
+		pair_indices: List of pair_idx integers to re-solve.
+		interval_results: List of interval result dicts from Stage 3, modified in-place.
+		seeds: List of seed dicts sorted by frame_index.
+		context: SolveContext with scene_transform, motion_track, reader, etc.
+		num_workers: Number of parallel workers.
+		debug: Debug flag.
+		run_control: Run control for quit handling.
+		on_interval_solved: Callback(fingerprint, result) for persistence.
+		video_path: Path to input video for worker pool.
+	"""
+	if not pair_indices:
+		return
+
+	stage_start = time.time()
+	print(f"\n{stage_name}: blob pass ({len(pair_indices)} of "
+		f"{len(interval_results)} intervals)")
+
+	# build work items: (pair_idx, seed_start, seed_end, blob_snap_enabled=True)
+	tasks = []
+	for pair_idx in pair_indices:
+		result = interval_results[pair_idx]
+		if result is None:
+			continue
+		# locate seed pair for this interval
+		usable_seeds = interval_fingerprint.filter_usable_seeds_sorted(seeds)
+		seed_start = usable_seeds[pair_idx]
+		seed_end = usable_seeds[pair_idx + 1]
+		tasks.append((pair_idx, seed_start, seed_end, True))
+
+	# dispatch: in-process if single worker or very few tasks,
+	# pool if multiple workers and enough work to amortize pool setup.
+	use_pool = num_workers >= 2 and len(tasks) >= 4
+
+	if len(tasks) > 0:
+		if not use_pool:
+			# in-process blob pass
+			for pair_idx, seed_start, seed_end, blob_snap_enabled in tasks:
+				if run_control is not None and run_control.quit_requested:
+					break
+				result_blob = solve_interval_analytical(
+					seed_start, seed_end, context.scene_transform,
+					context.all_seeds_scene, context.fps,
+					blob_snap_enabled=True,
+					debug=debug,
+					motion_track=context.motion_track,
+					all_seeds=context.all_seeds,
+					reader=context.reader,
+				)
+				# overwrite Stage 3 result with blob result
+				fingerprint = compute_interval_fingerprint(
+					seed_start, seed_end,
+				)
+				if on_interval_solved is not None:
+					on_interval_solved(fingerprint, result_blob)
+				interval_results[pair_idx] = result_blob
+		else:
+			# pool blob pass
+			import solver_workers
+			with solver_workers.make_pool(
+				num_workers=num_workers,
+				video_path=video_path,
+				scene_transform=context.scene_transform,
+				motion_track=context.motion_track,
+				all_seeds_scene=context.all_seeds_scene,
+				all_seeds=context.all_seeds,
+				fps=context.fps,
+				debug=debug,
+			) as pool:
+				futures = {}
+				for pair_idx, seed_start, seed_end, blob_snap_enabled in tasks:
+					fut = pool.submit(
+						solver_workers._solve_interval_worker,
+						(pair_idx, seed_start, seed_end, blob_snap_enabled),
+					)
+					futures[fut] = pair_idx
+
+				pending = set(futures.keys())
+				while pending:
+					if run_control is not None and run_control.quit_requested:
+						break
+					done, pending = concurrent.futures.wait(
+						pending,
+						timeout=0.25,
+						return_when=concurrent.futures.FIRST_COMPLETED,
+					)
+					for fut in done:
+						pair_idx, fingerprint, result_blob = fut.result()
+						if on_interval_solved is not None:
+							on_interval_solved(fingerprint, result_blob)
+						interval_results[pair_idx] = result_blob
+
+				# on quit, cancel pending and drain
+				if run_control is not None and run_control.quit_requested:
+					for fut in list(pending):
+						fut.cancel()
+					for fut in concurrent.futures.as_completed(pending):
+						if fut.cancelled():
+							continue
+						pair_idx, fingerprint, result_blob = fut.result()
+						interval_results[pair_idx] = result_blob
+
+	stage_elapsed = time.time() - stage_start
+	print(f"  {stage_name} complete: {len(pair_indices)} intervals, "
+		f"elapsed {stage_elapsed:.1f} s")
+
+
+#============================================
 def solve_all_intervals(
 	reader: object,
 	seeds: list,
@@ -1105,6 +1276,10 @@ def solve_all_intervals(
 	motion_track: object = None,
 	video_path: str = None,
 	video_frame_count: int = None,
+	hermite_only: bool = False,
+	full_solve: bool = False,
+	race_start_interval: tuple = None,
+	pre_race_reference: dict = None,
 ) -> dict:
 	"""Solve all seed-to-seed intervals and stitch into a full trajectory.
 
@@ -1139,6 +1314,10 @@ def solve_all_intervals(
 		video_frame_count: Total frame count from mediainfo (required for
 			contact sheet rendering and frame clamping). Must be the
 			authoritative value from cli._probe_video(), not OpenCV.
+		hermite_only: If True, stop after Stage 3 (Hermite-only); skip Stage 4
+			and Stage 5. Used for fast diagnostics.
+		full_solve: If True, run Stage 5 (blob pass on every post-race interval).
+			Default False runs Stages 1-4 (blob only on promoted intervals).
 
 	Returns:
 		Dict with keys:
@@ -1169,19 +1348,25 @@ def solve_all_intervals(
 		)
 		all_seeds_scene.append((frame_index, sx, sy, sw, sh))
 
-	# Stage 1: Locate race-start interval via seed-pair displacement.
-	# Returns None when no pre-race phase can be identified; downstream code
-	# treats that case as "skip Stage 2 and pre-race synthesis."
-	race_start_interval = race_start.locate_race_start_interval(
-		seeds, scene_transform, fps
-	)
+	# Stage 2 race-start identification now happens in cli._run_solve before
+	# this call. The result is passed in via the race_start_interval kwarg.
+	# Refine mode and any other caller that does not pre-stage the lookup
+	# may pass None here; we fall back to running the locator inline so the
+	# function remains usable standalone.
+	if race_start_interval is None:
+		race_start_interval = race_start.locate_race_start_interval(
+			seeds, scene_transform, fps
+		)
 
 	# plan_interval_work is the single source of truth for seed filter +
 	# fingerprint computation + cache partition. refine mode also calls
 	# it, so solve and refine agree on every cache key byte-for-byte.
 	# Pass race_start_interval for classification.
+	# The unified fingerprint encodes seed geometry + geometry-affecting
+	# schema only; how an interval was solved (hermite vs blob) is metadata
+	# on the result, not part of the cache key.
 	plan = solve_queue.plan_interval_work(
-		seeds, prior_intervals, race_start_interval=race_start_interval
+		seeds, prior_intervals, race_start_interval=race_start_interval,
 	)
 	if plan.total_intervals == 0:
 		print("  interval_solver: need at least 2 usable seeds to solve intervals")
@@ -1203,7 +1388,7 @@ def solve_all_intervals(
 		video_frame_count=video_frame_count,
 		debug=debug,
 		race_start_interval=race_start_interval,
-		pre_race_reference=None,
+		pre_race_reference=pre_race_reference,
 	)
 	interval_results = solve_queue.execute_interval_work(
 		plan, context,
@@ -1212,6 +1397,55 @@ def solve_all_intervals(
 		run_control=run_control,
 		key_reader=key_reader,
 	)
+
+	# Stage 4 and Stage 5: blob-coupled re-solve
+	# Stage 4 (default): blob promotion pass on low/fair confidence intervals.
+	# Stage 5 (--full): blob pass on every post-race interval.
+	# Both re-run the propagator with blob_snap_enabled=True.
+	# Hermite is recomputed (cheap); expensive blob observer paid once per interval.
+	# Results overwrite the Stage 3 entries in interval_results.
+
+	stage_4_promoted_count = 0
+	if not hermite_only:
+		if full_solve:
+			# Stage 5: blob pass on every post-race interval
+			# Select all post-race intervals (exclude pre-race per C4)
+			stage_5_indices = []
+			for pair_idx, result in enumerate(interval_results):
+				if result is None:
+					continue
+				# Skip pre-race intervals per contract C4
+				if result.get("source") == "pre_race_reference":
+					continue
+				stage_5_indices.append(pair_idx)
+			_dispatch_blob_pass(
+				"Stage 5: full blob pass",
+				stage_5_indices,
+				interval_results,
+				seeds,
+				context,
+				num_workers,
+				debug,
+				run_control,
+				on_interval_solved,
+				video_path,
+			)
+		else:
+			# Stage 4 (default): blob promotion pass on promoted intervals only
+			promoted_indices = select_promoted_intervals(interval_results)
+			stage_4_promoted_count = len(promoted_indices)
+			_dispatch_blob_pass(
+				"Stage 4: blob promotion pass",
+				promoted_indices,
+				interval_results,
+				seeds,
+				context,
+				num_workers,
+				debug,
+				run_control,
+				on_interval_solved,
+				video_path,
+			)
 
 	# stitch and finalize
 	trajectory = stitch_trajectories(interval_results)
@@ -1228,5 +1462,6 @@ def solve_all_intervals(
 		"intervals": interval_results,
 		"trajectory": trajectory,
 		"pre_race_reference": pre_race_reference,
+		"stage_4_promoted_count": stage_4_promoted_count,
 	}
 	return output

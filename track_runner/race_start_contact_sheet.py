@@ -74,6 +74,10 @@ def render_race_start_contact_sheet(
 	reader = frame_reader.FrameReader(video_path, fps, total_frames)
 
 	# Read and process all 11 tiles
+	# Precompute tile size to ensure all tiles are uniform (required for cv2.hconcat)
+	crop_pixels = CROP_SIZE_SCALE * max(torso_w, torso_h)
+	target_size = int(crop_pixels)
+
 	processed_tiles = []
 	for tile_idx, tile in enumerate(tiles):
 		frame_idx = tile["frame_index"]
@@ -88,9 +92,6 @@ def render_race_start_contact_sheet(
 				f"failed to read frame {frame_idx} (offset {offset_s:+.1f}s) "
 				f"for tile {tile_idx}; output path: {output_path}"
 			)
-
-		# Crop around the pre-race reference box in scene coordinates
-		crop_pixels = CROP_SIZE_SCALE * max(torso_w, torso_h)
 
 		# Project scene anchor to pixel coordinates for this frame
 		pixel_x, pixel_y = scene_transform.scene_to_pixel(
@@ -135,8 +136,6 @@ def render_race_start_contact_sheet(
 			)
 		else:
 			padded = cropped
-
-		target_size = int(crop_pixels)
 
 		# Draw the torso reference box on the padded tile
 		# Box center is at (crop_pixels/2, crop_pixels/2) in the padded image
@@ -218,10 +217,22 @@ def render_race_start_contact_sheet(
 
 		processed_tiles.append(padded)
 
+	# Resize all tiles to target_size x target_size to ensure uniformity
+	# (handles edge cases where padding math may not guarantee exact size)
+	uniform_tiles = []
+	for tile in processed_tiles:
+		if tile.shape[0] != target_size or tile.shape[1] != target_size:
+			# Resize to target_size, using INTER_AREA for shrinking and INTER_CUBIC for upscaling
+			interp = cv2.INTER_AREA if min(tile.shape[:2]) > target_size else cv2.INTER_CUBIC
+			resized = cv2.resize(tile, (target_size, target_size), interpolation=interp)
+			uniform_tiles.append(resized)
+		else:
+			uniform_tiles.append(tile)
+
 	# Assemble the three rows: 5 PRE, 1 START, 5 POST
-	pre_tiles = processed_tiles[0:5]
-	center_tile = processed_tiles[5]
-	post_tiles = processed_tiles[6:11]
+	pre_tiles = uniform_tiles[0:5]
+	center_tile = uniform_tiles[5]
+	post_tiles = uniform_tiles[6:11]
 
 	# Concatenate rows horizontally
 	pre_row = cv2.hconcat(pre_tiles)

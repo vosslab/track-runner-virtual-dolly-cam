@@ -44,6 +44,23 @@ at recognition, machines are good at frame-to-frame geometry. Mixing the two
 roles leads to the tracker either losing the runner (too much machine autonomy)
 or requiring constant human supervision (too little).
 
+## Five-stage pipeline structure
+
+The solve process runs as five named, independently observable stages:
+
+| Stage | Code ID | Purpose |
+| --- | --- | --- |
+| 1 | `stage_1_camera_motion` | Precompute camera motion and build scene transform. See [docs/TR_CAMERA_MOTION_METHOD.md](TR_CAMERA_MOTION_METHOD.md). |
+| 2 | `stage_2_race_start_id` | Identify race-start interval (seed pair spanning `race_start_frame`). |
+| 3 | `stage_3_hermite_pass` | Hermite-only solve on all post-race intervals; score for confidence tier. |
+| 3b | `stage_3b_pre_race_synth` | Stationary pre-race synthesis (scene-anchored, seed-averaged per C4). Fires as soon as Stage 3's race-start interval completes. |
+| 4 | `stage_4_blob_promoted` | Blob-coupled re-solve on promoted intervals (low/fair confidence only). |
+| 5 | `stage_5_blob_full` | Optional blob-coupled re-solve on every post-race interval (via `--full` flag). |
+
+The pipeline's cost philosophy: "Spend expensive evidence only where cheap evidence is uncertain." Stage 3 runs Hermite (fast, ~3 ms per 100-frame interval) on every post-race interval. Stage 4 then promotes intervals with FWD/BWD disagreement (low or fair confidence tier) into the blob observer (expensive, one per interval). Stage 5 is user-selectable (`--full` flag) and runs blob on every interval for maximum fidelity when speed is less critical.
+
+Default solve runs Stages 1-4. `--hermite-only` stops after Stage 3 for diagnostics. `--full` runs Stages 1-5. Refine mode respects the same stage selection: refined intervals enter at Stage 3 and optionally promote to Stage 4 per their confidence score.
+
 ## Why bounded interval solving
 
 Seeds are hard anchors, not suggestions. Each inter-seed interval is solved

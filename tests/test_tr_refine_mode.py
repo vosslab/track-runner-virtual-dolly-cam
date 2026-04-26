@@ -56,7 +56,7 @@ def _prior_cache_for(seeds: list) -> dict:
 	# seed pair. Values are sentinel dicts so identity is traceable.
 	prior = {}
 	for i in range(len(seeds) - 1):
-		fp = interval_fingerprint.compute_interval_fingerprint(seeds[i], seeds[i + 1], stage="blob")
+		fp = interval_fingerprint.compute_interval_fingerprint(seeds[i], seeds[i + 1])
 		prior[fp] = {"cached_from_pair_idx": i, "source": "fwd_bwd"}
 	return prior
 

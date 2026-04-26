@@ -704,7 +704,7 @@ def precompute_camera_motion(
 	motion_model = _estimator_type_to_model(estimator_type)
 	config_fp = _compute_config_fingerprint(estimator_config)
 	config_hash = config_fp[:8]
-	cache_path = tr_paths.default_motion_cache_path(input_file)
+	cache_path = tr_paths.default_camera_motion_path(input_file)
 	# try to load from cache; stale hash returns None and triggers recompute
 	cached_motion = load_motion_cache(cache_path, config_hash)
 	if cached_motion is not None:

@@ -123,12 +123,12 @@ def _solve_interval_worker(task: tuple) -> tuple:
 	built once per process by `_worker_init`.
 
 	Args:
-		task: Tuple of (pair_idx, seed_start, seed_end).
+		task: Tuple of (pair_idx, seed_start, seed_end, blob_snap_enabled).
 
 	Returns:
 		Tuple of (pair_idx, fingerprint, result_dict).
 	"""
-	pair_idx, seed_start, seed_end = task
+	pair_idx, seed_start, seed_end, blob_snap_enabled = task
 	ctx = _WORKER_CONTEXT
 	fingerprint = interval_solver.compute_interval_fingerprint(
 		seed_start, seed_end,
@@ -138,6 +138,7 @@ def _solve_interval_worker(task: tuple) -> tuple:
 		ctx.scene_transform,
 		ctx.all_seeds_scene,
 		ctx.fps,
+		blob_snap_enabled,
 		debug=ctx.debug,
 		motion_track=ctx.motion_track,
 		all_seeds=ctx.all_seeds,

@@ -108,21 +108,40 @@ def default_diagnostics_path(input_file: str) -> str:
 #============================================
 
 def default_intervals_path(input_file: str) -> str:
-	"""Return the default geometry-cache NPZ file path for a given input file.
+	"""Return the default torso_box_coords NPZ file path for a given input file.
 
-	File format changed from JSON `.intervals.json` to NPZ
-	`.geometry_cache.npz` per the plan's format rule (dense per-frame
-	numeric series stored as NPZ). Function name retained for callsite
-	compatibility; the returned path points at the new NPZ file.
+	Per schema v8, unified artifact containing all per-frame torso boxes
+	(forward, backward, blended interval paths) from stage 1-5 solve.
+	Replaces separate geometry_cache.npz and debug_paths.npz files.
+	Function name retained for callsite compatibility; the returned path
+	points at the new unified NPZ file.
 
 	Args:
 		input_file: Input media file path.
 
 	Returns:
-		str: Geometry-cache NPZ file path inside tr_config/.
+		str: Torso-box-coords NPZ file path inside tr_config/.
 	"""
-	cache_path = _data_file_path(input_file, ".track_runner.geometry_cache.npz")
-	return cache_path
+	coords_path = _data_file_path(input_file, ".track_runner.torso_box_coords.npz")
+	return coords_path
+
+#============================================
+
+def default_torso_box_coords_path(input_file: str) -> str:
+	"""Return the default torso_box_coords NPZ file path for a given input file.
+
+	Unified artifact containing all per-frame torso boxes (forward, backward,
+	blended interval paths) from stage 1-5 solve. Replaces separate
+	geometry_cache.npz and debug_paths.npz files as of schema v8.
+
+	Args:
+		input_file: Input media file path.
+
+	Returns:
+		str: Torso-box-coords NPZ file path inside tr_config/.
+	"""
+	coords_path = _data_file_path(input_file, ".track_runner.torso_box_coords.npz")
+	return coords_path
 
 #============================================
 
@@ -158,27 +177,7 @@ def default_output_path(input_file: str) -> str:
 
 #============================================
 
-def default_debug_paths_path(input_file: str) -> str:
-	"""Return the default debug_paths sidecar path for a given input file.
-
-	This sidecar is written only when solve runs with `--debug-paths`.
-	It carries per-interval forward and backward interval paths for the
-	debug overlay, separate from the production geometry cache.
-
-	Args:
-		input_file: Input media file path.
-
-	Returns:
-		str: Debug interval paths NPZ sidecar path inside tr_config/.
-	"""
-	sidecar_path = _data_file_path(
-		input_file, ".track_runner.debug_paths.npz"
-	)
-	return sidecar_path
-
-#============================================
-
-def default_motion_cache_path(input_file: str) -> str:
+def default_camera_motion_path(input_file: str) -> str:
 	"""Return the default camera motion cache path for a given input file.
 
 	Args:

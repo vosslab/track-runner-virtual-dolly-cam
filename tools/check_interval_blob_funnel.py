@@ -1424,7 +1424,7 @@ def main() -> None:
 
 	# resolve canonical paths
 	seeds_path = args.seeds_file or tr_paths.default_seeds_path(args.input_file)
-	motion_path = tr_paths.default_motion_cache_path(args.input_file)
+	motion_path = tr_paths.default_camera_motion_path(args.input_file)
 	diag_path = tr_paths.default_diagnostics_path(args.input_file)
 
 	# load seeds + motion cache (motion is required; no identity fallback)

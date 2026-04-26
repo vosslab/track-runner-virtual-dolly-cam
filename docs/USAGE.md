@@ -55,18 +55,27 @@ Options: `-I`/`--seed-interval` sets the interval in seconds between seed frames
 
 ### solve
 
-Full solve. Clears all prior results and solves every interval from scratch.
+Full solve runs through multiple stages: camera motion precompute, race-start identification, Hermite-only pass on all post-race intervals, and optional blob-coupled refinement. Clears all prior results and solves every interval from scratch.
 
 ```bash
 python track_runner/track_runner.py -i VIDEO.mp4 solve
 ```
 
-Options:
+Solve modes (choose at most one):
+
+| Flag | Behavior | Wall time |
+| --- | --- | --- |
+| (default) | Stages 1-4: Hermite on all intervals, blob on promoted (low/fair confidence). | ~5-10 min |
+| `-f`, `--full` | Stages 1-5: Hermite on all, then blob on every interval. Maximum fidelity. | ~30-60 min |
+| `-H`, `--hermite-only` | Stages 1-3: Camera motion, race-start, Hermite only. Fast diagnostics, no blob. | ~2-5 min |
+
+Common options:
 
 | Flag | Description |
 | --- | --- |
 | `-y`, `--yes` | Auto-confirm the "clear and re-solve from scratch?" prompt (useful in scripts). |
-| `--debug-paths` | Also write `<video>.track_runner.debug_paths.npz` with forward/backward propagation tracks for every solved interval. Required input for the FWD/BWD debug overlay in later `encode`/`analyze --debug` runs. Solve-only: `refine` intentionally does not touch the sidecar so a partial re-solve cannot clobber a complete sidecar. |
+
+First run after upgrade note: the first solve run after the 2026-04-25 staging restructure will print "first run after solve restructure: full recompute expected" because the cache namespaces are new. Subsequent runs hit the cache normally. Run `--hermite-only` for a quick first-pass read if full solve time is a concern.
 
 ### target
 

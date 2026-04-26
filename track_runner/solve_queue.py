@@ -462,9 +462,21 @@ def execute_interval_work(
 	seq_frame_counter = [0]
 	solved_count = 0
 
+	# Find the race-start interval (phase="interval") -- this is the
+	# seed pair that spans race_start_frame. Once its result lands,
+	# fire pre-race synthesis early rather than waiting for the entire
+	# pool to complete.
+	race_start_pair_idx = None
+	for idx, phase in phase_by_idx.items():
+		if phase == "interval":
+			race_start_pair_idx = idx
+			break
+	pre_race_fired = False
+
 	# separate pending indices by phase. Pre-race intervals are solved
-	# after the bracket (and all post-race) intervals complete, using
-	# the computed pre_race_reference.
+	# after the race-start interval completes, using the computed
+	# pre_race_reference. Note: pending_pre_race are handled inline during
+	# the result-collection loop once race_start_pair_idx fires.
 	pending_normal = [idx for idx in pending_pair_indices
 		if phase_by_idx.get(idx) != "pre_race"]
 	pending_pre_race = [idx for idx in pending_pair_indices
@@ -520,6 +532,91 @@ def execute_interval_work(
 	progress = None
 	task = None
 
+	def _synthesize_pre_race() -> None:
+		"""Synthesize all pending pre-race intervals.
+
+		Fires once per execute_interval_work call. Called from two sites:
+		1. _accept callback when race-start interval completes (newly solved).
+		2. Cached-race-start detection at top of pool dispatch (cached hit).
+
+		The nonlocal pre_race_fired flag prevents double-execution.
+		"""
+		nonlocal pre_race_fired
+		if (pre_race_fired or race_start_pair_idx is None or
+			len(pending_pre_race) == 0):
+			return
+		pre_race_fired = True
+
+		interval_low, interval_high = context.race_start_interval
+		final_race_start_frame = race_start.pick_race_start_frame_midpoint(
+			interval_low, interval_high,
+		)
+
+		# Reuse precomputed pre_race_reference if available (from F2 pass);
+		# otherwise compute it now.
+		if context.pre_race_reference is not None:
+			pre_race_reference = context.pre_race_reference
+		else:
+			pre_race_reference = race_start.compute_pre_race_reference(
+				context.all_seeds, final_race_start_frame, context.scene_transform,
+				race_start_interval=context.race_start_interval
+			)
+			context.pre_race_reference = pre_race_reference
+
+		# Render the race-start confirmation contact sheet -- a required
+		# artifact whenever pre-race intervals are synthesized. It is the
+		# user-facing visual check that the chosen race_start_frame is
+		# correct, and it is the artifact `target --race-start` points
+		# the user at.
+		tiles = race_start.choose_race_start_confirmation_frames(
+			final_race_start_frame, context.fps, context.video_frame_count
+		)
+		contact_sheet_path = tr_paths.default_race_start_contact_sheet_path(
+			context.video_path
+		)
+		race_start_contact_sheet.render_race_start_contact_sheet(
+			context.video_path,
+			context.fps,
+			context.video_frame_count,
+			tiles,
+			pre_race_reference,
+			context.scene_transform,
+			contact_sheet_path,
+		)
+		print(f"  race-start confirmation: {contact_sheet_path}")
+
+		# Synthesize pre-race intervals using the reference. These run
+		# in the driver process while the pool continues with remaining
+		# post-race intervals.
+		for pre_race_pair_idx in pending_pre_race:
+			if run_control is not None and run_control.quit_requested:
+				break
+			if key_reader is not None and run_control is not None:
+				ch = key_reader.poll()
+				key_input.handle_key(ch, run_control, key_reader, progress if progress is not None else None)
+			if run_control is not None and run_control.quit_requested:
+				break
+
+			seed_start = usable_seeds_sorted[pre_race_pair_idx]
+			seed_end = usable_seeds_sorted[pre_race_pair_idx + 1]
+			start_frame = int(seed_start["frame_index"])
+			end_frame = int(seed_end["frame_index"])
+
+			if context.debug:
+				console = progress.console if progress is not None else None
+				if console is not None:
+					console.print(f"  synthesizing pre-race interval {pre_race_pair_idx + 1}/{total_intervals} "
+						f"(frames {start_frame}-{end_frame})")
+				else:
+					print(f"  synthesizing pre-race interval {pre_race_pair_idx + 1}/{total_intervals} "
+						f"(frames {start_frame}-{end_frame})")
+
+			result = _solve_pre_race_interval(
+				seed_start, seed_end, pre_race_reference,
+				context.scene_transform, context.fps
+			)
+			_accept(pre_race_pair_idx, expected_fingerprints[pre_race_pair_idx], result)
+
 	def _accept(pair_idx: int, fingerprint: str, result: dict) -> None:
 		nonlocal solved_count
 		interval_results[pair_idx] = result
@@ -540,6 +637,24 @@ def execute_interval_work(
 		seq_frame_counter[0] += n_frames
 		if progress is not None and task is not None:
 			progress.update(task, advance=1)
+
+		# M4 early pre-race fast-path: fire pre-race synthesis as soon as
+		# the race-start interval result lands (phase="interval"), not after
+		# the entire pool completes. This runs in the driver process, avoiding
+		# worker-pool race conditions (per R4 risk mitigation).
+		if race_start_pair_idx is not None and pair_idx == race_start_pair_idx:
+			_synthesize_pre_race()
+
+	# Edge case: race-start interval was cached. If we have pending pre-race
+	# intervals to synthesize, fire the fast-path now before the pool starts.
+	# The cached result is already in interval_results via the cache replay
+	# loop above, but _accept was never called, so _synthesize_pre_race must
+	# be triggered manually here. The nonlocal pre_race_fired flag ensures
+	# we do not synthesize twice if somehow the race-start is both cached
+	# and (incorrectly) dispatched to the pool.
+	if (race_start_pair_idx is not None and
+		race_start_pair_idx in plan.cached_results_by_idx):
+		_synthesize_pre_race()
 
 	if pending_normal_total > 0:
 		# frame-weighted ETA: sum span across cache-miss normal intervals.
@@ -598,6 +713,7 @@ def execute_interval_work(
 					result = interval_solver.solve_interval_analytical(
 						seed_start, seed_end, context.scene_transform,
 						context.all_seeds_scene, context.fps,
+						blob_snap_enabled=False,
 						debug=context.debug,
 						motion_track=context.motion_track,
 						all_seeds=context.all_seeds,
@@ -625,7 +741,7 @@ def execute_interval_work(
 						seed_end = usable_seeds_sorted[pair_idx + 1]
 						fut = pool.submit(
 							solver_workers._solve_interval_worker,
-							(pair_idx, seed_start, seed_end),
+							(pair_idx, seed_start, seed_end, False),
 						)
 						future_to_idx[fut] = pair_idx
 
@@ -662,81 +778,19 @@ def execute_interval_work(
 							pair_idx, fingerprint, result = fut.result()
 							_accept(pair_idx, fingerprint, result)
 
-	# ============ Race-start frame selection and pre-race synthesis ============
-	# Stage 2 (velocity-onset detector in race_phases) is deactivated;
-	# see docs/TODO.md "Stage 2 race-start refinement". Production picks
-	# race_start_frame as the deterministic midpoint of Stage 1's
-	# interval -- seed-aligned and crash-free.
-	if context.race_start_interval is not None and len(pending_pre_race) > 0:
-		interval_low, interval_high = context.race_start_interval
-		final_race_start_frame = race_start.pick_race_start_frame_midpoint(
-			interval_low, interval_high,
+	# ============ Pre-race synthesis was moved earlier ============
+	# M4 change: pre-race synthesis now fires as soon as the race-start
+	# interval result lands (in _accept, phase="interval"), not after the
+	# entire pool completes. The old post-pool code path has been removed.
+	# This runs in the driver process, avoiding worker-pool race conditions.
+
+	# Verify accounting only when not interrupted by quit
+	if run_control is None or not run_control.quit_requested:
+		assert reused_count + solved_count == total_intervals, (
+			f"reuse/solve accounting drifted: "
+			f"reused={reused_count} solved={solved_count} "
+			f"total={total_intervals}"
 		)
-
-		# Compute pre_race_reference now that we have the final race_start_frame
-		pre_race_reference = race_start.compute_pre_race_reference(
-			context.all_seeds, final_race_start_frame, context.scene_transform,
-			race_start_interval=context.race_start_interval
-		)
-
-		# Store in context so interval_solver can access it
-		context.pre_race_reference = pre_race_reference
-
-		# Render the race-start confirmation contact sheet -- a required
-		# artifact whenever pre-race intervals are synthesized. It is the
-		# user-facing visual check that the chosen race_start_frame is
-		# correct, and it is the artifact `target --race-start` points
-		# the user at.
-		tiles = race_start.choose_race_start_confirmation_frames(
-			final_race_start_frame, context.fps, context.video_frame_count
-		)
-		contact_sheet_path = tr_paths.default_race_start_contact_sheet_path(
-			context.video_path
-		)
-		race_start_contact_sheet.render_race_start_contact_sheet(
-			context.video_path,
-			context.fps,
-			context.video_frame_count,
-			tiles,
-			pre_race_reference,
-			context.scene_transform,
-			contact_sheet_path,
-		)
-		print(f"  race-start confirmation: {contact_sheet_path}")
-
-		# Now solve pre-race intervals using the reference
-		for pair_idx in pending_pre_race:
-			if run_control is not None and run_control.quit_requested:
-				break
-			if key_reader is not None and run_control is not None:
-				ch = key_reader.poll()
-				key_input.handle_key(ch, run_control, key_reader, progress if pending_normal_total > 0 else None)
-			if run_control is not None and run_control.quit_requested:
-				break
-
-			seed_start = usable_seeds_sorted[pair_idx]
-			seed_end = usable_seeds_sorted[pair_idx + 1]
-			start_frame = int(seed_start["frame_index"])
-			end_frame = int(seed_end["frame_index"])
-
-			if context.debug:
-				print(f"  synthesizing pre-race interval {pair_idx + 1}/{total_intervals} "
-					f"(frames {start_frame}-{end_frame})")
-
-			result = _solve_pre_race_interval(
-				seed_start, seed_end, pre_race_reference,
-				context.scene_transform, context.fps
-			)
-			_accept(pair_idx, expected_fingerprints[pair_idx], result)
-
-		# Stage 2 and pre-race synthesis completed successfully
-		# Verify accounting only when not interrupted by quit
-		if run_control is None or not run_control.quit_requested:
-			assert reused_count + solved_count == total_intervals, (
-				f"reuse/solve accounting drifted: "
-				f"reused={reused_count} solved={solved_count} "
-				f"total={total_intervals}"
-			)
 
 	# post-loop summary: make cache behavior visible on stdout
 	print(f"  solver: reused {reused_count}, solved {solved_count} "

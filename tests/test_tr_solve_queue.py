@@ -76,7 +76,7 @@ def test_plan_partitions_between_cache_and_pending():
 	"""
 	seeds = [_make_seed(10), _make_seed(100), _make_seed(200)]
 	fp_first = interval_fingerprint.compute_interval_fingerprint(
-		seeds[0], seeds[1], stage="blob",
+		seeds[0], seeds[1],
 	)
 	prior = {fp_first: {"start_frame": 10, "end_frame": 100, "dummy": True}}
 	plan = solve_queue.plan_interval_work(seeds, prior)
@@ -94,7 +94,7 @@ def test_plan_orphan_fingerprint_filtered_from_pruned_prior():
 	"""
 	seeds = [_make_seed(10), _make_seed(100)]
 	fp_good = interval_fingerprint.compute_interval_fingerprint(
-		seeds[0], seeds[1], stage="blob",
+		seeds[0], seeds[1],
 	)
 	prior = {
 		fp_good: {"dummy": True},
@@ -357,8 +357,8 @@ def test_pre_race_pending_disjoint_from_cached():
 	"""
 	seeds = [_make_seed(f) for f in (0, 10, 20, 30, 40)]
 
-	fp_pre_0 = interval_fingerprint.compute_interval_fingerprint(seeds[0], seeds[1], stage="blob")
-	fp_pre_1 = interval_fingerprint.compute_interval_fingerprint(seeds[1], seeds[2], stage="blob")
+	fp_pre_0 = interval_fingerprint.compute_interval_fingerprint(seeds[0], seeds[1])
+	fp_pre_1 = interval_fingerprint.compute_interval_fingerprint(seeds[1], seeds[2])
 	prior = {fp_pre_0: {"dummy": True}, fp_pre_1: {"dummy": True}}
 
 	plan = solve_queue.plan_interval_work(

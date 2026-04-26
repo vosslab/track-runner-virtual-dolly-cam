@@ -238,7 +238,7 @@ def main() -> None:
 	seeds_path = args.seeds_file or tr_paths.default_seeds_path(
 		args.input_file
 	)
-	motion_path = tr_paths.default_motion_cache_path(args.input_file)
+	motion_path = tr_paths.default_camera_motion_path(args.input_file)
 	geom_path = tr_paths.default_intervals_path(args.input_file)
 
 	seeds_data = state_io.load_seeds(seeds_path)

@@ -629,6 +629,7 @@ def _apply_blob_snap(
 	reader: object,
 	scene_transform: object,
 	residual_cache: dict,
+	blob_snap_enabled: bool,
 ) -> list:
 	"""Stage 2: produce snap_pred from a frozen raw_pred, reading raw only.
 
@@ -674,6 +675,9 @@ def _apply_blob_snap(
 			alignment.
 		residual_cache: Per-interval cache dict; contains image-derived
 			raw data only (no accepted blobs, no gate outcomes).
+		blob_snap_enabled: Required bool. When False, skip blob observer
+			entirely and return raw_pred values wrapped as state dicts.
+			When True, behavior is byte-identical to prior code path.
 
 	Returns:
 		snap_pred as a list of state dicts, one per entry in `raw`, in
@@ -692,6 +696,11 @@ def _apply_blob_snap(
 		and hasattr(reader, "frame_count")
 	)
 	effective_reader = reader if reader_ok else None
+
+	# if blob_snap_enabled is False, short-circuit directly to raw_pred
+	# without calling observe_blob_at
+	if not blob_snap_enabled:
+		effective_reader = None
 
 	for i in range(num):
 		frame_index, raw_cx, raw_cy, w, h, conf, is_stat = raw[i]
@@ -835,6 +844,7 @@ def _apply_blob_snap(
 def propagate_forward_analytical(
 	interval_curves: dict,
 	scene_transform: object,
+	blob_snap_enabled: bool,
 	reader: object = None,
 	residual_cache: dict = None,
 ) -> list:
@@ -847,6 +857,8 @@ def propagate_forward_analytical(
 	Args:
 		interval_curves: Dict from fit_interval_curves().
 		scene_transform: SceneTransform instance.
+		blob_snap_enabled: Required bool. When False, skip blob observer
+			entirely. When True, behavior is byte-identical to prior code.
 		reader: Optional video reader. When None, blob snap is skipped
 			and propagation reduces to pure Hermite (delete-test mode).
 		residual_cache: Optional per-interval cache. When reader is
@@ -857,12 +869,7 @@ def propagate_forward_analytical(
 		end_frame inclusive. Index 0 is at start_frame.
 	"""
 	raw = _compute_raw_pred_forward(interval_curves, scene_transform)
-	if reader is None or residual_cache is None:
-		# pure Hermite path. Delete-test: behavior equals the pre-patch
-		# propagator exactly on inputs with no observer call.
-		states = _apply_blob_snap(raw, None, scene_transform, {})
-		return states
-	states = _apply_blob_snap(raw, reader, scene_transform, residual_cache)
+	states = _apply_blob_snap(raw, reader, scene_transform, residual_cache or {}, blob_snap_enabled)
 	return states
 
 
@@ -870,6 +877,7 @@ def propagate_forward_analytical(
 def propagate_backward_analytical(
 	interval_curves: dict,
 	scene_transform: object,
+	blob_snap_enabled: bool,
 	reader: object = None,
 	residual_cache: dict = None,
 ) -> list:
@@ -878,6 +886,8 @@ def propagate_backward_analytical(
 	Args:
 		interval_curves: Dict from fit_interval_curves().
 		scene_transform: SceneTransform instance.
+		blob_snap_enabled: Required bool. When False, skip blob observer
+			entirely. When True, behavior is byte-identical to prior code.
 		reader: Optional video reader.
 		residual_cache: Optional per-interval cache shared with the FWD
 			pass. Legitimately holds raw residuals and raw blobs only;
@@ -893,8 +903,5 @@ def propagate_backward_analytical(
 		ordering.
 	"""
 	raw = _compute_raw_pred_backward(interval_curves, scene_transform)
-	if reader is None or residual_cache is None:
-		states = _apply_blob_snap(raw, None, scene_transform, {})
-		return states
-	states = _apply_blob_snap(raw, reader, scene_transform, residual_cache)
+	states = _apply_blob_snap(raw, reader, scene_transform, residual_cache or {}, blob_snap_enabled)
 	return states

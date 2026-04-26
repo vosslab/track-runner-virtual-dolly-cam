@@ -112,11 +112,12 @@ def test_solve_all_modes_produce_valid_results():
 
 
 #============================================
-def test_fingerprint_tags_differ():
-	"""Hermite and blob fingerprint tags encode distinct cache namespaces."""
-	hermite_tag = interval_fingerprint.HERMITE_GEOMETRY_TAG
-	blob_tag = interval_fingerprint.BLOB_GEOMETRY_TAG
-	assert hermite_tag != blob_tag
+def test_geometry_tag_encodes_schema_version():
+	"""The unified GEOMETRY_TAG encodes only the geometry-affecting schema."""
+	# With a single unified tag, all intervals share the same cache namespace
+	# based on seed geometry and schema version only. How the interval was
+	# solved (hermite vs blob) is metadata on the result, not the cache key.
+	assert "schema_v" in interval_fingerprint.GEOMETRY_TAG
 
 
 #============================================
