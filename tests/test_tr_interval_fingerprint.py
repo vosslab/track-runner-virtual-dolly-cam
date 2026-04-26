@@ -56,8 +56,8 @@ def test_fingerprint_deterministic():
 	"""
 	seed_a = _make_seed(10)
 	seed_b = _make_seed(100)
-	fp_1 = interval_fingerprint.compute_interval_fingerprint(seed_a, seed_b)
-	fp_2 = interval_fingerprint.compute_interval_fingerprint(seed_a, seed_b)
+	fp_1 = interval_fingerprint.compute_interval_fingerprint(seed_a, seed_b, stage="blob")
+	fp_2 = interval_fingerprint.compute_interval_fingerprint(seed_a, seed_b, stage="blob")
 	assert fp_1 == fp_2
 
 
@@ -71,10 +71,10 @@ def test_fingerprint_changes_when_seeds_differ():
 	"""
 	base_start = _make_seed(10)
 	base_end = _make_seed(100)
-	fp_base = interval_fingerprint.compute_interval_fingerprint(base_start, base_end)
+	fp_base = interval_fingerprint.compute_interval_fingerprint(base_start, base_end, stage="blob")
 	# perturb start's cx
 	perturbed = interval_fingerprint.compute_interval_fingerprint(
-		_make_seed(10, cx=101.0), base_end,
+		_make_seed(10, cx=101.0), base_end, stage="blob",
 	)
 	assert fp_base != perturbed
 
@@ -193,22 +193,25 @@ def test_cache_key_stable_across_metadata_only_schema_bump(monkeypatch):
 	"""
 	seed_a = {"frame_index": 10, "cx": 1.0, "cy": 2.0, "w": 3.0, "h": 4.0}
 	seed_b = {"frame_index": 20, "cx": 5.0, "cy": 6.0, "w": 7.0, "h": 8.0}
-	key_before = interval_fingerprint.compute_interval_fingerprint(seed_a, seed_b)
+	key_before = interval_fingerprint.compute_interval_fingerprint(seed_a, seed_b, stage="blob")
 	# Pick a bumped version that is strictly higher than every member
 	# of GEOMETRY_AFFECTING_SCHEMAS so the helper still returns the
 	# previous max.
 	bumped = max(tr_schema.GEOMETRY_AFFECTING_SCHEMAS) + 100
 	monkeypatch.setattr(tr_schema, "SCHEMA_VERSION", bumped)
 	monkeypatch.setattr(state_io, "SCHEMA_VERSION", bumped)
-	# GEOMETRY_TAG is captured at import time; rebuild to simulate what
+	# Blob tag is captured at import time; rebuild to simulate what
 	# a fresh process would do after a metadata-only bump.
-	rebuilt_geom = interval_fingerprint.build_geometry_tag()
-	assert "/schema/" not in rebuilt_geom
-	assert str(bumped) not in rebuilt_geom
+	rebuilt_hermite = interval_fingerprint.build_hermite_geometry_tag()
+	rebuilt_blob = interval_fingerprint.build_blob_geometry_tag()
+	assert "/schema/" not in rebuilt_hermite
+	assert "/schema/" not in rebuilt_blob
+	assert str(bumped) not in rebuilt_hermite
+	assert str(bumped) not in rebuilt_blob
 	# The telemetry tag, by contrast, MUST reflect the bump.
 	rebuilt_full = interval_fingerprint.build_solver_fingerprint_tag()
 	assert f"/schema/{bumped}" in rebuilt_full
-	key_after = interval_fingerprint.compute_interval_fingerprint(seed_a, seed_b)
+	key_after = interval_fingerprint.compute_interval_fingerprint(seed_a, seed_b, stage="blob")
 	assert key_before == key_after
 
 
@@ -227,5 +230,7 @@ def test_cache_key_changes_when_schema_is_geometry_affecting(monkeypatch):
 	monkeypatch.setattr(
 		tr_schema, "GEOMETRY_AFFECTING_SCHEMAS", original_set | {bumped},
 	)
-	rebuilt = interval_fingerprint.build_geometry_tag()
-	assert f"geometry_schema_v{bumped}" in rebuilt
+	rebuilt_hermite = interval_fingerprint.build_hermite_geometry_tag()
+	rebuilt_blob = interval_fingerprint.build_blob_geometry_tag()
+	assert f"geometry_schema_v{bumped}" in rebuilt_hermite
+	assert f"geometry_schema_v{bumped}" in rebuilt_blob

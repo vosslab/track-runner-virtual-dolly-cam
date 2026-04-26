@@ -76,7 +76,7 @@ def test_plan_partitions_between_cache_and_pending():
 	"""
 	seeds = [_make_seed(10), _make_seed(100), _make_seed(200)]
 	fp_first = interval_fingerprint.compute_interval_fingerprint(
-		seeds[0], seeds[1],
+		seeds[0], seeds[1], stage="blob",
 	)
 	prior = {fp_first: {"start_frame": 10, "end_frame": 100, "dummy": True}}
 	plan = solve_queue.plan_interval_work(seeds, prior)
@@ -94,7 +94,7 @@ def test_plan_orphan_fingerprint_filtered_from_pruned_prior():
 	"""
 	seeds = [_make_seed(10), _make_seed(100)]
 	fp_good = interval_fingerprint.compute_interval_fingerprint(
-		seeds[0], seeds[1],
+		seeds[0], seeds[1], stage="blob",
 	)
 	prior = {
 		fp_good: {"dummy": True},
@@ -325,3 +325,53 @@ def test_pre_race_interval_consistency_sentinels():
 	assert score["size_consistency"] == 1.0
 	assert score["motion_quality"] == 1.0
 	assert score["occlusion_fraction"] == 0.0
+
+
+#============================================
+def test_pre_race_synthesis_classified_by_phase():
+	"""When race_start_interval is given, plan_interval_work labels each
+	pair_idx with one of {pre_race, interval, post_race}, and exactly one
+	pair carries the race-start interval phase.
+	"""
+	seeds = [_make_seed(f) for f in (0, 10, 20, 30, 40, 50)]
+	race_start_interval = (20, 30)
+
+	plan = solve_queue.plan_interval_work(
+		seeds, prior_intervals=None, race_start_interval=race_start_interval,
+	)
+
+	phases = list(plan.phase_by_idx.values())
+	# Behavioral: pre-race and post-race phases both exist when seeds bracket race start.
+	assert "pre_race" in phases
+	assert "post_race" in phases
+	# Behavioral: exactly one race-start interval pair exists.
+	race_start_idx = [idx for idx, phase in plan.phase_by_idx.items() if phase == "interval"]
+	assert len(race_start_idx) == 1
+
+
+#============================================
+def test_pre_race_pending_disjoint_from_cached():
+	"""When some intervals are cached, plan partitions the rest into pending
+	such that pending and cached sets are disjoint and account for every
+	interval. Pre-race intervals that are cached must not appear in pending.
+	"""
+	seeds = [_make_seed(f) for f in (0, 10, 20, 30, 40)]
+
+	fp_pre_0 = interval_fingerprint.compute_interval_fingerprint(seeds[0], seeds[1], stage="blob")
+	fp_pre_1 = interval_fingerprint.compute_interval_fingerprint(seeds[1], seeds[2], stage="blob")
+	prior = {fp_pre_0: {"dummy": True}, fp_pre_1: {"dummy": True}}
+
+	plan = solve_queue.plan_interval_work(
+		seeds, prior_intervals=prior, race_start_interval=(20, 30),
+	)
+
+	pending_set = set(plan.pending_pair_indices)
+	cached_set = set(plan.cached_results_by_idx)
+	# Round-trip invariant: every interval is either reused or pending.
+	assert plan.reused_count + plan.pending_count == plan.total_intervals
+	# Disjointness: cached and pending never overlap.
+	assert pending_set.isdisjoint(cached_set)
+	# All-pre-race-cached: no pre-race index remains pending.
+	pending_pre_race = [idx for idx in pending_set
+		if plan.phase_by_idx.get(idx) == "pre_race"]
+	assert not pending_pre_race

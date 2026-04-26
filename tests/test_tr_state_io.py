@@ -15,10 +15,15 @@ hardcoded-constant asserts, no brittle checks on derived schema versions.
 import json
 
 # PIP3 modules
+import numpy
 import pytest
 
 # local repo modules
+import camera_motion
+import interval_solver
+import scene_coords
 import state_io
+import tr_paths
 
 
 #============================================
@@ -325,3 +330,58 @@ def test_writer_omits_pre_race_reference_when_none(tmp_path):
 	# load and verify
 	loaded = state_io.load_diagnostics(str(diag_path))
 	assert loaded["pre_race_reference"] is None
+
+
+#============================================
+def test_torso_box_coords_round_trip_hermite_only(tmp_path):
+	"""C10 round-trip: write_torso_box_coords + load_torso_box_coords preserve
+	per-interval forward / backward / blended paths after a hermite-only solve.
+	"""
+	n_frames = 300
+	motion = camera_motion.MotionTrack(
+		dx=numpy.zeros(n_frames, dtype=numpy.float32),
+		dy=numpy.zeros(n_frames, dtype=numpy.float32),
+		scale=numpy.ones(n_frames, dtype=numpy.float32),
+		quality=numpy.ones(n_frames, dtype=numpy.float32),
+	)
+	scene_transform = scene_coords.SceneTransform(motion)
+	seeds = [
+		{"frame_index": 10 + i * 100, "cx": 100.0 + i * 50.0, "cy": 200.0,
+			"w": 30.0, "h": 60.0, "status": "visible"}
+		for i in range(3)
+	]
+
+	class _StubReader:
+		def get_info(self):
+			return {"fps": 30.0}
+
+		def read_frame(self, frame_index):
+			return numpy.zeros((480, 640, 3), dtype=numpy.uint8)
+
+	diagnostics = interval_solver.solve_all_intervals(
+		reader=_StubReader(),
+		seeds=seeds,
+		detector=None,
+		config={},
+		num_workers=1,
+		debug=False,
+		scene_transform=scene_transform,
+		motion_track=motion,
+		video_frame_count=n_frames,
+		hermite_only=True,
+		full_solve=False,
+		race_start_interval=None,
+	)
+	prior_ivs = {f"fp_{i}": iv for i, iv in enumerate(diagnostics["intervals"])}
+
+	coords_path = tr_paths.default_intervals_path(str(tmp_path / "test_video.mp4"))
+	state_io.write_torso_box_coords(coords_path, {"solved_intervals": prior_ivs})
+	loaded = state_io.load_torso_box_coords(coords_path)
+
+	# Round-trip invariant: same fingerprint key set, and every loaded path
+	# carries finite per-frame coordinates on each direction.
+	assert set(loaded["solved_intervals"]) == set(prior_ivs)
+	for interval_data in loaded["solved_intervals"].values():
+		for path_key in ("forward_path", "backward_path", "blended_path"):
+			path = interval_data[path_key]
+			assert all(numpy.isfinite(s["cx"]) and numpy.isfinite(s["cy"]) for s in path)

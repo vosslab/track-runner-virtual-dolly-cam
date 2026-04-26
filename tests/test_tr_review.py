@@ -90,3 +90,57 @@ def test_classify_severity_skips_pre_race():
 	)
 	result = review.classify_interval_severity(pre_race_interval, fps=30.0)
 	assert result is None
+
+
+#============================================
+def test_review_flagging_skips_pre_race():
+	"""identify_weak_spans excludes pre_race intervals from suggestions."""
+	diagnostics = {
+		"fps": 30.0,
+		"intervals": [
+			{
+				"start_frame": 0,
+				"end_frame": 100,
+				"interval_score": {
+					"agreement": 0.3,
+					"confidence_tier": "low",
+					"failure_reasons": ["low_agreement"],
+					"warning_flags": [],
+				},
+				"blended_path": [
+					{"cx": 100.0, "cy": 100.0, "w": 30.0, "h": 60.0}
+					for _ in range(101)
+				],
+			},
+			{
+				"start_frame": 100,
+				"end_frame": 150,
+				"interval_score": {
+					"agreement": 1.0,
+					"confidence_tier": "pre_race",
+					"failure_reasons": [],
+					"warning_flags": [],
+				},
+				"blended_path": [
+					{"cx": 100.0, "cy": 100.0, "w": 30.0, "h": 60.0}
+					for _ in range(51)
+				],
+			},
+		]
+	}
+	suggestions = review.identify_weak_spans(diagnostics)
+	# No suggestion may fall inside the pre-race interval frame range.
+	for suggestion in suggestions:
+		assert not (100 <= suggestion["frame_index"] <= 150)
+
+
+#============================================
+def test_rank_key_sorts_pre_race_to_end():
+	"""Sorting by rank_key places pre_race intervals last."""
+	intervals = [
+		{"interval_score": {"agreement": 0.9, "confidence_tier": "high"}},
+		{"interval_score": {"agreement": 0.1, "confidence_tier": "low"}},
+		{"interval_score": {"agreement": 1.0, "confidence_tier": "pre_race"}},
+	]
+	sorted_intervals = sorted(intervals, key=review.rank_key)
+	assert sorted_intervals[-1]["interval_score"]["confidence_tier"] == "pre_race"

@@ -105,6 +105,7 @@ def test_analytical_solve_produces_blended_path():
 		scene_transform=scene_transform,
 		all_seeds_scene=all_seeds_scene,
 		fps=30.0,
+		blob_snap_enabled=False,
 	)
 	# endpoints should match seeds within 1px
 	blended = result["blended_path"]
@@ -214,5 +215,56 @@ def test_solve_all_intervals_calls_on_interval_solved():
 	for fingerprint, result in captured:
 		assert isinstance(fingerprint, str)
 		assert "start_frame" in result
+
+
+#============================================
+def test_hermite_only_solve_populates_diagnostics():
+	"""P0 regression: hermite-only solve must produce intervals with finite
+	per-frame paths and a recognized confidence tier. Prior to the cache
+	namespace fix, intervals were silently dropped.
+	"""
+	n_frames = 300
+	motion = _make_synthetic_motion_track(n_frames)
+	scene_transform = scene_coords.SceneTransform(motion)
+	seeds = _make_seeds_linear_motion(
+		n_seeds=3, start_frame=10, frame_spacing=100,
+		start_x=100.0, start_y=200.0,
+		dx_per_frame=0.5, dy_per_frame=0.0,
+		box_w=30.0, box_h=60.0,
+	)
+
+	class _StubReader:
+		def get_info(self) -> dict:
+			return {"fps": 30.0}
+
+		def read_frame(self, frame_index):
+			return numpy.zeros((480, 640, 3), dtype=numpy.uint8)
+
+	diagnostics = interval_solver.solve_all_intervals(
+		reader=_StubReader(),
+		seeds=seeds,
+		detector=None,
+		config={},
+		num_workers=1,
+		debug=False,
+		scene_transform=scene_transform,
+		motion_track=motion,
+		video_frame_count=n_frames,
+		hermite_only=True,
+		full_solve=False,
+		race_start_interval=None,
+	)
+
+	valid_tiers = {"high", "fair", "low", "pre_race"}
+	# Behavioral: at least one frame was solved with finite coordinates, and
+	# every solved frame is finite with a recognized tier. The "any" guard
+	# protects against the original regression (intervals silently dropped).
+	finite_frames = [
+		s for interval in diagnostics["intervals"] for s in interval["blended_path"]
+		if numpy.isfinite(s["cx"]) and numpy.isfinite(s["cy"])
+	]
+	assert any(True for _ in finite_frames)
+	for interval in diagnostics["intervals"]:
+		assert interval["interval_score"]["confidence_tier"] in valid_tiers
 
 

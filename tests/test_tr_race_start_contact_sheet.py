@@ -44,7 +44,15 @@ def _make_tiles(frame_offset_fn, count: int = 11, clamped_fn=None) -> list:
 
 #============================================
 class FakeFrameReader:
-	"""Minimal fake FrameReader for testing without real video I/O."""
+	"""Minimal fake FrameReader for testing without real video I/O.
+
+	Optional tile_height_overrides maps frame_index -> height; matching frames
+	are returned with a non-default height to exercise the resize-to-uniform
+	path in render_race_start_contact_sheet (cv2.hconcat fails on mismatched
+	tile heights without that resize).
+	"""
+
+	tile_height_overrides: dict = {}
 
 	def __init__(self, video_path, fps, total_frames):
 		self.video_path = video_path
@@ -58,7 +66,8 @@ class FakeFrameReader:
 			return None
 		# Return a small 480x270 BGR frame filled with a frame-index-dependent value
 		value = int(128 + (frame_index % 127))
-		frame = numpy.full((270, 480, 3), value, dtype=numpy.uint8)
+		height = self.tile_height_overrides.get(frame_index, 270)
+		frame = numpy.full((height, 480, 3), value, dtype=numpy.uint8)
 		return frame
 
 	def close(self):
@@ -256,6 +265,51 @@ def test_padding_in_frame_crop_no_padding(tmp_path):
 			)
 
 	# Verify PNG was written
+	assert os.path.exists(output_path)
+	assert os.path.getsize(output_path) > 0
+
+
+#============================================
+def test_render_handles_mismatched_tile_heights(tmp_path):
+	"""Regression: refine-mode seed edits can produce tiles with slightly
+	different heights; cv2.hconcat must not fail on the mismatch.
+	"""
+	output_path = str(tmp_path / "contact_sheet.png")
+
+	tiles = _make_tiles(lambda i: i)
+
+	pre_race_reference = {
+		"race_start_frame": 5,
+		"torso_w": 10.0,
+		"torso_h": 10.0,
+		"scene_anchor_x": 320.0,
+		"scene_anchor_y": 240.0,
+	}
+
+	fake_transform = MagicMock()
+	fake_transform.scene_to_pixel.return_value = (320.0, 240.0)
+
+	# Force a single tile to a different height so cv2.hconcat would fail
+	# without the resize-to-uniform fallback.
+	original_overrides = FakeFrameReader.tile_height_overrides
+	FakeFrameReader.tile_height_overrides = {1: 271}
+	try:
+		with patch("race_start_contact_sheet.frame_reader.FrameReader", FakeFrameReader):
+			with patch("race_start_contact_sheet.overlay_config.get_pre_race_reference_bgr") as mock_color:
+				mock_color.return_value = (0, 255, 0)
+
+				race_start_contact_sheet.render_race_start_contact_sheet(
+					video_path="dummy.mp4",
+					fps=30.0,
+					total_frames=100,
+					tiles=tiles,
+					pre_race_reference=pre_race_reference,
+					scene_transform=fake_transform,
+					output_path=output_path,
+				)
+	finally:
+		FakeFrameReader.tile_height_overrides = original_overrides
+
 	assert os.path.exists(output_path)
 	assert os.path.getsize(output_path) > 0
 

@@ -1,21 +1,24 @@
-"""Invariant tests for the parallel solver driver.
+"""Driver-level invariants for `interval_solver.solve_all_intervals`.
 
-The serial solver loop was replaced with a cache-partitioned driver that
-dispatches cache-miss intervals either in-process (num_workers < 2 or <4
-misses) or through a ProcessPoolExecutor (num_workers >= 2 and >=4 misses).
-These tests lock invariants that the partition must preserve:
+These tests lock the orchestration contract of the cache-partitioned
+driver -- ordering, cache short-circuit, and callback firing -- without
+exercising real concurrent worker execution. Worker behavior itself is
+covered by `test_tr_solver_integration.py` (real solver path) and by
+`test_tr_solve_queue.py` (planner). Actual pool equivalence is validated
+end-to-end on a real video as part of WP-4's rollout checklist; spawning
+a ProcessPoolExecutor from pytest would require a real video fixture and
+slow the suite.
+
+Invariants:
 
 1. Full cache-hit runs never open a pool (no video_path required).
-2. Result list is returned in seed order regardless of pool use.
+2. Result list is returned in seed order regardless of dispatch path.
 3. on_interval_solved fires exactly once per newly solved fingerprint.
 4. on_interval_solved never fires for cache hits.
 5. on_interval_complete fires for every interval (cached + newly solved).
 
-The tests do not spawn real worker processes: driving a ProcessPoolExecutor
-from pytest would require a real video fixture and slow the suite. Instead
-they monkeypatch `solve_interval_analytical` and force the in-process path
-by keeping num_workers=1. Pool equivalence is validated manually end-to-end
-on a real video as part of WP-4's rollout checklist.
+Tests force the in-process path with num_workers=1 and monkeypatch
+`solve_interval_analytical` so only the driver loop is exercised.
 """
 
 # PIP3 modules
@@ -89,7 +92,7 @@ def test_full_cache_hit_skips_pool(monkeypatch):
 	# pre-build prior_intervals containing every fingerprint.
 	prior = {}
 	for i in range(len(seeds) - 1):
-		fp = interval_solver.compute_interval_fingerprint(seeds[i], seeds[i + 1])
+		fp = interval_solver.compute_interval_fingerprint(seeds[i], seeds[i + 1], stage="blob")
 		prior[fp] = _fake_result(seeds[i], seeds[i + 1])
 
 	# if solve_interval_analytical is ever called, fail loudly.
@@ -123,7 +126,7 @@ def test_result_list_in_seed_order(monkeypatch):
 	# cache the middle interval only; drivers must still fill the others
 	# in seed order.
 	prior = {}
-	fp_middle = interval_solver.compute_interval_fingerprint(seeds[2], seeds[3])
+	fp_middle = interval_solver.compute_interval_fingerprint(seeds[2], seeds[3], stage="blob")
 	prior[fp_middle] = _fake_result(seeds[2], seeds[3])
 	# tag so we can identify the cached entry downstream.
 	prior[fp_middle]["_from_cache"] = True
@@ -162,7 +165,7 @@ def test_on_interval_solved_fires_once_per_new_fingerprint(monkeypatch):
 
 	# cache the first interval; two cache-misses remain.
 	prior = {}
-	fp_first = interval_solver.compute_interval_fingerprint(seeds[0], seeds[1])
+	fp_first = interval_solver.compute_interval_fingerprint(seeds[0], seeds[1], stage="blob")
 	prior[fp_first] = _fake_result(seeds[0], seeds[1])
 
 	monkeypatch.setattr(
@@ -180,8 +183,8 @@ def test_on_interval_solved_fires_once_per_new_fingerprint(monkeypatch):
 	)
 
 	# exactly 2 new-solve callbacks (intervals 1-2 and 2-3), none for cache hit.
-	fp_interval_1 = interval_solver.compute_interval_fingerprint(seeds[1], seeds[2])
-	fp_interval_2 = interval_solver.compute_interval_fingerprint(seeds[2], seeds[3])
+	fp_interval_1 = interval_solver.compute_interval_fingerprint(seeds[1], seeds[2], stage="blob")
+	fp_interval_2 = interval_solver.compute_interval_fingerprint(seeds[2], seeds[3], stage="blob")
 	assert set(solved_fingerprints) == {fp_interval_1, fp_interval_2}
 	# cache hit's fingerprint is NOT in the callback list.
 	assert fp_first not in solved_fingerprints
@@ -195,7 +198,7 @@ def test_on_interval_complete_fires_for_every_interval(monkeypatch):
 	scene_transform = scene_coords.SceneTransform(motion)
 
 	prior = {}
-	fp_first = interval_solver.compute_interval_fingerprint(seeds[0], seeds[1])
+	fp_first = interval_solver.compute_interval_fingerprint(seeds[0], seeds[1], stage="blob")
 	prior[fp_first] = _fake_result(seeds[0], seeds[1])
 
 	monkeypatch.setattr(
@@ -226,10 +229,10 @@ def test_fingerprints_unchanged_by_parallel_refactor():
 	"""
 	seed_a = {"frame_index": 100, "cx": 500.5, "cy": 300.25, "w": 40.0, "h": 80.0}
 	seed_b = {"frame_index": 200, "cx": 600.0, "cy": 310.0, "w": 42.0, "h": 82.0}
-	fp1 = interval_solver.compute_interval_fingerprint(seed_a, seed_b)
-	fp2 = interval_solver.compute_interval_fingerprint(seed_a, seed_b)
+	fp1 = interval_solver.compute_interval_fingerprint(seed_a, seed_b, stage="blob")
+	fp2 = interval_solver.compute_interval_fingerprint(seed_a, seed_b, stage="blob")
 	assert fp1 == fp2
 	assert isinstance(fp1, str)
 	# swapping seed order must change the fingerprint (direction matters).
-	fp_reversed = interval_solver.compute_interval_fingerprint(seed_b, seed_a)
+	fp_reversed = interval_solver.compute_interval_fingerprint(seed_b, seed_a, stage="blob")
 	assert fp_reversed != fp1
