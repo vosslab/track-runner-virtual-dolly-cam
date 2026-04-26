@@ -484,6 +484,31 @@ def generate_refinement_targets(
 		for s in suggestions:
 			if _in_range(s["frame_index"]) and not _frame_in_excluded_interval(s["frame_index"]):
 				target_set.add(s["frame_index"])
+		# When the user passed --severity, ensure the target-frame count
+		# matches the "severity breakdown" line printed at solve time
+		# (cli.py:_print_quality_summary). That breakdown only counts
+		# intervals with confidence NOT in {high, good} -- it is a
+		# secondary severity tag layered on already-weak intervals.
+		# Mirror that predicate here so `-s low` produces exactly the
+		# same set of intervals the breakdown summed.
+		if severity is not None:
+			for idx, iv in enumerate(intervals):
+				if idx in excluded_intervals:
+					continue
+				score = iv["interval_score"]
+				confidence = get_confidence_label(score)
+				if confidence in ("high", "good", "pre_race"):
+					continue
+				iv_severity = classify_interval_severity(iv, fps)
+				if _SEVERITY_RANK.get(iv_severity, 0) < min_rank:
+					continue
+				start_frame = int(iv["start_frame"])
+				end_frame = int(iv["end_frame"])
+				if any(start_frame <= f <= end_frame for f in target_set):
+					continue
+				mid = _midpoint_frame(start_frame, end_frame)
+				if _in_range(mid):
+					target_set.add(mid)
 
 	if "interval" in active_modes:
 		# evenly spaced frames; find total frame span from intervals

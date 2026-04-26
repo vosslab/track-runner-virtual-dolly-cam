@@ -359,14 +359,18 @@ def _print_quality_summary(diagnostics: dict, fps: float) -> None:
 		low_count = 0
 		for iv in intervals:
 			score = iv["interval_score"]
-			if review.get_confidence_label(score) in ("high", "good"):
+			# Pre-race intervals are scene-anchored (C4) and not
+			# severity-classified; classify_interval_severity returns
+			# None for them. Skip alongside high/good so the breakdown
+			# matches the "weak intervals" target predicate.
+			if review.get_confidence_label(score) in ("high", "good", "pre_race"):
 				continue
 			sev = review.classify_interval_severity(iv, fps)
 			if sev == "high":
 				high_count += 1
 			elif sev == "medium":
 				medium_count += 1
-			else:
+			elif sev == "low":
 				low_count += 1
 		print(f"  severity breakdown: {high_count} high, "
 			f"{medium_count} medium, {low_count} low")
@@ -1333,48 +1337,55 @@ def _mode_target(
 			severity=severity,
 		)
 
-		# apply --top slicing if requested
+		# apply --top slicing if requested. UX: --top N means "give me N
+		# frames, period" -- if the severity floor or confidence-based
+		# filter produces fewer than N candidates, supplement with the
+		# next-worst intervals so the user always gets the requested count
+		# (capped at the number of non-pre-race intervals available).
 		if top_n is not None:
-			# extract intervals and filter by severity to match generate_refinement_targets logic
 			intervals = diag_data.get("intervals", [])
-			filtered_intervals = []
-			if severity is not None:
-				# only include intervals matching severity threshold
-				min_rank = review._SEVERITY_RANK.get(severity, 0)
-				for iv in intervals:
-					score = iv["interval_score"]
-					if review.get_confidence_label(score) in ("high", "good"):
-						continue
-					iv_severity = review.classify_interval_severity(iv, fps)
-					if review._SEVERITY_RANK.get(iv_severity, 0) >= min_rank:
-						filtered_intervals.append(iv)
-			else:
-				# no severity filter: include all intervals
-				for iv in intervals:
-					score = iv["interval_score"]
-					if review.get_confidence_label(score) not in ("high", "good"):
-						filtered_intervals.append(iv)
+			# every non-pre-race interval is a potential candidate, ranked
+			# worst-first by rank_key. Pre-race is excluded per C4.
+			candidates = [
+				iv for iv in intervals
+				if review.get_confidence_label(iv["interval_score"]) != "pre_race"
+			]
+			candidates.sort(key=review.rank_key)
+			top_intervals = candidates[:top_n]
 
-			# sort worst-first and slice
-			filtered_intervals.sort(key=review.rank_key)
-			filtered_intervals = filtered_intervals[:top_n]
-
-			# re-generate target frames from the top-N intervals only
-			if filtered_intervals:
-				# build a minimal diagnostics dict with just the top intervals
+			if top_intervals:
 				top_diag = dict(diag_data)
-				top_diag["intervals"] = filtered_intervals
+				top_diag["intervals"] = top_intervals
+				# severity=None for the regenerate step: --top has already
+				# selected the worst-N regardless of severity floor, so
+				# re-applying the severity filter would discard frames the
+				# user explicitly asked for.
 				target_frames = review.generate_refinement_targets(
 					top_diag,
 					mode="suggested",
 					seed_interval=int(seed_interval * fps),
-					severity=severity,
+					severity=None,
 				)
+				# Ensure every top-N interval contributes at least one
+				# target frame (midpoint), even high/good-confidence ones
+				# that identify_weak_spans skips. With --top N the user
+				# expects N frames.
+				target_set = set(target_frames)
+				for iv in top_intervals:
+					start_frame = int(iv["start_frame"])
+					end_frame = int(iv["end_frame"])
+					if any(start_frame <= f <= end_frame for f in target_set):
+						continue
+					target_set.add((start_frame + end_frame) // 2)
+				target_frames = sorted(target_set)
 			else:
 				target_frames = []
 
-			if len(filtered_intervals) < top_n:
-				print(f"  hint: only {len(filtered_intervals)} intervals matched (--top={top_n} requested)")
+			if len(top_intervals) < top_n:
+				print(
+					f"  hint: only {len(top_intervals)} intervals available "
+					f"(--top={top_n} requested)"
+				)
 
 	if not target_frames:
 		sev_label = f" at {severity}+ severity" if severity else ""
