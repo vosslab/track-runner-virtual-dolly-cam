@@ -50,6 +50,12 @@ import common_tools.frame_filters as frame_filters
 # module-level video identity, set once in main() and treated as read-only
 VIDEO_IDENTITY = None
 
+# Per-process memory profile toggle. Flip to True locally when hunting a
+# leak; main() prints peak RSS and open-FD count at end of run. Off in
+# committed code per PYTHON_STYLE: configuration belongs in source, not
+# in custom environment variables.
+PROFILE_MEM = False
+
 
 #============================================
 def _probe_video(input_file: str) -> dict:
@@ -2178,12 +2184,10 @@ def main() -> None:
 	t_total_elapsed = time.time() - t_total_start
 	print(f"total time: {t_total_elapsed:.1f}s")
 
-	# opt-in per-process memory profile for cross-video leak diagnosis.
-	# Toggle with `TR_PROFILE_MEM=1`; off otherwise. Distinguishes
-	# in-process growth (RSS, open FDs) from kernel-side growth that
-	# only `_temp_monitor.sh` can see.
-	if os.environ.get("TR_PROFILE_MEM") == "1":
-		# ru_maxrss is bytes on macOS, KB on Linux; print both labels
+	# per-process memory profile -- gated by the module-level PROFILE_MEM
+	# constant (off by default; flip in source when diagnosing leaks)
+	if PROFILE_MEM:
+		# ru_maxrss is bytes on macOS, KB on Linux
 		ru = resource.getrusage(resource.RUSAGE_SELF)
 		open_fds = "n/a"
 		# /dev/fd is the macOS equivalent of /proc/self/fd; counting
