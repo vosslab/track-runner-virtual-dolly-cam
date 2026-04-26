@@ -18,6 +18,7 @@ import argparse
 import json
 import os
 import shutil
+import resource
 import statistics
 import subprocess
 import time
@@ -2176,6 +2177,24 @@ def main() -> None:
 	# print total elapsed time
 	t_total_elapsed = time.time() - t_total_start
 	print(f"total time: {t_total_elapsed:.1f}s")
+
+	# opt-in per-process memory profile for cross-video leak diagnosis.
+	# Toggle with `TR_PROFILE_MEM=1`; off otherwise. Distinguishes
+	# in-process growth (RSS, open FDs) from kernel-side growth that
+	# only `_temp_monitor.sh` can see.
+	if os.environ.get("TR_PROFILE_MEM") == "1":
+		# ru_maxrss is bytes on macOS, KB on Linux; print both labels
+		ru = resource.getrusage(resource.RUSAGE_SELF)
+		open_fds = "n/a"
+		# /dev/fd is the macOS equivalent of /proc/self/fd; counting
+		# entries gives the current open-FD count without needing psutil
+		fd_dir = "/dev/fd"
+		if os.path.isdir(fd_dir):
+			open_fds = str(len(os.listdir(fd_dir)))
+		print(
+			f"profile: ru_maxrss={ru.ru_maxrss} (bytes on macOS) "
+			f"open_fds={open_fds}"
+		)
 
 
 #============================================

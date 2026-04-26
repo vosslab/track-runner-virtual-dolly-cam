@@ -63,6 +63,16 @@ DOG_MIN_DIAMETER = 4.0
 # reference implementation exercised most heavily by the user.
 DEFAULT_HALF_WINDOW = 4
 
+# upper bound on the per-interval grayscale frame cache. Each cached
+# frame at 2816x1584 float32 is ~17.8 MB; an unbounded cache filled the
+# entire interval (hundreds of frames per worker, tens of GB across the
+# pool) and was the cause of the 2026-04-25 batch-solve OOM crashes.
+# compute_residual_for_frame only needs the half_window=4 -> 9-frame
+# neighborhood of the current frame; 24 entries leave generous slack
+# for the rolling window plus FWD/BWD overlap and cap the cache at
+# ~430 MB/worker regardless of interval length.
+MAX_GRAY_CACHE_FRAMES = 24
+
 # ROI multiplier: crop region is this many times the torso box height
 ROI_MULTIPLIER = 8.0
 
@@ -320,6 +330,13 @@ def _read_gray_frame(
 ) -> numpy.ndarray:
 	"""Read a frame as grayscale float32, using cache when available.
 
+	Cache is bounded to MAX_GRAY_CACHE_FRAMES entries, evicted in
+	insertion order (Python 3.7+ dicts preserve insertion order, so
+	iterating yields oldest-first). On a hit, the entry is re-inserted
+	to mark it as most-recently-used; on a miss, the new entry goes in
+	and the oldest entries are evicted until the cap is met. Numpy
+	arrays are released as soon as the dict drops the reference.
+
 	Args:
 		reader: VideoReader instance.
 		frame_index: Frame to read.
@@ -328,14 +345,24 @@ def _read_gray_frame(
 	Returns:
 		Grayscale float32 array, or None if read fails.
 	"""
+	# cache hit: move to recent end so the LRU eviction picks the
+	# truly oldest entry rather than this one
 	if frame_index in cache:
-		return cache[frame_index]
+		gray_float = cache.pop(frame_index)
+		cache[frame_index] = gray_float
+		return gray_float
+	# cache miss: read, convert, insert
 	frame_bgr = reader.read_frame(frame_index)
 	if frame_bgr is None:
 		return None
 	gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
 	gray_float = gray.astype(numpy.float32)
 	cache[frame_index] = gray_float
+	# evict oldest until at or below cap. dict iteration is in
+	# insertion order, so the first key is the oldest.
+	while len(cache) > MAX_GRAY_CACHE_FRAMES:
+		oldest_key = next(iter(cache))
+		del cache[oldest_key]
 	return gray_float
 
 

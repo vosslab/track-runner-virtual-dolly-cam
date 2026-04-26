@@ -162,6 +162,15 @@ def make_pool(
 	The heavy run-invariant objects ship once per worker through
 	`initargs`, so per-task payload stays small.
 
+	Workers are configured with `max_tasks_per_child=1`: every interval
+	is solved in a fresh process that exits and is replaced after the
+	task returns. This is a hard upper bound on per-worker memory
+	growth -- when a process exits, the OS reclaims its entire heap,
+	pymalloc arenas, numpy buffers, and OpenCV decode state. There is
+	no shared mutable state across intervals to amortize, and the
+	per-interval solve dwarfs the ~1-3 s spawn + import + WorkerContext
+	pickle cost, so reuse buys nothing but a memory leak surface.
+
 	Args:
 		num_workers: Number of worker processes.
 		video_path: Path to the video file.
@@ -183,4 +192,5 @@ def make_pool(
 			video_path, scene_transform, motion_track,
 			all_seeds_scene, all_seeds, fps, debug,
 		),
+		max_tasks_per_child=1,
 	)
