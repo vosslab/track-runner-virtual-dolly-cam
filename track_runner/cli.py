@@ -819,6 +819,7 @@ def _run_solve(
 		"on_interval_solved": on_solved_cb,
 		"hermite_only": args.hermite_only,
 		"full_solve": args.full_solve,
+		"upgrade": getattr(args, "upgrade", False),
 	}
 	if on_interval_complete is not None:
 		solve_kwargs["on_interval_complete"] = on_interval_complete
@@ -1471,7 +1472,17 @@ def _mode_solve(
 		intervals_file = state_io.load_torso_box_coords(intervals_path)
 		prior_complete = intervals_file.get("solve_complete", False)
 		prior_count = len(intervals_file.get("solved_intervals", {}))
-		if prior_complete and prior_count > 0:
+		# --upgrade: keep cache, run Stage 4 promotion only. Skip the
+		# clear-and-re-solve prompt entirely; we do not want to wipe
+		# anything. Falls through to _run_solve below with upgrade=True.
+		if args.upgrade:
+			if not prior_complete or prior_count == 0:
+				print("  --upgrade requires a completed prior solve; "
+					"run 'solve --hermite-only --keep' first")
+				return
+			print(f"  --upgrade: running Stage 4 on existing cache "
+				f"({prior_count} intervals)")
+		elif prior_complete and prior_count > 0:
 			print(f"  prior solve completed ({prior_count} intervals)")
 			if args.assume_yes:
 				answer = "y"

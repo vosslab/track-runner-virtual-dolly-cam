@@ -26,6 +26,6 @@ for json in tr_config/*.seeds.json; do
   echo "$video"
   echo "================================="
   file "$video"
-  ./track_runner/track_runner.py -i $video solve --keep
+  ./track_runner/track_runner.py -i $video solve --upgrade
   sleep 60
 done

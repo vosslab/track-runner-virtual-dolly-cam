@@ -190,7 +190,9 @@ def parse_args() -> argparse.Namespace:
 	)
 	# Auto-answer for the 'clear and re-solve from scratch?' prompt.
 	# Mutually exclusive: -y forces yes (re-solve), --keep forces no
-	# (skip if prior complete). Both are scripted-run friendly.
+	# (skip if prior complete), --upgrade keeps the existing cache and
+	# only runs Stage 4 promotion on it. All three are scripted-run
+	# friendly (no interactive prompt).
 	solve_prompt_group = solve_parser.add_mutually_exclusive_group(required=False)
 	solve_prompt_group.add_argument(
 		"-y", "--yes", dest="assume_yes", action="store_true",
@@ -207,6 +209,15 @@ def parse_args() -> argparse.Namespace:
 			"for scripted runs that should only solve missing videos."
 		),
 	)
+	solve_prompt_group.add_argument(
+		"--upgrade", dest="upgrade", action="store_true",
+		help=(
+			"Run Stage 4 blob promotion on the existing torso_box_coords "
+			"cache without re-doing Stage 3. Use after a 'solve "
+			"--hermite-only' batch to upgrade weak intervals to blob "
+			"results."
+		),
+	)
 	# Stage control flags: mutually exclusive group
 	solve_stage_group = solve_parser.add_mutually_exclusive_group(required=False)
 	solve_stage_group.add_argument(
@@ -218,7 +229,7 @@ def parse_args() -> argparse.Namespace:
 		help="Stop after Stage 3: Hermite-only solve (fast diagnostics).",
 	)
 	solve_parser.set_defaults(assume_yes=False, keep_prior=False,
-		full_solve=False, hermite_only=False)
+		upgrade=False, full_solve=False, hermite_only=False)
 
 	# -- refine mode --
 	refine_parser = subparsers.add_parser(

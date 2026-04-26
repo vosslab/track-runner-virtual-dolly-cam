@@ -389,7 +389,10 @@ class SeedController(BaseAnnotationController):
 		if info is None:
 			return ""
 
-		severity = info["severity"].upper()
+		# Pre-race intervals (and any future severity-untagged kind) have
+		# severity=None; render as "PRE-RACE" rather than crash.
+		raw_severity = info["severity"]
+		severity = raw_severity.upper() if raw_severity else "PRE-RACE"
 		agreement = info["agreement"]
 		margin = info["margin"]
 		# start with severity and key scores

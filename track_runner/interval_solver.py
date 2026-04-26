@@ -1394,6 +1394,7 @@ def solve_all_intervals(
 	video_frame_count: int = None,
 	hermite_only: bool = False,
 	full_solve: bool = False,
+	upgrade: bool = False,
 	race_start_interval: tuple = None,
 	pre_race_reference: dict = None,
 ) -> dict:
@@ -1552,9 +1553,15 @@ def solve_all_intervals(
 			# contract C6: refine must not re-touch already-solved intervals).
 			# In a clean solve, plan.pending_pair_indices == every interval,
 			# so behavior is unchanged for the no-cache path.
-			promoted_indices = select_promoted_intervals(
-				interval_results, plan.pending_pair_indices,
-			)
+			# `--upgrade` mode: bypass the freshly-solved restriction and
+			# consider every cached interval -- the whole point of upgrade
+			# is to promote weak intervals from a hermite-only batch.
+			if upgrade:
+				promoted_indices = select_promoted_intervals(interval_results)
+			else:
+				promoted_indices = select_promoted_intervals(
+					interval_results, plan.pending_pair_indices,
+				)
 			stage_4_promoted_count = len(promoted_indices)
 			_dispatch_blob_pass(
 				"Stage 4: blob promotion pass",
