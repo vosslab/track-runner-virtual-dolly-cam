@@ -12,7 +12,6 @@ import concurrent.futures
 # PIP3 modules
 import cv2
 import numpy
-import rich.progress
 
 # local repo modules (BlockBarColumn for wide block-character progress bars)
 import interval_solver
@@ -138,14 +137,8 @@ def encode_cropped_video(
 		codec=codec, crf=crf, vf_string=vf_string,
 	)
 	frame_count = len(crop_rects)
-	# wrap reader with rich progress bar (refresh every 1s to avoid flicker)
-	with rich.progress.Progress(
-		rich.progress.TextColumn("{task.description}"),
-		interval_solver.BlockBarColumn(),
-		rich.progress.TaskProgressColumn(),
-		rich.progress.TimeRemainingColumn(),
-		refresh_per_second=1,
-	) as progress:
+	# Shared progress bar: identical column layout to solve Stages 1/3/4.
+	with interval_solver.make_solve_progress() as progress:
 		task = progress.add_task("  encoding", total=frame_count)
 		for frame_index, frame in reader:
 			# stop once we have processed all provided crop rects
@@ -562,14 +555,8 @@ def _encode_segment(
 		codec=codec, crf=crf, vf_string=vf_string,
 	)
 	chunk_size = len(crop_rects_chunk)
-	# rich progress bar for this worker (refresh every 1s to avoid flicker)
-	with rich.progress.Progress(
-		rich.progress.TextColumn("{task.description}"),
-		interval_solver.BlockBarColumn(),
-		rich.progress.TaskProgressColumn(),
-		rich.progress.TimeRemainingColumn(),
-		refresh_per_second=1,
-	) as progress:
+	# Shared progress bar: identical column layout to solve Stages 1/3/4.
+	with interval_solver.make_solve_progress() as progress:
 		task = progress.add_task(
 			f"  worker {worker_id + 1}/{total_workers}",
 			total=chunk_size,
