@@ -314,7 +314,7 @@ def _point_to_crop_coords(
 # Velocity-arrow tunables. The gain amplifies frame-to-frame motion so
 # the arrow is legible at typical fps; the cap fraction prevents
 # screen-spanning arrows on glitched frames when torso width is missing.
-_VELOCITY_GAIN = 3.0
+_VELOCITY_GAIN = 9.0
 _VELOCITY_FALLBACK_CAP_FRAC = 0.10
 # bounded look-back so a single dropped frame still produces a vector
 # but a long not-in-frame gap does not
