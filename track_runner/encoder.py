@@ -5,6 +5,7 @@ Handles video cropping via numpy and encoding via ffmpeg subprocess pipe.
 
 # Standard Library
 import os
+import math
 import shutil
 import subprocess
 import concurrent.futures
@@ -66,14 +67,30 @@ def copy_audio(
 		video_path: Path to cropped video (video only).
 		output_path: Path for the final muxed output.
 	"""
-	# check if the original input has audio
-	if not _input_has_audio(input_path):
-		print(f"No audio stream in {input_path}, copying video only")
-		shutil.copy2(video_path, output_path)
-		return
 	ffmpeg_path = shutil.which("ffmpeg")
 	if ffmpeg_path is None:
 		raise RuntimeError("ffmpeg not found in PATH")
+	# when the input has no audio, still remux through ffmpeg so the
+	# output container matches the destination extension (mkvmerge writes
+	# Matroska bytes regardless of the temp file's extension; a plain
+	# byte-copy from a .tmp.mp4 to a .mp4 destination would mislabel the
+	# container).
+	if not _input_has_audio(input_path):
+		print(f"No audio stream in {input_path}, remuxing video only")
+		cmd = [
+			ffmpeg_path,
+			"-y",
+			"-i", video_path,
+			"-c:v", "copy",
+			output_path,
+		]
+		result = subprocess.run(cmd, capture_output=True, text=True)
+		if result.returncode != 0:
+			raise RuntimeError(
+				f"ffmpeg remux (no audio) failed with code "
+				f"{result.returncode}: {result.stderr}"
+			)
+		return
 	cmd = [
 		ffmpeg_path,
 		"-y",
@@ -104,15 +121,19 @@ def encode_cropped_video(
 	codec: str = "libx264",
 	crf: int = 18,
 	frame_states: list | None = None,
-	debug: bool = False,
 	encode_filters: list | None = None,
 	run_control: object = None,
 	key_reader_obj: object = None,
+	draw_tracking: bool = False,
+	draw_debug: bool = False,
+	draw_velocity: bool = False,
 ) -> None:
 	"""Read all frames, apply crops, and write encoded output.
 
-	When debug=True and frame_states is provided, draws tracking
-	bounding box and info overlay on the cropped frames.
+	When any of draw_tracking / draw_debug / draw_velocity is True and
+	frame_states is provided, the corresponding overlay tier is burned
+	into the cropped frames. See draw_debug_overlay_cropped() for the
+	tier semantics.
 
 	Args:
 		reader: An open VideoReader instance.
@@ -123,8 +144,10 @@ def encode_cropped_video(
 		codec: Video codec (default libx264).
 		crf: Constant Rate Factor (default 18).
 		frame_states: List of per-frame state dicts from tracker.
-		debug: If True, draw tracking overlay on cropped frames.
 		encode_filters: Ordered list of filter names to apply during encode.
+		draw_tracking: Draw the review overlay (torso box + crosshair).
+		draw_debug: Draw the developer overlay (implies tracking).
+		draw_velocity: Draw the per-frame motion arrow.
 	"""
 	info = reader.get_info()
 	fps = info["fps"]
@@ -155,11 +178,21 @@ def encode_cropped_video(
 			# apply opencv encode filters after resize
 			if encode_filters:
 				resized = frame_filters.apply_filter_pipeline(resized, encode_filters)
-			# draw debug overlay on the cropped frame when requested
-			if debug and frame_states is not None:
+			# draw overlays on the cropped frame when any tier requested.
+			# prev_center is precomputed on the driver side and stashed
+			# on each per-frame state dict so the parallel encoder path
+			# sees correct lookback across chunk boundaries (a chunk-local
+			# walk would miss valid priors from preceding chunks).
+			any_overlay = draw_tracking or draw_debug or draw_velocity
+			if any_overlay and frame_states is not None:
 				state = frame_states[frame_index] if frame_index < len(frame_states) else None
+				prev_center = state.get("prev_center") if state is not None else None
 				draw_debug_overlay_cropped(
 					resized, state, crop_rect, crop_width, crop_height,
+					draw_tracking=draw_tracking,
+					draw_debug=draw_debug,
+					draw_velocity=draw_velocity,
+					prev_center=prev_center,
 				)
 			writer.write_frame(resized)
 			progress.update(task, advance=1)
@@ -247,6 +280,84 @@ def _box_to_crop_coords(
 
 
 #============================================
+def _point_to_crop_coords(
+	cx: float,
+	cy: float,
+	crop_rect: tuple,
+	out_w: int,
+	out_h: int,
+) -> tuple:
+	"""Convert a single full-frame (cx, cy) to crop-space pixel coords.
+
+	Mirrors the center transform inside _box_to_crop_coords without
+	requiring a fake box.
+
+	Args:
+		cx: Full-frame x coordinate.
+		cy: Full-frame y coordinate.
+		crop_rect: (x, y, w, h) crop region in full-frame coordinates.
+		out_w: Output frame width in pixels.
+		out_h: Output frame height in pixels.
+
+	Returns:
+		Tuple of (x, y) integer pixel coordinates in crop-space.
+	"""
+	crop_x, crop_y, crop_w, crop_h = crop_rect
+	scale_x = out_w / crop_w if crop_w > 0 else 1.0
+	scale_y = out_h / crop_h if crop_h > 0 else 1.0
+	x_in_crop = int((cx - crop_x) * scale_x)
+	y_in_crop = int((cy - crop_y) * scale_y)
+	return (x_in_crop, y_in_crop)
+
+
+#============================================
+# Velocity-arrow tunables. The gain amplifies frame-to-frame motion so
+# the arrow is legible at typical fps; the cap fraction prevents
+# screen-spanning arrows on glitched frames when torso width is missing.
+_VELOCITY_GAIN = 3.0
+_VELOCITY_FALLBACK_CAP_FRAC = 0.10
+# bounded look-back so a single dropped frame still produces a vector
+# but a long not-in-frame gap does not
+_VELOCITY_LOOKBACK_FRAMES = 5
+
+
+#============================================
+def _find_prev_valid_center(frame_states: list, index: int) -> tuple | None:
+	"""Walk back from index-1 up to _VELOCITY_LOOKBACK_FRAMES for a valid prior.
+
+	A valid prior state has finite cx and cy. Used to anchor the
+	velocity-arrow's direction when the immediately-prior frame is
+	missing or invalid.
+
+	Args:
+		frame_states: List of per-frame state dicts (or None entries).
+		index: Current frame index; the search starts at index-1.
+
+	Returns:
+		(cx, cy) tuple in full-frame coords, or None if no valid prior
+		state is found within the lookback window.
+	"""
+	if frame_states is None:
+		return None
+	start = index - 1
+	stop = max(-1, index - 1 - _VELOCITY_LOOKBACK_FRAMES)
+	for k in range(start, stop, -1):
+		if k < 0 or k >= len(frame_states):
+			continue
+		st = frame_states[k]
+		if st is None:
+			continue
+		cx = st.get("cx")
+		cy = st.get("cy")
+		if cx is None or cy is None:
+			continue
+		if not (math.isfinite(cx) and math.isfinite(cy)):
+			continue
+		return (float(cx), float(cy))
+	return None
+
+
+#============================================
 def _compute_overlay_scale(
 	out_h: int,
 	box_h_px: float = 0.0,
@@ -292,13 +403,27 @@ def draw_debug_overlay_cropped(
 	out_w: int,
 	out_h: int,
 	debug_state: dict | None = None,
+	draw_tracking: bool = False,
+	draw_debug: bool = False,
+	draw_velocity: bool = False,
+	prev_center: tuple | None = None,
 ) -> None:
-	"""Draw v2 tracking debug overlay on a cropped/resized frame in-place.
+	"""Draw the encode-overlay set on a cropped/resized frame in-place.
 
-	Transforms tracking boxes from full-frame center coords into
-	crop-space pixel coords. Draws accepted torso track (solid green),
-	forward/backward interval path boxes (dashed), competitor box (red), and
-	text labels for confidence, source, and interval ID.
+	Three independent tiers gate which elements get drawn:
+
+	- draw_tracking: torso box + crosshair only. Optimized for legibility
+	  during playback ("is the tracker on the runner?").
+	- draw_debug: tracking elements plus FWD/BWD prediction boxes,
+	  competitor box, raw box, source/confidence labels, interval ID,
+	  per-frame diagnostic text. Optimized for offline frame-by-frame
+	  review.
+	- draw_velocity: per-frame motion arrow anchored at the current
+	  crosshair, pointing in the direction of motion since the most
+	  recent valid prior center.
+
+	draw_debug implies draw_tracking by construction (the caller derives
+	draw_tracking = draw_tracking_overlay or draw_debug_overlay).
 
 	All drawing elements scale with output resolution and tracked box
 	size, so overlays remain proportional whether zoomed in or out.
@@ -311,23 +436,29 @@ def draw_debug_overlay_cropped(
 		crop_rect: Crop rectangle as (x, y, w, h) in full-frame coords.
 		out_w: Output frame width in pixels.
 		out_h: Output frame height in pixels.
-		debug_state: Optional dict with additional debug boxes and labels:
-			- "forward_box": [cx, cy, w, h] or None
-			- "backward_box": [cx, cy, w, h] or None
-			- "competitor_box": [cx, cy, w, h] or None
-			- "confidence_label": "HIGH" / "MED" / "LOW"
-			- "interval_id": str like "150-450"
+		debug_state: Optional dict with additional debug boxes and labels.
+		draw_tracking: Draw the torso box and center crosshair.
+		draw_debug: Draw the full developer overlay (implies tracking).
+		draw_velocity: Draw the per-frame motion arrow.
+		prev_center: (cx, cy) of the most recent valid prior frame in
+			full-frame coords, or None if no valid prior is available.
 	"""
+	# nothing requested: short-circuit
+	if not (draw_tracking or draw_debug or draw_velocity):
+		return
+
 	if state is None:
-		# no tracking data: scale text to output resolution
-		s = _compute_overlay_scale(out_h)
-		font_scale = max(0.3, 0.5 * s)
-		thickness = max(1, int(1.5 * s))
-		cv2.putText(
-			frame, "NO DATA", (10, int(25 * s)),
-			cv2.FONT_HERSHEY_SIMPLEX, font_scale,
-			overlay_config.get_source_bgr("lost"), thickness,
-		)
+		# only the developer tier shows the NO DATA marker; the review
+		# tier stays clean on missing frames
+		if draw_debug:
+			s = _compute_overlay_scale(out_h)
+			font_scale = max(0.3, 0.5 * s)
+			thickness = max(1, int(1.5 * s))
+			cv2.putText(
+				frame, "NO DATA", (10, int(25 * s)),
+				cv2.FONT_HERSHEY_SIMPLEX, font_scale,
+				overlay_config.get_source_bgr("lost"), thickness,
+			)
 		return
 
 	# extract v2 state fields
@@ -382,62 +513,124 @@ def draw_debug_overlay_cropped(
 	# draw all boxes and crosshair on an overlay for alpha blending
 	overlay = frame.copy()
 
-	# draw dashed blue forward interval path box when available
-	if forward_box is not None:
-		fx1, fy1, fx2, fy2 = _box_to_crop_coords(forward_box, crop_rect, out_w, out_h)
-		draw_utils.draw_dashed_rect(overlay, fx1, fy1, fx2, fy2,
-			overlay_config.get_prediction_bgr("forward"),
-			thickness=thin_line, dash_len=dash_len)
+	# track whether the boxes-overlay layer was modified so we can skip
+	# the alpha-blend when only velocity/text layers had work to do
+	overlay_dirty = False
+	# crosshair position is needed for the velocity arrow even when
+	# draw_tracking is false (e.g. velocity arrow on top of clean
+	# debug-overlay state); compute it once if we have geometry
+	cross_cx: int | None = None
+	cross_cy: int | None = None
 
-	# draw dashed orange backward interval path box when available
-	if backward_box is not None:
-		bx1, by1, bx2, by2 = _box_to_crop_coords(backward_box, crop_rect, out_w, out_h)
-		draw_utils.draw_dashed_rect(overlay, bx1, by1, bx2, by2,
-			overlay_config.get_prediction_bgr("backward"),
-			thickness=thin_line, dash_len=dash_len)
+	# developer-tier geometry: FWD/BWD/competitor/raw boxes
+	if draw_debug:
+		if forward_box is not None:
+			fx1, fy1, fx2, fy2 = _box_to_crop_coords(forward_box, crop_rect, out_w, out_h)
+			draw_utils.draw_dashed_rect(overlay, fx1, fy1, fx2, fy2,
+				overlay_config.get_prediction_bgr("forward"),
+				thickness=thin_line, dash_len=dash_len)
+			overlay_dirty = True
+		if backward_box is not None:
+			bx1, by1, bx2, by2 = _box_to_crop_coords(backward_box, crop_rect, out_w, out_h)
+			draw_utils.draw_dashed_rect(overlay, bx1, by1, bx2, by2,
+				overlay_config.get_prediction_bgr("backward"),
+				thickness=thin_line, dash_len=dash_len)
+			overlay_dirty = True
+		if competitor_box is not None:
+			rx1, ry1, rx2, ry2 = _box_to_crop_coords(competitor_box, crop_rect, out_w, out_h)
+			cv2.rectangle(overlay, (rx1, ry1), (rx2, ry2), (0, 0, 0), outline_line)
+			cv2.rectangle(overlay, (rx1, ry1), (rx2, ry2),
+				overlay_config.get_source_bgr("competitor"), med_line)
+			overlay_dirty = True
 
-	# draw red competitor box when present (low margin situation)
-	if competitor_box is not None:
-		rx1, ry1, rx2, ry2 = _box_to_crop_coords(competitor_box, crop_rect, out_w, out_h)
-		cv2.rectangle(overlay, (rx1, ry1), (rx2, ry2), (0, 0, 0), outline_line)
-		cv2.rectangle(overlay, (rx1, ry1), (rx2, ry2),
-			overlay_config.get_source_bgr("competitor"), med_line)
-
-	# draw accepted torso track as solid box colored by source type
+	# accepted torso track as solid box + crosshair (review tier and up)
+	ax1 = ay1 = ax2 = ay2 = 0
 	if cx is not None and cy is not None and w is not None and h is not None:
 		# color the box by tracking source (seed, propagated, merged, etc.)
 		box_color = _source_color(source, seed_status)
 		accepted_box = [cx, cy, w, h]
 		ax1, ay1, ax2, ay2 = _box_to_crop_coords(accepted_box, crop_rect, out_w, out_h)
-		# black outline for contrast against any background
-		cv2.rectangle(overlay, (ax1, ay1), (ax2, ay2), (0, 0, 0), outline_line)
-		# solid source-colored accepted track box
-		cv2.rectangle(overlay, (ax1, ay1), (ax2, ay2), box_color, med_line)
-		# crosshair at box center
+		# crosshair coords are also used for the velocity arrow tail
 		cross_cx = int((ax1 + ax2) / 2)
 		cross_cy = int((ay1 + ay2) / 2)
-		cv2.line(overlay, (cross_cx - cross_len, cross_cy),
-			(cross_cx + cross_len, cross_cy), (0, 0, 0), med_line)
-		cv2.line(overlay, (cross_cx, cross_cy - cross_len),
-			(cross_cx, cross_cy + cross_len), (0, 0, 0), med_line)
-		cv2.line(overlay, (cross_cx - cross_len, cross_cy),
-			(cross_cx + cross_len, cross_cy), box_color, thin_line)
-		cv2.line(overlay, (cross_cx, cross_cy - cross_len),
-			(cross_cx, cross_cy + cross_len), box_color, thin_line)
-		# small filled dot at exact computed center for drift diagnosis
-		cv2.circle(overlay, (cross_cx, cross_cy), max(2, int(3 * s)), box_color, -1)
+		if draw_tracking:
+			# black outline for contrast against any background
+			cv2.rectangle(overlay, (ax1, ay1), (ax2, ay2), (0, 0, 0), outline_line)
+			# solid source-colored accepted track box
+			cv2.rectangle(overlay, (ax1, ay1), (ax2, ay2), box_color, med_line)
+			# crosshair at box center
+			cv2.line(overlay, (cross_cx - cross_len, cross_cy),
+				(cross_cx + cross_len, cross_cy), (0, 0, 0), med_line)
+			cv2.line(overlay, (cross_cx, cross_cy - cross_len),
+				(cross_cx, cross_cy + cross_len), (0, 0, 0), med_line)
+			cv2.line(overlay, (cross_cx - cross_len, cross_cy),
+				(cross_cx + cross_len, cross_cy), box_color, thin_line)
+			cv2.line(overlay, (cross_cx, cross_cy - cross_len),
+				(cross_cx, cross_cy + cross_len), box_color, thin_line)
+			# small filled dot at exact computed center for drift diagnosis
+			cv2.circle(overlay, (cross_cx, cross_cy), max(2, int(3 * s)), box_color, -1)
+			overlay_dirty = True
 
-	# draw raw (pre-anchor) box as dashed gray outline for drift comparison
-	raw_box = debug_state.get("raw_box")
-	if raw_box is not None:
-		rx1, ry1, rx2, ry2 = _box_to_crop_coords(raw_box, crop_rect, out_w, out_h)
-		draw_utils.draw_dashed_rect(overlay, rx1, ry1, rx2, ry2, (200, 200, 200),
-			thickness=thin_line, dash_len=dash_len)
+	# raw (pre-anchor) box as dashed gray outline (developer tier only)
+	if draw_debug:
+		raw_box = debug_state.get("raw_box")
+		if raw_box is not None:
+			rx1, ry1, rx2, ry2 = _box_to_crop_coords(raw_box, crop_rect, out_w, out_h)
+			draw_utils.draw_dashed_rect(overlay, rx1, ry1, rx2, ry2, (200, 200, 200),
+				thickness=thin_line, dash_len=dash_len)
+			overlay_dirty = True
 
-	# blend box overlay onto frame with transparency
-	cv2.addWeighted(overlay, _OVERLAY_ALPHA_BOXES, frame, 1.0 - _OVERLAY_ALPHA_BOXES, 0, frame)
+	# velocity arrow: anchored at the current crosshair, pointing in the
+	# direction of motion since the most recent valid prior center
+	if draw_velocity and prev_center is not None and cross_cx is not None and cross_cy is not None:
+		prev_cx, prev_cy = prev_center
+		# transform both endpoints to crop-space; use the prior point only
+		# for the displacement direction, not as the tail of the arrow
+		prev_x, prev_y = _point_to_crop_coords(
+			prev_cx, prev_cy, crop_rect, out_w, out_h,
+		)
+		dx = cross_cx - prev_x
+		dy = cross_cy - prev_y
+		mag = math.hypot(dx, dy)
+		if mag > 0.5:
+			# scale-amplify so frame-to-frame motion is legible
+			amp_dx = dx * _VELOCITY_GAIN
+			amp_dy = dy * _VELOCITY_GAIN
+			amp_mag = math.hypot(amp_dx, amp_dy)
+			# cap to half the torso-box width when available; otherwise
+			# use a fraction of the smaller output dimension so the cap
+			# is always defined
+			if w is not None and math.isfinite(w) and w > 0:
+				crop_x_, crop_y_, crop_w_, _ = crop_rect
+				scale_x = out_w / crop_w_ if crop_w_ > 0 else 1.0
+				cap = max(8.0, 0.5 * w * scale_x)
+			else:
+				cap = max(8.0, _VELOCITY_FALLBACK_CAP_FRAC * min(out_w, out_h))
+			if amp_mag > cap:
+				amp_dx *= cap / amp_mag
+				amp_dy *= cap / amp_mag
+			tip_x = int(cross_cx + amp_dx)
+			tip_y = int(cross_cy + amp_dy)
+			arrow_color = _source_color(source, seed_status) if cx is not None else (255, 255, 255)
+			# black outline first for contrast, then source-color arrow
+			cv2.arrowedLine(
+				overlay, (cross_cx, cross_cy), (tip_x, tip_y),
+				(0, 0, 0), max(2, outline_line), tipLength=0.3,
+			)
+			cv2.arrowedLine(
+				overlay, (cross_cx, cross_cy), (tip_x, tip_y),
+				arrow_color, max(1, med_line), tipLength=0.3,
+			)
+			overlay_dirty = True
 
-	# draw text on a separate overlay for text transparency
+	# blend box overlay onto frame with transparency only if anything drew
+	if overlay_dirty:
+		cv2.addWeighted(overlay, _OVERLAY_ALPHA_BOXES, frame, 1.0 - _OVERLAY_ALPHA_BOXES, 0, frame)
+
+	# text overlay (labels, conf bar, diagnostic text) is developer-tier only
+	if not draw_debug:
+		return
+
 	text_overlay = frame.copy()
 
 	# build top-left info text: source and confidence value
@@ -515,10 +708,12 @@ def _encode_segment(
 	codec: str,
 	crf: int,
 	frame_states_chunk: list | None,
-	debug: bool,
 	worker_id: int,
 	total_workers: int,
 	encode_filters: list | None = None,
+	draw_tracking: bool = False,
+	draw_debug: bool = False,
+	draw_velocity: bool = False,
 ) -> str:
 	"""Encode one segment of the video in a worker process.
 
@@ -534,11 +729,13 @@ def _encode_segment(
 		start_frame: First frame index for this segment.
 		codec: Video codec string.
 		crf: Constant Rate Factor.
-		frame_states_chunk: Per-frame state dicts for debug overlay, or None.
-		debug: If True, draw debug overlay.
+		frame_states_chunk: Per-frame state dicts for overlays, or None.
 		worker_id: Worker index for progress bar positioning.
 		total_workers: Total number of workers for display.
 		encode_filters: Ordered list of filter names to apply during encode.
+		draw_tracking: Draw the review overlay.
+		draw_debug: Draw the developer overlay (implies tracking).
+		draw_velocity: Draw the per-frame motion arrow.
 
 	Returns:
 		Path to the encoded segment file.
@@ -578,11 +775,20 @@ def _encode_segment(
 			# apply opencv encode filters after resize
 			if encode_filters:
 				resized = frame_filters.apply_filter_pipeline(resized, encode_filters)
-			# draw debug overlay when requested
-			if debug and frame_states_chunk is not None:
+			# draw overlays when any tier requested. prev_center is
+			# precomputed on the driver side (see _mode_encode) and
+			# carried inside each frame_state dict; this is what makes
+			# velocity arrows correct at chunk seams.
+			any_overlay = draw_tracking or draw_debug or draw_velocity
+			if any_overlay and frame_states_chunk is not None:
 				state = frame_states_chunk[local_idx] if local_idx < len(frame_states_chunk) else None
+				prev_center = state.get("prev_center") if state is not None else None
 				draw_debug_overlay_cropped(
 					resized, state, crop_rect, crop_width, crop_height,
+					draw_tracking=draw_tracking,
+					draw_debug=draw_debug,
+					draw_velocity=draw_velocity,
+					prev_center=prev_center,
 				)
 			writer.write_frame(resized)
 			progress.update(task, advance=1)
@@ -603,11 +809,13 @@ def encode_cropped_video_parallel(
 	codec: str = "libx264",
 	crf: int = 18,
 	frame_states: list | None = None,
-	debug: bool = False,
 	workers: int = 4,
 	encode_filters: list | None = None,
 	run_control: object = None,
 	key_reader_obj: object = None,
+	draw_tracking: bool = False,
+	draw_debug: bool = False,
+	draw_velocity: bool = False,
 ) -> None:
 	"""Encode cropped video using parallel worker processes.
 
@@ -626,11 +834,13 @@ def encode_cropped_video_parallel(
 		codec: Video codec (default libx264).
 		crf: Constant Rate Factor (default 18).
 		frame_states: List of per-frame state dicts from tracker.
-		debug: If True, draw tracking overlay on cropped frames.
 		workers: Number of parallel encoding workers.
 		encode_filters: Ordered list of filter names to apply during encode.
 		run_control: Optional RunControl for quit detection.
 		key_reader_obj: Optional KeyInputReader for keyboard polling.
+		draw_tracking: Draw the review overlay (torso box + crosshair).
+		draw_debug: Draw the developer overlay (implies tracking).
+		draw_velocity: Draw the per-frame motion arrow.
 	"""
 	# fall back to sequential if only 1 worker
 	if workers <= 1:
@@ -639,8 +849,11 @@ def encode_cropped_video_parallel(
 				reader, crop_rects, output_path,
 				crop_width, crop_height,
 				codec=codec, crf=crf,
-				frame_states=frame_states, debug=debug,
+				frame_states=frame_states,
 				encode_filters=encode_filters,
+				draw_tracking=draw_tracking,
+				draw_debug=draw_debug,
+				draw_velocity=draw_velocity,
 			)
 		return
 
@@ -688,10 +901,12 @@ def encode_cropped_video_parallel(
 				seg["start_frame"],
 				codec, crf,
 				seg["states"],
-				debug,
 				seg["worker_id"],
 				actual_workers,
 				encode_filters,
+				draw_tracking,
+				draw_debug,
+				draw_velocity,
 			)
 			future_to_seg[future] = seg["path"]
 		# polling loop: use concurrent.futures.wait() with short timeout

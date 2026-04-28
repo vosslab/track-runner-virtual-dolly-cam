@@ -163,16 +163,20 @@ def default_output_path(input_file: str) -> str:
 	"""Return the default encoded output path next to the source video.
 
 	Output stays in the same directory as the input file to keep
-	large encoded files on fast local storage.
+	large encoded files on fast local storage. The extension is forced
+	to lowercase '.mkv' regardless of the input extension: the encoder
+	always writes Matroska bytes via mkvmerge, and MKV's index-based
+	seeking is more reliable than MP4/MOV moov-atom seeking. MP4 export
+	is opt-in via --mp4 / -o foo.mp4.
 
 	Args:
 		input_file: Input media file path.
 
 	Returns:
-		str: Output file path like {input_dir}/{stem}_tracked{ext}.
+		str: Output file path like {input_dir}/{stem}_tracked.mkv.
 	"""
-	stem, ext = os.path.splitext(input_file)
-	output_path = f"{stem}_tracked{ext}"
+	stem, _ = os.path.splitext(input_file)
+	output_path = f"{stem}_tracked.mkv"
 	return output_path
 
 #============================================

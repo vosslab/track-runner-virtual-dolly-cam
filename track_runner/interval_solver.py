@@ -635,6 +635,80 @@ def stitch_trajectories(
 
 
 
+# scale for FWD/BWD-agreement -> per-frame confidence map.
+# d_torso = ||fwd_center - bwd_center|| / blended_torso_height
+# conf = exp(-d_torso / FWD_BWD_CONF_SCALE)
+# At one full torso of disagreement (d_torso = 1.0) -> conf ~= 0.37,
+# which sits below the encode_analysis LOW_CONF_THRESHOLD; smaller
+# disagreements produce conf close to 1.0. Per C2 we normalize by torso
+# height (no raw pixels for runner-relative decisions); per C8 the
+# FWD/BWD pair is the canonical per-frame uncertainty signal.
+FWD_BWD_CONF_SCALE = 1.0
+
+
+#============================================
+def derive_per_frame_confidence(
+	interval_results: list,
+	n_frames: int,
+) -> list:
+	"""Derive a per-frame confidence array from FWD/BWD agreement.
+
+	Reconstructs the per-frame `conf` that the propagator emits in solve
+	mode but that is not persisted in `torso_box_coords.npz`. Used by
+	analyze and encode reconstruction paths so downstream consumers
+	(regime classifier, encode_analysis, anchor_to_seeds) see real
+	confidence values instead of zero or a hardcoded fallback.
+
+	Per contract C8, agreement between the independent FWD and BWD
+	passes is the canonical uncertainty signal. Per contract C2, the
+	disagreement is normalized by torso height so the threshold is
+	scale-invariant across full-frame and small-runner footage.
+
+	Args:
+		interval_results: List of interval dicts with start_frame,
+			end_frame, blended_path, and (optionally) forward_path /
+			backward_path. Pre-race synthesis intervals only have
+			blended_path.
+		n_frames: Total trajectory length (max end_frame + 1).
+
+	Returns:
+		List of length n_frames with per-frame confidence in [0, 1].
+		Frames not covered by any interval default to 0.0.
+	"""
+	confs = [0.0] * n_frames
+	for result in interval_results:
+		start = int(result["start_frame"])
+		blended = result.get("blended_path") or []
+		fwd = result.get("forward_path")
+		bwd = result.get("backward_path")
+		# pre-race intervals (Stage 3b) have no FWD/BWD; treat them as
+		# fully confident per C4 (scene-anchored, stationary)
+		if fwd is None or bwd is None:
+			for i in range(len(blended)):
+				fi = start + i
+				if 0 <= fi < n_frames:
+					confs[fi] = 1.0
+			continue
+		# post-race interval: use FWD/BWD agreement at each frame
+		span = min(len(blended), len(fwd), len(bwd))
+		for i in range(span):
+			fi = start + i
+			if not (0 <= fi < n_frames):
+				continue
+			dx = float(fwd[i]["cx"]) - float(bwd[i]["cx"])
+			dy = float(fwd[i]["cy"]) - float(bwd[i]["cy"])
+			d = math.hypot(dx, dy)
+			# normalize disagreement by local torso height (C2)
+			torso_h = float(blended[i]["h"])
+			if torso_h <= 0.0:
+				torso_h = 1.0
+			d_torso = d / torso_h
+			# exponential decay maps zero disagreement -> 1.0,
+			# one-torso disagreement -> ~0.37
+			confs[fi] = math.exp(-d_torso / FWD_BWD_CONF_SCALE)
+	return confs
+
+
 #============================================
 def _stamp_seed_confidence(
 	trajectory: list,
@@ -1525,14 +1599,25 @@ def solve_all_intervals(
 	stage_4_promoted_count = 0
 	if not hermite_only:
 		if full_solve:
-			# Stage 5: blob pass on every post-race interval
-			# Select all post-race intervals (exclude pre-race per C4)
+			# Stage 5: blob pass on every post-race interval, restricted
+			# to freshly solved intervals per contract C6 (refine must
+			# not re-touch already-solved intervals). In a clean solve,
+			# plan.pending_pair_indices covers every post-race interval,
+			# so behavior is unchanged. In refine, it is the small set
+			# refine actually solved. `--upgrade` bypasses the filter on
+			# purpose -- the point of upgrade is to re-blob the entire
+			# cached set after a hermite-only batch.
+			candidate_indices = (
+				None if upgrade else set(plan.pending_pair_indices)
+			)
 			stage_5_indices = []
 			for pair_idx, result in enumerate(interval_results):
 				if result is None:
 					continue
 				# Skip pre-race intervals per contract C4
 				if result.get("source") == "pre_race_reference":
+					continue
+				if candidate_indices is not None and pair_idx not in candidate_indices:
 					continue
 				stage_5_indices.append(pair_idx)
 			_dispatch_blob_pass(

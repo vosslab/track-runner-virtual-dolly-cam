@@ -482,9 +482,12 @@ def _labels_to_spans(
 		if idx < len(spans) - 1:
 			blend_out = min(blend_frames, (e - s) // 2)
 
-		# compute summary stats for the span
-		span_confs = [features[i]["conf"] for i in range(s, e)]
-		span_ratios = [features[i]["bbox_height_ratio"] for i in range(s, e)]
+		# compute summary stats for the span. Cast each per-frame value to
+		# a native float -- features[i]["conf"] is a numpy scalar (the
+		# backing array is numpy.empty(..., dtype=float)) and a sum of
+		# numpy scalars stays numpy, which yaml.safe_dump can't serialize.
+		span_confs = [float(features[i]["conf"]) for i in range(s, e)]
+		span_ratios = [float(features[i]["bbox_height_ratio"]) for i in range(s, e)]
 		mean_conf = sum(span_confs) / len(span_confs)
 		mean_ratio = sum(span_ratios) / len(span_ratios)
 

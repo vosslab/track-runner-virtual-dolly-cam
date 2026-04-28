@@ -14,6 +14,9 @@ from PySide6.QtWidgets import QLabel
 # local repo modules
 import overlay_config
 
+# Neutral grey used for pre-race badge and reason-text spans.
+PRE_RACE_COLOR = "#94A3B8"
+
 #============================================
 
 class StatusPresenter:
@@ -88,17 +91,23 @@ class StatusPresenter:
 		# severity badge with color from overlay_styles.yaml
 		severity_html = ""
 		if interval_info is not None:
-			severity = interval_info.get("severity", "").lower()
-			sev_style = overlay_config.get_severity_style(severity)
-			sev_color = sev_style["color"]
-			sev_label = sev_style["label"]
+			# Pre-race intervals are not severity-classified per contract C4;
+			# severity is None in that case (key is present, value is None).
+			raw_severity = interval_info["severity"]
+			if raw_severity is None:
+				sev_color = PRE_RACE_COLOR
+				sev_label = "PRE-RACE"
+			else:
+				sev_style = overlay_config.get_severity_style(raw_severity.lower())
+				sev_color = sev_style["color"]
+				sev_label = sev_style["label"]
 			severity_html = f"  <span style='color: {sev_color};'>[{sev_label}]</span>"
 			# compact reason text
 			reason_parts = self._format_reasons(interval_info)
 			if reason_parts:
 				reason_text = ", ".join(reason_parts)
 				severity_html += (
-					f" <span style='color: #94A3B8;'>({reason_text})</span>"
+					f" <span style='color: {PRE_RACE_COLOR};'>({reason_text})</span>"
 				)
 
 		# use rich text if severity info is present

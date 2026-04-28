@@ -578,6 +578,7 @@ class BaseAnnotationController(QObject):
 				label="AVG",
 				fill_alpha=int(cons_style["fill_opacity"] * 255),
 				dashed=(cons_style["line_style"] == "dotted"),
+				label_slot=4,
 			)
 			self._consensus_item.setZValue(3)
 			self._add_overlay(self._consensus_item)
@@ -598,6 +599,7 @@ class BaseAnnotationController(QObject):
 				label="REFINED",
 				fill_alpha=int(blended_style["fill_opacity"] * 255),
 				dashed=(blended_style["line_style"] == "dashed"),
+				label_slot=1,
 			)
 			self._blended_item.setZValue(4)
 			self._add_overlay(self._blended_item)
@@ -618,6 +620,7 @@ class BaseAnnotationController(QObject):
 				label="FWD",
 				fill_alpha=int(fwd_style["fill_opacity"] * 255),
 				dashed=(fwd_style["line_style"] == "dashed"),
+				label_slot=2,
 			)
 			self._fwd_item.setZValue(5)
 			self._add_overlay(self._fwd_item)
@@ -638,6 +641,7 @@ class BaseAnnotationController(QObject):
 				label="BWD",
 				fill_alpha=int(bwd_style["fill_opacity"] * 255),
 				dashed=(bwd_style["line_style"] == "dashed"),
+				label_slot=3,
 			)
 			self._bwd_item.setZValue(5)
 			self._add_overlay(self._bwd_item)

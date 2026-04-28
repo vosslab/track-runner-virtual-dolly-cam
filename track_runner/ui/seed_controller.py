@@ -642,11 +642,28 @@ class SeedController(BaseAnnotationController):
 
 	#============================================
 
-	def _on_quit(self) -> None:
-		"""Handle quit request."""
+	def _on_quit(self, exhausted: bool = False) -> None:
+		"""Handle quit request.
+
+		Args:
+			exhausted: True when called from `_advance` after running off
+				the end of the seed-frame list. False (default) when the
+				user pressed quit explicitly. The printed message
+				distinguishes the two so the log doesn't claim "user
+				quit" when the UI ran out of work.
+		"""
 		self._done = True
-		print(f"  user quit at frame {self._current_frame} "
-			f"({self._list_idx + 1}/{len(self._seed_frame_indices)})")
+		total = len(self._seed_frame_indices)
+		if exhausted:
+			print(
+				f"  finished all {total} target frames; "
+				f"closing seeding UI"
+			)
+		else:
+			print(
+				f"  user quit at frame {self._current_frame} "
+				f"({self._list_idx + 1}/{total})"
+			)
 		# print seed statistics summary
 		all_seeds = self._all_seeds + self._new_seeds
 		self._print_seed_stats(all_seeds)
@@ -901,7 +918,7 @@ class SeedController(BaseAnnotationController):
 		"""Advance to next seed frame."""
 		self._list_idx += 1
 		if self._list_idx >= len(self._seed_frame_indices):
-			self._on_quit()
+			self._on_quit(exhausted=True)
 			return
 		self._current_frame = self._seed_frame_indices[self._list_idx]
 		self._refresh_frame()

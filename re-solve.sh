@@ -13,7 +13,7 @@ for json in tr_config/*.seeds.json; do
   echo "================================="
   file "$video"
   ./track_runner/track_runner.py -i $video solve --hermite-only --keep
-  sleep 60
+  sleep 5
 done
 
 for json in tr_config/*.seeds.json; do
@@ -27,5 +27,5 @@ for json in tr_config/*.seeds.json; do
   echo "================================="
   file "$video"
   ./track_runner/track_runner.py -i $video solve --upgrade
-  sleep 60
+  sleep 5
 done

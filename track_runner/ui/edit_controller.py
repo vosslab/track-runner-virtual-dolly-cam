@@ -436,6 +436,7 @@ class EditController(BaseAnnotationController):
 			label=f"SEED ({status})",
 			fill_alpha=fill_alpha,
 			thickness_scale=thickness,
+			label_slot=0,
 		)
 		# low z-value so seed box renders below FWD/BWD
 		self._seed_rect_item.setZValue(1)

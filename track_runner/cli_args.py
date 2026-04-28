@@ -4,6 +4,7 @@ Provides argument parser configuration for all track_runner subcommands.
 """
 
 # Standard Library
+import os
 import argparse
 
 # local repo modules
@@ -52,6 +53,27 @@ def _add_top_arg(parser: argparse.ArgumentParser) -> None:
 
 
 #============================================
+def _add_gaps_arg(parser: argparse.ArgumentParser) -> None:
+	"""Register -g/--gaps on a subparser.
+
+	`--gaps N` injects the midpoints of the N largest seed gaps as
+	explicit seeding targets. Independent of `-t/--top`, which targets
+	instability-region peaks.
+
+	Args:
+		parser: Subparser to add the argument to.
+	"""
+	parser.add_argument(
+		"-g", "--gaps", dest="gap_top_n", type=int, default=None,
+		help=(
+			"add midpoints of the N largest seed gaps to the seeding "
+			"target list (independent of -t/--top). Implies -s on "
+			"analyze."
+		),
+	)
+
+
+#============================================
 def _add_encode_args(parser: argparse.ArgumentParser) -> None:
 	"""Register encoding-related arguments on a subparser.
 
@@ -75,8 +97,67 @@ def _add_encode_args(parser: argparse.ArgumentParser) -> None:
 		default=None,
 		help=(
 			"Comma-separated filter pipeline for encode output "
-			"(overrides config). Example: bilateral,hqdn3d"
+			"(overrides config). Example: bilateral,hqdn3d. "
+			"Pass '-F none' as an alias for --no-filters."
 		),
+	)
+	parser.add_argument(
+		"--no-filters", dest="no_filters", action="store_true",
+		help=(
+			"Disable all encode filters (overrides config and -F). "
+			"Cannot be combined with -F/--encode-filters."
+		),
+	)
+	parser.add_argument(
+		"--mp4", dest="mp4", action="store_true",
+		help=(
+			"Write final output as .mp4 (stream-copy remux from the "
+			"internal MKV; no re-encode). Default container is .mkv."
+		),
+	)
+	parser.add_argument(
+		"--allow-offcenter-crop", dest="allow_offcenter_crop",
+		action="store_true",
+		help=(
+			"Skip the central-window torso-center check and let the "
+			"encode proceed even when the runner is sustained outside "
+			"the safe central window of the output frame. The encoded "
+			"video may show black bars where the crop window extends "
+			"past the source frame."
+		),
+	)
+	# overlay tier flags: tracking (review) vs debug (developer); mutex.
+	# velocity arrow is independent but requires one of the two tiers.
+	overlay_group = parser.add_mutually_exclusive_group()
+	overlay_group.add_argument(
+		"--draw-tracking-overlay", dest="draw_tracking_overlay",
+		action="store_true",
+		help=(
+			"Draw the normal review overlay: final torso box and small "
+			"center crosshair only."
+		),
+	)
+	overlay_group.add_argument(
+		"--draw-debug-overlay", dest="draw_debug_overlay",
+		action="store_true",
+		help=(
+			"Draw the developer overlay: tracking overlay plus raw box, "
+			"FWD/BWD boxes, source/confidence labels, and other "
+			"diagnostic geometry."
+		),
+	)
+	parser.add_argument(
+		"--draw-velocity-arrow", dest="draw_velocity_arrow",
+		action="store_true",
+		help=(
+			"Draw the per-frame motion arrow. Requires "
+			"--draw-tracking-overlay or --draw-debug-overlay."
+		),
+	)
+	parser.set_defaults(
+		no_filters=False, mp4=False, allow_offcenter_crop=False,
+		draw_tracking_overlay=False, draw_debug_overlay=False,
+		draw_velocity_arrow=False,
 	)
 	# torso_height_multiple override: no short flag on purpose.
 	# "z" reads as "zoom," which the config naming intentionally moved
@@ -133,7 +214,13 @@ def parse_args() -> argparse.Namespace:
 	)
 	parser.add_argument(
 		"-d", "--debug", dest="debug", action="store_true",
-		help="Enable debug video output with tracking overlays.",
+		help=(
+			"Enable verbose diagnostic output for developers (logging "
+			"and side-channel debug artifacts). Does not affect "
+			"rendered overlays in the encoded video; use 'encode "
+			"--draw-tracking-overlay' / '--draw-debug-overlay' / "
+			"'--draw-velocity-arrow' for those."
+		),
 	)
 	parser.add_argument(
 		"-w", "--workers", dest="workers", type=int, default=None,
@@ -178,11 +265,20 @@ def parse_args() -> argparse.Namespace:
 		"--race-start", dest="target_race_start", action="store_true",
 		help="Target frames around the detected race-start transition for confirmation."
 	)
+	target_submode_group.add_argument(
+		"--from-analyze", dest="target_from_analyze", action="store_true",
+		help=(
+			"Target frames from the latest 'analyze' report: union of "
+			"seed_suggestions and instability-region midpoints. Run "
+			"'analyze' first to refresh the report."
+		),
+	)
 	_add_severity_arg(target_parser, "Minimum severity of weak intervals to target.")
 	_add_top_arg(target_parser)
+	_add_gaps_arg(target_parser)
 	_add_seed_interval_arg(target_parser)
 	base_controller_module.BaseAnnotationController.add_argparse_args(target_parser)
-	target_parser.set_defaults(target_race_start=False)
+	target_parser.set_defaults(target_race_start=False, target_from_analyze=False)
 
 	# -- solve mode --
 	solve_parser = subparsers.add_parser(
@@ -250,6 +346,13 @@ def parse_args() -> argparse.Namespace:
 	# -- encode mode --
 	encode_parser = subparsers.add_parser(
 		"encode", help="Encode cropped video from existing trajectory.",
+		epilog=(
+			"Global -d/--debug controls diagnostic output only and does "
+			"not affect rendered overlays. Use --draw-tracking-overlay "
+			"(review), --draw-debug-overlay (developer), and "
+			"--draw-velocity-arrow (motion cue) to burn overlays into "
+			"the encoded video."
+		),
 	)
 	_add_encode_args(encode_parser)
 
@@ -261,6 +364,18 @@ def parse_args() -> argparse.Namespace:
 		"--aspect", dest="aspect", type=str, default=None,
 		help="Override crop aspect ratio (e.g. '1:1', '16:9').",
 	)
+	analyze_parser.add_argument(
+		"-s", "--seed", dest="analyze_seed", action="store_true",
+		help=(
+			"After printing the analyze report, open the seeding UI on "
+			"the worst-N instability-region peak frames (same set used "
+			"by 'target --from-analyze'). Implied by '-t N'."
+		),
+	)
+	_add_top_arg(analyze_parser)
+	_add_gaps_arg(analyze_parser)
+	base_controller_module.BaseAnnotationController.add_argparse_args(analyze_parser)
+	analyze_parser.set_defaults(analyze_seed=False)
 
 	# -- setup mode --
 	subparsers.add_parser(
@@ -277,5 +392,31 @@ def parse_args() -> argparse.Namespace:
 	top_n = getattr(args, "top_n", None)
 	if top_n is not None and top_n < 1:
 		parser.error("--top must be a positive integer")
+
+	# encode-mode CLI contract validation: velocity arrow requires an
+	# overlay tier; --no-filters and -F are mutually exclusive; --mp4
+	# cannot be combined with an explicit -o ending in .mkv.
+	if args.mode == "encode":
+		if args.draw_velocity_arrow and not (
+			args.draw_tracking_overlay or args.draw_debug_overlay
+		):
+			parser.error(
+				"--draw-velocity-arrow requires --draw-tracking-overlay "
+				"or --draw-debug-overlay"
+			)
+		if args.no_filters and args.encode_filters is not None:
+			parser.error(
+				"--no-filters cannot be combined with -F/--encode-filters; "
+				"pick one"
+			)
+		output_file = getattr(args, "output_file", None)
+		if args.mp4 and output_file is not None:
+			# explicit-output ext check is normalized by lowercase
+			_, ext = os.path.splitext(output_file)
+			if ext.lower() == ".mkv":
+				parser.error(
+					"--mp4 cannot be combined with -o ending in .mkv; "
+					"drop --mp4 or pass an .mp4 output path"
+				)
 
 	return args

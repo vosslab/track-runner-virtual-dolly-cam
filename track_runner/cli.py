@@ -16,6 +16,7 @@ Subcommands:
 # Standard Library
 import argparse
 import json
+import math
 import os
 import shutil
 import resource
@@ -1308,10 +1309,29 @@ def _mode_target(
 	shutil.copy2(seeds_path, backup_path)
 	print(f"  backup saved to {backup_path}")
 
-	# Check for --race-start sub-mode
+	# Check for sub-modes
 	use_race_start_mode = getattr(args, "target_race_start", False)
+	use_from_analyze_mode = getattr(args, "target_from_analyze", False)
 
-	if use_race_start_mode:
+	if use_from_analyze_mode:
+		analysis_path = tr_paths.default_encode_analysis_path(args.input_file)
+		top_n = getattr(args, "top_n", None) or encode_analysis.ANALYZE_TOP_DEFAULT
+		gap_top_n = getattr(args, "gap_top_n", None) or 0
+		# pass existing seed frames so the loader skips regions already
+		# seeded and can inject a midpoint for the largest seed gap.
+		existing_seed_frames = [int(s["frame_index"]) for s in seeds]
+		target_frames = encode_analysis.load_analyze_target_frames(
+			analysis_path, video_info["frame_count"],
+			top_n=top_n,
+			existing_seed_frames=existing_seed_frames,
+			gap_top_n=gap_top_n,
+		)
+		gaps_label = f", gaps {gap_top_n}" if gap_top_n else ""
+		print(
+			f"  loaded {len(target_frames)} target frames from "
+			f"{analysis_path} (top {top_n}{gaps_label})"
+		)
+	elif use_race_start_mode:
 		# Race-start target mode: fixed frame selection around detected race-start
 		target_frames = _generate_race_start_target_frames(
 			diag_data,
@@ -1319,7 +1339,6 @@ def _mode_target(
 			video_info["frame_count"],
 		)
 		# Print the contact sheet path
-		import tr_paths
 		contact_sheet_path = tr_paths.default_race_start_contact_sheet_path(
 			args.input_file
 		)
@@ -1389,14 +1408,18 @@ def _mode_target(
 				)
 
 	if not target_frames:
-		sev_label = f" at {severity}+ severity" if severity else ""
-		if use_race_start_mode:
+		if use_from_analyze_mode:
+			print("  no target frames from analyze report (run 'analyze' first)")
+		elif use_race_start_mode:
 			print("  no race-start frames selected")
 		else:
+			sev_label = f" at {severity}+ severity" if severity else ""
 			print(f"  no weak intervals found{sev_label}")
 		return
 
-	if use_race_start_mode:
+	if use_from_analyze_mode:
+		print(f"  {len(target_frames)} target frames from analyze report")
+	elif use_race_start_mode:
 		print(f"  {len(target_frames)} race-start target frames")
 	else:
 		sev_label = f" ({severity}+ severity)" if severity else ""
@@ -1420,6 +1443,8 @@ def _mode_target(
 		start_frame = int(args.start_time * video_info["fps"])
 
 	# collect seeds at target frames with predictions overlay
+	frame_list = ", ".join(str(f) for f in target_frames)
+	print(f"  target frame list: {frame_list}")
 	print(f"  collecting seeds at {len(target_frames)} weak interval frames...")
 	updated_seeds = seeding.collect_seeds_at_frames(
 		args.input_file,
@@ -1718,7 +1743,14 @@ def _apply_encode_overrides(args: argparse.Namespace, cfg: dict) -> None:
 def _resolve_encode_filters(args: argparse.Namespace, proc_cfg: dict) -> list:
 	"""Resolve the encode filter list from CLI and tr_config.
 
-	CLI --encode-filters overrides config processing.encode_filters.
+	Precedence (highest first):
+	1. --no-filters wins over everything (returns []).
+	2. -F none (case-insensitive, whitespace-tolerant) is an alias for
+	   --no-filters and returns []. Mixed forms like 'none,blur' are
+	   rejected with a targeted error.
+	3. -F <list> overrides config processing.encode_filters.
+	4. config processing.encode_filters is the fallback.
+
 	Validates each filter name against the known filter list.
 
 	Args:
@@ -1728,11 +1760,31 @@ def _resolve_encode_filters(args: argparse.Namespace, proc_cfg: dict) -> list:
 	Returns:
 		List of validated filter name strings, or empty list.
 	"""
-	# CLI override takes priority
+	# --no-filters short-circuit (parse-time validation already rejects
+	# the --no-filters + -F combination, so reaching here means -F is
+	# None whenever no_filters is True; defensive check kept for direct
+	# callers).
+	if getattr(args, "no_filters", False):
+		if getattr(args, "encode_filters", None) is not None:
+			raise RuntimeError(
+				"--no-filters cannot be combined with -F/--encode-filters; "
+				"pick one"
+			)
+		return []
+	# -F none alias: case-insensitive, whitespace-tolerant
 	cli_value = getattr(args, "encode_filters", None)
 	if cli_value is not None:
-		# split comma-separated string into list
-		filter_list = [f.strip() for f in cli_value.split(",") if f.strip()]
+		raw_tokens = [tok.strip() for tok in cli_value.split(",") if tok.strip()]
+		lowered = [tok.lower() for tok in raw_tokens]
+		if "none" in lowered:
+			# 'none' must appear alone; reject mixed forms like 'none,blur'
+			if len(lowered) > 1:
+				raise RuntimeError(
+					"'none' cannot be combined with other filters; use "
+					"--no-filters or pass an explicit list"
+				)
+			return []
+		filter_list = raw_tokens
 	else:
 		# fall back to config value
 		filter_list = list(proc_cfg.get("encode_filters", []))
@@ -1801,6 +1853,15 @@ def _mode_analyze(
 	)
 	trajectory = interval_solver.stitch_trajectories(interval_results)
 
+	# reconstruct per-frame conf from FWD/BWD agreement (not persisted in
+	# torso_box_coords.npz). See interval_solver.derive_per_frame_confidence.
+	derived_confs = interval_solver.derive_per_frame_confidence(
+		interval_results, len(trajectory),
+	)
+	for i, state in enumerate(trajectory):
+		if state is not None:
+			state["conf"] = derived_confs[i]
+
 	# apply multi-seed anchored interpolation to reduce drift
 	seeds_path = tr_paths.default_seeds_path(args.input_file)
 	all_seeds = []
@@ -1808,6 +1869,9 @@ def _mode_analyze(
 		seeds_data = state_io.load_seeds(seeds_path)
 		all_seeds = seeds_data.get("seeds", [])
 		trajectory = interval_solver.anchor_to_seeds(trajectory, all_seeds)
+		trajectory = interval_solver._stamp_seed_confidence(
+			trajectory, all_seeds,
+		)
 		# apply trajectory erasure from seeds
 		fps = float(diag_data.get("fps", video_info["fps"]))
 		trajectory = interval_solver._apply_trajectory_erasure(
@@ -1929,11 +1993,28 @@ def _mode_encode(
 	)
 	trajectory = interval_solver.stitch_trajectories(interval_results)
 
-	# save raw trajectory and FWD/BWD tracks before anchoring for debug overlay
+	# reconstruct per-frame conf from FWD/BWD agreement (not persisted in
+	# torso_box_coords.npz). See interval_solver.derive_per_frame_confidence.
+	derived_confs = interval_solver.derive_per_frame_confidence(
+		interval_results, len(trajectory),
+	)
+	for i, state in enumerate(trajectory):
+		if state is not None:
+			state["conf"] = derived_confs[i]
+
+	# derive overlay-tier flags from CLI: developer overlay implies the
+	# review overlay; velocity is independent. Global args.debug is left
+	# alone (it controls diagnostic output, not rendered overlays).
+	draw_tracking = args.draw_tracking_overlay or args.draw_debug_overlay
+	draw_debug = args.draw_debug_overlay
+	draw_velocity = args.draw_velocity_arrow
+
+	# save raw trajectory and FWD/BWD tracks before anchoring; only the
+	# developer overlay needs them (FWD/BWD/raw boxes are debug-tier)
 	raw_trajectory_for_debug = None
 	fwd_trajectory_for_debug = None
 	bwd_trajectory_for_debug = None
-	if args.debug:
+	if draw_debug:
 		raw_trajectory_for_debug = [
 			dict(s) if s is not None else None
 			for s in trajectory
@@ -1961,6 +2042,9 @@ def _mode_encode(
 		seeds_data = state_io.load_seeds(seeds_path)
 		all_seeds = seeds_data.get("seeds", [])
 		trajectory = interval_solver.anchor_to_seeds(trajectory, all_seeds)
+		trajectory = interval_solver._stamp_seed_confidence(
+			trajectory, all_seeds,
+		)
 		# apply trajectory erasure from seeds (function decides which seeds to erase)
 		fps = float(diag_data.get("fps", video_info["fps"]))
 		trajectory = interval_solver._apply_trajectory_erasure(
@@ -1978,10 +2062,26 @@ def _mode_encode(
 	print("computing crop trajectory...")
 	crop_rects = tr_crop.trajectory_to_crop_rects(trajectory, video_info, cfg)
 
-	# resolve output path (encoded output stays next to input video)
+	# resolve output path (encoded output stays next to input video).
+	# Default container is .mkv (mkvmerge concat output); --mp4 or -o
+	# foo.mp4 produces a .mp4 final via the existing audio-mux step
+	# (ffmpeg -c copy honors the destination extension's container).
+	# The parser already rejects: -o foo.mov; --mp4 -o foo.mkv; etc.
 	output_file = getattr(args, "output_file", None)
 	if output_file is not None:
+		_, ext = os.path.splitext(output_file)
+		ext_lower = ext.lower()
+		if ext_lower not in (".mkv", ".mp4"):
+			raise RuntimeError(
+				f"output extension {ext!r} not supported; use .mkv "
+				f"(default) or .mp4 (with --mp4)"
+			)
 		output_path = output_file
+	elif getattr(args, "mp4", False):
+		# swap the default .mkv extension for .mp4
+		default_mkv = tr_paths.default_output_path(args.input_file)
+		stem, _ = os.path.splitext(default_mkv)
+		output_path = f"{stem}.mp4"
 	else:
 		output_path = tr_paths.default_output_path(args.input_file)
 
@@ -2007,11 +2107,36 @@ def _mode_encode(
 	video_codec = proc_cfg.get("video_codec", "libx264")
 	crf_value = int(proc_cfg.get("crf", 18))
 
+	# pre-encode validation: refuse when the runner is sustained outside
+	# the safe central window of the output frame. Black-fill from a
+	# slightly off-source crop is fine, but a runner pinned to one side
+	# for a sustained run is almost always a configuration bug; better
+	# to fail in a second than to burn a multi-minute encode.
+	if not args.allow_offcenter_crop:
+		aspect_ratio = tr_crop.parse_aspect_ratio(
+			proc_cfg.get("crop_aspect", "1:1")
+		)
+		torso_multiple = float(
+			proc_cfg.get("torso_height_multiple", 3.33)
+		)
+		tr_crop.validate_torso_within_central_window(
+			trajectory, crop_rects,
+			crop_w, crop_h,
+			video_info["width"], video_info["height"],
+			torso_multiple=torso_multiple,
+			aspect_ratio=aspect_ratio,
+		)
+
 	# resolve encode filters: CLI overrides config, config overrides default
 	encode_filters = _resolve_encode_filters(args, proc_cfg)
 
-	# encode
-	temp_video = output_path + ".tmp.mp4"
+	# encode. The intermediate is fixed at {final_stem}.tmp.mkv -- the
+	# encoder writes Matroska bytes via mkvmerge, so a .mkv-suffixed
+	# temp name is truthful. Using `.tmp.mkv` (rather than `.mkv` alone)
+	# avoids accidentally overwriting an existing real `{stem}.mkv` if
+	# the user has both encodes side by side.
+	final_stem, _ = os.path.splitext(output_path)
+	temp_video = f"{final_stem}.tmp.mkv"
 	workers_enc_label = f" ({num_workers} workers)" if num_workers > 1 else ""
 	filters_label = f" filters={encode_filters}" if encode_filters else ""
 	print(f"encoding cropped video: {crop_w}x{crop_h}{workers_enc_label}{filters_label}")
@@ -2025,9 +2150,16 @@ def _mode_encode(
 	if args.debug:
 		key_input.QUIT_TRACE = True
 
-	# build frame_states for debug overlay
+	# build frame_states for any overlay tier; debug-only fields (raw,
+	# FWD/BWD boxes) are only attached when draw_debug is set.
+	# prev_center for the velocity arrow is precomputed here on the
+	# driver side so parallel workers see correct lookback across chunk
+	# boundaries (a chunk-local lookback would miss valid priors from
+	# the preceding chunk and silently suppress the arrow at every
+	# segment seam).
+	any_overlay = draw_tracking or draw_debug or draw_velocity
 	frame_states_for_debug = None
-	if args.debug:
+	if any_overlay:
 		frame_states_for_debug = []
 		for i, state in enumerate(trajectory):
 			if state is not None:
@@ -2059,6 +2191,73 @@ def _mode_encode(
 			else:
 				debug_state = None
 			frame_states_for_debug.append(debug_state)
+		# precompute prev_center for the velocity arrow on the driver
+		# side; the encoder will read state["prev_center"] directly so
+		# parallel workers do not need access to other workers' chunks.
+		#
+		# By default the prev_center is land-relative (i.e., the runner's
+		# motion relative to the ground), not camera-relative: when the
+		# camera pans faster than the runner, a camera-relative arrow
+		# would point backwards. We project the prior frame's pixel
+		# position into scene (land-anchored) coords, then back into the
+		# CURRENT frame's pixel coords. The arrow drawn from the current
+		# crosshair to the difference is then runner-vs-ground motion
+		# expressed in the current camera's pixel space.
+		if draw_velocity:
+			scene_transform = None
+			motion_track = camera_motion.load_motion_cache(
+				tr_paths.default_camera_motion_path(args.input_file)
+			)
+			if motion_track is not None:
+				scene_transform = scene_coords.SceneTransform(motion_track)
+			else:
+				print(
+					"  warning: no camera_motion cache available; "
+					"velocity arrow will use camera-relative motion "
+					"(run 'solve' to populate the cache)"
+				)
+			interval_solver_lookback = encoder._VELOCITY_LOOKBACK_FRAMES
+			for i, st in enumerate(frame_states_for_debug):
+				if st is None:
+					continue
+				start = i - 1
+				stop = max(-1, i - 1 - interval_solver_lookback)
+				prev_center = None
+				prev_idx = -1
+				for k in range(start, stop, -1):
+					if k < 0:
+						break
+					prior = frame_states_for_debug[k]
+					if prior is None:
+						continue
+					pcx = prior.get("cx")
+					pcy = prior.get("cy")
+					if pcx is None or pcy is None:
+						continue
+					if not (math.isfinite(pcx) and math.isfinite(pcy)):
+						continue
+					prev_center = (float(pcx), float(pcy))
+					prev_idx = k
+					break
+				# Reproject the prior pixel position through scene
+				# coordinates so the arrow direction reflects ground
+				# motion. Falls back to camera-relative when the cache
+				# is unavailable or the frame index is out of range.
+				if prev_center is not None and scene_transform is not None:
+					try:
+						prev_scene = scene_transform.pixel_to_scene(
+							prev_idx, prev_center[0], prev_center[1],
+						)
+						prev_in_current = scene_transform.scene_to_pixel(
+							i, prev_scene[0], prev_scene[1],
+						)
+						prev_center = (
+							float(prev_in_current[0]),
+							float(prev_in_current[1]),
+						)
+					except (IndexError, ValueError):
+						pass
+				st["prev_center"] = prev_center
 
 	with key_input.KeyInputReader() as enc_kreader:
 		if num_workers > 1:
@@ -2067,11 +2266,13 @@ def _mode_encode(
 				crop_w, crop_h,
 				codec=video_codec, crf=crf_value,
 				frame_states=frame_states_for_debug,
-				debug=args.debug,
 				workers=num_workers,
 				encode_filters=encode_filters,
 				run_control=enc_rc,
 				key_reader_obj=enc_kreader,
+				draw_tracking=draw_tracking,
+				draw_debug=draw_debug,
+				draw_velocity=draw_velocity,
 			)
 		else:
 			with video_io.VideoReader(args.input_file) as reader:
@@ -2080,10 +2281,12 @@ def _mode_encode(
 					crop_w, crop_h,
 					codec=video_codec, crf=crf_value,
 					frame_states=frame_states_for_debug,
-					debug=args.debug,
 					encode_filters=encode_filters,
 					run_control=enc_rc,
 					key_reader_obj=enc_kreader,
+					draw_tracking=draw_tracking,
+					draw_debug=draw_debug,
+					draw_velocity=draw_velocity,
 				)
 	# restore default signal handler
 	key_input.restore_default_sigint()
@@ -2241,6 +2444,37 @@ def main() -> None:
 		_mode_encode(args, cfg, video_info, diag_path, intervals_path)
 	elif mode == "analyze":
 		_mode_analyze(args, cfg, video_info, diag_path, intervals_path)
+		# --seed shortcut: hand off to target's --from-analyze path so
+		# the user goes from analyze report -> seeding UI in one command.
+		# `-t N` and `-g N` also trigger this path -- supplying either
+		# is a clear signal the user wants to act on the targets.
+		seed_requested = (
+			getattr(args, "analyze_seed", False)
+			or getattr(args, "top_n", None) is not None
+			or getattr(args, "gap_top_n", None) is not None
+		)
+		if seed_requested:
+			if not had_config_file:
+				raise RuntimeError(
+					f"--seed requires a per-video config at {config_path}; "
+					f"run 'setup' mode first"
+				)
+			args.target_from_analyze = True
+			args.target_race_start = False
+			# target mode reads optional fields the analyze parser does not
+			# define; supply safe defaults so getattr() lookups inside
+			# _mode_target succeed.
+			for field, default in (
+				("severity", None),
+				("seed_interval", 10.0),
+				("top_n", None),
+				("start_time", None),
+			):
+				if not hasattr(args, field):
+					setattr(args, field, default)
+			_mode_target(
+				args, cfg, video_info, seeds_path, diag_path, intervals_path,
+			)
 	else:
 		raise RuntimeError(f"unknown mode: {mode}")
 

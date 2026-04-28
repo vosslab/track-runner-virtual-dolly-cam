@@ -142,13 +142,15 @@ class AnnotationWindow(AppShell):
 		# Create overlay visibility toolbar with checkable toggle actions
 		self._overlay_toolbar = self.addToolBar("Overlays")
 		self._overlay_toolbar.setMovable(False)
-		# map of overlay key -> (label, color hex from predictions section)
+		# map of overlay key -> (label, color hex from predictions section).
+		# Legend is intentionally absent here: it is a UI toggle for the
+		# in-scene legend widget, not an overlay layer with a palette
+		# color, so it gets a separate text-only action below.
 		pred_colors = {
 			"fwd": ("FWD", overlay_config.get_prediction_color("forward")),
 			"bwd": ("BWD", overlay_config.get_prediction_color("backward")),
 			"blended": ("REFINED", overlay_config.get_prediction_color("blended")),
 			"consensus": ("AVG", overlay_config.get_prediction_color("consensus")),
-			"legend": ("Legend", "#FFFFFF"),
 		}
 		self._overlay_actions: dict = {}
 		for key, (label, color) in pred_colors.items():
@@ -161,6 +163,16 @@ class AnnotationWindow(AppShell):
 			action.toggled.connect(self._on_overlay_toggled)
 			self._overlay_toolbar.addAction(action)
 			self._overlay_actions[key] = action
+
+		# Legend toggle: text-only, no color swatch, since it does not
+		# represent an overlay layer color.
+		legend_action = QAction("Legend", self)
+		legend_action.setCheckable(True)
+		legend_action.setChecked(True)
+		legend_action.setData("legend")
+		legend_action.toggled.connect(self._on_overlay_toggled)
+		self._overlay_toolbar.addAction(legend_action)
+		self._overlay_actions["legend"] = legend_action
 
 		# Motion heat-map overlay. Default OFF (expensive compute).
 		# Toggled via this action or the H keyboard shortcut. Owned by

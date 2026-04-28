@@ -39,6 +39,7 @@ class RectItem(QGraphicsRectItem):
 		fill_alpha: int = 15,
 		dashed: bool = False,
 		thickness_scale: float = 1.0,
+		label_slot: int = 0,
 		parent: QtWidgets.QGraphicsItem | None = None
 	) -> None:
 		"""
@@ -86,16 +87,39 @@ class RectItem(QGraphicsRectItem):
 			outline_pen.setDashPattern([6, 10])
 		self._outline_pen = outline_pen
 
-		if label:
-			# label font scales with box height, uses mono family
-			font_size = max(7, min(12, int(h * 0.08)))
-			label_item = QGraphicsTextItem(label, self)
-			label_item.setDefaultTextColor(color)
-			label_font = QFont(overlay_config.get_mono_font_family())
-			label_font.setPointSize(font_size)
-			label_item.setFont(label_font)
-			# position label just above the top-left corner
-			label_item.setPos(x, y - font_size - 6)
+		# Stash label state so paint() can draw it directly. Drawing in
+		# paint() (rather than via QGraphicsTextItem children) avoids
+		# child-paint-order bugs that left the dark pill visible without
+		# any text rendered inside.
+		self._label = label
+		self._label_color = color
+		self._label_font = QFont(overlay_config.get_mono_font_family())
+		# bolder/larger floor than before so SEED vs REFINED/FWD/BWD is
+		# legible on small boxes at fit-zoom.
+		self._label_font.setPointSize(max(11, min(16, int(h * 0.10))))
+		self._label_font.setBold(True)
+		self._label_box_x = x
+		self._label_box_y = y
+		# slot 0 = closest to box top; higher slots stack upward so
+		# overlapping boxes (FWD/BWD/REFINED/AVG/SEED at the same place)
+		# get distinct, non-overlapping label pills.
+		self._label_slot = int(label_slot)
+
+	#============================================
+
+	def boundingRect(self) -> QRectF:
+		"""Expand the bounding rect upward to include the label pill.
+
+		Without this, Qt's update region clips the pill drawn in
+		paint(), so the label disappears on partial repaints.
+		"""
+		base = super().boundingRect()
+		# label pill height ~ font_size + ~10px padding/leading; 32px
+		# per slot is a generous upper bound that covers the bold floor
+		# of 16pt with stacking room for higher slots (5 slots max).
+		extra_top = 32.0 * (self._label_slot + 1)
+		extra_side = 200.0
+		return base.adjusted(-extra_side, -extra_top, extra_side, 0)
 
 	#============================================
 
@@ -115,6 +139,42 @@ class RectItem(QGraphicsRectItem):
 		painter.drawRect(self.rect())
 		# draw normal fill + colored border on top
 		super().paint(painter, option, widget)
+
+		# draw the label as a dark pill with bold colored text, in scene
+		# coordinates anchored to the original box top-left.
+		if self._label:
+			painter.save()
+			painter.setFont(self._label_font)
+			fm = painter.fontMetrics()
+			text_w = fm.horizontalAdvance(self._label)
+			text_h = fm.height()
+			padding = 3
+			pill_w = text_w + 2 * padding
+			pill_h = text_h + 2 * padding
+			pill_x = self._label_box_x
+			# stack by slot: slot 0 sits just above the box, slot 1
+			# above slot 0, etc. so overlapping boxes do not overdraw
+			# each other's labels.
+			slot_offset = (pill_h + 2) * self._label_slot
+			pill_y = self._label_box_y - pill_h - 4 - slot_offset
+			# if the pill would clip above the frame, drop it just
+			# inside the top-left corner of the box instead, also
+			# stacked by slot so SEED (slot 0) sits at the very top.
+			if pill_y < 0:
+				pill_y = self._label_box_y + 2 + (pill_h + 2) * self._label_slot
+			# dark pill background
+			pill_rect = QRectF(pill_x, pill_y, pill_w, pill_h)
+			pill_bg = QColor(0, 0, 0)
+			pill_bg.setAlpha(200)
+			painter.setBrush(QBrush(pill_bg))
+			painter.setPen(QPen(Qt.PenStyle.NoPen))
+			painter.drawRect(pill_rect)
+			# colored text on top
+			painter.setPen(QPen(self._label_color))
+			text_x = pill_x + padding
+			text_y = pill_y + padding + fm.ascent()
+			painter.drawText(int(text_x), int(text_y), self._label)
+			painter.restore()
 
 	#============================================
 

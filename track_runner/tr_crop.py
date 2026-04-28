@@ -13,6 +13,273 @@ import numpy
 
 
 #============================================
+class OffCenterCropError(RuntimeError):
+	"""Raised when the runner exits the safe central crop window for
+	longer than the configured tolerance.
+
+	Carries structured fields about the violation so programmatic
+	consumers (and tests) can inspect the failure without parsing the
+	error message:
+
+		first_violating_frame: int  -- index of the first frame in run
+		run_length:           int  -- length of the offending run so far
+		edge:                 str  -- "left", "right", "top", "bottom",
+		                              or "" when crop fits in source
+
+	Distinct from generic RuntimeError so callers can catch it and
+	surface a targeted message, while still propagating up via the
+	RuntimeError base class for any existing top-level handler.
+	"""
+
+	def __init__(
+		self,
+		message: str,
+		first_violating_frame: int,
+		run_length: int,
+		edge: str,
+	) -> None:
+		super().__init__(message)
+		self.first_violating_frame = first_violating_frame
+		self.run_length = run_length
+		self.edge = edge
+
+
+#============================================
+def _diagnose_offcenter_cause(
+	crop_rect: tuple,
+	frame_width: int,
+	frame_height: int,
+	torso_multiple: float,
+	aspect_ratio: float,
+) -> tuple:
+	"""Return (edge_tag, explanation) describing why the crop is off-center.
+
+	Pure formatter; never raises. The edge_tag is one of "left",
+	"right", "top", "bottom", or "" when the crop fits in the source
+	frame and the cause is generic.
+
+	Args:
+		crop_rect: (x, y, w, h) of the offending frame's crop rectangle.
+		frame_width: Source video frame width in pixels.
+		frame_height: Source video frame height in pixels.
+		torso_multiple: Configured torso_height_multiple.
+		aspect_ratio: Configured crop aspect ratio (width / height).
+
+	Returns:
+		Tuple of (edge_tag, paragraph_string).
+	"""
+	cx, cy, cw, ch = crop_rect
+	# priority order: edges first, fall back to a generic hint
+	if cx < 0:
+		message = (
+			f"crop window extends {-cx} px past the left edge of the "
+			f"{frame_width}x{frame_height} source frame; "
+			f"torso_multiple={torso_multiple:g} and aspect={aspect_ratio:.3f} "
+			f"produced a crop width of {cw} -- the cropped output's left "
+			f"side is black-filled"
+		)
+		return ("left", message)
+	if cx + cw > frame_width:
+		overshoot = (cx + cw) - frame_width
+		message = (
+			f"crop window extends {overshoot} px past the right edge of "
+			f"the {frame_width}x{frame_height} source frame; "
+			f"torso_multiple={torso_multiple:g} and aspect={aspect_ratio:.3f} "
+			f"produced a crop width of {cw} -- the cropped output's right "
+			f"side is black-filled"
+		)
+		return ("right", message)
+	if cy < 0:
+		message = (
+			f"crop window extends {-cy} px past the top edge of the "
+			f"{frame_width}x{frame_height} source frame; "
+			f"torso_multiple={torso_multiple:g} and aspect={aspect_ratio:.3f} "
+			f"produced a crop height of {ch} -- the cropped output's top "
+			f"is black-filled"
+		)
+		return ("top", message)
+	if cy + ch > frame_height:
+		overshoot = (cy + ch) - frame_height
+		message = (
+			f"crop window extends {overshoot} px past the bottom edge of "
+			f"the {frame_width}x{frame_height} source frame; "
+			f"torso_multiple={torso_multiple:g} and aspect={aspect_ratio:.3f} "
+			f"produced a crop height of {ch} -- the cropped output's bottom "
+			f"is black-filled"
+		)
+		return ("bottom", message)
+	# crop fits in the source frame but the runner is still off-center
+	generic = (
+		f"crop window fits in the source frame but the runner could not "
+		f"be contained at center; check the torso_height_multiple "
+		f"(={torso_multiple:g}), crop_aspect (={aspect_ratio:.3f}), and "
+		f"output_resolution interaction"
+	)
+	return ("", generic)
+
+
+#============================================
+def validate_torso_within_central_window(
+	trajectory: list,
+	crop_rects: list,
+	output_w: int,
+	output_h: int,
+	frame_width: int,
+	frame_height: int,
+	torso_multiple: float,
+	aspect_ratio: float,
+	central_x_fraction: float = 0.5,
+	central_y_fraction: float = 0.7,
+	max_offcenter_run: int = 3,
+) -> None:
+	"""Raise OffCenterCropError when the runner stays outside the safe
+	central crop window for too many consecutive frames.
+
+	Black-fill from a slightly off-source crop is acceptable; a runner
+	pinned to one side of the frame for a sustained run of frames is
+	almost always a configuration bug. This pre-encode validator
+	enforces that contract.
+
+	Frames with no valid torso center (None entries, missing or
+	non-finite cx/cy) are skipped: they neither extend nor break a run.
+	Skipping (rather than resetting) prevents a brief tracker dropout
+	from hiding a real sustained off-center streak.
+
+	Args:
+		trajectory: Per-frame state dicts (may contain None entries).
+		crop_rects: (x, y, w, h) crop rectangles, one per frame.
+		output_w: Encoded output width in pixels.
+		output_h: Encoded output height in pixels.
+		frame_width: Source video frame width in pixels.
+		frame_height: Source video frame height in pixels.
+		torso_multiple: Configured torso_height_multiple (for diagnostic).
+		aspect_ratio: Configured crop aspect ratio (for diagnostic).
+		central_x_fraction: Width of the safe central horizontal window,
+			as a fraction of output_w. Default 0.5 (central 50%).
+		central_y_fraction: Height of the safe central vertical window,
+			as a fraction of output_h. Default 0.7 (central 70%).
+		max_offcenter_run: Maximum tolerated run length of consecutive
+			off-center valid frames before the gate fires. Default 3.
+
+	Raises:
+		OffCenterCropError: when a run of off-center valid frames longer
+			than max_offcenter_run is detected. The error message names
+			the first frame of the run, the run length, the runner's
+			scene-space and output-space positions, the safe-window
+			bounds, and the most likely root cause.
+	"""
+	# safe-window bounds (inclusive)
+	half_x = central_x_fraction / 2.0
+	half_y = central_y_fraction / 2.0
+	xlo = output_w * (0.5 - half_x)
+	xhi = output_w * (0.5 + half_x)
+	ylo = output_h * (0.5 - half_y)
+	yhi = output_h * (0.5 + half_y)
+
+	run_length = 0
+	run_start_frame = -1
+	n_frames = min(len(trajectory), len(crop_rects))
+	for i in range(n_frames):
+		state = trajectory[i]
+		# skipped frames pause the run; do not extend, do not reset
+		if state is None:
+			continue
+		cx = state.get("cx")
+		cy = state.get("cy")
+		if cx is None or cy is None:
+			continue
+		if not (math.isfinite(cx) and math.isfinite(cy)):
+			continue
+		# map scene-space center into output-space pixels
+		crop_rect = crop_rects[i]
+		crop_x, crop_y, crop_w, crop_h = crop_rect
+		# guard against degenerate zero-sized crops (should not happen,
+		# but a /0 here would mask the real diagnostic)
+		if crop_w <= 0 or crop_h <= 0:
+			continue
+		out_x = (cx - crop_x) * (output_w / crop_w)
+		out_y = (cy - crop_y) * (output_h / crop_h)
+		# violation iff outside the inclusive central window
+		violates = (out_x < xlo or out_x > xhi or out_y < ylo or out_y > yhi)
+		if violates:
+			if run_length == 0:
+				run_start_frame = i
+			run_length += 1
+			if run_length > max_offcenter_run:
+				edge, cause = _diagnose_offcenter_cause(
+					crop_rect, frame_width, frame_height,
+					torso_multiple, aspect_ratio,
+				)
+				msg = (
+					f"runner torso center is outside the safe central "
+					f"crop window for {run_length} consecutive frames "
+					f"starting at frame {run_start_frame} "
+					f"(threshold: {max_offcenter_run}). "
+					f"runner scene-space center=({cx:.1f}, {cy:.1f}); "
+					f"crop_rect=({crop_x}, {crop_y}, {crop_w}, {crop_h}); "
+					f"runner output-space=({out_x:.1f}, {out_y:.1f}); "
+					f"safe window x=[{xlo:.1f}, {xhi:.1f}] "
+					f"({central_x_fraction:.0%}), "
+					f"y=[{ylo:.1f}, {yhi:.1f}] "
+					f"({central_y_fraction:.0%}). "
+					f"{cause}. "
+					f"pass --allow-offcenter-crop to skip this check."
+				)
+				raise OffCenterCropError(
+					msg,
+					first_violating_frame=run_start_frame,
+					run_length=run_length,
+					edge=edge,
+				)
+		else:
+			run_length = 0
+			run_start_frame = -1
+
+
+#============================================
+def _max_centered_fit_size(
+	cx: float,
+	cy: float,
+	desired_w: float,
+	frame_width: int,
+	frame_height: int,
+	aspect_ratio: float,
+) -> tuple:
+	"""Return the largest aspect-preserving (w, h) centered on (cx, cy)
+	that fits inside [0, frame_width] x [0, frame_height].
+
+	Used by direct_center mode when `crop_centered_fit_to_source` is on:
+	if the user-requested crop window does not fit centered on the
+	runner, shrink it (preserving aspect) until at least one edge of
+	the crop touches a source-frame edge, instead of letting the crop
+	slide off and produce black bars.
+
+	Args:
+		cx: Crop center x (full-frame coordinates).
+		cy: Crop center y (full-frame coordinates).
+		desired_w: Requested crop width (the user's torso_multiple x
+			aspect target). Acts as an upper bound on the result.
+		frame_width: Source frame width in pixels.
+		frame_height: Source frame height in pixels.
+		aspect_ratio: Target crop aspect (width / height).
+
+	Returns:
+		(fit_w, fit_h) tuple of floats. fit_w / fit_h == aspect_ratio
+		within float epsilon. Both values are non-negative; if the
+		runner sits at a frame edge, the helper can return zeros and
+		the caller is expected to apply the min_crop_size floor.
+	"""
+	# horizontal bound from cx
+	max_w_horiz = 2.0 * min(cx, frame_width - cx)
+	# vertical bound, expressed as a width via aspect
+	max_w_vert = aspect_ratio * 2.0 * min(cy, frame_height - cy)
+	fit_w = min(desired_w, max_w_horiz, max_w_vert)
+	fit_w = max(0.0, fit_w)
+	fit_h = fit_w / aspect_ratio if aspect_ratio > 0 else 0.0
+	return (fit_w, fit_h)
+
+
+#============================================
 def parse_aspect_ratio(aspect_str: str) -> float:
 	"""Parse an aspect ratio string into a float.
 
@@ -561,6 +828,57 @@ def direct_center_crop_trajectory(
 				smoothed_cx[i] += (raw_cx[i] - smoothed_cx[i]) * pull_factor
 				smoothed_cy[i] += (raw_cy[i] - smoothed_cy[i]) * pull_factor
 
+	# Step 3.6: centered-fit-to-source. Treat torso_multiple (which
+	# drove desired_crop_h above) as the maximum zoom-out, not a fixed
+	# target. If the centered crop would extend past a source edge,
+	# shrink it (preserving aspect) until at least one edge touches the
+	# source. This keeps the runner at the output center -- the failure
+	# mode the legacy black-fill path produced.
+	#
+	# Floor consistency: floor_w = floor_h * aspect_ratio, and
+	# _max_centered_fit_size returns aspect-preserving (fit_w, fit_h).
+	# Therefore fit_w < floor_w iff fit_h < floor_h: when one floor
+	# binds, both bind, and the result (floor_w, floor_h) preserves
+	# aspect. The two `max` calls below are independent for clarity but
+	# never produce an aspect mismatch.
+	fit_to_source = bool(processing.get("crop_centered_fit_to_source", True))
+	if fit_to_source:
+		floor_h = float(min_crop_size)
+		floor_w = floor_h * aspect_ratio
+		for i in range(n):
+			fit_w, fit_h = _max_centered_fit_size(
+				smoothed_cx[i], smoothed_cy[i],
+				smoothed_w[i],
+				frame_width, frame_height,
+				aspect_ratio,
+			)
+			# honor the existing min_crop_size floor; if the runner
+			# sits exactly on a frame edge the fit collapses to zero
+			# and the floor preserves a usable crop (the validator
+			# from earlier work catches sustained off-center runs).
+			smoothed_w[i] = max(fit_w, floor_w)
+			smoothed_h[i] = max(fit_h, floor_h)
+		# second-pass smoothing of the fitted height signal (the fit
+		# step can introduce small frame-to-frame jumps when the
+		# runner moves through varying-distance zones); only run when
+		# size smoothing was already requested by the user. Forward-
+		# backward EMA is not strictly bounded by its inputs, so the
+		# re-fit cuts any lifted values back to their per-frame
+		# bound. Result is smooth in the common case and bounded
+		# always.
+		if alpha_size > 0:
+			smoothed_h = _forward_backward_ema(smoothed_h, alpha_size)
+			smoothed_w = smoothed_h * aspect_ratio
+			for i in range(n):
+				fit_w, fit_h = _max_centered_fit_size(
+					smoothed_cx[i], smoothed_cy[i],
+					smoothed_w[i],
+					frame_width, frame_height,
+					aspect_ratio,
+				)
+				smoothed_w[i] = max(fit_w, floor_w)
+				smoothed_h[i] = max(fit_h, floor_h)
+
 	# Step 4: reconstruct rectangles from center + size
 	x = smoothed_cx - smoothed_w / 2.0
 	y = smoothed_cy - smoothed_h / 2.0
@@ -572,8 +890,15 @@ def direct_center_crop_trajectory(
 	# do NOT clamp position to frame bounds -- allow black fill at edges
 	# (apply_crop in encoder.py fills out-of-bounds with black)
 
-	# Step 6: apply final velocity cap on center only
-	if max_velocity > 0:
+	# Step 6: apply final velocity cap on center only.
+	# When fit_to_source is on, the velocity cap conflicts with the
+	# "always centered on the runner" contract: capping per-frame motion
+	# would let the crop center lag the smoothed runner center, which
+	# both decentres the runner and can re-introduce a black-fill edge
+	# (the lagged crop may extend past a source edge that was avoided
+	# by the fit step). The user's contract is "keep torso centered at
+	# all costs", so velocity capping is skipped on the fit path.
+	if max_velocity > 0 and not fit_to_source:
 		# recompute centers from current rects
 		cx = x + smoothed_w / 2.0
 		cy = y + smoothed_h / 2.0

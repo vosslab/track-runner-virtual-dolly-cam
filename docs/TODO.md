@@ -141,6 +141,41 @@ Interval-job queueing logic is currently duplicated across several
 call sites. Extract it into one worker module so additions and fixes
 only have to land in one place.
 
+### Unify per-frame and per-interval scoring across the pipeline
+
+Per-frame `conf` is currently produced and consumed in at least four
+mostly-disconnected places, each with its own conventions:
+
+- [track_runner/velocity_model.py](../track_runner/velocity_model.py)
+  `blend_paths` emits `merged_conf` per blended-path frame during
+  solve; it decays from FWD/BWD propagator state.
+- [track_runner/interval_solver.py](../track_runner/interval_solver.py)
+  `_stamp_seed_confidence` overwrites seed-frame conf with `1.0` for
+  visible/partial and `0.3` for approximate.
+- [track_runner/interval_solver.py](../track_runner/interval_solver.py)
+  `derive_per_frame_confidence` (added 2026-04-27) reconstructs conf
+  from `||fwd-bwd||/torso_h` mapped through `exp(-d/scale)` for
+  analyze and encode (because the npz schema does not persist
+  per-frame conf).
+- [track_runner/scoring.py](../track_runner/scoring.py) computes
+  per-interval agreement / `confidence_tier` from the FWD/BWD pair as
+  a separate quantity that lives in `interval_scores.json`.
+
+`anchor_to_seeds` reads `state.get("conf", 0.5)` at
+`interval_solver.py:1136`; `regime_classifier._per_frame_features`
+expects a real `state["conf"]`; `encode_analysis.analyze_crop_stability`
+treats it as a 0..1 weight. Different sources, different scales,
+different defaults.
+
+Goal: one `scoring` API that owns confidence semantics end-to-end --
+how raw FWD/BWD agreement becomes a per-frame score, how seeds
+override it, and how per-frame scores roll up to per-interval tiers.
+Solve, refine, analyze, and encode should all call into the same
+helpers instead of each rolling their own. Bonus: re-derive the npz
+schema choice from this -- if scoring is fully reconstructable from
+geometry plus seeds, the `conf` field stays out of the cache by
+design rather than by accident.
+
 ## Seeding UI
 
 ### Combine YOLO-assist with the motion-cue residual map

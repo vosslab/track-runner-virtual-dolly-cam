@@ -357,9 +357,18 @@ def _find_instability_regions(
 		region_hjerk = [height_jerk[i] for i in range(start, end)]
 		region_conf = [confidences[i] for i in range(start, end)]
 		region_instab = [instability_scores[i] for i in range(start, end)]
+		# peak_frame: index of max-instability frame inside the region.
+		# Stored alongside region geometry so the analyze->seed loader can
+		# pick worst-first frames without re-sorting seed_suggestions
+		# (which is intentionally time-ordered for the printed report).
+		peak_offset = max(
+			range(len(region_instab)), key=lambda k: region_instab[k],
+		)
+		peak_frame = start + peak_offset
 		region_dict = {
 			"start_frame": start,
 			"end_frame": end,
+			"peak_frame": peak_frame,
 			"cause": cause,
 			"mean_confidence": round(statistics.mean(region_conf), 3),
 			"jerk_p95": round(_percentile(region_jerk, 0.95), 2),
@@ -802,6 +811,39 @@ def analyze_solver_context(
 		desert_count += 1
 	if seed_frames and (last_end - seed_frames[-1]) > desert_threshold:
 		desert_count += 1
+	# seed gap stats: mean, max, and the top-N largest gaps. Surfaced
+	# in the analyze report and YAML so coverage holes are visible
+	# before the user decides whether to seed. `top_seed_gaps` is also
+	# what `--gaps N` consumes from the loader to pick gap-midpoint
+	# targets. Each entry: start_frame/end_frame are the seeds bracketing
+	# the gap, midpoint is the seedless frame to target, gap_s is the
+	# gap in seconds.
+	seed_gap_mean_s = 0.0
+	seed_gap_max_s = 0.0
+	top_seed_gaps = []
+	if len(seed_frames) >= 2 and fps > 0:
+		gaps_frames = [
+			seed_frames[i] - seed_frames[i - 1]
+			for i in range(1, len(seed_frames))
+		]
+		seed_gap_mean_s = round(sum(gaps_frames) / len(gaps_frames) / fps, 1)
+		seed_gap_max_s = round(max(gaps_frames) / fps, 1)
+		# rank gap entries by descending gap size, keep top
+		# ANALYZE_TOP_DEFAULT (also used by the loader and the printed
+		# report). The user can re-run with a larger -t/-g if needed.
+		ranked = sorted(
+			range(1, len(seed_frames)),
+			key=lambda i: -(seed_frames[i] - seed_frames[i - 1]),
+		)
+		for i in ranked[:ANALYZE_TOP_DEFAULT]:
+			start_f = int(seed_frames[i - 1])
+			end_f = int(seed_frames[i])
+			top_seed_gaps.append({
+				"start_frame": start_f,
+				"end_frame": end_f,
+				"midpoint_frame": (start_f + end_f) // 2,
+				"gap_s": round((end_f - start_f) / fps, 1),
+			})
 	# extract per-interval scores from interval_score dict
 	# analytical mode (v3): has velocity_consistency, size_consistency
 	# optical-flow mode (v2): has identity_score, competitor_margin, meeting_point_error
@@ -846,6 +888,9 @@ def analyze_solver_context(
 	result = {
 		"seed_density": seed_density,
 		"desert_count": desert_count,
+		"seed_gap_mean_s": seed_gap_mean_s,
+		"seed_gap_max_s": seed_gap_max_s,
+		"top_seed_gaps": top_seed_gaps,
 	}
 	if is_analytical:
 		# analytical metrics
@@ -937,6 +982,10 @@ def format_analysis_report(
 	lines.append("  solver context:")
 	lines.append(f"    seed density:     {solver_context['seed_density']} seeds/min")
 	lines.append(f"    desert count:     {solver_context['desert_count']}")
+	lines.append(
+		f"    seed gaps:        mean {solver_context['seed_gap_mean_s']}s, "
+		f"max {solver_context['seed_gap_max_s']}s"
+	)
 	# render metrics based on solver mode
 	if "velocity_consistency_median" in solver_context:
 		# analytical v3 metrics
@@ -961,9 +1010,21 @@ def format_analysis_report(
 			f"    competitor margin: {solver_context['competitor_margin_median']}",
 		)
 	lines.append("")
-	# instability regions (top 5)
+	# largest seed gaps (top N): always print so coverage holes show
+	# up alongside instability regions, even on a `analyze`-only run
+	top_gaps = solver_context.get("top_seed_gaps") or []
+	if top_gaps:
+		shown_gaps = top_gaps[:ANALYZE_TOP_DEFAULT]
+		lines.append(f"  largest seed gaps (top {len(shown_gaps)}):")
+		for g in shown_gaps:
+			lines.append(
+				f"    frames {g['start_frame']}-{g['end_frame']}: "
+				f"{g['gap_s']}s (midpoint {g['midpoint_frame']})"
+			)
+		lines.append("")
+	# instability regions (top N)
 	if regions:
-		top_regions = regions[:5]
+		top_regions = regions[:ANALYZE_TOP_DEFAULT]
 		lines.append(f"  instability regions (top {len(top_regions)}):")
 		for region in top_regions:
 			lines.append(
@@ -984,7 +1045,7 @@ def format_analysis_report(
 		affected = primary["end_frame"] - primary["start_frame"]
 		lines.append(f"    affected frames: {affected}")
 	if seeds_suggested:
-		frame_list = ", ".join(str(f) for f in seeds_suggested[:5])
+		frame_list = ", ".join(str(f) for f in seeds_suggested[:ANALYZE_TOP_DEFAULT])
 		lines.append(f"    suggested seed frames: {frame_list}")
 	# chatter note
 	chatter = motion["quantization_chatter_fraction"]
@@ -999,6 +1060,177 @@ def format_analysis_report(
 	lines.append(f"  wrote: {output_yaml_path}")
 	report = "\n".join(lines)
 	return report
+
+
+# Default cap for both the printed report ("instability regions (top N)",
+# "suggested seed frames: ...") and the analyze->seed bridge. The console
+# and the seeding-UI target list stay in sync: what you see is what you
+# seed. Override per-invocation with target/analyze --top N.
+ANALYZE_TOP_DEFAULT = 10
+
+# Minimum spacing (seconds) between target frames emitted by the
+# analyze->seed bridge. Adjacent instability regions can land their
+# peak frames within a few frames of each other; without spacing the
+# user's seeding session ends up with back-to-back targets that all
+# annotate the same moment. 0.5 s is enough to land in a different
+# stride at typical run paces while still allowing two targets per
+# distinct problem area.
+ANALYZE_MIN_SPACING_S = 0.5
+
+# Multiplier on mean seed-gap above which the analyze->seed bridge
+# injects a gap-midpoint target (matches the spirit of the post-session
+# "largest gap" warning, but with a higher bar to avoid pulling targets
+# into already-decent stretches). 2x triggers on routine variance; 4x
+# triggers only on real coverage holes that meaningfully hurt the
+# trajectory.
+ANALYZE_GAP_RATIO_THRESHOLD = 4.0
+
+
+#============================================
+def load_analyze_target_frames(
+	analysis_path: str,
+	frame_count: int,
+	top_n: int = ANALYZE_TOP_DEFAULT,
+	existing_seed_frames: list = None,
+	gap_top_n: int = 0,
+) -> list:
+	"""Read worst-N instability-region peak frames from analyze YAML.
+
+	Bridges the analyze report to the seeding UI. Walks
+	`instability_regions` in worst-first order (sorted descending by
+	`mean_instability` in `_find_instability_regions`) and emits one
+	frame per kept region: `peak_frame`, the max-instability frame
+	inside the region. Falls back to the region midpoint for older
+	YAMLs that predate `peak_frame`.
+
+	Adjacent regions can land their peaks a handful of frames apart,
+	so a min-spacing filter (`ANALYZE_MIN_SPACING_S` seconds, scaled by
+	`summary.fps` from the YAML) skips any region whose peak sits
+	within that window of an already-kept frame. The user gets `top_n`
+	requested *spaced-out* targets, not `top_n` clustered ones from a
+	single dense problem area. Output is sorted ascending by frame for
+	the seeding UI.
+
+	Why not slice `seed_suggestions[:top_n]`: that list is the same
+	per-region peak frames, but it is intentionally sorted ASCENDING by
+	frame number (`_suggest_seed_frames`) for the printed report, so
+	slicing it picks the earliest N problem spots in time, not the N
+	worst by instability. Walking `instability_regions[:top_n]` keeps
+	the worst-first ordering.
+
+	Args:
+		analysis_path: Path to the encode_analysis.yaml file written by
+			`analyze` mode.
+		frame_count: Total frames in the video; used to clamp out-of-range
+			suggestions defensively.
+		top_n: Maximum number of worst-ranked regions to keep AFTER the
+			min-spacing filter (defaults to ANALYZE_TOP_DEFAULT). Use a
+			large number to take everything.
+		gap_top_n: Number of largest seed-gap midpoints to include
+			explicitly (corresponds to the analyze/target `-g/--gaps N`
+			flag). 0 disables explicit gap targets; the auto-injection
+			of one gap target when the largest gap exceeds
+			ANALYZE_GAP_RATIO_THRESHOLD * mean still applies regardless.
+
+	Returns:
+		Sorted, deduplicated list of frame indices to seed at. Empty
+		list if the file has no regions.
+	"""
+	if not os.path.isfile(analysis_path):
+		raise RuntimeError(
+			f"no encode_analysis.yaml found at {analysis_path}; "
+			f"run 'analyze' first"
+		)
+	with open(analysis_path) as f:
+		doc = yaml.safe_load(f)
+	if not isinstance(doc, dict):
+		raise RuntimeError(f"malformed encode_analysis.yaml at {analysis_path}")
+	# fps is required to convert ANALYZE_MIN_SPACING_S into a frame
+	# threshold; the analyze writer always sets summary.fps so a missing
+	# field means the YAML is from a non-analyze writer or corrupted.
+	summary = doc.get("summary") or {}
+	fps = float(summary["fps"])
+	min_gap_frames = int(round(ANALYZE_MIN_SPACING_S * fps))
+	# treat already-seeded frames as "kept" for the spacing filter so
+	# `-t N` returns N un-seeded targets, not N regions some of which the
+	# UI will silently drop. Caller passes the current seed frame list;
+	# missing/None means "do not filter against seeds".
+	existing = sorted(existing_seed_frames) if existing_seed_frames else []
+	kept = []
+	# Gap-coverage target: if there's a seed gap more than 2x the
+	# average (matching the post-session "largest gap" warning in
+	# seed_controller._print_seed_stats), prepend its midpoint as the
+	# top-priority target. Coverage matters at least as much as local
+	# instability -- if the runner is unseeded for 3 seconds, fixing
+	# that gap usually helps the trajectory more than touching up
+	# another peak in an already-dense region. One gap target per call;
+	# the user can re-run analyze after seeding it to surface the next.
+	if len(existing) >= 2:
+		gaps = [
+			(existing[i] - existing[i - 1], i)
+			for i in range(1, len(existing))
+		]
+		max_gap, max_idx = max(gaps)
+		mean_gap = sum(g for g, _ in gaps) / len(gaps)
+		if max_gap > ANALYZE_GAP_RATIO_THRESHOLD * mean_gap and max_gap > min_gap_frames * 2:
+			gap_mid = (existing[max_idx - 1] + existing[max_idx]) // 2
+			if 0 <= gap_mid < frame_count:
+				gap_s = max_gap / fps
+				mean_s = mean_gap / fps
+				print(
+					f"  injected gap-coverage target at frame {gap_mid} "
+					f"(gap {gap_s:.1f}s vs mean {mean_s:.1f}s, "
+					f">{ANALYZE_GAP_RATIO_THRESHOLD:.0f}x)"
+				)
+				kept.append(gap_mid)
+	# Explicit `--gaps N` targets: read the pre-ranked top_seed_gaps
+	# block from the YAML's solver_context. Semantics: "ensure the top
+	# N gaps are in the target list" -- iterate `top_seed_gaps[:N]`
+	# and add each midpoint unless an existing kept frame is already
+	# within min_gap_frames of it. So `-t 4 -g 4` with the largest
+	# gap also auto-injected gives 4 peaks + 4 gap midpoints minus the
+	# auto/explicit duplicate = 7 distinct frames, matching the user's
+	# mental model. No threshold on gap size -- explicit ask, explicit
+	# delivery.
+	if gap_top_n > 0:
+		top_gaps = (
+			(doc.get("solver_context") or {}).get("top_seed_gaps") or []
+		)
+		for g in top_gaps[:gap_top_n]:
+			mid = int(g["midpoint_frame"])
+			if not (0 <= mid < frame_count):
+				continue
+			if any(abs(mid - k) < min_gap_frames for k in kept):
+				continue
+			kept.append(mid)
+	# Peak budget: track peaks added separately from total kept so the
+	# auto-injected gap and any explicit `-g N` entries do not eat into
+	# the `-t N` peak count. `-t 3` means up to 3 region peaks, walking
+	# the full region list (worst-first) until we either find 3 peaks
+	# that pass the spacing/seed filters or exhaust the list.
+	peaks_added = 0
+	for region in doc.get("instability_regions") or []:
+		if peaks_added >= top_n:
+			break
+		start = int(region["start_frame"])
+		end = int(region["end_frame"])
+		# peak_frame field added 2026-04-27; older YAMLs lack it
+		if "peak_frame" in region:
+			peak = int(region["peak_frame"])
+		else:
+			peak = (start + end) // 2
+		if not (0 <= peak < frame_count):
+			continue
+		# spacing filter: regions arrive worst-first, earlier wins on
+		# ties; existing seeds also count so we never re-emit a target
+		# the UI will dedupe away.
+		near_kept = any(abs(peak - k) < min_gap_frames for k in kept)
+		near_seed = any(abs(peak - s) < min_gap_frames for s in existing)
+		if near_kept or near_seed:
+			continue
+		kept.append(peak)
+		peaks_added += 1
+	return sorted(kept)
 
 
 #============================================
@@ -1064,4 +1296,4 @@ def write_analysis_yaml(
 	with open(output_path, "w") as f:
 		f.write("# auto-generated by track_runner analyze\n")
 		f.write("# this is a diagnostic report, not an encode settings file\n")
-		yaml.dump(doc, f, default_flow_style=False, sort_keys=False)
+		yaml.safe_dump(doc, f, default_flow_style=False, sort_keys=False)
