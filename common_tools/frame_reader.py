@@ -11,12 +11,165 @@ The temp MKV is cleaned up on close().
 # Standard Library
 import os
 import shutil
+import warnings
 import subprocess
 import tempfile
+import dataclasses
 
 # PIP3 modules
 import cv2
 import numpy
+
+# local repo modules
+import common_tools.goodbox
+
+
+# per-axis safety floor: if the goodbox crop would discard more than
+# this fraction of the scaled axis, FrameReader keeps the full
+# scaled axis and warns once.
+_MAX_CROP_FRACTION = 0.10
+
+
+#============================================
+@dataclasses.dataclass(frozen=True)
+class FrameGeometry:
+	"""Source <-> processed coordinate mapping for a binned reader.
+
+	Origin-preserving: cropping happens only from the right and
+	bottom edges of the scaled frame; the top-left origin is fixed
+	at (0, 0). Conversion is therefore pure scale by `bin_factor`,
+	with no offset term.
+
+	Attributes:
+		source_width: original frame width in pixels.
+		source_height: original frame height in pixels.
+		bin_factor: integer downsample factor; 1 means no bin.
+		scaled_width: floor(source_width / bin_factor).
+		scaled_height: floor(source_height / bin_factor).
+		processed_width: scaled_width snapped down to the largest
+			goodbox not exceeding it (or scaled_width when the
+			safety floor disables the crop on this axis or when
+			bin_factor == 1).
+		processed_height: same rule, for height.
+	"""
+
+	source_width: int
+	source_height: int
+	bin_factor: int
+	scaled_width: int
+	scaled_height: int
+	processed_width: int
+	processed_height: int
+
+	#============================================
+	def source_to_processed(self, x: float, y: float) -> tuple[float, float]:
+		"""Convert a source-frame point to processed-frame coords."""
+		return (x / self.bin_factor, y / self.bin_factor)
+
+	#============================================
+	def processed_to_source(self, x: float, y: float) -> tuple[float, float]:
+		"""Convert a processed-frame point to source-frame coords."""
+		return (x * self.bin_factor, y * self.bin_factor)
+
+	#============================================
+	def source_to_processed_delta(self, dx: float, dy: float) -> tuple[float, float]:
+		"""Scale a source-frame delta to processed-frame pixels."""
+		return (dx / self.bin_factor, dy / self.bin_factor)
+
+	#============================================
+	def processed_to_source_delta(self, dx: float, dy: float) -> tuple[float, float]:
+		"""Scale a processed-frame delta to source-frame pixels."""
+		return (dx * self.bin_factor, dy * self.bin_factor)
+
+
+#============================================
+def _resolve_frame_geometry(
+	source_width: int, source_height: int, bin_factor: int
+) -> FrameGeometry:
+	"""Resolve a FrameGeometry from raw source dims and a bin factor.
+
+	bin_factor == 1 short-circuits: source == scaled == processed.
+
+	Otherwise: scaled = floor(source / bin_factor), then snap each
+	axis to the largest goodbox not exceeding it. If snapping
+	would discard more than _MAX_CROP_FRACTION of the scaled axis,
+	the snap is skipped on that axis (warned once); the other axis
+	can still snap.
+	"""
+	# bin == 1 short-circuit; no resize, no crop
+	if bin_factor == 1:
+		return FrameGeometry(
+			source_width=source_width,
+			source_height=source_height,
+			bin_factor=1,
+			scaled_width=source_width,
+			scaled_height=source_height,
+			processed_width=source_width,
+			processed_height=source_height,
+		)
+	# divisibility warnings: a fractional source-pixel column or row
+	# is silently dropped by floor division below.
+	if source_width % bin_factor != 0:
+		warnings.warn(
+			f"FrameReader: source_width={source_width} is not"
+			f" divisible by bin_factor={bin_factor}; the rightmost"
+			f" {source_width % bin_factor} source-pixel column(s)"
+			f" will be dropped by INTER_AREA downsample.",
+			stacklevel=3,
+		)
+	if source_height % bin_factor != 0:
+		warnings.warn(
+			f"FrameReader: source_height={source_height} is not"
+			f" divisible by bin_factor={bin_factor}; the bottom"
+			f" {source_height % bin_factor} source-pixel row(s)"
+			f" will be dropped by INTER_AREA downsample.",
+			stacklevel=3,
+		)
+	scaled_width = source_width // bin_factor
+	scaled_height = source_height // bin_factor
+	processed_width = _snap_or_keep(scaled_width, "width")
+	processed_height = _snap_or_keep(scaled_height, "height")
+	return FrameGeometry(
+		source_width=source_width,
+		source_height=source_height,
+		bin_factor=bin_factor,
+		scaled_width=scaled_width,
+		scaled_height=scaled_height,
+		processed_width=processed_width,
+		processed_height=processed_height,
+	)
+
+
+#============================================
+def _snap_or_keep(scaled_dim: int, axis_name: str) -> int:
+	"""Snap a scaled axis to its goodbox, or keep it if the snap
+	would discard more than _MAX_CROP_FRACTION of the axis.
+
+	Args:
+		scaled_dim: scaled axis size in processed pixels.
+		axis_name: "width" or "height" (used in the warning text).
+
+	Returns:
+		Processed axis size: either the largest goodbox not
+		exceeding scaled_dim, or scaled_dim itself if the safety
+		floor disables the snap on this axis.
+	"""
+	if scaled_dim < 4:
+		# nothing useful to snap; goodbox helper would raise
+		return scaled_dim
+	snapped = common_tools.goodbox.largest_goodbox_at_most(scaled_dim)
+	loss = scaled_dim - snapped
+	if loss <= 0:
+		return snapped
+	if loss / scaled_dim > _MAX_CROP_FRACTION:
+		warnings.warn(
+			f"FrameReader: goodbox {axis_name} crop would discard"
+			f" {loss}/{scaled_dim} pixels (> {int(_MAX_CROP_FRACTION * 100)}%);"
+			f" keeping full scaled {axis_name}.",
+			stacklevel=4,
+		)
+		return scaled_dim
+	return snapped
 
 
 #============================================
@@ -49,7 +202,14 @@ class FrameReader:
 	"""
 
 	#============================================
-	def __init__(self, video_path: str, fps: float, total_frames: int, debug: bool = False):
+	def __init__(
+		self,
+		video_path: str,
+		fps: float,
+		total_frames: int,
+		debug: bool = False,
+		bin_factor: int = 1,
+	):
 		"""Initialize FrameReader with a video file.
 
 		Args:
@@ -57,11 +217,30 @@ class FrameReader:
 			fps: Video frame rate.
 			total_frames: Total number of frames in the video.
 			debug: Enable verbose per-frame debug output.
+			bin_factor: optional integer downsample factor (>= 1).
+				When > 1, every frame returned by `read_frame` is
+				downsampled by `cv2.INTER_AREA` to floor(W/bin)
+				x floor(H/bin) and then snapped to the largest
+				FFT-friendly goodbox not exceeding each scaled
+				dim, cropping only from the right and bottom edges
+				(origin-preserving). bin_factor=1 short-circuits
+				both the resize and the crop branch and is
+				byte-identical to the pre-bin reader.
 		"""
+		# bin_factor validation
+		if not isinstance(bin_factor, int):
+			raise TypeError(
+				f"bin_factor must be int, got {type(bin_factor).__name__}"
+			)
+		if bin_factor < 1:
+			raise ValueError(
+				f"bin_factor must be >= 1, got {bin_factor}"
+			)
 		self._video_path = video_path
 		self._fps = fps
 		self._total_frames = total_frames
 		self._debug = debug
+		self._bin_factor = bin_factor
 		# path currently used for captures (changes if remuxed)
 		self._active_path = video_path
 		# temp MKV path, set if remux occurs
@@ -72,12 +251,20 @@ class FrameReader:
 		self._cap = cv2.VideoCapture(video_path)
 		if not self._cap.isOpened():
 			raise RuntimeError(f"cannot open video: {video_path}")
-		# capture per-video geometry once. width/height are exposed as
-		# public properties so consumers shared with VideoReader (e.g.
-		# residual_motion.compute_residual_for_frame) can use either
-		# reader class interchangeably.
-		self._width = int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-		self._height = int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+		# source-frame dimensions read from the capture
+		source_width = int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+		source_height = int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+		# resolve scaled and processed dims; FrameGeometry is the
+		# single source of coordinate-conversion truth and exposes
+		# the resolved dims downstream.
+		self._geometry = _resolve_frame_geometry(
+			source_width, source_height, bin_factor
+		)
+		# public width/height return processed dims; image consumers
+		# downstream do not need to know bin_factor exists, but
+		# coordinate-aware callers should use FrameReader.geometry.
+		self._width = self._geometry.processed_width
+		self._height = self._geometry.processed_height
 		# dedicated sequential capture used only by strategy 4
 		# lazily opened on first sequential read to avoid wasting resources
 		self._seq_cap = None
@@ -115,6 +302,46 @@ class FrameReader:
 		return self._height
 
 	#============================================
+	@property
+	def geometry(self) -> "FrameGeometry":
+		"""Source <-> processed coordinate mapper for this reader."""
+		return self._geometry
+
+	#============================================
+	@property
+	def bin_factor(self) -> int:
+		"""Integer bin factor; 1 means no bin (byte-identical reads)."""
+		return self._bin_factor
+
+	#============================================
+	def _apply_bin(self, frame: numpy.ndarray | None) -> numpy.ndarray | None:
+		"""Apply bin + origin-preserving goodbox crop to a raw frame.
+
+		Returns frame unchanged when bin_factor == 1.
+		"""
+		if frame is None:
+			return None
+		if self._bin_factor == 1:
+			return frame
+		geom = self._geometry
+		# downsample with INTER_AREA (best for shrink); use
+		# (scaled_width, scaled_height) as the (cols, rows) target
+		scaled = cv2.resize(
+			frame,
+			(geom.scaled_width, geom.scaled_height),
+			interpolation=cv2.INTER_AREA,
+		)
+		# origin-preserving right/bottom crop to processed dims
+		if (
+			scaled.shape[0] != geom.processed_height
+			or scaled.shape[1] != geom.processed_width
+		):
+			scaled = scaled[
+				0 : geom.processed_height, 0 : geom.processed_width
+			]
+		return scaled
+
+	#============================================
 	def read_frame(self, frame_index: int) -> numpy.ndarray | None:
 		"""Read a single frame by index, trying multiple strategies.
 
@@ -133,7 +360,7 @@ class FrameReader:
 		if ret:
 			results["seek_msec"] = "OK"
 			self._print_debug(frame_index, results)
-			return frame
+			return self._apply_bin(frame)
 		results["seek_msec"] = "FAIL"
 
 		# strategy 2: seek by frame index
@@ -142,7 +369,7 @@ class FrameReader:
 		if ret:
 			results["seek_frame"] = "OK"
 			self._print_debug(frame_index, results)
-			return frame
+			return self._apply_bin(frame)
 		results["seek_frame"] = "FAIL"
 
 		# strategy 3: reopen seek capture and seek by frame index
@@ -154,7 +381,7 @@ class FrameReader:
 			if ret:
 				results["reopen"] = "OK"
 				self._print_debug(frame_index, results)
-				return frame
+				return self._apply_bin(frame)
 		results["reopen"] = "FAIL"
 
 		# strategy 4: sequential forward read on dedicated capture
@@ -162,7 +389,7 @@ class FrameReader:
 		if frame is not None:
 			results["sequential"] = "OK"
 			self._print_debug(frame_index, results)
-			return frame
+			return self._apply_bin(frame)
 		results["sequential"] = "FAIL"
 
 		# strategy 5: remux to MKV and retry (one-shot, never retried)
@@ -174,7 +401,7 @@ class FrameReader:
 				frame = self._retry_after_remux(frame_index, results)
 				if frame is not None:
 					self._print_debug(frame_index, results)
-					return frame
+					return self._apply_bin(frame)
 			else:
 				results["remux"] = "FAIL"
 

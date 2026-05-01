@@ -32,6 +32,7 @@ import tr_paths
 import tr_video_identity
 import encoder
 import video_io
+import common_tools.frame_reader
 import seeding
 import scoring
 import seed_editor
@@ -775,6 +776,7 @@ def _run_solve(
 	diag_path: str,
 	num_workers: int,
 	on_interval_complete: object = None,
+	is_refine: bool = False,
 ) -> dict:
 	"""Run the interval solver and write diagnostics.
 
@@ -813,6 +815,14 @@ def _run_solve(
 		print("first run after solve restructure: full recompute expected")
 
 	# build solver kwargs
+	bin_factor = int(getattr(args, "bin_factor", 1))
+	if bin_factor < 1:
+		raise ValueError(f"--bin must be >= 1, got {bin_factor}")
+	if bin_factor > 1:
+		print(
+			f"  bin_factor={bin_factor}: camera-motion and residual"
+			f" stages run on processed frames"
+		)
 	solve_kwargs = {
 		"num_workers": num_workers,
 		"debug": args.debug,
@@ -821,6 +831,7 @@ def _run_solve(
 		"hermite_only": args.hermite_only,
 		"full_solve": args.full_solve,
 		"upgrade": getattr(args, "upgrade", False),
+		"bin_factor": bin_factor,
 	}
 	if on_interval_complete is not None:
 		solve_kwargs["on_interval_complete"] = on_interval_complete
@@ -832,10 +843,20 @@ def _run_solve(
 	# Precompute camera motion for scene coordinate transformation
 	print("precomputing camera motion...")
 	cache_dir = tr_paths.ensure_data_dir()
-	with video_io.VideoReader(args.input_file) as reader:
+	# Stage 1 reader honors --bin via FrameReader. bin_factor=1
+	# returns byte-identical frames.
+	stage1_reader = common_tools.frame_reader.FrameReader(
+		video_path=args.input_file,
+		fps=float(video_info["fps"]),
+		total_frames=int(video_info["frame_count"]),
+		bin_factor=bin_factor,
+	)
+	try:
 		motion_track = camera_motion.precompute_camera_motion(
-			reader, cfg, args.input_file, video_info, cache_dir
+			stage1_reader, cfg, args.input_file, video_info, cache_dir
 		)
+	finally:
+		stage1_reader.close()
 	motion_track_data = motion_track
 	scene_transform = scene_coords.SceneTransform(motion_track)
 	# pass the video path through so workers can reopen it in their own
@@ -899,9 +920,15 @@ def _run_solve(
 		solve_kwargs["key_reader"] = kreader
 		# analytical solver does not use YOLO detector
 		detector = None
-		with video_io.VideoReader(args.input_file) as reader:
+		stage3_reader = common_tools.frame_reader.FrameReader(
+			video_path=args.input_file,
+			fps=float(video_info["fps"]),
+			total_frames=int(video_info["frame_count"]),
+			bin_factor=bin_factor,
+		)
+		try:
 			diagnostics = interval_solver.solve_all_intervals(
-				reader, seeds,
+				stage3_reader, seeds,
 				detector,
 				cfg,
 				scene_transform=scene_transform,
@@ -909,6 +936,8 @@ def _run_solve(
 				video_frame_count=video_info["frame_count"],
 				**solve_kwargs,
 			)
+		finally:
+			stage3_reader.close()
 	# restore default signal handler
 	key_input.restore_default_sigint()
 	t_stage3_elapsed = time.time() - t_stage3_start

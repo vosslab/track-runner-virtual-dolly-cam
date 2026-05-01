@@ -51,9 +51,17 @@ def build_geometry_tag() -> str:
 	blob-snap constants or changing which propagator ran does not change
 	the tag -- only a real geometry-affecting schema bump does.
 
+	bin_factor is intentionally NOT part of this tag: the interval
+	fingerprint is a contract on per-frame source-frame outputs (the
+	final torso boxes), and per-frame computations cross the bin
+	boundary independently inside camera_motion and residual_motion,
+	upscaling back to source-frame before the interval solver consumes
+	them. Bin participates in the camera-motion `config_hash` (which
+	caches per-frame phase-correlate output) but not in interval cache
+	keys, so changing `--bin` between runs reuses the interval cache.
+
 	Returns:
-		Geometry tag string: `schema_v<N>` where N is the geometry-
-		affecting schema version.
+		Geometry tag string: `schema_v<N>`.
 	"""
 	geom_v = tr_schema.latest_geometry_affecting_schema()
 	tag = f"schema_v{geom_v}"
@@ -91,6 +99,12 @@ def compute_interval_fingerprint(
 	so solve-mode and refine-mode cache keys line up byte-for-byte.
 	Do NOT pass `SOLVER_FINGERPRINT_TAG` here -- that tag carries
 	schema-version metadata and would couple cache keys to schema bumps.
+
+	Note: bin_factor is intentionally NOT a parameter here. Per-frame
+	bin-aware computations cross the source<->processed boundary inside
+	camera_motion and residual_motion, upscaling back to source-frame
+	before the interval solver consumes them. Interval-level cache keys
+	therefore stay bin-invariant.
 
 	Args:
 		seed_start: Interval start seed dict.

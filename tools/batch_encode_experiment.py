@@ -12,6 +12,9 @@ Outputs:
     {video}_{variant}.analysis.yaml -- analyzer report
     results.md                      -- comparison table
     results.csv                     -- machine-readable comparison
+
+TODO: upgrade or remove -- references retired geometry_cache.npz (schema v8
+retirement); decide whether to update to current loader or delete.
 """
 
 # Standard Library

@@ -110,11 +110,10 @@ def default_diagnostics_path(input_file: str) -> str:
 def default_intervals_path(input_file: str) -> str:
 	"""Return the default torso_box_coords NPZ file path for a given input file.
 
-	Per schema v8, unified artifact containing all per-frame torso boxes
-	(forward, backward, blended interval paths) from stage 1-5 solve.
-	Replaces separate geometry_cache.npz and debug_paths.npz files.
+	Unified artifact containing all per-frame torso boxes (forward, backward,
+	blended interval paths) from stage 1-5 solve.
 	Function name retained for callsite compatibility; the returned path
-	points at the new unified NPZ file.
+	points at the current unified NPZ file.
 
 	Args:
 		input_file: Input media file path.
@@ -131,8 +130,7 @@ def default_torso_box_coords_path(input_file: str) -> str:
 	"""Return the default torso_box_coords NPZ file path for a given input file.
 
 	Unified artifact containing all per-frame torso boxes (forward, backward,
-	blended interval paths) from stage 1-5 solve. Replaces separate
-	geometry_cache.npz and debug_paths.npz files as of schema v8.
+	blended interval paths) from stage 1-5 solve.
 
 	Args:
 		input_file: Input media file path.
@@ -184,6 +182,13 @@ def default_output_path(input_file: str) -> str:
 def default_camera_motion_path(input_file: str) -> str:
 	"""Return the default camera motion cache path for a given input file.
 
+	Legacy single-file path. Retained so callers that don't yet pass a
+	`config_hash` keep working at `bin_factor=1`. New callers should
+	prefer `camera_motion_cache_dir` plus
+	`camera_motion_cache_path_for_hash` so different processed-frame
+	identities (e.g. `--bin 1` vs `--bin 4`) each persist their own
+	cache file rather than overwriting one another.
+
 	Args:
 		input_file: Input media file path.
 
@@ -192,6 +197,66 @@ def default_camera_motion_path(input_file: str) -> str:
 	"""
 	motion_path = _data_file_path(input_file, ".track_runner.camera_motion.npz")
 	return motion_path
+
+
+#============================================
+def camera_motion_cache_dir(input_file: str) -> str:
+	"""Return the per-video camera-motion cache directory.
+
+	Caches live under
+	`<tr_config>/<video_basename>.track_runner.camera_motion/`. Each
+	resolved (estimator config + bin_factor + processed dims) writes
+	to its own file inside this directory, so back-to-back runs at
+	different `--bin` values keep both results on disk and never
+	clobber a higher-quality cache with a lower-quality recompute.
+
+	Args:
+		input_file: Input media file path.
+
+	Returns:
+		str: Directory path. Caller is responsible for creating the
+		directory before writing.
+	"""
+	cache_dir = _data_file_path(input_file, ".track_runner.camera_motion")
+	return cache_dir
+
+
+#============================================
+def camera_motion_active_marker_path(input_file: str) -> str:
+	"""Return the path to the small JSON marker recording the
+	camera-motion identity bound to the current solved state.
+
+	Solve writes this marker after Stage 1; refine reads it to select
+	the exact cache file to load. Refine never recomputes Stage 1, so
+	if this marker (or the cache file it names) is missing, refine
+	fails loud with "Run solve first".
+	"""
+	cache_dir = camera_motion_cache_dir(input_file)
+	return os.path.join(cache_dir, "active.json")
+
+
+#============================================
+def camera_motion_cache_path_for_hash(
+	input_file: str,
+	motion_model: str,
+	config_hash: str,
+) -> str:
+	"""Resolve the per-hash camera-motion cache file path.
+
+	Args:
+		input_file: Input media file path.
+		motion_model: Motion model label
+			(`MOTION_MODEL_FIXED`/`DISCRETE`/`CONTINUOUS`).
+		config_hash: 8-char config fingerprint for this run.
+
+	Returns:
+		str: NPZ path of the form
+		`<cache_dir>/<motion_model>_<config_hash>.npz`.
+	"""
+	cache_dir = camera_motion_cache_dir(input_file)
+	filename = f"{motion_model}_{config_hash}.npz"
+	cache_path = os.path.join(cache_dir, filename)
+	return cache_path
 
 #============================================
 

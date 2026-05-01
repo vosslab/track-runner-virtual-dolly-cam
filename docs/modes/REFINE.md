@@ -12,7 +12,7 @@ Incremental re-solve that only re-solves changed or new intervals and reuses pri
 
 <!-- BEGIN AUTO HELP: refine -->
 ```text
-usage: track_runner.py refine [-h] [-f | -H]
+usage: track_runner.py refine [-h] [-f | -H] [--bin BIN_FACTOR]
 
 options:
   -h, --help          show this help message and exit
@@ -20,6 +20,12 @@ options:
                       (slow).
   -H, --hermite-only  Stop after Stage 3: Hermite-only refine (fast
                       diagnostics).
+  --bin BIN_FACTOR    Optional spatial downsample applied to camera-motion and
+                      residual stages only. Integer >= 1; default 1 (no bin).
+                      bin_factor > 1 also crops each scaled axis to the
+                      largest FFT-friendly goodbox not exceeding it (origin-
+                      preserving right/bottom crop). Source-frame outputs
+                      unchanged.
 ```
 <!-- END AUTO HELP: refine -->
 

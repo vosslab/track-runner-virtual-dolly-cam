@@ -13,6 +13,7 @@ Full solve runs through multiple stages: camera motion precompute, race-start id
 <!-- BEGIN AUTO HELP: solve -->
 ```text
 usage: track_runner.py solve [-h] [-y | --keep | --upgrade] [-f | -H]
+                             [--bin BIN_FACTOR]
 
 options:
   -h, --help          show this help message and exit
@@ -30,6 +31,12 @@ options:
                       (slow).
   -H, --hermite-only  Stop after Stage 3: Hermite-only solve (fast
                       diagnostics).
+  --bin BIN_FACTOR    Optional spatial downsample applied to camera-motion and
+                      residual stages only. Integer >= 1; default 1 (no bin).
+                      bin_factor > 1 also crops each scaled axis to the
+                      largest FFT-friendly goodbox not exceeding it (origin-
+                      preserving right/bottom crop). Source-frame outputs
+                      unchanged.
 ```
 <!-- END AUTO HELP: solve -->
 

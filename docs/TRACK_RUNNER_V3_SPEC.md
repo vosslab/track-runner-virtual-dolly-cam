@@ -838,10 +838,9 @@ paths. Per-frame geometry lives elsewhere; see "Geometry cache NPZ"
 below and the canonical reference in
 [TR_CONFIG_FILES.md](TR_CONFIG_FILES.md).
 
-### Geometry cache NPZ
+### Torso-box-coords NPZ
 
-Path: `{input}.track_runner.geometry_cache.npz` (replaces the legacy
-`.intervals.json`).
+Path: `{input}.track_runner.torso_box_coords.npz`.
 
 Persists the per-interval blended interval path as four float32 arrays
 per interval (`i<k>_cx`, `i<k>_cy`, `i<k>_w`, `i<k>_h`) plus a JSON

@@ -12,6 +12,27 @@ import ui.base_controller as base_controller_module
 
 
 #============================================
+def _add_bin_arg(parser: argparse.ArgumentParser) -> None:
+	"""Register --bin N on solve and refine subparsers.
+
+	bin_factor is an integer >= 1 applied at the I/O boundary by
+	common_tools.frame_reader.FrameReader. bin_factor=1 (default) is
+	byte-identical to the pre-bin reader. Goodbox crop runs
+	automatically when bin_factor > 1; the safety floor caps per-axis
+	loss at 10% with a one-line warning.
+	"""
+	parser.add_argument(
+		"--bin", dest="bin_factor", type=int, default=1,
+		help=(
+			"Optional spatial downsample applied to camera-motion and "
+			"residual stages only. Integer >= 1; default 1 (no bin). "
+			"bin_factor > 1 also crops each scaled axis to the largest "
+			"FFT-friendly goodbox not exceeding it (origin-preserving "
+			"right/bottom crop). Source-frame outputs unchanged."
+		),
+	)
+
+
 def _add_seed_interval_arg(parser: argparse.ArgumentParser) -> None:
 	"""Register -I/--seed-interval on a subparser.
 
@@ -326,6 +347,7 @@ def parse_args() -> argparse.Namespace:
 	)
 	solve_parser.set_defaults(assume_yes=False, keep_prior=False,
 		upgrade=False, full_solve=False, hermite_only=False)
+	_add_bin_arg(solve_parser)
 
 	# -- refine mode --
 	refine_parser = subparsers.add_parser(
@@ -342,6 +364,7 @@ def parse_args() -> argparse.Namespace:
 		help="Stop after Stage 3: Hermite-only refine (fast diagnostics).",
 	)
 	refine_parser.set_defaults(full_solve=False, hermite_only=False)
+	_add_bin_arg(refine_parser)
 
 	# -- encode mode --
 	encode_parser = subparsers.add_parser(

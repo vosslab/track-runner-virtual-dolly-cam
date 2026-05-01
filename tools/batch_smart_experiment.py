@@ -15,6 +15,9 @@ Outputs:
     regime_summary.md      -- regime classification per video
     {video}_{variant}.analysis.yaml  -- per-variant analysis
     {video}_{variant}.mkv  -- encoded video (phase 2 only)
+
+TODO: upgrade or remove -- references retired geometry_cache.npz (schema v8
+retirement); decide whether to update to current loader or delete.
 """
 
 # Standard Library

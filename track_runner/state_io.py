@@ -8,7 +8,7 @@ a seed is a torso box drawn by a human. The canonical on-disk shape
 Convenience geometry (cx/cy/w/h) is derived in memory from torso_box
 at load time and discarded at write time; it never appears on disk.
 
-Geometry-cache files (NPZ) store the solved per-frame blended interval path
+Torso-box-coords files (NPZ) store the solved per-frame blended interval path
 under the format rule "dense per-frame numeric series -> NPZ". Per
 interval, four float32 arrays (cx/cy/w/h) plus a small JSON manifest
 mapping fingerprint to array_index. No scoring content.
@@ -57,8 +57,8 @@ DIAGNOSTICS_HEADER_KEY = "track_runner_diagnostics"
 # header key and version for in-memory interval dicts (kept for
 # compatibility with existing call sites; not a JSON on-disk
 # header -- the NPZ file carries `schema_version` as its own key).
-# v1 = legacy JSON intervals.json (no longer written). v2 = NPZ
-# geometry_cache.npz and torso_box_coords.npz (current).
+# v1 = legacy JSON intervals.json (no longer written).
+# v2 = NPZ torso_box_coords.npz (current unified artifact).
 INTERVALS_HEADER_KEY = "track_runner_intervals"
 INTERVALS_HEADER_VALUE = 2
 

@@ -31,6 +31,9 @@ Funnel shape, per pass per interval:
                   blob_gate=="accepted")
 
 Output: console two-line print per interval, CSV, JSON sidecar.
+
+TODO: upgrade or remove -- references retired geometry_cache.npz (schema v8
+retirement); decide whether to update to current loader or delete.
 """
 
 # Standard Library

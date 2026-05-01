@@ -131,6 +131,7 @@ class ExecutionContext:
 	debug: bool
 	race_start_interval: tuple = None
 	pre_race_reference: dict = None
+	bin_factor: int = 1
 
 
 #============================================
@@ -727,6 +728,8 @@ def execute_interval_work(
 					all_seeds=context.all_seeds,
 					fps=context.fps,
 					debug=context.debug,
+					bin_factor=context.bin_factor,
+					total_frames=context.video_frame_count,
 				) as pool:
 					future_to_idx = {}
 					for pair_idx in pending_normal:

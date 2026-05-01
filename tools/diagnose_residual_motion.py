@@ -20,6 +20,9 @@ Outputs:
   - Summary montage of all motion masks
   - Short residual video (~100 frames from weakest solver gap)
   - Per-frame statistics table and two-gate experiment summary to stdout
+
+TODO: upgrade or remove -- references retired geometry_cache.npz (schema v8
+retirement); decide whether to update to current loader or delete.
 """
 
 # Standard Library

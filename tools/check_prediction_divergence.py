@@ -23,6 +23,9 @@ Note: divergence is measured relative to the solver's accepted
 output, which is not ground truth. A small value means raw_pred and
 the solver's blended path agree; a large value means raw_pred differs
 materially from what the solver ultimately shipped.
+
+TODO: upgrade or remove -- references retired geometry_cache.npz (schema v8
+retirement); decide whether to update to current loader or delete.
 """
 
 # Standard Library

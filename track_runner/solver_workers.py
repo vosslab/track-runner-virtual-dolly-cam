@@ -31,6 +31,7 @@ import concurrent.futures
 # local repo modules
 import video_io
 import interval_solver
+import common_tools.frame_reader
 
 
 #============================================
@@ -68,6 +69,8 @@ def _worker_init(
 	all_seeds: list,
 	fps: float,
 	debug: bool,
+	bin_factor: int = 1,
+	total_frames: int = 0,
 ) -> None:
 	"""Initialize per-process solver state for a pool worker.
 
@@ -86,9 +89,19 @@ def _worker_init(
 	"""
 	global _WORKER_CONTEXT
 	# reopen the video in this process; the main process's reader cannot
-	# cross the fork/spawn boundary.
-	reader = video_io.VideoReader(video_path)
-	reader.__enter__()
+	# cross the fork/spawn boundary. Use FrameReader so the worker
+	# honors the run's bin_factor; bin_factor=1 short-circuits to
+	# byte-identical reads.
+	if bin_factor > 1:
+		reader = common_tools.frame_reader.FrameReader(
+			video_path=video_path,
+			fps=fps,
+			total_frames=total_frames,
+			bin_factor=bin_factor,
+		)
+	else:
+		reader = video_io.VideoReader(video_path)
+		reader.__enter__()
 	_WORKER_CONTEXT = WorkerContext(
 		reader=reader,
 		scene_transform=scene_transform,
@@ -106,11 +119,20 @@ def _worker_init(
 
 #============================================
 def _worker_atexit() -> None:
-	"""Close the worker's VideoReader on process exit."""
+	"""Close the worker's reader on process exit.
+
+	Both VideoReader and FrameReader expose `close()`; FrameReader
+	does not implement the context-manager protocol, so close
+	unconditionally here.
+	"""
 	global _WORKER_CONTEXT
 	ctx = _WORKER_CONTEXT
 	if ctx is not None and ctx.reader is not None:
-		ctx.reader.__exit__(None, None, None)
+		close = getattr(ctx.reader, "close", None)
+		if close is not None:
+			close()
+		else:
+			ctx.reader.__exit__(None, None, None)
 		_WORKER_CONTEXT = None
 
 
@@ -157,6 +179,8 @@ def make_pool(
 	all_seeds: list,
 	fps: float,
 	debug: bool,
+	bin_factor: int = 1,
+	total_frames: int = 0,
 ) -> concurrent.futures.ProcessPoolExecutor:
 	"""Create a ProcessPoolExecutor configured with `_worker_init`.
 
@@ -192,6 +216,7 @@ def make_pool(
 		initargs=(
 			video_path, scene_transform, motion_track,
 			all_seeds_scene, all_seeds, fps, debug,
+			bin_factor, total_frames,
 		),
 		max_tasks_per_child=1,
 	)

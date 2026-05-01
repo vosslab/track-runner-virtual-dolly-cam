@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Analyze track runner v3 JSON data and produce text report, CSVs, and summary JSON."""
+"""Analyze track runner v3 JSON data and produce text report, CSVs, and summary JSON.
+
+TODO: upgrade or remove -- references retired geometry_cache.npz (schema v8
+retirement); decide whether to update to current loader or delete.
+"""
 
 # Standard Library
 import os

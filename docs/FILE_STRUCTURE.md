@@ -108,7 +108,6 @@ track-runner-virtual-dolly-cam/
 |       |-- test_blob_snap.py
 |       |-- test_camera_motion.py
 |       |-- test_cli_args_encode.py
-|       |-- test_geometry_cache_schema.py
 |       |-- test_heat_map_overlay_smoke.py
 |       |-- test_interval_fingerprint.py
 |       |-- test_race_phases.py

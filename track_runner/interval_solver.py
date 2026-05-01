@@ -1401,6 +1401,8 @@ def _dispatch_blob_pass(
 					all_seeds=context.all_seeds,
 					fps=context.fps,
 					debug=debug,
+					bin_factor=getattr(context, "bin_factor", 1),
+					total_frames=getattr(context, "video_frame_count", 0),
 				) as pool:
 					# Frame span lookup keyed by pair_idx so the pool's
 					# completion order doesn't matter for ETA accuracy.
@@ -1471,6 +1473,7 @@ def solve_all_intervals(
 	upgrade: bool = False,
 	race_start_interval: tuple = None,
 	pre_race_reference: dict = None,
+	bin_factor: int = 1,
 ) -> dict:
 	"""Solve all seed-to-seed intervals and stitch into a full trajectory.
 
@@ -1515,8 +1518,10 @@ def solve_all_intervals(
 			- "intervals": list of interval result dicts
 			- "trajectory": full frame-by-frame tracking state list
 	"""
-	info = reader.get_info()
-	fps = float(info.get("fps", 30.0))
+	# Read fps from the reader's public attribute. Both VideoReader
+	# and FrameReader expose `.fps`; prior get_info() call assumed
+	# VideoReader-only API.
+	fps = float(getattr(reader, "fps", 30.0))
 
 	# convert all seeds to scene coordinates up front so both the in-process
 	# solve path and the pool-worker initializer see identical precomputed
@@ -1580,6 +1585,7 @@ def solve_all_intervals(
 		debug=debug,
 		race_start_interval=race_start_interval,
 		pre_race_reference=pre_race_reference,
+		bin_factor=bin_factor,
 	)
 	interval_results = solve_queue.execute_interval_work(
 		plan, context,

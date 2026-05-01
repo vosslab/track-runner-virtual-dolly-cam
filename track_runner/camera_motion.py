@@ -22,7 +22,24 @@ import rich.progress
 import tr_paths
 import interval_solver
 import tr_video_identity
-import video_io
+import common_tools.frame_reader
+
+
+#============================================
+def _reader_geometry(reader: object) -> tuple[int, int, int]:
+	"""Return (bin_factor, processed_width, processed_height) for any reader.
+
+	FrameReader exposes a `.geometry` attribute via FrameGeometry; other
+	readers (VideoReader, synthetic test stubs) report the source frame
+	dims and bin_factor=1.
+	"""
+	geom = getattr(reader, "geometry", None)
+	if geom is not None:
+		return geom.bin_factor, geom.processed_width, geom.processed_height
+	# fallback: assume bin_factor=1 and use width/height as processed dims
+	w = int(getattr(reader, "width", 0))
+	h = int(getattr(reader, "height", 0))
+	return 1, w, h
 
 
 #============================================
@@ -355,7 +372,15 @@ def _estimate_chunk_pairs(args: tuple) -> tuple:
 		index pair is echoed back so the driver can write the chunk
 		into the right slice without depending on dispatch order.
 	"""
-	video_path, start_idx, end_idx, model_name = args
+	(
+		video_path,
+		start_idx,
+		end_idx,
+		model_name,
+		bin_factor,
+		fps,
+		total_frames,
+	) = args
 	# batched flush into shared counter on either pair-count or
 	# wall-clock thresholds, whichever fires first. Keeps the bar
 	# moving on slow videos without spamming the lock on fast ones.
@@ -377,11 +402,23 @@ def _estimate_chunk_pairs(args: tuple) -> tuple:
 			last_flush[0] = now
 
 	on_pair = _on_pair if counter is not None else None
-	with video_io.VideoReader(video_path) as reader:
+	# Open a FrameReader so workers honor the run's bin_factor.
+	# FrameReader returns processed frames; phase correlation runs at
+	# processed dims and the chunk's dx/dy come back in processed-frame
+	# pixels. The driver upscales at the boundary before persisting.
+	reader = common_tools.frame_reader.FrameReader(
+		video_path=video_path,
+		fps=fps,
+		total_frames=total_frames,
+		bin_factor=bin_factor,
+	)
+	try:
 		dx_c, dy_c, scale_c, quality_c = _measure_pairs_in_range(
 			reader, start_idx, end_idx, model_name,
 			on_pair=on_pair,
 		)
+	finally:
+		reader.close()
 	# flush whatever did not hit a batch boundary
 	if counter is not None and local[0] > 0:
 		with counter.get_lock():
@@ -429,6 +466,8 @@ def _estimate_parallel(
 	total_frames: int,
 	model_name: str,
 	n_chunks: int,
+	bin_factor: int = 1,
+	fps: float = 0.0,
 ) -> tuple:
 	"""Drive the chunked, multi-process measurement pass.
 
@@ -467,7 +506,10 @@ def _estimate_parallel(
 	if not chunk_ranges:
 		return dx_arr, dy_arr, scale_arr, quality_arr
 	tasks = [
-		(video_path, start, end, model_name)
+		(
+			video_path, start, end, model_name,
+			bin_factor, fps, total_frames,
+		)
 		for (start, end) in chunk_ranges
 	]
 	# fresh process per chunk for memory hygiene; matches solver pool.
@@ -583,8 +625,13 @@ def _run_measurement(
 		raise RuntimeError(
 			"n_chunks > 1 requires a reader with a video_path attribute"
 		)
+	# threading bin/fps through so workers can construct a FrameReader
+	# with the same processed-frame contract as the driver.
+	bin_factor, _, _ = _reader_geometry(reader)
+	fps = float(getattr(reader, "fps", 0.0))
 	return _estimate_parallel(
 		video_path, total_frames, model_name, n_chunks,
+		bin_factor=bin_factor, fps=fps,
 	)
 
 
@@ -667,6 +714,13 @@ class FixedZoomEstimator(MotionEstimator):
 		dx_arr, dy_arr, scale_arr, quality_arr = _run_measurement(
 			reader, total_frames, MOTION_MODEL_FIXED, n_chunks,
 		)
+		# at this point dx/dy are in processed-frame pixels. upscale
+		# back to source-frame so MotionTrack persistence keeps its
+		# existing source-frame contract.
+		bin_factor, _, _ = _reader_geometry(reader)
+		if bin_factor != 1:
+			dx_arr = dx_arr * float(bin_factor)
+			dy_arr = dy_arr * float(bin_factor)
 
 		# apply 3-frame median filter to smooth dx, dy
 		dx_arr = self._median_filter_1d(dx_arr, 3)
@@ -741,6 +795,12 @@ class DiscreteZoomEstimator(MotionEstimator):
 		dx_arr, dy_arr, raw_scale, quality_arr = _run_measurement(
 			reader, total, MOTION_MODEL_DISCRETE, n_chunks,
 		)
+		# upscale dx/dy from processed-frame to source-frame pixels.
+		# scale (log-polar) is dimensionless and unchanged.
+		bin_factor, _, _ = _reader_geometry(reader)
+		if bin_factor != 1:
+			dx_arr = dx_arr * float(bin_factor)
+			dy_arr = dy_arr * float(bin_factor)
 
 		# detect zoom jumps using 5-frame sliding window. zoom_levels
 		# is required for the discrete estimator -- silently defaulting
@@ -843,6 +903,12 @@ class ContinuousZoomEstimator(MotionEstimator):
 		dx_arr, dy_arr, raw_scale, quality_arr = _run_measurement(
 			reader, total, MOTION_MODEL_CONTINUOUS, n_chunks,
 		)
+		# upscale dx/dy from processed-frame to source-frame pixels.
+		# scale (log-polar) is dimensionless and unchanged.
+		bin_factor, _, _ = _reader_geometry(reader)
+		if bin_factor != 1:
+			dx_arr = dx_arr * float(bin_factor)
+			dy_arr = dy_arr * float(bin_factor)
 
 		# continuous-zoom quality gate: per-frame, no cross-frame
 		# state; safe to apply to the merged arrays.
@@ -866,16 +932,28 @@ class ContinuousZoomEstimator(MotionEstimator):
 
 
 #============================================
-def _compute_config_fingerprint(config: dict) -> str:
+def _compute_config_fingerprint(
+	config: dict,
+	geometry_extras: dict | None = None,
+) -> str:
 	"""Compute a hash fingerprint of the motion estimation config.
 
 	Args:
 		config: Configuration dict (typically motion.estimator settings).
+		geometry_extras: Optional dict of run-time geometry inputs that
+			affect phase correlation (bin_factor, processed_width,
+			processed_height). Mixed into the hash so cached caches
+			from a different binning miss naturally.
 
 	Returns:
 		Hex string representing the config state.
 	"""
-	config_json = json.dumps(config, sort_keys=True, default=str)
+	# combine config and geometry_extras under disjoint top-level keys
+	# so the hash input is structured and stable.
+	hashed = {"config": config}
+	if geometry_extras:
+		hashed["geometry"] = geometry_extras
+	config_json = json.dumps(hashed, sort_keys=True, default=str)
 	# md5 used for cache fingerprinting, not security
 	fingerprint = hashlib.md5(
 		config_json.encode(), usedforsecurity=False,
@@ -1029,6 +1107,88 @@ def load_motion_cache(
 
 
 #============================================
+def _write_active_marker(
+	input_file: str,
+	motion_model: str,
+	config_hash: str,
+	bin_factor: int,
+	processed_width: int,
+	processed_height: int,
+) -> None:
+	"""Record the camera-motion identity bound to the current solved
+	state. Solve writes the marker after Stage 1; refine reads it.
+	"""
+	tr_paths.ensure_data_dir()
+	marker_path = tr_paths.camera_motion_active_marker_path(input_file)
+	tr_paths.ensure_parent_dir(marker_path)
+	payload = {
+		"motion_model": motion_model,
+		"config_hash": config_hash,
+		"bin_factor": int(bin_factor),
+		"processed_width": int(processed_width),
+		"processed_height": int(processed_height),
+	}
+	# atomic write via sibling temp file + os.replace
+	tmp_path = marker_path + ".tmp"
+	with open(tmp_path, "w") as f:
+		json.dump(payload, f, sort_keys=True)
+	os.replace(tmp_path, marker_path)
+
+
+#============================================
+def load_active_camera_motion_or_fail(input_file: str) -> MotionTrack:
+	"""Load the camera-motion track identified by the active marker.
+
+	Refine entry point. Reads the active marker written by solve, then
+	loads the cache file the marker names. Raises if either the marker
+	or the cache file is missing -- refine never recomputes Stage 1.
+
+	Args:
+		input_file: Path to the input video.
+
+	Returns:
+		MotionTrack from the cache file recorded in the active marker.
+
+	Raises:
+		RuntimeError: If the marker or the cache file it names is
+			missing. Tells the caller to run solve first.
+	"""
+	marker_path = tr_paths.camera_motion_active_marker_path(input_file)
+	if not os.path.isfile(marker_path):
+		# fallback: a pre-active-marker run wrote the legacy
+		# single-file camera_motion.npz. If it exists, accept it as
+		# the active cache so old solve outputs still refine.
+		legacy_path = tr_paths.default_camera_motion_path(input_file)
+		if os.path.isfile(legacy_path):
+			cached = load_motion_cache(legacy_path, expected_config_hash=None)
+			if cached is not None:
+				return cached
+		raise RuntimeError(
+			"Camera-motion cache for this solve is missing."
+			" Run solve first."
+		)
+	with open(marker_path, "r") as f:
+		payload = json.load(f)
+	cache_path = tr_paths.camera_motion_cache_path_for_hash(
+		input_file, payload["motion_model"], payload["config_hash"],
+	)
+	if not os.path.isfile(cache_path):
+		raise RuntimeError(
+			"Camera-motion cache for this solve is missing."
+			" Run solve first."
+		)
+	# load without enforcing the expected hash; the marker already
+	# certifies which file to use.
+	cached = load_motion_cache(cache_path, expected_config_hash=None)
+	if cached is None:
+		raise RuntimeError(
+			"Camera-motion cache for this solve is missing."
+			" Run solve first."
+		)
+	return cached
+
+
+#============================================
 def precompute_camera_motion(
 	reader,
 	config: dict,
@@ -1068,13 +1228,64 @@ def precompute_camera_motion(
 		zoom_type = config.get("camera", {}).get("zoom_type", "fixed")
 		estimator_type = zoom_type
 	motion_model = _estimator_type_to_model(estimator_type)
-	config_fp = _compute_config_fingerprint(estimator_config)
+	# mix run-time geometry (bin_factor, processed_width,
+	# processed_height) into the config fingerprint. Phase
+	# correlation responds differently to different processed dims,
+	# so a cache from a different bin is not reusable.
+	bin_factor, processed_w, processed_h = _reader_geometry(reader)
+	geometry_extras = {
+		"bin_factor": int(bin_factor),
+		"processed_width": int(processed_w),
+		"processed_height": int(processed_h),
+	}
+	config_fp = _compute_config_fingerprint(
+		estimator_config, geometry_extras=geometry_extras,
+	)
 	config_hash = config_fp[:8]
-	cache_path = tr_paths.default_camera_motion_path(input_file)
-	# try to load from cache; stale hash returns None and triggers recompute
-	cached_motion = load_motion_cache(cache_path, config_hash)
+	# Per-hash cache file: each (estimator + bin + processed dims)
+	# combination persists to its own filename inside the per-video
+	# camera-motion cache directory. This preserves better-quality
+	# caches when the user re-runs at a different --bin value.
+	per_hash_path = tr_paths.camera_motion_cache_path_for_hash(
+		input_file, motion_model, config_hash,
+	)
+	cached_motion = load_motion_cache(per_hash_path, config_hash)
 	if cached_motion is not None:
+		# rebind the active marker so refine knows which file solve
+		# selected (cheap; idempotent on repeat solve runs).
+		_write_active_marker(
+			input_file, motion_model, config_hash,
+			bin_factor, processed_w, processed_h,
+		)
 		return cached_motion
+	# Backward compat: a pre-bin run wrote a single legacy file at
+	# `<video>.track_runner.camera_motion.npz`. Probe it; if its
+	# embedded config_hash matches today's hash, reuse it (this is
+	# the common case when bin_factor==1 and no other config has
+	# changed since the file was written). Mismatched legacy files
+	# stay on disk untouched -- they are not deleted, just not used.
+	legacy_path = tr_paths.default_camera_motion_path(input_file)
+	if os.path.isfile(legacy_path):
+		legacy_motion = load_motion_cache(legacy_path, config_hash)
+		if legacy_motion is not None:
+			# legacy file already at the right hash; record the
+			# active marker so refine has an explicit pointer.
+			_write_active_marker(
+				input_file, motion_model, config_hash,
+				bin_factor, processed_w, processed_h,
+			)
+			return legacy_motion
+	# one-line notice on a config-driven cache miss; helps users
+	# understand why a recompute is happening when bin/config changes.
+	if os.path.isfile(legacy_path) or os.path.isdir(
+		tr_paths.camera_motion_cache_dir(input_file)
+	):
+		print(
+			f"  camera-motion cache for this config not found"
+			f" (bin_factor={bin_factor}); computing fresh."
+			f" Existing caches at other settings are preserved."
+		)
+	cache_path = per_hash_path
 	# select the matching estimator implementation
 	if motion_model == MOTION_MODEL_FIXED:
 		estimator = FixedZoomEstimator()
@@ -1093,8 +1304,16 @@ def precompute_camera_motion(
 	motion = estimator.estimate(
 		reader, config, n_chunks=n_chunks,
 	)
-	# save to cache atomically (numpy.savez overwrites in place)
+	# save to cache atomically (numpy.savez overwrites in place).
+	# Per-hash filename means a different bin's cache file (already
+	# on disk for a previous solve) is not overwritten by this run.
 	save_motion_cache(
 		motion, cache_path, motion_model, video_identity, config_hash,
+	)
+	# bind the active marker to this freshly-computed identity so
+	# subsequent refine runs reuse exactly this cache file.
+	_write_active_marker(
+		input_file, motion_model, config_hash,
+		bin_factor, processed_w, processed_h,
 	)
 	return motion

@@ -9,6 +9,9 @@ Outputs:
   - Per-video analysis YAML files in tr_config/
   - Summary CSV to output_smoke/
   - Console report for inclusion in findings doc
+
+TODO: upgrade or remove -- references retired geometry_cache.npz (schema v8
+retirement); decide whether to update to current loader or delete.
 """
 
 # Standard Library

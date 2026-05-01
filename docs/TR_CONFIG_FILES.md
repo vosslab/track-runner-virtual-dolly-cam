@@ -40,8 +40,8 @@ This single rule dictates every file format below.
 | `<video>.track_runner.config.yaml` | YAML | 250-450 B | `tr_config.write_config` | `tr_config.load_config` |
 | `<video>.track_runner.seeds.json` | JSON | 5-50 KB | `state_io.write_seeds` | `state_io.load_seeds` |
 | `<video>.track_runner.interval_scores.json` | JSON | ~100 KB | `state_io.write_solver_diagnostics` | `state_io.load_diagnostics` |
-| `<video>.track_runner.geometry_cache.npz` | NPZ | 100 KB - 3 MB | `state_io.write_geometry_cache` | `state_io.load_geometry_cache` |
-| `<video>.track_runner.debug_paths.npz` | NPZ (opt-in) | 2-8x geometry_cache | `state_io.write_debug_paths` | `state_io.load_debug_paths` |
+| `<video>.track_runner.torso_box_coords.npz` | NPZ | 100 KB - 3 MB | `state_io.write_torso_box_coords` | `state_io.load_torso_box_coords` |
+| `<video>.track_runner.debug_paths.npz` | NPZ (opt-in) | 2-8x torso_box_coords | `state_io.write_debug_paths` | `state_io.load_debug_paths` |
 | `<video>.track_runner.camera_motion.npz` | NPZ | 150-300 KB | `camera_motion.save_motion_cache` | `camera_motion.load_motion_cache` |
 | `<video>.track_runner.agreement_debug.json` | JSON | varies | `state_io.write_agreement_debug_sidecar` | manual |
 | `track_runner.config.yaml` (root) | YAML | ~250 B | hand-edited | merged under every per-video config |
@@ -51,8 +51,8 @@ Function names were retained across the cleanup for callsite
 compatibility even where the on-disk filename changed:
 `load_diagnostics`/`write_solver_diagnostics` operate on
 `interval_scores.json`, and `load_intervals`/`write_intervals` were
-replaced by new `load_geometry_cache`/`write_geometry_cache` because
-the underlying format changed from JSON to NPZ.
+replaced by new `load_torso_box_coords`/`write_torso_box_coords`
+because the underlying format changed from JSON to NPZ.
 
 ## Seeds JSON
 
@@ -116,12 +116,12 @@ observed before cleanup drop to ~5-50 KB in canonical v3 (~150-200 B
 per seed). The one-shot migration tool
 (`tools/_migrate_tr_config.py`) handles existing files.
 
-## Geometry cache NPZ
+## Torso-box-coords NPZ
 
-File: `<video>.track_runner.geometry_cache.npz`. This is the **cache
+File: `<video>.track_runner.torso_box_coords.npz`. This is the **cache
 of solved per-frame trajectory geometry that the encoder consumes.**
-Reader `state_io.load_geometry_cache`, writer
-`state_io.write_geometry_cache`.
+Reader `state_io.load_torso_box_coords`, writer
+`state_io.write_torso_box_coords`.
 
 ### Top-level keys (NPZ)
 
@@ -135,7 +135,7 @@ Reader `state_io.load_geometry_cache`, writer
 
 ### In-memory shape
 
-`load_geometry_cache` reassembles the legacy shape consumers expect:
+`load_torso_box_coords` reassembles the legacy shape consumers expect:
 
 ```python
 {
@@ -232,7 +232,7 @@ the old `.diagnostics.json`.
 ```
 
 No per-frame trajectory data -- trajectory lives in
-`geometry_cache.npz`. This file is exclusively the scoring summary
+`torso_box_coords.npz`. This file is exclusively the scoring summary
 consumed by review tooling.
 
 ## Debug interval paths NPZ (opt-in)
@@ -256,7 +256,7 @@ writer `state_io.write_debug_paths`.
 ### Lifecycle
 
 Each manifest entry's `fingerprint` is intersected against the
-current `geometry_cache.npz` manifest fingerprints on load;
+current `torso_box_coords.npz` manifest fingerprints on load;
 non-matching entries are ignored with a per-interval warning.
 `--debug-tracks` solve atomically overwrites the file with fresh
 tracks.

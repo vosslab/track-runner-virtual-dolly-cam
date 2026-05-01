@@ -151,7 +151,7 @@ Allowed:
 
 ## C11. Limit per frame content to only content that is needed
 
-- per frame stats and metadata are discourged if unused. torso box is x,y,w,h; 
+- per frame stats and metadata are discourged if unused. torso box is x,y,w,h;
   scaling, shifts, and confidence are all fine for camera motion. But we do not
   need things like source frame size or binning, motion model stored for EACH frame
   is it just a bunch of garbage for parameters that are not frame based

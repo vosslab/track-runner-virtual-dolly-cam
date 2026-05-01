@@ -991,18 +991,35 @@ def observe_blob_at(
 		when no residual was computable, no blobs were extracted, or
 		no extracted blob fell inside the corridor.
 	"""
-	pred_cx, pred_cy = pred_center
-	pred_w, pred_h = pred_box
+	# Bin boundary (entry): pred_center/pred_box are source-frame per
+	# the public contract. ROI and blob extraction must run in
+	# processed-frame coordinates, which is the frame the reader
+	# returns. We convert via the reader's FrameGeometry and operate
+	# entirely in processed-frame space until the exit conversion.
+	geometry = getattr(reader, "geometry", None)
+	if geometry is not None and geometry.bin_factor != 1:
+		pred_cx_p, pred_cy_p = geometry.source_to_processed(*pred_center)
+		pred_w_p, pred_h_p = geometry.source_to_processed_delta(*pred_box)
+	else:
+		pred_cx_p, pred_cy_p = pred_center
+		pred_w_p, pred_h_p = pred_box
 
 	# compute ROI from caller's prediction and use it as part of the
 	# cache key so FWD and BWD with divergent raw_pred each get their
 	# own residual. _compute_roi returns a 4-tuple, which is hashable.
+	# All values here are processed-frame; ROI tuples in the cache key
+	# are processed-frame coordinates by contract.
 	frame_w = getattr(reader, "width", 1920)
 	frame_h = getattr(reader, "height", 1080)
-	roi = _compute_roi(pred_cx, pred_cy, pred_h, frame_w, frame_h)
+	roi = _compute_roi(pred_cx_p, pred_cy_p, pred_h_p, frame_w, frame_h)
 	cache_key = (frame_index, roi)
 
-	# fetch or compute cached frame data (raw image-derived only)
+	# fetch or compute cached frame data (raw image-derived only).
+	# Cache key for raw blob lists is "raw_blobs_processed" to make
+	# the processed-frame contract explicit at the read site:
+	# the only public consumer is observe_blob_at, which converts
+	# back to source-frame at exit before constructing
+	# BlobObservation.
 	cached = residual_cache.get(cache_key)
 	if cached is None:
 		# nested cache for raw frame reads (keyed by frame_index alone;
@@ -1015,37 +1032,36 @@ def observe_blob_at(
 		)
 		if residual is None:
 			# negative-result entry avoids re-attempts; holds no decisions
-			residual_cache[cache_key] = {"raw_blobs": []}
+			residual_cache[cache_key] = {"raw_blobs_processed": []}
 			return None
-		# DoG band-pass tuned to the predicted torso width. The ROI
-		# residual is in the same pixel space as pred_w (full-frame
-		# observer; ROIs do not downsample), so the diameter argument
-		# lands in residual pixel space directly. The filter peaks on
-		# torso-scale blobs and suppresses sub-torso speckle that would
-		# otherwise survive the threshold gate.
+		# DoG band-pass tuned to the predicted torso width in
+		# processed-frame pixels. The residual lives in the processed
+		# frame's pixel space; pred_w_p is in the same space, so the
+		# diameter argument lands directly without any further scaling.
 		dog_residual = dog_filter_blob_scale(
-			residual, pred_w, k=DOG_K_FACTOR_DEFAULT,
+			residual, pred_w_p, k=DOG_K_FACTOR_DEFAULT,
 		)
 		dog_residual[validity_mask == 0] = 0.0
 		raw_blobs = extract_frame_blobs(dog_residual, validity_mask, threshold)
-		# restore full-frame coords so downstream math is in pixel space
+		# restore full-frame (processed) coords so corridor math
+		# below works in a single coordinate space.
 		roi_x1 = roi[0]
 		roi_y1 = roi[1]
 		for blob in raw_blobs:
 			blob["centroid_x"] += roi_x1
 			blob["centroid_y"] += roi_y1
-		residual_cache[cache_key] = {"raw_blobs": raw_blobs}
+		residual_cache[cache_key] = {"raw_blobs_processed": raw_blobs}
 		cached = residual_cache[cache_key]
 
-	raw_blobs = cached["raw_blobs"]
+	raw_blobs = cached["raw_blobs_processed"]
 	if not raw_blobs:
 		return None
 
 	# apply corridor filter (uses caller's tangent; NOT stored in cache)
 	tangent = local_tangent if local_tangent is not None else (1.0, 0.0, 0.0, 1.0)
-	corridor_radius = max(1.5 * pred_w, 0.75 * pred_h)
+	corridor_radius = max(1.5 * pred_w_p, 0.75 * pred_h_p)
 	corridor_blobs = filter_blobs_to_corridor(
-		raw_blobs, pred_cx, pred_cy, tangent, corridor_radius,
+		raw_blobs, pred_cx_p, pred_cy_p, tangent, corridor_radius,
 	)
 	if not corridor_blobs:
 		return None
@@ -1055,7 +1071,7 @@ def observe_blob_at(
 	best_score = -1.0
 	for blob in corridor_blobs:
 		score = compute_cue_confidence(
-			blob, pred_cx, pred_cy, pred_w, pred_h, tangent,
+			blob, pred_cx_p, pred_cy_p, pred_w_p, pred_h_p, tangent,
 		)
 		if score > best_score:
 			best_score = score
@@ -1064,10 +1080,26 @@ def observe_blob_at(
 	if best_blob is None:
 		return None
 
+	# Bin boundary (exit): convert centroid back to source-frame and
+	# convert cross_track / along_track distances by the same scale.
+	# Confidence is dimensionless and unchanged.
+	cx_proc = float(best_blob["centroid_x"])
+	cy_proc = float(best_blob["centroid_y"])
+	cross_proc = float(best_blob.get("cross_track", 0.0))
+	along_proc = float(best_blob.get("along_track", 0.0))
+	if geometry is not None and geometry.bin_factor != 1:
+		cx_src, cy_src = geometry.processed_to_source(cx_proc, cy_proc)
+		cross_src, along_src = geometry.processed_to_source_delta(
+			cross_proc, along_proc,
+		)
+	else:
+		cx_src, cy_src = cx_proc, cy_proc
+		cross_src, along_src = cross_proc, along_proc
+
 	observation = BlobObservation(
-		center_pixel=(float(best_blob["centroid_x"]), float(best_blob["centroid_y"])),
-		cross_track=float(best_blob.get("cross_track", 0.0)),
-		along_track=float(best_blob.get("along_track", 0.0)),
+		center_pixel=(cx_src, cy_src),
+		cross_track=cross_src,
+		along_track=along_src,
 		confidence=float(best_score),
 	)
 	return observation
