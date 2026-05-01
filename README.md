@@ -20,6 +20,14 @@ non-negotiable invariants.
 
 Prerequisites: install system and Python dependencies first -- see [docs/INSTALL.md](docs/INSTALL.md).
 
+The canonical run order:
+
+```text
+setup -> seed -> solve -> ( target -> refine ) x N -> encode
+                                ^________|
+                          repeat until scores OK
+```
+
 ```bash
 source source_me.sh
 python3 track_runner/track_runner.py -i VIDEO.mp4 setup
