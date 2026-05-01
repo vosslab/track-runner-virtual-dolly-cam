@@ -123,13 +123,13 @@ class HeatMapOverlay(QObject):
 	current overlay state without polling.
 
 	Args:
-		reader: VideoReader with .width, .height, .frame_count, .read_frame.
+		reader: VideoReader with .width, .height, .frame_count, .read_frame, .fps.
 		scene_transform: SceneTransform passed through to the facade. An
 			identity transform is acceptable; the overlay sets
 			scene_transform_available=False to show the disclosure badge.
 		scene: QGraphicsScene to attach the overlay items to.
 		style: Dict from overlay_config.get_heat_map_style() with keys
-			fixed_max, blend_alpha, half_window, threshold, outline_rgb,
+			fixed_max, blend_alpha, window_seconds, threshold, outline_rgb,
 			legend_text, missing_transform_note.
 		get_pred_fn: Callable(frame_index) -> ((cx, cy), (w, h)) or None.
 		scene_transform_available: True when the scene_transform argument
@@ -351,7 +351,8 @@ class HeatMapOverlay(QObject):
 		result = residual_heat_map.compute_heat_map_roi(
 			self._reader, frame_index, self._scene_transform,
 			pred_center, pred_box,
-			half_window=self._style["half_window"],
+			window_seconds=self._style["window_seconds"],
+			fps=self._reader.fps,
 			threshold=self._style["threshold"],
 			fixed_max=self._style["fixed_max"],
 			blend_alpha=self._style["blend_alpha"],

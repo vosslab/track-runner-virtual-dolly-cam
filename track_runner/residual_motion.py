@@ -50,17 +50,31 @@ DEFAULT_THRESHOLD = 10.0
 # SIFT/blob-detection classic. Empirically, on residual-motion heat
 # maps from this project's running-subject footage, values in 2-5 give
 # much stronger response than 1.1-1.6 -- the tight-band paper settings
-# leave the torso blob too dim relative to sub-torso speckle. Default
-# bumped to 3.0 as the middle of the useful range.
-DOG_K_FACTOR_DEFAULT = 3.0
+# leave the torso blob too dim relative to sub-torso speckle. The
+# torso blob is also long-aspect elliptical (not perfectly round), so
+# a wider DoG band better captures the elongated component shape than
+# the tighter k=1.1-1.6 settings. Empirically k=5 gives noticeably
+# better response than k=3 on this project's footage.
+DOG_K_FACTOR_DEFAULT = 5.0
 
 # Minimum target diameter (pixels) below which the DoG kernel collapses.
 # Callers passing smaller diameters get the input array unchanged.
 DOG_MIN_DIAMETER = 4.0
 
-# half-window for background estimation (4 = 9-frame window).
-# Value inherited from tools/diagnose_residual_motion.py, which is the
-# reference implementation exercised most heavily by the user.
+# Default background-rejection window expressed in seconds. The value
+# 8.0/60.0 is chosen so the canonical 60 fps case yields the legacy
+# half_window=4 (9-frame window) exactly via resolve_half_window, while
+# a 120 fps clip yields half_window=8 (17-frame window) -- the same
+# ~133 ms of background context regardless of frame rate. See the
+# heat-map design doc for why a temporal window matters: at higher
+# frame rates the runner moves less per frame, so a fixed-frame window
+# leaves the runner's pixels overlapping across all neighbors and the
+# nanmedian collapses runner pixels into the background estimate.
+DEFAULT_BACKGROUND_WINDOW_SECONDS = 8.0 / 60.0
+
+# Legacy half-window default (4 = 9-frame window). Retained as an
+# expert override for diagnose tool and tests; production paths must
+# pass (window_seconds, fps) and rely on resolve_half_window.
 DEFAULT_HALF_WINDOW = 4
 
 # upper bound on the per-interval grayscale frame cache. Each cached
@@ -414,15 +428,86 @@ def _compute_roi(
 
 
 #============================================
+def resolve_half_window(
+	window_seconds: float,
+	fps: float,
+	min_half_window: int = 2,
+	max_half_window: int = 12,
+) -> int:
+	"""Convert a temporal background window to a half-window frame count.
+
+	Background-rejection windows are temporal phenomena. The frame count
+	used by the nanmedian stack is a derived quantity from
+	(window_seconds, fps); fixing the frame count instead of the time
+	span couples the algorithm to sampling rate and breaks at high fps.
+
+	Args:
+		window_seconds: Total temporal span of the background window.
+			Must be > 0.
+		fps: Source video frame rate. Must be > 0.
+		min_half_window: Lower clamp; ensures the median has enough
+			neighbors even at very low fps. Default 2.
+		max_half_window: Upper clamp; protects high-fps footage from
+			runaway compute and over-smoothing. Default 12.
+
+	Returns:
+		Integer half-window suitable for compute_residual_for_frame.
+
+	Raises:
+		ValueError: window_seconds <= 0 or fps <= 0.
+	"""
+	if not (window_seconds > 0):
+		raise ValueError(
+			f"window_seconds must be > 0, got {window_seconds}"
+		)
+	if not (fps > 0):
+		raise ValueError(f"fps must be > 0, got {fps}")
+	# half_window = round(window_seconds * fps / 2); clamp to bounds
+	hw = int(round(window_seconds * fps / 2.0))
+	hw = max(min_half_window, min(max_half_window, hw))
+	return hw
+
+
+#============================================
+def _resolve_half_window_for_call(
+	half_window,
+	window_seconds: float,
+	fps,
+	reader,
+):
+	"""Internal: pick the right half_window for a residual call.
+
+	Precedence: explicit half_window override > resolved from
+	(window_seconds, fps). fps may be passed explicitly or pulled from
+	`reader.fps`; missing or non-positive fps raises ValueError. There
+	is no silent fallback to a hard-coded fps.
+	"""
+	if half_window is not None:
+		# expert override path; trust the caller
+		return int(half_window)
+	if fps is None:
+		fps = getattr(reader, "fps", None)
+	if fps is None or not (fps > 0):
+		raise ValueError(
+			"observe_blob_at / compute_residual_for_frame require a "
+			"positive fps. Pass fps explicitly or use a reader with a "
+			f"fps attribute. Got fps={fps!r}."
+		)
+	return resolve_half_window(window_seconds, fps)
+
+
+#============================================
 def compute_residual_for_frame(
 	reader: object,
 	frame_index: int,
 	scene_transform: object,
-	half_window: int = DEFAULT_HALF_WINDOW,
+	half_window: int = None,
 	cache: dict = None,
 	roi: tuple = None,
 	scale_factor: float = 1.0,
 	return_extras: bool = False,
+	window_seconds: float = DEFAULT_BACKGROUND_WINDOW_SECONDS,
+	fps: float = None,
 ) -> tuple:
 	"""Compute residual magnitude and validity mask for one frame.
 
@@ -439,8 +524,16 @@ def compute_residual_for_frame(
 		reader: VideoReader instance.
 		frame_index: Center frame index.
 		scene_transform: SceneTransform instance.
-		half_window: Frames on each side for background (default from
-			DEFAULT_HALF_WINDOW = 4, i.e. 9-frame window).
+		half_window: Expert override for the per-side neighbor count.
+			Production callers should leave this None and pass
+			(window_seconds, fps) so the window stays temporal. When None
+			(default), resolved from (window_seconds, fps) via
+			resolve_half_window. When set explicitly, used as-is.
+		window_seconds: Temporal background window in seconds. Default
+			DEFAULT_BACKGROUND_WINDOW_SECONDS (~0.133 s). Ignored when
+			half_window is explicit.
+		fps: Source video fps. If None, pulled from reader.fps. Required
+			(non-positive raises ValueError) unless half_window is set.
 		cache: Optional dict for frame caching. Modified in place.
 		roi: Optional (x1, y1, x2, y2) bounds to restrict computation.
 			Blob centroids are returned in ROI coordinates; caller must
@@ -459,6 +552,14 @@ def compute_residual_for_frame(
 		The 4-tuple order matches tools/diagnose_residual_motion.py's
 		historical compute_multiframe_flow contract.
 	"""
+	# resolve the temporal window to a frame-count half_window. Explicit
+	# half_window wins; otherwise (window_seconds, fps) -> half_window
+	# via resolve_half_window. fps is pulled from reader.fps when not
+	# passed explicitly; missing/non-positive fps raises ValueError.
+	half_window = _resolve_half_window_for_call(
+		half_window, window_seconds, fps, reader,
+	)
+
 	# guard incompatible option combos
 	if return_extras and roi is not None:
 		raise ValueError("return_extras cannot be combined with roi")
@@ -822,7 +923,9 @@ def observe_blob_at(
 	reader: object,
 	residual_cache: dict,
 	threshold: float = DEFAULT_THRESHOLD,
-	half_window: int = DEFAULT_HALF_WINDOW,
+	half_window: int = None,
+	window_seconds: float = DEFAULT_BACKGROUND_WINDOW_SECONDS,
+	fps: float = None,
 ) -> BlobObservation:
 	"""Return the best blob observation at one frame, or None.
 
@@ -875,7 +978,13 @@ def observe_blob_at(
 			creates this empty per interval and drops it after both
 			passes complete.
 		threshold: Motion intensity threshold for blob extraction.
-		half_window: Half-window count for background subtraction.
+		half_window: Expert override for per-side neighbor count.
+			Production callers should leave this None and pass
+			(window_seconds, fps); the helper resolves the temporal
+			window to a frame count.
+		window_seconds: Temporal background window in seconds. Default
+			DEFAULT_BACKGROUND_WINDOW_SECONDS (~0.133 s).
+		fps: Source video fps. Pulled from reader.fps when None.
 
 	Returns:
 		BlobObservation for the best in-corridor candidate, or None
@@ -902,6 +1011,7 @@ def observe_blob_at(
 		residual, validity_mask = compute_residual_for_frame(
 			reader, frame_index, scene_transform,
 			half_window, frame_read_cache, roi,
+			window_seconds=window_seconds, fps=fps,
 		)
 		if residual is None:
 			# negative-result entry avoids re-attempts; holds no decisions

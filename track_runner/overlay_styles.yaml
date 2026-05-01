@@ -126,7 +126,7 @@ heat_map:
   colormap: jet
   fixed_max: 30.0
   blend_alpha: 0.40
-  half_window: 4
+  window_seconds: 0.133333
   threshold: 10.0
   outline_rgb: [160, 160, 160]
   legend_text: "motion low -> high: blue -> cyan -> yellow -> red"

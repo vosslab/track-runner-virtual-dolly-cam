@@ -20,7 +20,7 @@ Public surface:
 
 #============================================
 # the one and only schema version constant
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 #============================================
 # Schema versions that altered solved-geometry semantics. Membership is
@@ -35,7 +35,11 @@ SCHEMA_VERSION = 8
 # (Hermite recompute is cheap and avoids fingerprint ambiguity).
 # v8 enters the set because the unified torso_box_coords.npz artifact
 # replaces the separate geometry_cache.npz and debug_paths.npz files.
-GEOMETRY_AFFECTING_SCHEMAS: set = {3, 6, 7, 8}
+# v9 enters the set because the residual-motion heat map window resolution
+# changed from fixed-frame-count (half_window=4) to adaptive (window_seconds).
+# This alters the motion-cue observation semantics; cached intervals using the
+# prior frame-count window are invalidated.
+GEOMETRY_AFFECTING_SCHEMAS: set = {3, 6, 7, 8, 9}
 
 
 #============================================
@@ -64,11 +68,11 @@ def latest_geometry_affecting_schema() -> int:
 # considered the layout impact" step on every bump.
 SUPPORTED_ARTIFACT_SCHEMAS: dict = {
 	# diagnostics JSON: shape was migrated from flat (v2) to nested
-	# (v3+) at load time; v3-v8 share the nested shape.
-	"diagnostics": {2, 3, 4, 5, 6, 7, 8},
+	# (v3+) at load time; v3-v9 share the nested shape.
+	"diagnostics": {2, 3, 4, 5, 6, 7, 8, 9},
 	# torso_box_coords.npz: unified artifact (v8) replacing separate
 	# geometry_cache and debug_paths. Layout stable from v8 onward.
-	"torso_box_coords": {8},
+	"torso_box_coords": {8, 9},
 }
 
 

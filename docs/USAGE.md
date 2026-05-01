@@ -21,161 +21,18 @@ Global options must appear before the subcommand.
 
 ## Subcommands
 
-Subcommands are listed below in the order of the canonical workflow:
-`setup` -> `seed` -> `solve` -> `target` -> `refine` (repeat) -> `encode`.
-`edit` and `analyze` are diagnostic/maintenance detours off the main path.
+The eight subcommands -- `setup`, `seed`, `solve`, `target`, `refine`, `edit`, `encode`, `analyze` -- each have a dedicated reference page. See [docs/MODES.md](MODES.md) for the index, or jump directly:
 
-### setup
+- [modes/SETUP.md](modes/SETUP.md) -- per-video camera configuration.
+- [modes/SEED.md](modes/SEED.md) -- place anchor seeds.
+- [modes/SOLVE.md](modes/SOLVE.md) -- full re-solve from scratch.
+- [modes/TARGET.md](modes/TARGET.md) -- add seeds at weak intervals.
+- [modes/REFINE.md](modes/REFINE.md) -- incremental re-solve.
+- [modes/EDIT.md](modes/EDIT.md) -- fix or review existing seeds.
+- [modes/ENCODE.md](modes/ENCODE.md) -- encode the final cropped video.
+- [modes/ANALYZE.md](modes/ANALYZE.md) -- pre-encode diagnostic.
 
-Interactive CLI questionnaire that collects per-video camera configuration
-(zoom type, camera height, camera position, track size) and stores it in
-the per-video config YAML.
-
-```bash
-python track_runner/track_runner.py -i VIDEO.mp4 setup
-```
-
-`setup` is required before `solve`, `refine`, or `target` (the gate is
-enforced in [track_runner/cli.py](../track_runner/cli.py); those modes
-consume setup-only config and will stop and direct you back to `setup` if
-it has not been run). Ideally run `setup` before `seed` as well, so the
-annotation UI has the correct camera/track context from the first seed;
-`seed` itself is not code-gated, but seeding without setup is not the
-recommended order.
-
-### seed
-
-Interactively place seed annotations on the runner. Seeds are anchor frames that establish the runner's identity and position.
-
-```bash
-python track_runner/track_runner.py -i VIDEO.mp4 seed
-```
-
-Options: `-I`/`--seed-interval` sets the interval in seconds between seed frames (default 10).
-
-### solve
-
-Full solve runs through multiple stages: camera motion precompute, race-start identification, Hermite-only pass on all post-race intervals, and optional blob-coupled refinement. Clears all prior results and solves every interval from scratch.
-
-```bash
-python track_runner/track_runner.py -i VIDEO.mp4 solve
-```
-
-Solve modes (choose at most one):
-
-| Flag | Behavior | Wall time |
-| --- | --- | --- |
-| (default) | Stages 1-4: Hermite on all intervals, blob on promoted (low/fair confidence). | ~5-10 min |
-| `-f`, `--full` | Stages 1-5: Hermite on all, then blob on every interval. Maximum fidelity. | ~30-60 min |
-| `-H`, `--hermite-only` | Stages 1-3: Camera motion, race-start, Hermite only. Fast diagnostics, no blob. | ~2-5 min |
-
-Common options:
-
-| Flag | Description |
-| --- | --- |
-| `-y`, `--yes` | Auto-confirm the "clear and re-solve from scratch?" prompt (useful in scripts). |
-
-First run after upgrade note: the first solve run after the 2026-04-25 staging restructure will print "first run after solve restructure: full recompute expected" because the cache namespaces are new. Subsequent runs hit the cache normally. Run `--hermite-only` for a quick first-pass read if full solve time is a concern.
-
-### target
-
-Add seeds at weak interval frames. Shows forward/backward propagation overlays to help place corrections.
-
-```bash
-python track_runner/track_runner.py -i VIDEO.mp4 target
-```
-
-Options:
-
-| Flag | Description |
-| --- | --- |
-| `-s`, `--severity` | Minimum severity of weak intervals to target. |
-| `-I`, `--seed-interval` | Seconds between candidate target frames. |
-| `--race-start` | Target frames around the detected race-start transition for confirmation. Selects interval endpoints and offset-derived frames around `race_start_frame`, prints the race-start contact sheet path, and enters the target UI without automatically inserting seeds. Use this to refine race-start seeds after viewing the contact sheet PNG produced during solve/refine. |
-
-### refine
-
-Incremental re-solve. Only re-solves changed or new intervals; reuses prior
-results for unchanged intervals.
-
-```bash
-python track_runner/track_runner.py -i VIDEO.mp4 refine
-```
-
-`refine` will never force a full solve. If refine detects that a full solve
-is needed, it exits and directs you to run `solve`. Untouched intervals are
-retained per contract C6.
-
-### edit
-
-Fix mistakes in existing seeds, or double-check seeds the scorer flagged
-as inconsistent. Not part of the main pipeline; use it when a seed looks
-wrong or the scoring step surfaced a low-quality seed that needs human
-review.
-
-```bash
-python track_runner/track_runner.py -i VIDEO.mp4 edit
-```
-
-Options: `-s`/`--severity` filters seeds near weak intervals at a threshold (`high`, `medium`, `low`).
-
-### encode
-
-Encode cropped video from the existing trajectory.
-
-```bash
-python track_runner/track_runner.py -i VIDEO.mp4 encode
-```
-
-Options:
-
-| Flag | Description |
-| --- | --- |
-| `-o`, `--output` | Output video file path (auto-generated if omitted). |
-| `--aspect` | Override crop aspect ratio (e.g. `1:1`, `16:9`). |
-| `--keep-temp` | Keep temporary files after encoding. |
-| `-F`, `--encode-filters` | Comma-separated filter pipeline (e.g. `bilateral,hqdn3d`). |
-
-### analyze
-
-Pre-encode diagnostic. `analyze` rebuilds the same trajectory and crop
-rects that `encode` would use, then reports on the result without writing
-a video. It is not required before `encode`; run it when you want a
-stability readout or want to catch problems before kicking off an encode.
-
-```bash
-python track_runner/track_runner.py -i VIDEO.mp4 analyze
-```
-
-What it computes and prints:
-
-- **Crop-path stability** -- smoothness metrics on the crop rectangle
-  trajectory (jitter, velocity, acceleration, deadband behavior), via
-  `encode_analysis.analyze_crop_stability`.
-- **Solver context** -- per-interval confidence, seed density, and
-  agreement summary derived from the solved intervals and seeds, via
-  `encode_analysis.analyze_solver_context`.
-- **Motion regime summary** -- straight / curve / stationary span
-  classification used by smart-mode crop policies, via
-  `regime_classifier.classify_regimes`.
-
-Outputs:
-
-- A formatted console report.
-- A YAML report at
-  `<video>.track_runner.encode_analysis.yaml` (path from
-  `tr_paths.default_encode_analysis_path`). `encode` and most other
-  modes print this path when the file exists, as a diagnostic-awareness
-  hint; they do not read it.
-
-Prerequisites: `analyze` needs `solve` (and therefore `setup`) to have
-produced diagnostics and solved intervals. If either is missing the
-command fails with a "run 'solve' first" message.
-
-Options: `--aspect` overrides the crop aspect ratio (useful for checking
-what a different aspect would look like without re-encoding). See
-[docs/TRACK_RUNNER_ANALYZE_AND_ENCODE.md](TRACK_RUNNER_ANALYZE_AND_ENCODE.md)
-for the deeper reference on analyze and encode.
+The flag tables on those pages are auto-regenerated from `--help` by `tools/refresh_mode_docs.py`.
 
 ## Typical workflow
 

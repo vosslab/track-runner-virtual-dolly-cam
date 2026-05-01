@@ -3,7 +3,7 @@
 Consumer-facing summary of the observation API that the FWD/BWD
 propagator calls once per non-endpoint frame. This is a bridge doc,
 not a source of truth: measurement details live in
-[MOTION_CUE_HEAT_MAP.md](MOTION_CUE_HEAT_MAP.md) and pass-local
+[TR_MOTION_CUE_HEAT_MAP.md](TR_MOTION_CUE_HEAT_MAP.md) and pass-local
 consumption invariants live in
 [FWD_BWD_MODEL_METHODOLOGY.md](FWD_BWD_MODEL_METHODOLOGY.md).
 
@@ -13,6 +13,32 @@ cue-confidence scoring, cache schema, dual-pass invariants.
 
 Subordinate to [TRACK_RUNNER_CONTRACT.md](TRACK_RUNNER_CONTRACT.md);
 on conflict, the contract wins.
+
+## API parameters
+
+`observe_blob_at` is called with the following required parameters:
+
+| Parameter | Type | Meaning |
+| --- | --- | --- |
+| `reader` | VideoReader | Source video reader with an `fps` property |
+| `frame_index` | int | Frame to measure |
+| `pred_center` | tuple | Predicted runner center (x, y) in full-frame pixels |
+| `pred_box` | tuple | Predicted torso box (x1, y1, x2, y2) in full-frame pixels |
+| `local_tangent` | tuple | Unit tangent vector (vx, vy) along motion |
+| `scene_transform` | SceneTransform | Camera stabilization and warping data |
+| `residual_cache` | dict | Per-interval cache (scoped to one seed-to-seed interval) |
+
+Optional parameters for measurement control:
+
+| Parameter | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `window_seconds` | float | 8.0/60.0 | Background window in seconds |
+| `fps` | float or None | reader.fps | Frame rate used to resolve `half_window` |
+| `half_window` | int or None | None | Expert override: skip resolution and use this half-window directly |
+
+Production code paths should pass `window_seconds` and let `fps` be derived
+from the reader. The `half_window` parameter is retained for diagnose tool
+and tests as an expert override; production must not pass it.
 
 ## Pipeline in five steps
 

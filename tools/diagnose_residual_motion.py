@@ -83,9 +83,18 @@ def parse_args() -> argparse.Namespace:
 		"-s", "--scale", dest="scale", type=float, default=1.0,
 		help="Downsample factor, e.g. 0.5 for half resolution (default: 1.0)"
 	)
-	parser.add_argument(
-		"-w", "--window", dest="half_window", type=int, default=4,
-		help="Half-window for background estimation (default: 4 = 9 frames)"
+	# mutually exclusive: legacy --window (half-window frame count) vs new --window-seconds
+	window_group = parser.add_mutually_exclusive_group()
+	window_group.add_argument(
+		"-w", "--window", dest="half_window", type=int, default=None,
+		help="[DEPRECATED] Half-window for background estimation (default: 4 = 9 frames). "
+			"Use --window-seconds instead."
+	)
+	window_group.add_argument(
+		"-W", "--window-seconds", dest="window_seconds", type=float,
+		default=residual_motion.DEFAULT_BACKGROUND_WINDOW_SECONDS,
+		help="Background window in seconds (default: 8.0/60.0 ~0.133 s, "
+			"yields half_window=4 at 60 fps, half_window=8 at 120 fps)"
 	)
 	parser.add_argument(
 		"-k", "--k-factor", dest="k_factor", type=float,
@@ -94,6 +103,12 @@ def parse_args() -> argparse.Namespace:
 			"3-5 works well on this project's residuals (default: 3.0)"
 	)
 	args = parser.parse_args()
+	# emit deprecation warning if legacy --window was used
+	if args.half_window is not None:
+		print(
+			"[deprecated] --window is legacy; prefer --window-seconds",
+			file=sys.stderr
+		)
 	return args
 
 
@@ -893,7 +908,8 @@ def compute_multiframe_flow(
 	frame_index: int,
 	scene_transform: scene_coords.SceneTransform,
 	scale_factor: float,
-	half_window: int = 4,
+	half_window: int = None,
+	window_seconds: float = None,
 ) -> tuple:
 	"""Detect motion at frame N using aligned temporal background subtraction.
 
@@ -906,20 +922,37 @@ def compute_multiframe_flow(
 		frame_index: Center frame index N.
 		scene_transform: SceneTransform for camera compensation.
 		scale_factor: Downsample factor (<1.0 downsamples before warp).
-		half_window: Offsets on each side (default 4 = 9-frame window).
+		half_window: [Legacy] Expert override for frame-count window.
+		window_seconds: [Preferred] Temporal window in seconds; fps resolved
+			from reader.fps.
 
 	Returns:
 		Tuple of (residual_mag, raw_mag_single, validity_mask, display_frame).
 		display_frame is frame N (BGR, possibly resized) for PNG overlay.
 	"""
-	return residual_motion.compute_residual_for_frame(
-		reader=reader,
-		frame_index=frame_index,
-		scene_transform=scene_transform,
-		half_window=half_window,
-		scale_factor=scale_factor,
-		return_extras=True,
-	)
+	# use window_seconds path if provided; fall back to half_window override
+	if window_seconds is not None:
+		return residual_motion.compute_residual_for_frame(
+			reader=reader,
+			frame_index=frame_index,
+			scene_transform=scene_transform,
+			window_seconds=window_seconds,
+			fps=reader.fps,
+			scale_factor=scale_factor,
+			return_extras=True,
+		)
+	else:
+		# legacy half_window path
+		if half_window is None:
+			half_window = residual_motion.DEFAULT_HALF_WINDOW
+		return residual_motion.compute_residual_for_frame(
+			reader=reader,
+			frame_index=frame_index,
+			scene_transform=scene_transform,
+			half_window=half_window,
+			scale_factor=scale_factor,
+			return_extras=True,
+		)
 
 
 #============================================
@@ -932,8 +965,9 @@ def compute_frame_statistics(
 	seeds_list: list,
 	threshold: float,
 	scale_factor: float,
-	half_window: int,
-	k_factor: float,
+	half_window: int = None,
+	k_factor: float = None,
+	window_seconds: float = None,
 ) -> dict:
 	"""Compute per-frame motion statistics using temporal blob tracking.
 
@@ -949,7 +983,9 @@ def compute_frame_statistics(
 		seeds_list: List of seed dicts.
 		threshold: Motion threshold.
 		scale_factor: Downsample factor.
-		half_window: Half-window for background estimation.
+		half_window: [Legacy] Half-window frame count override.
+		k_factor: DoG k-factor.
+		window_seconds: [Preferred] Temporal window in seconds.
 
 	Returns:
 		Dict of statistics for this frame.
@@ -1009,7 +1045,8 @@ def compute_frame_statistics(
 
 	# compute residual for center frame
 	result = compute_multiframe_flow(
-		reader, frame_index, scene_transform, scale_factor, half_window,
+		reader, frame_index, scene_transform, scale_factor,
+		half_window=half_window, window_seconds=window_seconds,
 	)
 	comp_mag, raw_mag, validity_mask, display_frame = result
 	if comp_mag is None:
@@ -1071,7 +1108,8 @@ def compute_frame_statistics(
 
 		# compute residual for neighbor frame
 		neighbor_result = compute_multiframe_flow(
-			reader, fi, scene_transform, scale_factor, half_window,
+			reader, fi, scene_transform, scale_factor,
+			half_window=half_window, window_seconds=window_seconds,
 		)
 		n_mag, _, n_validity, _ = neighbor_result
 		if n_mag is None:
@@ -1834,8 +1872,9 @@ def render_flow_video(
 	threshold: float,
 	scale_factor: float,
 	output_dir: str,
-	half_window: int = 2,
+	half_window: int = None,
 	num_video_frames: int = 100,
+	window_seconds: float = None,
 ) -> None:
 	"""Render a short video of consecutive residual flow heatmaps.
 
@@ -1863,11 +1902,20 @@ def render_flow_video(
 	fourcc = cv2.VideoWriter_fourcc(*"mp4v")
 	writer = cv2.VideoWriter(out_path, fourcc, reader.fps, (out_w, out_h))
 
+	# resolve half_window for display (same logic as main)
+	if window_seconds is not None:
+		hw_display = residual_motion.resolve_half_window(window_seconds, reader.fps)
+	elif half_window is not None:
+		hw_display = half_window
+	else:
+		hw_display = residual_motion.DEFAULT_HALF_WINDOW
+
 	print(f"  rendering flow video: frames {start}-{end} "
-		f"(window={2*half_window+1}) -> {out_path}")
+		f"(window={2*hw_display+1}) -> {out_path}")
 	for fi in range(start, end):
 		result = compute_multiframe_flow(
-			reader, fi, scene_transform, scale_factor, half_window,
+			reader, fi, scene_transform, scale_factor,
+			half_window=half_window, window_seconds=window_seconds,
 		)
 		mag, raw_mag, validity_mask, display_frame = result
 		if mag is None:
@@ -2118,18 +2166,32 @@ def main() -> None:
 	# set up output directory
 	output_dir = os.path.join("output_smoke", "residual_motion")
 	os.makedirs(output_dir, exist_ok=True)
-	num_frames_in_window = 2 * args.half_window + 1
 	print("\nResidual Motion Diagnostic")
 	print("=" * 40)
-	print(f"  settings: threshold={args.threshold}px, "
-		f"scale={args.scale}, "
-		f"window={num_frames_in_window} frames (half={args.half_window})")
-	print(f"  dog_filter: torso-scale band-pass active (k={args.k_factor:.2f}); "
-		f"blob-extraction threshold -t applies to DoG output")
 
-	# load all data
+	# load all data (including reader with fps)
 	result = load_all_data(args.input_file)
 	reader, motion_track, scene_transform, seeds_list, diagnostics, intervals_data = result
+
+	# resolve half_window for display: legacy --window overrides; otherwise use window_seconds + fps
+	use_window_seconds = args.half_window is None
+	if use_window_seconds:
+		# new path: resolve from window_seconds and fps for display only
+		half_window_display = residual_motion.resolve_half_window(args.window_seconds, reader.fps)
+		window_seconds_pass = args.window_seconds
+		half_window_pass = None
+	else:
+		# legacy path: explicit half_window override
+		half_window_display = args.half_window
+		window_seconds_pass = None
+		half_window_pass = args.half_window
+
+	num_frames_in_window = 2 * half_window_display + 1
+	print(f"  settings: threshold={args.threshold}px, "
+		f"scale={args.scale}, "
+		f"window={num_frames_in_window} frames (half={half_window_display})")
+	print(f"  dog_filter: torso-scale band-pass active (k={args.k_factor:.2f}); "
+		f"blob-extraction threshold -t applies to DoG output")
 
 	# select diagnostic frames (two pools)
 	diagnostic_frames = select_diagnostic_frames(
@@ -2152,7 +2214,8 @@ def main() -> None:
 		stats = compute_frame_statistics(
 			frame_info, reader, scene_transform, intervals_data,
 			diagnostics, seeds_list, args.threshold, args.scale,
-			args.half_window, args.k_factor,
+			half_window=half_window_pass, k_factor=args.k_factor,
+			window_seconds=window_seconds_pass,
 		)
 		if stats.get("no_data") or stats.get("no_reference"):
 			print(f"  warning: no data/reference for frame {frame_index}")
@@ -2161,7 +2224,7 @@ def main() -> None:
 		# render diagnostic PNG
 		render_diagnostic_png(
 			stats, seeds_list, intervals_data,
-			args.threshold, args.scale, args.half_window, output_dir,
+			args.threshold, args.scale, half_window_display, output_dir,
 		)
 		all_stats.append(stats)
 
@@ -2176,7 +2239,7 @@ def main() -> None:
 	render_flow_video(
 		reader, scene_transform, seeds_list, intervals_data, diagnostics,
 		midpoint, args.threshold, args.scale, output_dir,
-		args.half_window,
+		half_window=half_window_pass, window_seconds=window_seconds_pass,
 	)
 
 	print(f"\nAll outputs in: {output_dir}/")

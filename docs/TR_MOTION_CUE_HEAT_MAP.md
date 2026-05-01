@@ -67,8 +67,9 @@ For one frame at `frame_index`:
 2. Optionally crop the target to a square ROI centered on the
    caller's predicted position (see "ROI geometry" below).
 3. For each neighbor `frame_index + k` with `k` in
-   `[-half_window, +half_window] \ {0}` (the default is
-   `DEFAULT_HALF_WINDOW = 4`, i.e. a 9-frame window spanning
+   `[-half_window, +half_window] \ {0}` (the default is resolved from
+   `DEFAULT_BACKGROUND_WINDOW_SECONDS` via `resolve_half_window(fps)`,
+   yielding 4 at 60 fps, i.e. a 9-frame window spanning
    `[frame_index - 4, frame_index + 4]`):
    - Read the neighbor frame (BGR, cached separately).
    - Build a 2x3 affine warp matrix that transforms the neighbor
@@ -99,6 +100,43 @@ subsection below](#dog-band-pass-pre-filter).
 If fewer than two aligned neighbors could be collected, the function
 returns `(None, None)`.
 
+## How the default window is resolved from time to frame count
+
+The background window used to be fixed at a frame count
+(`DEFAULT_HALF_WINDOW = 4`, yielding a 9-frame window). This is
+frame-rate agnostic -- a structural mismatch: the underlying algorithm
+depends on a temporal span (how much scene context to reject the runner
+from the median estimate), not a frame count.
+
+The fix is to express the window in seconds and resolve it to a
+frame-count at call time using the source `fps`. The helper function
+`resolve_half_window(window_seconds, fps, min_half_window=2,
+max_half_window=12)` performs the conversion:
+
+- Input: temporal window and frame rate (both required, non-positive
+  values raise `ValueError`).
+- Compute: `half_window = round(window_seconds * fps / 2)`.
+- Clamp: apply `[min_half_window, max_half_window]` bounds to protect
+  against runaway windows at very high fps and under-collapse at very
+  low fps.
+- Output: the frame-count half-window for use in `compute_residual_for_frame`.
+
+The default `window_seconds = 8.0 / 60.0` (approximately 0.133 seconds)
+is chosen so that:
+
+- At 60 fps (legacy varsity-runner footage), it yields exactly
+  `half_window = 4` (9-frame window), preserving byte-for-byte
+  compatibility with on-disk caches and seeded intervals.
+- At 120 fps (slower-runner footage), it yields `half_window = 8`,
+  doubling the window to account for the runner's reduced per-frame
+  motion at higher sample rates.
+- At 30 fps, it yields `half_window = 2`, reducing the window for
+  lower-frame-rate footage.
+- At 240 fps or higher, it clamps to `max_half_window = 12`, protecting
+  against runaway window sizes.
+- At 15 fps or lower, it clamps to `min_half_window = 2`, ensuring the
+  median has enough neighbors even at very low frame rates.
+
 There is no per-frame smoothing, normalization, or contrast
 stretching on the stored field. The only preprocessing is the warp,
 the median, and the absolute difference. Visualization-time scaling
@@ -127,7 +165,7 @@ bounded cache-miss cost.
 ## DoG band-pass pre-filter
 
 Before connected-component extraction, the residual magnitude image is
-band-pass filtered by `dog_filter_blob_scale(mag, diameter, k=3.0)`
+band-pass filtered by `dog_filter_blob_scale(mag, diameter, k=5.0)`
 (in [track_runner/residual_motion.py](../track_runner/residual_motion.py)).
 This step is applied unconditionally inside both `observe_blob_at`
 (production observer) and `compute_heat_map_roi` (GUI overlay) so the
@@ -149,9 +187,13 @@ structures (ground texture, crowd silhouettes) are suppressed. The
 threshold downstream is then `threshold` per `extract_frame_blobs`,
 applied to the DoG-filtered map.
 
-The k-factor default of 3.0 was chosen empirically on this project's
-residuals (k=1.1 is too tight; k=5 is also strong; the diagnose tool's
-`-k` flag exposes the knob for sweeps but production does not).
+The k-factor default of 5.0 was chosen empirically on this project's
+residuals (the paper default k=1.1 and SIFT classic k=1.6 are too tight;
+they leave the torso blob too dim relative to sub-torso speckle). The
+torso blob is long-aspect elliptical (not perfectly round), so a wider
+DoG band better captures the elongated component shape than tighter
+settings. The diagnose tool's `-k` flag exposes the knob for sweeps but
+production uses 5.0 as the stable default.
 
 ## Blob extraction from the heat map
 
@@ -331,31 +373,41 @@ state owned by
   diagnostics carries `no_candidate_blobs: true` when the whole
   interval had zero candidates.
 
-## Why the default window is 9 frames (half_window = 4)
+## Why the default window is about 0.133 seconds
 
 The background estimator is a `nanmedian` over aligned neighbors. Median
 robustness needs enough valid samples per pixel to ignore a single
-moving object passing through, and in practice that means a 9-frame
-window (`+/- 4`): the runner occupies a small fraction of those eight
-neighbors at any given pixel, so the median collapses to the stationary
-background almost everywhere. A 5-frame window (`+/- 2`) leaves the
-median with only four neighbors, which is too few for the median to
-reject the runner from its own path: the runner's pixels enter the
+moving object passing through. The time span matters more than the frame
+count: the runner occupies a small fraction of a ~133 ms window at any
+given pixel in most scenes, so the median collapses to the stationary
+background almost everywhere.
+
+At 60 fps, this default temporal span resolves to a 9-frame window
+(`half_window = 4`): the runner occupies perhaps 2-3 of those eight
+neighbors, leaving enough stationary pixels for the median to work well.
+A shorter window (e.g., a 5-frame window at 60 fps) leaves the median
+with only four neighbors, which is often too few for the median to
+reject the runner from its own path; the runner's pixels enter the
 background estimate and the residual under-reports real motion.
 
-The 9-frame window has always been the value used by
-`tools/diagnose_residual_motion.py`, which is the most-exercised
-reference implementation in this repo. The production path briefly
-shipped with `half_window = 2` (5-frame window) but that was an
-oversight, not a deliberate choice; the production `DEFAULT_HALF_WINDOW`
-was raised to `4` to match diagnose. The 9-frame window should be
-treated as the canonical default for all callers.
+At higher frame rates (e.g., 120 fps on slower-runner footage), the
+runner's per-frame displacement shrinks, so without a time-based window
+the runner would overlap heavily across all neighbors and the median
+would again collapse runner pixels into the background. The time-based
+window fixes this: at 120 fps the same 0.133-second span yields an
+8-frame window, maintaining robust rejection across different
+frame rates.
+
+The temporal default `DEFAULT_BACKGROUND_WINDOW_SECONDS = 8.0 / 60.0`
+was chosen so that the legacy 60 fps canon (9 frames) is preserved
+exactly; it has always been the reference value used by
+`tools/diagnose_residual_motion.py`.
 
 Trade-offs at the default:
 
-- Compute cost scales linearly with window size. A 9-frame window
-  performs four frame reads + warps per target frame (plus the target
-  itself), versus two for a 5-frame window.
+- Compute cost scales linearly with window size. At 60 fps a 9-frame
+  window performs four frame reads + warps per target frame (plus the
+  target itself), versus two for a 5-frame window.
 - Near sequence boundaries the available stack shrinks; the fallback
   condition `len(aligned_stack) < 2` in the library returns
   `(None, None)` and the propagator falls through to pure Hermite.
@@ -369,9 +421,9 @@ Trade-offs at the default:
 
 If you see evidence that the default is the wrong regime for a
 particular scene, prefer re-running `tools/diagnose_residual_motion.py`
-with an explicit `--half-window` override before editing
-`DEFAULT_HALF_WINDOW`. Changing the constant affects every production
-caller and invalidates geometry caches.
+with an explicit `--window-seconds` override before editing
+`DEFAULT_BACKGROUND_WINDOW_SECONDS`. Changing the constant affects every
+production caller and invalidates geometry caches.
 
 ## Version tag
 

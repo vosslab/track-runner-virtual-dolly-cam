@@ -8,9 +8,13 @@ All color accessors return hex strings for UI or BGR tuples for cv2.
 # Standard Library
 import os
 import re
+import warnings
 
 # PIP3 modules
 import yaml
+
+# local repo modules
+import residual_motion
 
 #============================================
 # module-level cache (loaded once per process)
@@ -117,10 +121,22 @@ def _validate_palette(palette: dict) -> None:
 		fixed_max = float(hm.get("fixed_max", 0.0))
 		if fixed_max <= 0.0:
 			raise ValueError(f"heat_map.fixed_max must be positive: {fixed_max}")
-		# half_window must be non-negative integer
-		hw = int(hm.get("half_window", 0))
-		if hw < 0:
-			raise ValueError(f"heat_map.half_window must be >= 0: {hw}")
+		# window_seconds and half_window (legacy): validate migration
+		has_window_seconds = "window_seconds" in hm
+		has_half_window = "half_window" in hm
+		if has_window_seconds and has_half_window:
+			raise ValueError(
+				"heat_map: cannot specify both window_seconds and half_window (legacy). "
+				"Remove half_window from the config."
+			)
+		if has_window_seconds:
+			ws = float(hm["window_seconds"])
+			if ws <= 0.0:
+				raise ValueError(f"heat_map.window_seconds must be > 0: {ws}")
+		if has_half_window:
+			hw = int(hm.get("half_window", 0))
+			if hw <= 0:
+				raise ValueError(f"heat_map.half_window must be > 0: {hw}")
 		# threshold must be non-negative float
 		thr = float(hm.get("threshold", 0.0))
 		if thr < 0.0:
@@ -579,9 +595,14 @@ def get_severity_style(level: str) -> dict:
 def get_heat_map_style() -> dict:
 	"""Get the motion heat-map overlay style block.
 
+	Implements strict migration from legacy half_window (int) to
+	window_seconds (float). If both are present, raises ValueError.
+	If only half_window is present, converts to window_seconds with
+	a deprecation warning (60 fps assumption).
+
 	Returns a dict with keys:
 	  colormap (str), fixed_max (float), blend_alpha (float),
-	  half_window (int), threshold (float), outline_rgb (tuple of 3 ints),
+	  window_seconds (float), threshold (float), outline_rgb (tuple of 3 ints),
 	  legend_text (str), missing_transform_note (str).
 
 	All values are validated in _validate_palette. Defaults are applied
@@ -598,11 +619,29 @@ def get_heat_map_style() -> dict:
 	outline_rgb = (
 		int(outline_raw[0]), int(outline_raw[1]), int(outline_raw[2]),
 	)
+
+	# migration: window_seconds (new) vs half_window (legacy)
+	if "window_seconds" in entry:
+		window_seconds = float(entry["window_seconds"])
+	elif "half_window" in entry:
+		# legacy: convert half_window to window_seconds using 60 fps assumption
+		half_window = int(entry["half_window"])
+		window_seconds = 2 * half_window / 60.0
+		warnings.warn(
+			f"Deprecated heat_map.half_window={half_window} interpreted as "
+			f"window_seconds={window_seconds:.6f}",
+			DeprecationWarning,
+			stacklevel=2,
+		)
+	else:
+		# use residual_motion default when neither is present
+		window_seconds = residual_motion.DEFAULT_BACKGROUND_WINDOW_SECONDS
+
 	style = {
 		"colormap": str(entry.get("colormap", "jet")),
 		"fixed_max": float(entry.get("fixed_max", 30.0)),
 		"blend_alpha": float(entry.get("blend_alpha", 0.40)),
-		"half_window": int(entry.get("half_window", 4)),
+		"window_seconds": window_seconds,
 		"threshold": float(entry.get("threshold", 10.0)),
 		"outline_rgb": outline_rgb,
 		"legend_text": str(entry.get(

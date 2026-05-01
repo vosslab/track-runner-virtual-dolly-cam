@@ -81,7 +81,8 @@ track-runner-virtual-dolly-cam/
 |   |-- batch_smart_experiment.py
 |   |-- benchmark_solver_gates.py
 |   |-- diagnose_residual_motion.py
-|   `-- inspect_score_distribution.py
+|   |-- inspect_score_distribution.py
+|   `-- refresh_mode_docs.py          regenerate `--help` blocks in docs/modes/
 |
 |-- tests/                         pytest suite
 |   |-- conftest.py                pytest configuration
@@ -134,7 +135,17 @@ track-runner-virtual-dolly-cam/
     |-- CHANGELOG.md               chronological change history
     |-- AUTHORS.md                 maintainer information
     |-- INSTALL.md                 setup and dependencies
-    |-- USAGE.md                   subcommand reference and workflow
+    |-- USAGE.md                   workflow narrative, global options, configuration
+    |-- MODES.md                   per-mode (subcommand) index pointing to docs/modes/
+    |-- modes/                     per-mode reference pages with auto-stamped --help
+    |   |-- SETUP.md
+    |   |-- SEED.md
+    |   |-- SOLVE.md
+    |   |-- TARGET.md
+    |   |-- REFINE.md
+    |   |-- EDIT.md
+    |   |-- ENCODE.md
+    |   `-- ANALYZE.md
     |-- CODE_ARCHITECTURE.md       pipeline and module overview
     |-- FILE_STRUCTURE.md          this file
     |-- TRACK_RUNNER_CONTRACT.md   hard invariants (authoritative)

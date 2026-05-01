@@ -128,7 +128,8 @@ def compute_heat_map_roi(
 	scene_transform: object,
 	pred_center: tuple,
 	pred_box: tuple,
-	half_window: int = 4,
+	window_seconds: float = residual_motion.DEFAULT_BACKGROUND_WINDOW_SECONDS,
+	fps: float = 60.0,
 	threshold: float = 10.0,
 	fixed_max: float = 30.0,
 	blend_alpha: float = 0.40,
@@ -151,9 +152,12 @@ def compute_heat_map_roi(
 		pred_center: (cx, cy) predicted torso center in full-frame pixels.
 		pred_box: (w, h) predicted torso box size in pixels. Only h is
 			used (matches solver's ROI rule).
-		half_window: Frames on each side of frame_index used to build
-			the median background. Default 4 (9-frame window) matches
-			`tools/diagnose_residual_motion.py`.
+		window_seconds: Duration in seconds for the background rejection
+			window. Default matches residual_motion.DEFAULT_BACKGROUND_WINDOW_SECONDS.
+			The fps parameter resolves this to a half-window frame count.
+		fps: Frame rate in frames per second. Used to resolve window_seconds
+			to frame counts via residual_motion.resolve_half_window.
+			Default 60.0.
 		threshold: Magnitude boundary. Pixels strictly below render as
 			grayscale of the source frame; pixels at or above render
 			as JET over the color frame.
@@ -197,7 +201,7 @@ def compute_heat_map_roi(
 	# stage 1b: residual calculation.
 	residual_result = residual_motion.compute_residual_for_frame(
 		reader, frame_index, scene_transform,
-		half_window=half_window, cache=None, roi=roi,
+		window_seconds=window_seconds, fps=fps, cache=None, roi=roi,
 	)
 	residual_mag, validity_mask = residual_result
 	if residual_mag is None:
