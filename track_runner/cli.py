@@ -841,22 +841,33 @@ def _run_solve(
 	print("Stage 1: camera motion")
 	t_stage1_start = time.time()
 	# Precompute camera motion for scene coordinate transformation
-	print("precomputing camera motion...")
 	cache_dir = tr_paths.ensure_data_dir()
-	# Stage 1 reader honors --bin via FrameReader. bin_factor=1
-	# returns byte-identical frames.
-	stage1_reader = common_tools.frame_reader.FrameReader(
-		video_path=args.input_file,
-		fps=float(video_info["fps"]),
-		total_frames=int(video_info["frame_count"]),
-		bin_factor=bin_factor,
-	)
-	try:
-		motion_track = camera_motion.precompute_camera_motion(
-			stage1_reader, cfg, args.input_file, video_info, cache_dir
+	if is_refine:
+		# Refine never recomputes camera motion. Camera motion is a
+		# property of the video, not of the seeds, so refine must
+		# load the exact cache solve bound via the active marker.
+		# Missing marker / cache file -> hard error pointing the
+		# user at solve.
+		print("loading camera motion (refine -- not recomputed)...")
+		motion_track = camera_motion.load_active_camera_motion_or_fail(
+			args.input_file,
 		)
-	finally:
-		stage1_reader.close()
+	else:
+		print("precomputing camera motion...")
+		# Stage 1 reader honors --bin via FrameReader. bin_factor=1
+		# returns byte-identical frames.
+		stage1_reader = common_tools.frame_reader.FrameReader(
+			video_path=args.input_file,
+			fps=float(video_info["fps"]),
+			total_frames=int(video_info["frame_count"]),
+			bin_factor=bin_factor,
+		)
+		try:
+			motion_track = camera_motion.precompute_camera_motion(
+				stage1_reader, cfg, args.input_file, video_info, cache_dir
+			)
+		finally:
+			stage1_reader.close()
 	motion_track_data = motion_track
 	scene_transform = scene_coords.SceneTransform(motion_track)
 	# pass the video path through so workers can reopen it in their own
@@ -1699,6 +1710,7 @@ def _mode_refine(
 	_run_solve(
 		args, cfg, seeds, video_info,
 		intervals_path, diag_path, num_workers,
+		is_refine=True,
 	)
 
 

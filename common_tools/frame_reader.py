@@ -270,6 +270,18 @@ class FrameReader:
 		self._seq_cap = None
 		# sequential position tracker (-1 means not initialized)
 		self._seq_pos = -1
+		# Sequential fast-path tracker on the seek capture (`self._cap`).
+		# Populated after a successful read; -1 means "not in a known
+		# sequential state -- next read_frame must seek." Mirrors the
+		# `_next_frame` trick from VideoReader: when the requested
+		# index equals this value, we call `cap.read()` directly with
+		# no `cap.set(...)` call, which is dramatically faster on
+		# codecs/containers where `set(POS_MSEC)` triggers a keyframe
+		# re-seek per frame (observed 100x+ penalty on H.264 mp4).
+		# Strategies 2-5 invalidate the tracker (they reposition the
+		# seek capture or the active source), so the fast-path always
+		# self-disarms when a non-sequential access fires.
+		self._cap_next_index = -1
 
 	#============================================
 	@property

@@ -36,5 +36,8 @@ Refine operates within the same stage pipeline as solve (stages 1-4 default, or 
 If refine exits with a message to run solve, heed it. The reason is usually:
 - A bulk seed change that affects the race-start detection or scene transform in a way that invalidates cached upstream state.
 - Structural changes to the seed set that cannot be handled incrementally.
+- Missing camera-motion cache: refine never recomputes Stage 1. It loads the exact camera-motion cache the prior solve bound via the per-video `active.json` marker, and aborts with "Camera-motion cache for this solve is missing. Run solve first." if the marker or cache file is absent.
+
+**`--bin` and refine:** Refine accepts `--bin` for the per-frame residual stages, but refine never recomputes Stage 1 regardless of `--bin`. Camera motion is a property of the video, not of the seeds, so changing `--bin` between solve and refine does not re-run Stage 1; refine reuses the camera-motion cache the prior solve recorded in `active.json`. To rebind Stage 1 to a different `--bin`, run `solve --bin N` (which rewrites the active marker).
 
 For interval independence philosophy, see contract C5 in [../TRACK_RUNNER_CONTRACT.md](../TRACK_RUNNER_CONTRACT.md).

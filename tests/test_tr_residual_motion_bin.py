@@ -65,8 +65,8 @@ def _patch_inner_pipeline(monkeypatch, blob_proc_xy, blob_score=0.7):
 	"""
 	# compute_residual_for_frame returns (residual, validity_mask)
 	def _stub_residual(reader, frame_index, scene_transform,
-	                   half_window, frame_read_cache, roi,
-	                   window_seconds=None, fps=None):
+		half_window, frame_read_cache, roi,
+		window_seconds=None, fps=None):
 		h = reader.height
 		w = reader.width
 		residual = numpy.zeros((h, w), dtype=numpy.float32)
