@@ -17,7 +17,6 @@ import numpy
 import camera_motion
 import overlay_config
 import scene_coords
-import tr_paths
 import ui.heat_map_overlay as heat_map_overlay_module
 import ui.overlay_items as overlay_items_module
 
@@ -908,12 +907,12 @@ class BaseAnnotationController(QObject):
 	def _load_scene_transform_for_gui(self) -> tuple:
 		"""Find and load the solver's cached motion track for the heat map.
 
-		The cache lives at
-		`<video>.track_runner.camera_motion.npz`, resolved via
-		tr_paths.default_camera_motion_path. If the file loads
-		successfully it becomes the basis for a real SceneTransform;
-		otherwise we return an identity transform so the GUI still
-		opens on fresh videos.
+		Loads the active per-hash camera-motion cache (the file the
+		current solved state binds to via the active.json marker),
+		with a legacy single-file fallback for pre-marker runs. If
+		nothing loads, returns an identity transform so the GUI still
+		opens on fresh videos and the "camera motion not compensated"
+		disclosure badge fires.
 
 		Returns:
 			Tuple (scene_transform, available: bool). available is True
@@ -924,8 +923,12 @@ class BaseAnnotationController(QObject):
 		motion_track = None
 		video_path = getattr(self._reader, "video_path", None)
 		if video_path is not None:
-			cache_path = tr_paths.default_camera_motion_path(video_path)
-			motion_track = camera_motion.load_motion_cache(cache_path)
+			try:
+				motion_track = camera_motion.load_active_camera_motion_or_fail(
+					video_path
+				)
+			except RuntimeError:
+				motion_track = None
 		if motion_track is not None:
 			transform = scene_coords.SceneTransform(motion_track)
 			return (transform, True)

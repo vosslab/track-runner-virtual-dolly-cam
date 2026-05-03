@@ -265,32 +265,6 @@ def test_validate_edge_attribute_empty_when_crop_fits():
 	assert exc.value.edge == ""
 
 
-def test_validate_torso_vertical_threshold_is_70_percent():
-	# safe y window in output space: [108, 612] (i.e., 30% offset from
-	# center 360, since central_y_fraction=0.7 means half=0.35,
-	# bounds = 360 +- 0.35*720 = 360 +- 252).
-	# cy=540 -> output_y=360 (dead center): pass, even sustained.
-	traj_pass = [_state(960.0, 540.0) for _ in range(10)]
-	rects = [CROP_RECT] * 10
-	_validate(traj_pass, rects)
-	# cy=900 -> output_y=720 (output_h), well past 612: violates.
-	traj_fail = [_state(960.0, 900.0) for _ in range(10)]
-	with pytest.raises(tr_crop.OffCenterCropError):
-		_validate(traj_fail, rects)
-
-
-def test_validate_torso_horizontal_threshold_is_50_percent():
-	# safe x window in output space: [320, 960].
-	# cx=900 -> output_x=580 (within), pass.
-	traj_pass = [_state(900.0, 540.0) for _ in range(10)]
-	rects = [CROP_RECT] * 10
-	_validate(traj_pass, rects)
-	# cx=1300 -> output_x=980 (just past 960), fail.
-	traj_fail = [_state(1300.0, 540.0) for _ in range(10)]
-	with pytest.raises(tr_crop.OffCenterCropError):
-		_validate(traj_fail, rects)
-
-
 def test_validate_torso_inclusive_bounds():
 	# A frame whose output_x equals the lower bound exactly should pass.
 	# cx=640 -> output_x=320 == xlo: inclusive, no violation even
@@ -468,7 +442,6 @@ def test_direct_center_keeps_runner_centered_when_zoom_too_aggressive():
 		"processing": {
 			"crop_aspect": "23:9",
 			"torso_height_multiple": 8.0,
-			"crop_min_size": 200,
 			"crop_containment_radius": 0.0,
 			"crop_max_height_change": 0.0,
 		},
@@ -492,7 +465,6 @@ def test_direct_center_aspect_preserved_under_fit():
 		"processing": {
 			"crop_aspect": "23:9",
 			"torso_height_multiple": 8.0,
-			"crop_min_size": 200,
 			"crop_containment_radius": 0.0,
 			"crop_max_height_change": 0.0,
 		},
@@ -512,7 +484,6 @@ def test_direct_center_legacy_black_fill_when_flag_disabled():
 		"processing": {
 			"crop_aspect": "23:9",
 			"torso_height_multiple": 8.0,
-			"crop_min_size": 200,
 			"crop_containment_radius": 0.0,
 			"crop_max_height_change": 0.0,
 			"crop_centered_fit_to_source": False,

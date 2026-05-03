@@ -2246,9 +2246,18 @@ def _mode_encode(
 		# expressed in the current camera's pixel space.
 		if draw_velocity:
 			scene_transform = None
-			motion_track = camera_motion.load_motion_cache(
-				tr_paths.default_camera_motion_path(args.input_file)
-			)
+			# Load the per-hash camera-motion cache that the active
+			# solve binds to (via the active.json marker), with a
+			# legacy single-file fallback for pre-marker runs. Encode
+			# is read-only and degrades gracefully when nothing is
+			# available -- it does not hard-error like refine does.
+			motion_track = None
+			try:
+				motion_track = camera_motion.load_active_camera_motion_or_fail(
+					args.input_file
+				)
+			except RuntimeError:
+				motion_track = None
 			if motion_track is not None:
 				scene_transform = scene_coords.SceneTransform(motion_track)
 			else:

@@ -52,6 +52,7 @@ python3 track_runner/track_runner.py -i VIDEO.mp4 encode
 ### Understand it
 - [docs/TRACK_RUNNER_DESIGN.md](docs/TRACK_RUNNER_DESIGN.md): Design philosophy and signal hierarchy behind the solver.
 - [docs/TRACK_RUNNER_CONTRACT.md](docs/TRACK_RUNNER_CONTRACT.md): Hard invariants the tool and contributors must respect.
+- [docs/ENCODE_DESIGN.md](docs/ENCODE_DESIGN.md): Encode-mode design choices and implementation, including crop trajectory, overlay tiers, and velocity-arrow projection.
 
 ### Develop on it
 - [docs/CODE_ARCHITECTURE.md](docs/CODE_ARCHITECTURE.md): Pipeline overview and module descriptions.

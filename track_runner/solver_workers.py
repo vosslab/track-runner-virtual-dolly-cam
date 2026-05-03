@@ -29,7 +29,6 @@ import dataclasses
 import concurrent.futures
 
 # local repo modules
-import video_io
 import interval_solver
 import common_tools.frame_reader
 
@@ -89,19 +88,16 @@ def _worker_init(
 	"""
 	global _WORKER_CONTEXT
 	# reopen the video in this process; the main process's reader cannot
-	# cross the fork/spawn boundary. Use FrameReader so the worker
-	# honors the run's bin_factor; bin_factor=1 short-circuits to
-	# byte-identical reads.
-	if bin_factor > 1:
-		reader = common_tools.frame_reader.FrameReader(
-			video_path=video_path,
-			fps=fps,
-			total_frames=total_frames,
-			bin_factor=bin_factor,
-		)
-	else:
-		reader = video_io.VideoReader(video_path)
-		reader.__enter__()
+	# cross the fork/spawn boundary. Always use FrameReader so every
+	# worker exposes the same `.geometry` interface regardless of
+	# bin_factor; bin_factor=1 short-circuits the resize and is
+	# byte-identical to the legacy VideoReader path.
+	reader = common_tools.frame_reader.FrameReader(
+		video_path=video_path,
+		fps=fps,
+		total_frames=total_frames,
+		bin_factor=bin_factor,
+	)
 	_WORKER_CONTEXT = WorkerContext(
 		reader=reader,
 		scene_transform=scene_transform,

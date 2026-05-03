@@ -313,7 +313,9 @@ def _measure_pairs_in_range(
 	prev_gray = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2GRAY)
 	frame_h, frame_w = prev_gray.shape
 	hann_window = _build_hann_for_model(model_name, frame_w, frame_h)
-	# walk forward; reader's next_frame fast-path avoids further seeks
+	# walk forward; the reader's sequential fast-path (FrameReader
+	# strategy 0 / VideoReader _next_frame) avoids cap.set() per
+	# frame so consecutive read_frame calls only do one cv2 read.
 	for k in range(n):
 		frame_idx = start_idx + k
 		curr_frame = reader.read_frame(frame_idx)
@@ -1005,8 +1007,13 @@ def save_motion_cache(
 
 	Args:
 		motion_track: MotionTrack instance to save.
-		cache_path: Target NPZ file path
-			(`<video>.track_runner.camera_motion.npz`).
+		cache_path: Target NPZ file path. Production callers pass a
+			per-hash path under
+			`<video>.track_runner.camera_motion/<motion_model>_<config_hash>.npz`
+			so each (estimator + bin_factor + processed dims)
+			identity gets its own file. Legacy callers may still
+			pass the single-file
+			`<video>.track_runner.camera_motion.npz` path.
 		motion_model: One of MOTION_MODEL_{FIXED,DISCRETE,CONTINUOUS}.
 		video_identity: dict carrying at least `basename` and
 			`frame_count`; persisted so a stale cache can be detected

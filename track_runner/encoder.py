@@ -287,10 +287,12 @@ def _point_to_crop_coords(
 	out_w: int,
 	out_h: int,
 ) -> tuple:
-	"""Convert a single full-frame (cx, cy) to crop-space pixel coords.
+	"""Convert a single full-frame (cx, cy) to crop-space float coords.
 
-	Mirrors the center transform inside _box_to_crop_coords without
-	requiring a fake box.
+	Returns floats so downstream callers (e.g. velocity-arrow angle
+	via atan2) keep subpixel precision; truncating here was the root
+	cause of the ~10-15 degree angle quantization in the velocity
+	arrow. Round to int only at the cv2 draw call.
 
 	Args:
 		cx: Full-frame x coordinate.
@@ -300,22 +302,21 @@ def _point_to_crop_coords(
 		out_h: Output frame height in pixels.
 
 	Returns:
-		Tuple of (x, y) integer pixel coordinates in crop-space.
+		Tuple of (x, y) float pixel coordinates in crop-space.
 	"""
 	crop_x, crop_y, crop_w, crop_h = crop_rect
 	scale_x = out_w / crop_w if crop_w > 0 else 1.0
 	scale_y = out_h / crop_h if crop_h > 0 else 1.0
-	x_in_crop = int((cx - crop_x) * scale_x)
-	y_in_crop = int((cy - crop_y) * scale_y)
+	x_in_crop = (cx - crop_x) * scale_x
+	y_in_crop = (cy - crop_y) * scale_y
 	return (x_in_crop, y_in_crop)
 
 
 #============================================
-# Velocity-arrow tunables. The gain amplifies frame-to-frame motion so
-# the arrow is legible at typical fps; the cap fraction prevents
-# screen-spanning arrows on glitched frames when torso width is missing.
+# Velocity-arrow tunables. The gain amplifies frame-to-frame motion
+# so the arrow is legible at typical fps; gain is the only length
+# knob (no cap), so doubling it doubles the visible arrow length.
 _VELOCITY_GAIN = 9.0
-_VELOCITY_FALLBACK_CAP_FRAC = 0.10
 # bounded look-back so a single dropped frame still produces a vector
 # but a long not-in-frame gap does not
 _VELOCITY_LOOKBACK_FRAMES = 5
@@ -581,44 +582,46 @@ def draw_debug_overlay_cropped(
 			overlay_dirty = True
 
 	# velocity arrow: anchored at the current crosshair, pointing in the
-	# direction of motion since the most recent valid prior center
-	if draw_velocity and prev_center is not None and cross_cx is not None and cross_cy is not None:
+	# direction of motion since the most recent valid prior center.
+	# Computed in floats end-to-end so atan2(dy, dx) keeps subpixel
+	# precision; only the final cv2.arrowedLine endpoints are rounded.
+	# No length cap: _VELOCITY_GAIN is the only length knob, so
+	# doubling it visibly doubles the arrow length.
+	if (
+		draw_velocity
+		and prev_center is not None
+		and cx is not None
+		and cy is not None
+	):
 		prev_cx, prev_cy = prev_center
-		# transform both endpoints to crop-space; use the prior point only
-		# for the displacement direction, not as the tail of the arrow
-		prev_x, prev_y = _point_to_crop_coords(
+		# float crop-space coords for both endpoints; the prior point
+		# only contributes its displacement direction, not the tail
+		prev_x_f, prev_y_f = _point_to_crop_coords(
 			prev_cx, prev_cy, crop_rect, out_w, out_h,
 		)
-		dx = cross_cx - prev_x
-		dy = cross_cy - prev_y
+		cur_x_f, cur_y_f = _point_to_crop_coords(
+			cx, cy, crop_rect, out_w, out_h,
+		)
+		dx = cur_x_f - prev_x_f
+		dy = cur_y_f - prev_y_f
 		mag = math.hypot(dx, dy)
 		if mag > 0.5:
 			# scale-amplify so frame-to-frame motion is legible
 			amp_dx = dx * _VELOCITY_GAIN
 			amp_dy = dy * _VELOCITY_GAIN
-			amp_mag = math.hypot(amp_dx, amp_dy)
-			# cap to half the torso-box width when available; otherwise
-			# use a fraction of the smaller output dimension so the cap
-			# is always defined
-			if w is not None and math.isfinite(w) and w > 0:
-				crop_x_, crop_y_, crop_w_, _ = crop_rect
-				scale_x = out_w / crop_w_ if crop_w_ > 0 else 1.0
-				cap = max(8.0, 0.5 * w * scale_x)
-			else:
-				cap = max(8.0, _VELOCITY_FALLBACK_CAP_FRAC * min(out_w, out_h))
-			if amp_mag > cap:
-				amp_dx *= cap / amp_mag
-				amp_dy *= cap / amp_mag
-			tip_x = int(cross_cx + amp_dx)
-			tip_y = int(cross_cy + amp_dy)
-			arrow_color = _source_color(source, seed_status) if cx is not None else (255, 255, 255)
+			tail_pt = (int(round(cur_x_f)), int(round(cur_y_f)))
+			tip_pt = (
+				int(round(cur_x_f + amp_dx)),
+				int(round(cur_y_f + amp_dy)),
+			)
+			arrow_color = _source_color(source, seed_status)
 			# black outline first for contrast, then source-color arrow
 			cv2.arrowedLine(
-				overlay, (cross_cx, cross_cy), (tip_x, tip_y),
+				overlay, tail_pt, tip_pt,
 				(0, 0, 0), max(2, outline_line), tipLength=0.3,
 			)
 			cv2.arrowedLine(
-				overlay, (cross_cx, cross_cy), (tip_x, tip_y),
+				overlay, tail_pt, tip_pt,
 				arrow_color, max(1, med_line), tipLength=0.3,
 			)
 			overlay_dirty = True

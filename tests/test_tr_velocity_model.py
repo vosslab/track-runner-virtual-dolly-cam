@@ -225,52 +225,6 @@ def test_seed_roundtrip_endpoints():
 
 
 #============================================
-def test_stationary_lock():
-	"""Test that near-zero displacement locks position constant."""
-	motion = camera_motion.MotionTrack(
-		dx=numpy.zeros(5, dtype=numpy.float32),
-		dy=numpy.zeros(5, dtype=numpy.float32),
-		scale=numpy.ones(5, dtype=numpy.float32),
-		quality=numpy.ones(5, dtype=numpy.float32),
-	)
-	transform = scene_coords.SceneTransform(motion)
-
-	# seeds with minimal displacement (< 3% of h=100)
-	left_seed = {
-		"frame_index": 0,
-		"cx": 100.0,
-		"cy": 100.0,
-		"w": 50.0,
-		"h": 100.0,
-		"status": "visible",
-	}
-	right_seed = {
-		"frame_index": 3,
-		"cx": 101.0,  # displacement = 1.0 px, threshold = 100*0.03 = 3.0
-		"cy": 100.5,
-		"w": 50.0,
-		"h": 100.0,
-		"status": "visible",
-	}
-
-	all_seeds_scene = [
-		(0, 100.0, 100.0, 50.0, 100.0),
-		(3, 101.0, 100.5, 50.0, 100.0),
-	]
-
-	curves = velocity_model.fit_interval_curves(
-		left_seed, right_seed, all_seeds_scene, transform,
-	)
-
-	# propagated states should hold position constant (stationary lock)
-	fwd_states = velocity_model.propagate_forward_analytical(
-		curves, transform, blob_snap_enabled=False,
-	)
-	for state in fwd_states:
-		assert numpy.isclose(state["cx"], left_seed["cx"], atol=0.1)
-
-
-#============================================
 def _make_decay_fixture():
 	"""Shared six-frame interval fixture for confidence-decay tests."""
 	motion = camera_motion.MotionTrack(

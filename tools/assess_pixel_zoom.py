@@ -8,9 +8,9 @@ tracks drift via reference-anchor estimation, and reports stability metrics.
 
 import argparse
 import csv
+import glob
 import math
 import os
-import sys
 from pathlib import Path
 
 import cv2
@@ -53,10 +53,6 @@ def parse_args():
 	parser.add_argument(
 		"-p", "--pattern", dest="pattern", default="*.mkv",
 		help="Batch file glob pattern (default: *.mkv)"
-	)
-	parser.add_argument(
-		"--crop-analysis", dest="crop_analysis", default="",
-		help="Optional .analysis.yaml path for cross-reference"
 	)
 	parser.add_argument(
 		"--estimator", dest="estimator", default="fourier_mellin",
@@ -158,24 +154,21 @@ def estimate_scale_fourier_mellin(
 		(scale, confidence) where scale in (0.5, 2.0) typical range,
 		confidence in [0, 1] (correlation peak height)
 	"""
-	try:
-		# phase correlation for scale shift in log-polar space
-		# shift_x corresponds to log-scale axis
-		(shift_x, shift_y), response = cv2.phaseCorrelate(lp_prev, lp_curr)
+	# phase correlation for scale shift in log-polar space
+	# shift_x corresponds to log-scale axis
+	(shift_x, shift_y), response = cv2.phaseCorrelate(lp_prev, lp_curr)
 
-		# convert shift_x (pixels in log-polar) to actual scale factor
-		# formula: scale = exp(-shift_x * ln(max_radius) / width)
-		# (negative sign: phase correlation shift is inverted relative to log-polar axis)
-		conversion_const = math.log(max_radius) / width
-		log_scale = -shift_x * conversion_const
-		scale = math.exp(log_scale)
+	# convert shift_x (pixels in log-polar) to actual scale factor
+	# formula: scale = exp(-shift_x * ln(max_radius) / width)
+	# (negative sign: phase correlation shift is inverted relative to log-polar axis)
+	conversion_const = math.log(max_radius) / width
+	log_scale = -shift_x * conversion_const
+	scale = math.exp(log_scale)
 
-		# clamp scale to sensible range
-		scale = max(0.80, min(1.25, scale))
+	# clamp scale to sensible range
+	scale = max(0.80, min(1.25, scale))
 
-		return (scale, response)
-	except Exception:
-		return (1.0, 0.0)
+	return (scale, response)
 
 #============================================
 
@@ -491,6 +484,21 @@ def _compute_side_strip_log_polar(
 
 #============================================
 
+def safe_percentile(data: list, p: int) -> float:
+	"""
+	Safely compute percentile, returning 0.0 for empty data.
+
+	Args:
+		data: list of values
+		p: percentile (0-100)
+
+	Returns:
+		percentile value or 0.0 if data is empty
+	"""
+	return float(numpy.percentile(data, p)) if data else 0.0
+
+#============================================
+
 def compute_zoom_summary(frame_data: list, fps: float) -> dict:
 	"""
 	Compute summary statistics from frame-level zoom data.
@@ -529,9 +537,6 @@ def compute_zoom_summary(frame_data: list, fps: float) -> dict:
 	zoom_cv = zoom_std / zoom_mean if zoom_mean > 0 else 0.0
 
 	# percentiles
-	def safe_percentile(data, p):
-		return float(numpy.percentile(data, p)) if data else 0.0
-
 	zoom_velocity_log_median = safe_percentile(valid_logs, 50)
 	zoom_velocity_log_p95 = safe_percentile(valid_logs, 95)
 	zoom_velocity_log_max = max(abs(v) for v in valid_logs) if valid_logs else 0.0
@@ -625,30 +630,30 @@ def write_zoom_yaml(summary: dict, analysis_info: dict, output_path: str) -> Non
 	# simple YAML writer (no external dependency)
 	lines = []
 	lines.append("pixel_zoom_assessment: 1")
-	lines.append(f"input_file: \"{analysis_info.get('input_file', 'unknown')}\"")
+	lines.append(f"input_file: \"{analysis_info['input_file']}\"")
 	lines.append("")
 
 	# video info
 	lines.append("video_info:")
-	lines.append(f"  width: {analysis_info.get('width', 0)}")
-	lines.append(f"  height: {analysis_info.get('height', 0)}")
-	lines.append(f"  fps: {analysis_info.get('fps', 0):.2f}")
-	lines.append(f"  total_frames: {analysis_info.get('total_frames', 0)}")
+	lines.append(f"  width: {analysis_info['width']}")
+	lines.append(f"  height: {analysis_info['height']}")
+	lines.append(f"  fps: {analysis_info['fps']:.2f}")
+	lines.append(f"  total_frames: {analysis_info['total_frames']}")
 	lines.append("")
 
 	# analysis range
 	lines.append("analysis_range:")
-	lines.append(f"  start_frame: {analysis_info.get('start_frame', 0)}")
-	lines.append(f"  end_frame: {analysis_info.get('end_frame', 0)}")
-	lines.append(f"  frames_analyzed: {analysis_info.get('frames_analyzed', 0)}")
+	lines.append(f"  start_frame: {analysis_info['start_frame']}")
+	lines.append(f"  end_frame: {analysis_info['end_frame']}")
+	lines.append(f"  frames_analyzed: {analysis_info['frames_analyzed']}")
 	lines.append("")
 
 	# algorithm
 	lines.append("algorithm:")
-	lines.append(f"  method: {analysis_info.get('estimator', 'unknown')}")
-	lines.append(f"  weighting: {analysis_info.get('weighting', 'unknown')}")
-	lines.append(f"  confidence_threshold: {analysis_info.get('confidence_threshold', 0.1)}")
-	lines.append(f"  max_radius: {analysis_info.get('max_radius', 0)}")
+	lines.append(f"  method: {analysis_info['estimator']}")
+	lines.append(f"  weighting: {analysis_info['weighting']}")
+	lines.append(f"  confidence_threshold: {analysis_info['confidence_threshold']}")
+	lines.append(f"  max_radius: {analysis_info['max_radius']}")
 	lines.append("")
 
 	# zoom stability
@@ -658,7 +663,7 @@ def write_zoom_yaml(summary: dict, analysis_info: dict, output_path: str) -> Non
 			lines.append(f"  {key}: {value:.6g}")
 		else:
 			lines.append(f"  {key}: {value}")
-	lines.append(f"  failed_frames: {analysis_info.get('failed_frames', 0)}")
+	lines.append(f"  failed_frames: {analysis_info['failed_frames']}")
 
 	with open(output_path, "w") as f:
 		f.write("\n".join(lines) + "\n")
@@ -671,10 +676,10 @@ def format_zoom_report(summary: dict, analysis_info: dict) -> str:
 	"""
 	lines = []
 	lines.append("\n=== pixel zoom assessment ===")
-	lines.append(f"  input:              {Path(analysis_info.get('input_file', 'unknown')).name}")
+	lines.append(f"  input:              {Path(analysis_info['input_file']).name}")
 
-	frames_analyzed = analysis_info.get("frames_analyzed", 0)
-	fps = analysis_info.get("fps", 1.0)
+	frames_analyzed = analysis_info["frames_analyzed"]
+	fps = analysis_info["fps"]
 	duration_s = frames_analyzed / fps if fps > 0 else 0.0
 
 	lines.append(f"  frames:             {frames_analyzed} ({duration_s:.1f}s "
@@ -682,26 +687,26 @@ def format_zoom_report(summary: dict, analysis_info: dict) -> str:
 
 	lines.append("")
 	lines.append("  algorithm:")
-	lines.append(f"    method:           {analysis_info.get('estimator', 'unknown')}")
-	lines.append(f"    weighting:        {analysis_info.get('weighting', 'unknown')}")
+	lines.append(f"    method:           {analysis_info['estimator']}")
+	lines.append(f"    weighting:        {analysis_info['weighting']}")
 
 	lines.append("")
 	lines.append("  zoom stability:")
-	lines.append(f"    range:            {summary.get('zoom_range', 0):.6f}")
-	lines.append(f"    cv:               {summary.get('zoom_cv', 0):.6f}")
-	lines.append(f"    velocity (log) median: {summary.get('zoom_velocity_log_median', 0):.6f}")
-	lines.append(f"    velocity (log) p95:    {summary.get('zoom_velocity_log_p95', 0):.6f}")
-	lines.append(f"    velocity (log) max:    {summary.get('zoom_velocity_log_max', 0):.6f}")
-	lines.append(f"    velocity median:  {summary.get('zoom_velocity_median', 0):.6f}")
-	lines.append(f"    velocity p95:     {summary.get('zoom_velocity_p95', 0):.6f}")
-	lines.append(f"    velocity max:     {summary.get('zoom_velocity_max', 0):.6f}")
-	lines.append(f"    jerk p95:         {summary.get('zoom_jerk_p95', 0):.6f}")
-	lines.append(f"    bounce count:     {summary.get('bounce_count', 0)}")
-	lines.append(f"    bounce rate/s:    {summary.get('bounce_rate_per_s', 0):.3f}")
-	lines.append(f"    drift per min:    {summary.get('drift_per_minute', 0):.6f}")
-	lines.append(f"    correlation mean: {summary.get('correlation_mean', 0):.3f}")
-	lines.append(f"    valid frames:     {summary.get('valid_pair_count', 0)} "
-		f"({summary.get('valid_frame_fraction', 0) * 100:.1f}%)")
+	lines.append(f"    range:            {summary['zoom_range']:.6f}")
+	lines.append(f"    cv:               {summary['zoom_cv']:.6f}")
+	lines.append(f"    velocity (log) median: {summary['zoom_velocity_log_median']:.6f}")
+	lines.append(f"    velocity (log) p95:    {summary['zoom_velocity_log_p95']:.6f}")
+	lines.append(f"    velocity (log) max:    {summary['zoom_velocity_log_max']:.6f}")
+	lines.append(f"    velocity median:  {summary['zoom_velocity_median']:.6f}")
+	lines.append(f"    velocity p95:     {summary['zoom_velocity_p95']:.6f}")
+	lines.append(f"    velocity max:     {summary['zoom_velocity_max']:.6f}")
+	lines.append(f"    jerk p95:         {summary['zoom_jerk_p95']:.6f}")
+	lines.append(f"    bounce count:     {summary['bounce_count']}")
+	lines.append(f"    bounce rate/s:    {summary['bounce_rate_per_s']:.3f}")
+	lines.append(f"    drift per min:    {summary['drift_per_minute']:.6f}")
+	lines.append(f"    correlation mean: {summary['correlation_mean']:.3f}")
+	lines.append(f"    valid frames:     {summary['valid_pair_count']} "
+		f"({summary['valid_frame_fraction'] * 100:.1f}%)")
 
 	return "\n".join(lines)
 
@@ -722,11 +727,9 @@ def run_batch_analysis(
 	Returns:
 		list of result dicts with keys: filename, summary, analysis_info
 	"""
-	from glob import glob
-
 	dir_path = Path(directory)
 	search_path = dir_path / pattern
-	video_files = sorted(glob(str(search_path)))
+	video_files = sorted(glob.glob(str(search_path)))
 
 	if not video_files:
 		print(f"No videos matching {pattern} in {directory}")
@@ -735,18 +738,15 @@ def run_batch_analysis(
 	results = []
 	for video_file in video_files:
 		print(f"\nProcessing: {Path(video_file).name}")
-		try:
-			analysis = analyze_video_zoom(
-				video_file, start_frame, max_frames, weighting, estimator
-			)
-			results.append({
-				"filename": Path(video_file).name,
-				"filepath": video_file,
-				"summary": analysis["summary"],
-				"analysis_info": analysis["analysis_info"],
-			})
-		except Exception as e:
-			print(f"  ERROR: {e}")
+		analysis = analyze_video_zoom(
+			video_file, start_frame, max_frames, weighting, estimator
+		)
+		results.append({
+			"filename": Path(video_file).name,
+			"filepath": video_file,
+			"summary": analysis["summary"],
+			"analysis_info": analysis["analysis_info"],
+		})
 
 	return results
 
@@ -766,12 +766,12 @@ def write_batch_comparison_csv(batch_results: list, output_path: str) -> None:
 	for result in batch_results:
 		row = {
 			"filename": result["filename"],
-			"zoom_range": result["summary"].get("zoom_range", 0),
-			"zoom_cv": result["summary"].get("zoom_cv", 0),
-			"bounce_rate_per_s": result["summary"].get("bounce_rate_per_s", 0),
-			"zoom_velocity_log_p95": result["summary"].get("zoom_velocity_log_p95", 0),
-			"drift_per_minute": result["summary"].get("drift_per_minute", 0),
-			"valid_frame_fraction": result["summary"].get("valid_frame_fraction", 0),
+			"zoom_range": result["summary"]["zoom_range"],
+			"zoom_cv": result["summary"]["zoom_cv"],
+			"bounce_rate_per_s": result["summary"]["bounce_rate_per_s"],
+			"zoom_velocity_log_p95": result["summary"]["zoom_velocity_log_p95"],
+			"drift_per_minute": result["summary"]["drift_per_minute"],
+			"valid_frame_fraction": result["summary"]["valid_frame_fraction"],
 		}
 		rows.append(row)
 
@@ -807,10 +807,10 @@ def format_batch_comparison_table(batch_results: list) -> str:
 	for result in sorted_results:
 		filename = result["filename"]
 		s = result["summary"]
-		zoom_range = s.get("zoom_range", 0)
-		bounce_rate = s.get("bounce_rate_per_s", 0)
-		velocity_p95 = s.get("zoom_velocity_log_p95", 0)
-		valid_frac = s.get("valid_frame_fraction", 0)
+		zoom_range = s["zoom_range"]
+		bounce_rate = s["bounce_rate_per_s"]
+		velocity_p95 = s["zoom_velocity_log_p95"]
+		valid_frac = s["valid_frame_fraction"]
 
 		lines.append(
 			f"| {filename} | {zoom_range:.6f} | {bounce_rate:.3f} | "
@@ -877,8 +877,7 @@ def main():
 		print(f"\n  wrote: {csv_path}")
 
 	else:
-		print("ERROR: Specify either -i (single file) or -d (directory)")
-		sys.exit(1)
+		raise RuntimeError("Specify either -i (single file) or -d (directory)")
 
 #============================================
 

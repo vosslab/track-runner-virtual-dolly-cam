@@ -330,7 +330,6 @@ class CropController:
 		smoothing_attack: float = 0.15,
 		smoothing_release: float = 0.05,
 		max_crop_velocity: float = 30.0,
-		min_crop_size: int = 200,
 		deadband_fraction: float = 0.02,
 		velocity_scale: float = 2.0,
 		displacement_alpha: float = 0.1,
@@ -345,7 +344,6 @@ class CropController:
 			smoothing_attack: Alpha for large corrections (fast response).
 			smoothing_release: Alpha for small corrections (slow drift).
 			max_crop_velocity: Maximum pixels the crop center can move per frame.
-			min_crop_size: Minimum crop height in pixels.
 			deadband_fraction: Fraction of crop size below which errors are ignored.
 			velocity_scale: Multiplier for adaptive velocity cap in smooth mode.
 			displacement_alpha: EMA smoothing factor for subject displacement.
@@ -357,7 +355,6 @@ class CropController:
 		self.smoothing_attack = smoothing_attack
 		self.smoothing_release = smoothing_release
 		self.max_crop_velocity = max_crop_velocity
-		self.min_crop_size = min_crop_size
 		self.deadband_fraction = deadband_fraction
 		self.velocity_scale = velocity_scale
 		self.displacement_alpha = displacement_alpha
@@ -401,8 +398,9 @@ class CropController:
 		# Step 1: use the configured fill ratio directly
 		fill = self.target_fill_ratio
 		desired_crop_h = th / fill
-		# clamp crop height to valid range
-		desired_crop_h = max(self.min_crop_size, min(desired_crop_h, fh))
+		# clamp crop height to frame height (no min floor: torso_height_multiple
+		# is the only zoom knob; a 1-pixel sanity floor protects against zero)
+		desired_crop_h = max(1.0, min(desired_crop_h, fh))
 		# compute crop width from aspect ratio
 		desired_crop_w = desired_crop_h * self.aspect_ratio
 		# clamp crop width to frame width
@@ -602,7 +600,6 @@ def create_crop_controller(
 	smoothing_attack = float(processing.get("crop_smoothing_attack", 0.15))
 	smoothing_release = float(processing.get("crop_smoothing_release", 0.05))
 	max_crop_velocity = float(processing.get("crop_max_velocity", 30.0))
-	min_crop_size = int(processing.get("crop_min_size", 200))
 	velocity_scale = float(processing.get("crop_velocity_scale", 2.0))
 	displacement_alpha = float(processing.get("crop_displacement_alpha", 0.1))
 
@@ -614,7 +611,6 @@ def create_crop_controller(
 		smoothing_attack=smoothing_attack,
 		smoothing_release=smoothing_release,
 		max_crop_velocity=max_crop_velocity,
-		min_crop_size=min_crop_size,
 		velocity_scale=velocity_scale,
 		displacement_alpha=displacement_alpha,
 	)
@@ -655,30 +651,45 @@ def direct_center_crop_trajectory(
 	# parse aspect ratio
 	aspect_str = processing.get("crop_aspect", "1:1")
 	aspect_ratio = parse_aspect_ratio(aspect_str)
-	# torso_height_multiple: crop_height = multiple * tracked torso height
-	# internal fill_ratio = torso_h / crop_h is the reciprocal
+	# torso_height_multiple: zoom knob. See Step 1 below for the
+	# W+H averaging contract that turns this into desired_crop_h.
 	torso_multiple = float(processing.get("torso_height_multiple", 3.33))
-	fill_ratio = 1.0 / torso_multiple
-	# minimum crop dimension from config
-	min_crop_size = int(processing.get("crop_min_size", 200))
-	# smoothing alphas (0 = disabled)
+	# Smoothing alphas. Position smoothing defaults off so the crop
+	# stays glued to the runner; size smoothing defaults ON to avoid
+	# the zoom-bouncing failure mode where per-frame torso-bbox jitter
+	# (typically +/-5%) translates directly into visible breathing in
+	# the encoded crop. 0.15 is a forward-backward EMA alpha
+	# corresponding to a ~6-7 frame time constant; set to 0 in per-video
+	# config to disable size smoothing entirely.
 	alpha_pos = float(processing.get("crop_post_smooth_strength", 0.0))
-	alpha_size = float(processing.get("crop_post_smooth_size_strength", 0.0))
+	alpha_size = float(processing.get("crop_post_smooth_size_strength", 0.15))
 	# final velocity cap on center (0 = no cap)
 	max_velocity = float(processing.get("crop_post_smooth_max_velocity", 0.0))
 
 	# Step 1: extract raw signals from trajectory
 	raw_cx = numpy.empty(n, dtype=float)
 	raw_cy = numpy.empty(n, dtype=float)
+	raw_w = numpy.empty(n, dtype=float)
 	raw_h = numpy.empty(n, dtype=float)
 	for i in range(n):
 		state = full_trajectory[i]
 		raw_cx[i] = state["cx"]
 		raw_cy[i] = state["cy"]
+		raw_w[i] = state["w"]
 		raw_h[i] = state["h"]
 
-	# compute desired crop height from bbox height and fill ratio
-	desired_crop_h = raw_h / fill_ratio
+	# Compute desired crop height from BOTH torso dimensions and average.
+	# Two estimates of how tall the crop should be:
+	#   (a) height-driven: crop_h = torso_multiple * raw_h
+	#   (b) width-driven:  crop_w = torso_multiple * raw_w
+	#                      crop_h = crop_w / aspect_ratio
+	# Both use the same torso_height_multiple knob, so for a runner
+	# whose torso has the canonical W:H aspect they agree exactly.
+	# Averaging makes the zoom robust to either dimension being noisy
+	# on a given frame (e.g. arms swung wide inflates raw_w).
+	desired_h_from_h = raw_h * torso_multiple
+	desired_h_from_w = (raw_w * torso_multiple) / aspect_ratio
+	desired_crop_h = 0.5 * (desired_h_from_h + desired_h_from_w)
 
 	# Step 2: apply forward-backward EMA to position and size
 	if alpha_pos > 0:
@@ -794,11 +805,13 @@ def direct_center_crop_trajectory(
 			if abs(delta) > max_delta:
 				smoothed_h[i] = smoothed_h[i - 1] + math.copysign(max_delta, delta)
 
-	# Step 3: guard minimum positive size
-	smoothed_h = numpy.maximum(smoothed_h, float(min_crop_size))
+	# Step 3: guard against zero/negative size only (1-pixel sanity floor
+	# to keep the containment-radius division safe). torso_height_multiple
+	# is the only zoom knob -- no hidden minimum-crop floor that would
+	# silently override the user's requested zoom.
+	smoothed_h = numpy.maximum(smoothed_h, 1.0)
 	# recompute width from smoothed height
 	smoothed_w = smoothed_h * aspect_ratio
-	# floor width at 1.0
 	smoothed_w = numpy.maximum(smoothed_w, 1.0)
 
 	# Step 3.5: center containment clamp (first pass)
@@ -835,16 +848,12 @@ def direct_center_crop_trajectory(
 	# source. This keeps the runner at the output center -- the failure
 	# mode the legacy black-fill path produced.
 	#
-	# Floor consistency: floor_w = floor_h * aspect_ratio, and
-	# _max_centered_fit_size returns aspect-preserving (fit_w, fit_h).
-	# Therefore fit_w < floor_w iff fit_h < floor_h: when one floor
-	# binds, both bind, and the result (floor_w, floor_h) preserves
-	# aspect. The two `max` calls below are independent for clarity but
-	# never produce an aspect mismatch.
+	# No min-size floor: torso_height_multiple is authoritative. The
+	# 1-pixel sanity floor below only protects downstream divisions
+	# from a degenerate zero-size crop when the runner sits on a
+	# frame edge.
 	fit_to_source = bool(processing.get("crop_centered_fit_to_source", True))
 	if fit_to_source:
-		floor_h = float(min_crop_size)
-		floor_w = floor_h * aspect_ratio
 		for i in range(n):
 			fit_w, fit_h = _max_centered_fit_size(
 				smoothed_cx[i], smoothed_cy[i],
@@ -852,12 +861,8 @@ def direct_center_crop_trajectory(
 				frame_width, frame_height,
 				aspect_ratio,
 			)
-			# honor the existing min_crop_size floor; if the runner
-			# sits exactly on a frame edge the fit collapses to zero
-			# and the floor preserves a usable crop (the validator
-			# from earlier work catches sustained off-center runs).
-			smoothed_w[i] = max(fit_w, floor_w)
-			smoothed_h[i] = max(fit_h, floor_h)
+			smoothed_w[i] = max(fit_w, 1.0)
+			smoothed_h[i] = max(fit_h, 1.0)
 		# second-pass smoothing of the fitted height signal (the fit
 		# step can introduce small frame-to-frame jumps when the
 		# runner moves through varying-distance zones); only run when
@@ -876,8 +881,8 @@ def direct_center_crop_trajectory(
 					frame_width, frame_height,
 					aspect_ratio,
 				)
-				smoothed_w[i] = max(fit_w, floor_w)
-				smoothed_h[i] = max(fit_h, floor_h)
+				smoothed_w[i] = max(fit_w, 1.0)
+				smoothed_h[i] = max(fit_h, 1.0)
 
 	# Step 4: reconstruct rectangles from center + size
 	x = smoothed_cx - smoothed_w / 2.0
@@ -1427,7 +1432,6 @@ def fixed_height_override(
 	crop_rects: list,
 	frame_width: int,
 	frame_height: int,
-	min_crop_size: int = 200,
 ) -> list:
 	"""Replace per-frame crop height with a clip-constant height.
 
@@ -1439,7 +1443,6 @@ def fixed_height_override(
 		crop_rects: Baseline (x, y, w, h) integer crop rectangles.
 		frame_width: Source video frame width in pixels.
 		frame_height: Source video frame height in pixels.
-		min_crop_size: Minimum allowed crop height in pixels.
 
 	Returns:
 		List of (x, y, w, h) integer crop rectangles with constant height.
@@ -1457,8 +1460,8 @@ def fixed_height_override(
 
 	# compute fixed height from median of baseline heights
 	fixed_h = float(numpy.median(base_h))
-	# clamp to valid range
-	fixed_h = max(float(min_crop_size), min(fixed_h, float(frame_height)))
+	# clamp to frame height (1-pixel sanity floor; no min_crop_size override)
+	fixed_h = max(1.0, min(fixed_h, float(frame_height)))
 
 	# compute aspect ratio from median baseline dimensions
 	median_w = float(numpy.median(base_w))
@@ -1498,7 +1501,6 @@ def slow_size_override(
 	frame_height: int,
 	alpha: float = 0.01,
 	deadband_fraction: float = 0.03,
-	min_crop_size: int = 200,
 ) -> list:
 	"""Replace crop height with a heavily smoothed path.
 
@@ -1514,7 +1516,6 @@ def slow_size_override(
 		alpha: EMA coefficient for size smoothing. Lower = heavier.
 		deadband_fraction: Fraction of current height below which
 			frame-to-frame changes are suppressed.
-		min_crop_size: Minimum allowed crop height in pixels.
 
 	Returns:
 		List of (x, y, w, h) integer crop rectangles with smoothed height.
@@ -1555,8 +1556,8 @@ def slow_size_override(
 	else:
 		smoothed_h = deadbanded_h.copy()
 
-	# enforce minimum size
-	smoothed_h = numpy.maximum(smoothed_h, float(min_crop_size))
+	# 1-pixel sanity floor; no min_crop_size override
+	smoothed_h = numpy.maximum(smoothed_h, 1.0)
 	# clamp to frame height
 	smoothed_h = numpy.minimum(smoothed_h, float(frame_height))
 
@@ -1614,7 +1615,6 @@ def apply_experiment_overrides(
 		Crop rectangles with experiment overrides applied.
 	"""
 	processing = config.get("processing", {})
-	min_crop_size = int(processing.get("crop_min_size", 200))
 
 	# step 1: apply center override if requested
 	center_mode = processing.get("exp_center_override")
@@ -1633,7 +1633,6 @@ def apply_experiment_overrides(
 	if size_mode == "fixed_crop":
 		crop_rects = fixed_height_override(
 			crop_rects, frame_width, frame_height,
-			min_crop_size=min_crop_size,
 		)
 	elif size_mode == "slow_size":
 		slow_alpha = float(processing.get("exp_slow_size_alpha", 0.01))
@@ -1642,7 +1641,6 @@ def apply_experiment_overrides(
 			crop_rects, frame_width, frame_height,
 			alpha=slow_alpha,
 			deadband_fraction=slow_deadband,
-			min_crop_size=min_crop_size,
 		)
 
 	return crop_rects

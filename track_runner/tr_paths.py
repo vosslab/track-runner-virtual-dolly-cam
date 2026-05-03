@@ -180,14 +180,22 @@ def default_output_path(input_file: str) -> str:
 #============================================
 
 def default_camera_motion_path(input_file: str) -> str:
-	"""Return the default camera motion cache path for a given input file.
+	"""Return the legacy single-file camera-motion cache path.
 
-	Legacy single-file path. Retained so callers that don't yet pass a
-	`config_hash` keep working at `bin_factor=1`. New callers should
-	prefer `camera_motion_cache_dir` plus
-	`camera_motion_cache_path_for_hash` so different processed-frame
-	identities (e.g. `--bin 1` vs `--bin 4`) each persist their own
-	cache file rather than overwriting one another.
+	Backward-compatibility / diagnostic-tool path only. Production
+	loaders should call
+	`camera_motion.load_active_camera_motion_or_fail`, which reads
+	the active.json marker and resolves to the per-hash cache file
+	via `camera_motion_cache_path_for_hash`. The active path lets
+	`--bin 1` and `--bin 4` runs each persist their own cache
+	without overwriting one another, and binds refine to the exact
+	cache identity that solve produced.
+
+	This function still exists because (1) refine's load path falls
+	back to the legacy file when no marker is present, so old solve
+	outputs keep refining; and (2) standalone diagnostic tools under
+	`tools/` read this path directly. Do not add new production
+	call sites here.
 
 	Args:
 		input_file: Input media file path.

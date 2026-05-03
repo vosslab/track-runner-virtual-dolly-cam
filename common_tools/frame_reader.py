@@ -357,6 +357,17 @@ class FrameReader:
 	def read_frame(self, frame_index: int) -> numpy.ndarray | None:
 		"""Read a single frame by index, trying multiple strategies.
 
+		Strategy 0 (sequential fast-path): when `frame_index ==
+		self._cap_next_index`, call `cap.read()` directly with no
+		`cap.set(...)` call. On many codecs/containers `set(POS_MSEC)`
+		causes a keyframe re-seek per frame; the fast-path is the
+		main reason VideoReader's sequential reads were so much
+		faster than FrameReader's. Strategies 1-5 are unchanged and
+		still fire for non-sequential access; any of them that
+		repositions or re-opens the seek capture invalidates the
+		tracker so the fast-path self-disarms when a scattered
+		access fires.
+
 		Args:
 			frame_index: Target frame index (0-based).
 
@@ -365,15 +376,43 @@ class FrameReader:
 		"""
 		results = {}
 
+		# strategy 0: sequential fast-path. No `cap.set(...)`; just
+		# `cap.read()`. The seek capture's position is known
+		# (`self._cap_next_index`) only when the previous read
+		# succeeded via strategy 0 or strategy 1. Anything that
+		# reseats the capture (strategies 2/3, the remux path,
+		# `__init__` initialization to -1) invalidates the tracker.
+		if (
+			self._cap_next_index >= 0
+			and frame_index == self._cap_next_index
+		):
+			ret, frame = self._cap.read()
+			if ret:
+				results["seq_fast"] = "OK"
+				# advance tracker for the next call
+				self._cap_next_index = frame_index + 1
+				self._print_debug(frame_index, results)
+				return self._apply_bin(frame)
+			# fast-path failed: tracker was wrong (EOF or hiccup);
+			# fall through to the existing seek strategies.
+			self._cap_next_index = -1
+			results["seq_fast"] = "FAIL"
+
 		# strategy 1: seek by milliseconds
 		time_msec = (frame_index / self._fps) * 1000.0
 		self._cap.set(cv2.CAP_PROP_POS_MSEC, time_msec)
 		ret, frame = self._cap.read()
 		if ret:
 			results["seek_msec"] = "OK"
+			# strategy 1 succeeded: arm the fast-path for the
+			# next consecutive index.
+			self._cap_next_index = frame_index + 1
 			self._print_debug(frame_index, results)
 			return self._apply_bin(frame)
 		results["seek_msec"] = "FAIL"
+		# any failed strategy below repositions or re-opens the
+		# capture; invalidate the fast-path tracker.
+		self._cap_next_index = -1
 
 		# strategy 2: seek by frame index
 		self._cap.set(cv2.CAP_PROP_POS_FRAMES, frame_index)

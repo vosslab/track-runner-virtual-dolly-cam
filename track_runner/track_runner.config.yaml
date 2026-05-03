@@ -6,12 +6,12 @@ processing:
   crop_mode: direct_center
   crop_aspect: '16:9'
   # crop height = torso_height_multiple x tracked torso height
-  # larger number = more surroundings. 8 is a wide, forgiving default
+  # (averaged with the width-driven equivalent crop_h = multiple * raw_w / aspect).
+  # Larger number = more surroundings. 8 is a wide, forgiving default.
   torso_height_multiple: 8
-  # minimum crop height in pixels; prevents tiny crops when the runner
-  # is far from camera. 480 leaves headroom before torso_height_multiple
-  # gets clamped
-  crop_min_size: 480
+  # forward-backward EMA on the desired crop height; prevents the
+  # zoom from bouncing on per-frame torso-bbox jitter. 0 disables.
+  crop_post_smooth_size_strength: 0.15
   # explicit output pixel resolution; must match crop_aspect.
   # omit to use the median of all crop rectangles (auto)
   output_resolution: [1920, 1080]
