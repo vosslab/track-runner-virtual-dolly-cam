@@ -114,8 +114,7 @@ def _divergence_for_pass(
 	num = len(raw_pred)
 	for i in range(num):
 		is_endpoint = (i == 0) or (i == num - 1)
-		is_stat = bool(raw_pred[i][6])
-		if is_endpoint or is_stat:
+		if is_endpoint:
 			continue
 		eligible += 1
 		frame_index = int(raw_pred[i][0])

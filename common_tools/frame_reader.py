@@ -398,30 +398,34 @@ class FrameReader:
 			self._cap_next_index = -1
 			results["seq_fast"] = "FAIL"
 
-		# strategy 1: seek by milliseconds
-		time_msec = (frame_index / self._fps) * 1000.0
-		self._cap.set(cv2.CAP_PROP_POS_MSEC, time_msec)
+		# strategy 1: seek by frame index. POS_FRAMES is faster than
+		# POS_MSEC on H.264 mp4/MOV scattered reads (POS_MSEC tends to
+		# force a keyframe re-seek per call). For sequential reads the
+		# strategy 0 fast-path above already skips this entirely.
+		self._cap.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
 		ret, frame = self._cap.read()
 		if ret:
-			results["seek_msec"] = "OK"
+			results["seek_frame"] = "OK"
 			# strategy 1 succeeded: arm the fast-path for the
 			# next consecutive index.
 			self._cap_next_index = frame_index + 1
 			self._print_debug(frame_index, results)
 			return self._apply_bin(frame)
-		results["seek_msec"] = "FAIL"
+		results["seek_frame"] = "FAIL"
 		# any failed strategy below repositions or re-opens the
 		# capture; invalidate the fast-path tracker.
 		self._cap_next_index = -1
 
-		# strategy 2: seek by frame index
-		self._cap.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
+		# strategy 2: seek by milliseconds (fallback for codecs where
+		# POS_FRAMES does not honor random access).
+		time_msec = (frame_index / self._fps) * 1000.0
+		self._cap.set(cv2.CAP_PROP_POS_MSEC, time_msec)
 		ret, frame = self._cap.read()
 		if ret:
-			results["seek_frame"] = "OK"
+			results["seek_msec"] = "OK"
 			self._print_debug(frame_index, results)
 			return self._apply_bin(frame)
-		results["seek_frame"] = "FAIL"
+		results["seek_msec"] = "FAIL"
 
 		# strategy 3: reopen seek capture and seek by frame index
 		self._cap.release()

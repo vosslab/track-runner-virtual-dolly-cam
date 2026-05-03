@@ -250,4 +250,4 @@ About 150 LOC in `analyze_plots.py`, ~30 LOC of CLI/wiring, ~80 LOC of tests, ~5
 
 ## Next step after approval
 
-If approved, implement in the milestone order above. Each milestone is a separate commit so reviewers can step through. M1 is a no-op skeleton (paths exist, panels empty) — a useful starting point because it lets the CLI wiring land independently of any rendering choices.
+If approved, implement in the milestone order above. Each milestone is a separate commit so reviewers can step through. M1 is a no-op skeleton (paths exist, panels empty) - a useful starting point because it lets the CLI wiring land independently of any rendering choices.

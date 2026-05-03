@@ -169,8 +169,8 @@ unchanged; only the read site changes.
   sidecar (`debug_paths.npz` on disk) when solve runs with
   `--debug-paths`.
 - Per-frame extras (`conf`, `source`, `blend_flag`, `occlusion_risk`,
-  `blob_gate`, `stationary_lock`) -- not read by production code from
-  a loaded cache; dropped at write.
+  `blob_gate`) -- not read by production code from a loaded cache;
+  dropped at write.
 
 ### Fingerprint format
 

@@ -232,7 +232,7 @@ def _replay_frame_funnel(
 	Args:
 		raw_prev, raw_curr, raw_next: raw_pred tuples from
 			_compute_raw_pred_forward/_backward, shape
-			(frame_index, cx, cy, w, h, conf, is_stationary).
+			(frame_index, cx, cy, w, h, conf).
 		reader, scene_transform, residual_cache: same arguments the
 			solver passes to observe_blob_at.
 
@@ -241,9 +241,9 @@ def _replay_frame_funnel(
 		proximity_ok (bool or None), direction_ok, path_ok, accepted,
 		gate_outcome (str: "absent", "rejected", "accepted").
 	"""
-	frame_index, raw_cx, raw_cy, w, h, _conf, _is_stat = raw_curr
-	_, raw_prev_cx, raw_prev_cy, _, _, _, _ = raw_prev
-	_, raw_next_cx, raw_next_cy, _, _, _, _ = raw_next
+	frame_index, raw_cx, raw_cy, w, h, _conf = raw_curr
+	_, raw_prev_cx, raw_prev_cy, _, _, _ = raw_prev
+	_, raw_next_cx, raw_next_cy, _, _, _ = raw_next
 
 	# local motion vectors in iteration order (duplicated from
 	# velocity_model._build_snap_pred so no solver change is required)
@@ -635,7 +635,7 @@ def _save_frame_png(
 	render path recomputes residual here. Duplicate work is acceptable
 	for diagnostic renders, which are bounded by the user's --limit.
 	"""
-	_fi, raw_cx, raw_cy, pred_w, pred_h, _conf, _is_stat = raw_curr
+	_fi, raw_cx, raw_cy, pred_w, pred_h, _conf = raw_curr
 	frame_w = getattr(reader, "width", 1920)
 	frame_h = getattr(reader, "height", 1080)
 	roi = residual_motion._compute_roi(
@@ -751,11 +751,10 @@ def replay_pass(
 	num = len(raw_pred)
 	for i in range(num):
 		is_endpoint = (i == 0) or (i == num - 1)
-		is_stat = bool(raw_pred[i][6])
-		# solver's skip rule: endpoints, stationary-lock, or reader
-		# unavailable. Reader availability is a whole-interval property;
-		# if the tool got this far, the reader is real.
-		if is_endpoint or is_stat:
+		# solver's skip rule: endpoints or reader unavailable. Reader
+		# availability is a whole-interval property; if the tool got
+		# this far, the reader is real.
+		if is_endpoint:
 			continue
 		# blended_lookup, when provided, maps frame_index -> (cx, cy).
 		# Skip the override (treat as pure real-blob run) when the

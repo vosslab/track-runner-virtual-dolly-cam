@@ -1327,8 +1327,9 @@ def _dispatch_blob_pass(
 		return
 
 	stage_start = time.time()
+	bin_factor = int(getattr(context, "bin_factor", 1))
 	print(f"\n{stage_name}: blob pass ({len(pair_indices)} of "
-		f"{len(interval_results)} intervals)")
+		f"{len(interval_results)} intervals, bin={bin_factor})")
 
 	# build work items: (pair_idx, seed_start, seed_end, blob_snap_enabled=True)
 	tasks = []
@@ -1368,6 +1369,17 @@ def _dispatch_blob_pass(
 				for pair_idx, seed_start, seed_end, blob_snap_enabled in tasks:
 					if run_control is not None and run_control.quit_requested:
 						break
+					t_iv = time.time()
+					n_frames = (
+						int(seed_end["frame_index"])
+						- int(seed_start["frame_index"])
+					)
+					print(
+						f"  blob start: pair_idx={pair_idx} "
+						f"frames {seed_start['frame_index']}-"
+						f"{seed_end['frame_index']} ({n_frames} frames)",
+						flush=True,
+					)
 					result_blob = solve_interval_analytical(
 						seed_start, seed_end, context.scene_transform,
 						context.all_seeds_scene, context.fps,
@@ -1376,6 +1388,11 @@ def _dispatch_blob_pass(
 						motion_track=context.motion_track,
 						all_seeds=context.all_seeds,
 						reader=context.reader,
+					)
+					print(
+						f"  blob done:  pair_idx={pair_idx} "
+						f"elapsed={time.time() - t_iv:.2f}s",
+						flush=True,
 					)
 					# overwrite Stage 3 result with blob result
 					fingerprint = compute_interval_fingerprint(

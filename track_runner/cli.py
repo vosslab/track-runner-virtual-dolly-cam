@@ -573,9 +573,23 @@ def _load_prior_results(intervals_path: str, diag_path: str) -> tuple:
 		for iv in diag.get("intervals", []):
 			key = (int(iv["start_frame"]), int(iv["end_frame"]))
 			prior_scores[key] = iv.get("interval_score", {})
-	for entry in solved.values():
+	# Geometry without a matching score is unusable downstream:
+	# Stage 4 promotion reads interval_score["confidence_tier"] and
+	# would KeyError on an empty score dict. Drop such entries so the
+	# solver re-runs them and re-populates scores from scratch.
+	stale_fingerprints = []
+	for fingerprint, entry in solved.items():
 		key = (int(entry["start_frame"]), int(entry["end_frame"]))
-		entry["interval_score"] = prior_scores.get(key, {})
+		score = prior_scores.get(key, {})
+		if not score:
+			stale_fingerprints.append(fingerprint)
+			continue
+		entry["interval_score"] = score
+	for fingerprint in stale_fingerprints:
+		del solved[fingerprint]
+	if stale_fingerprints:
+		print(f"  cache: dropped {len(stale_fingerprints)} interval(s) "
+			f"with missing scores; will re-solve")
 
 	def _on_interval_solved(fingerprint: str, result: dict) -> None:
 		"""Persist a newly solved interval to disk."""

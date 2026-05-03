@@ -271,7 +271,6 @@ def fit_interval_curves(
 		- right_size: (sw, sh) in scene coords.
 		- start_frame: int.
 		- end_frame: int.
-		- is_stationary: bool (if displacement < 3% of box dimension).
 	"""
 	left_frame = int(left_seed["frame_index"])
 	right_frame = int(right_seed["frame_index"])
@@ -329,11 +328,6 @@ def fit_interval_curves(
 		all_seeds_scene, right_seed_idx, "forward", None,
 	)
 
-	# check if stationary: displacement < 3% of left box dimension
-	displacement = math.sqrt((right_sx - left_sx) ** 2 + (right_sy - left_sy) ** 2)
-	stationary_threshold = left_h * 0.03
-	is_stationary = displacement < stationary_threshold
-
 	result = {
 		"fwd_slopes": (fwd_slope_x, fwd_slope_y),
 		"bwd_slopes": (bwd_slope_x, bwd_slope_y),
@@ -345,7 +339,6 @@ def fit_interval_curves(
 		"right_size": (right_sw, right_sh),
 		"start_frame": start_frame,
 		"end_frame": end_frame,
-		"is_stationary": is_stationary,
 	}
 	return result
 
@@ -357,14 +350,13 @@ def _compute_raw_pred_forward(
 ) -> list:
 	"""Stage 1 of the forward pass: pure Hermite prediction per frame.
 
-	Returns a list of `(frame_index, cx, cy, w, h, conf, is_stationary)`
-	tuples in pixel coordinates, one per frame from start_frame to
-	end_frame inclusive. This array is FROZEN -- the gating code MUST
-	read from it only, never from any post-blob output.
+	Returns a list of `(frame_index, cx, cy, w, h, conf)` tuples in
+	pixel coordinates, one per frame from start_frame to end_frame
+	inclusive. This array is FROZEN -- the gating code MUST read from
+	it only, never from any post-blob output.
 	"""
 	start_frame = interval_curves["start_frame"]
 	end_frame = interval_curves["end_frame"]
-	is_stationary = interval_curves["is_stationary"]
 
 	left_sx, left_sy = interval_curves["left_pos"]
 	right_sx, right_sy = interval_curves["right_pos"]
@@ -406,22 +398,16 @@ def _compute_raw_pred_forward(
 			t = 0.0 if frame_index == start_frame else 1.0
 		t = max(0.0, min(1.0, t))
 
-		if is_stationary:
-			scene_cx = left_sx
-			scene_cy = left_sy
-			scene_w = left_sw
-			scene_h = left_sh
-		else:
-			scene_cx = hermite_interpolate(t, left_sx, right_sx, m0_x * interval_length, m1_x * interval_length)
-			scene_cy = hermite_interpolate(t, left_sy, right_sy, m0_y * interval_length, m1_y * interval_length)
-			log_left_w = math.log(left_sw) if left_sw > 1e-6 else 0.0
-			log_right_w = math.log(right_sw) if right_sw > 1e-6 else 0.0
-			log_left_h = math.log(left_sh) if left_sh > 1e-6 else 0.0
-			log_right_h = math.log(right_sh) if right_sh > 1e-6 else 0.0
-			log_w = hermite_interpolate(t, log_left_w, log_right_w, m0_w * interval_length, m1_w * interval_length)
-			log_h = hermite_interpolate(t, log_left_h, log_right_h, m0_h * interval_length, m1_h * interval_length)
-			scene_w = math.exp(log_w) if log_w < 100 else left_sw
-			scene_h = math.exp(log_h) if log_h < 100 else left_sh
+		scene_cx = hermite_interpolate(t, left_sx, right_sx, m0_x * interval_length, m1_x * interval_length)
+		scene_cy = hermite_interpolate(t, left_sy, right_sy, m0_y * interval_length, m1_y * interval_length)
+		log_left_w = math.log(left_sw) if left_sw > 1e-6 else 0.0
+		log_right_w = math.log(right_sw) if right_sw > 1e-6 else 0.0
+		log_left_h = math.log(left_sh) if left_sh > 1e-6 else 0.0
+		log_right_h = math.log(right_sh) if right_sh > 1e-6 else 0.0
+		log_w = hermite_interpolate(t, log_left_w, log_right_w, m0_w * interval_length, m1_w * interval_length)
+		log_h = hermite_interpolate(t, log_left_h, log_right_h, m0_h * interval_length, m1_h * interval_length)
+		scene_w = math.exp(log_w) if log_w < 100 else left_sw
+		scene_h = math.exp(log_h) if log_h < 100 else left_sh
 
 		pixel_cx, pixel_cy, pixel_w, pixel_h = (
 			scene_transform.scene_box_to_pixel(frame_index, scene_cx, scene_cy, scene_w, scene_h)
@@ -437,7 +423,6 @@ def _compute_raw_pred_forward(
 			float(pixel_w),
 			float(pixel_h),
 			float(confidence),
-			bool(is_stationary),
 		))
 
 	return raw
@@ -459,7 +444,6 @@ def _compute_raw_pred_backward(
 	"""
 	start_frame = interval_curves["start_frame"]
 	end_frame = interval_curves["end_frame"]
-	is_stationary = interval_curves["is_stationary"]
 
 	left_sx, left_sy = interval_curves["left_pos"]
 	right_sx, right_sy = interval_curves["right_pos"]
@@ -505,22 +489,16 @@ def _compute_raw_pred_backward(
 			t = 1.0 if frame_index == end_frame else 0.0
 		t = max(0.0, min(1.0, t))
 
-		if is_stationary:
-			scene_cx = right_sx
-			scene_cy = right_sy
-			scene_w = right_sw
-			scene_h = right_sh
-		else:
-			scene_cx = hermite_interpolate(t, left_sx, right_sx, m0_x * interval_length, m1_x * interval_length)
-			scene_cy = hermite_interpolate(t, left_sy, right_sy, m0_y * interval_length, m1_y * interval_length)
-			log_left_w = math.log(left_sw) if left_sw > 1e-6 else 0.0
-			log_right_w = math.log(right_sw) if right_sw > 1e-6 else 0.0
-			log_left_h = math.log(left_sh) if left_sh > 1e-6 else 0.0
-			log_right_h = math.log(right_sh) if right_sh > 1e-6 else 0.0
-			log_w = hermite_interpolate(t, log_left_w, log_right_w, m0_w * interval_length, m1_w * interval_length)
-			log_h = hermite_interpolate(t, log_left_h, log_right_h, m0_h * interval_length, m1_h * interval_length)
-			scene_w = math.exp(log_w) if log_w < 100 else right_sw
-			scene_h = math.exp(log_h) if log_h < 100 else right_sh
+		scene_cx = hermite_interpolate(t, left_sx, right_sx, m0_x * interval_length, m1_x * interval_length)
+		scene_cy = hermite_interpolate(t, left_sy, right_sy, m0_y * interval_length, m1_y * interval_length)
+		log_left_w = math.log(left_sw) if left_sw > 1e-6 else 0.0
+		log_right_w = math.log(right_sw) if right_sw > 1e-6 else 0.0
+		log_left_h = math.log(left_sh) if left_sh > 1e-6 else 0.0
+		log_right_h = math.log(right_sh) if right_sh > 1e-6 else 0.0
+		log_w = hermite_interpolate(t, log_left_w, log_right_w, m0_w * interval_length, m1_w * interval_length)
+		log_h = hermite_interpolate(t, log_left_h, log_right_h, m0_h * interval_length, m1_h * interval_length)
+		scene_w = math.exp(log_w) if log_w < 100 else right_sw
+		scene_h = math.exp(log_h) if log_h < 100 else right_sh
 
 		pixel_cx, pixel_cy, pixel_w, pixel_h = (
 			scene_transform.scene_box_to_pixel(frame_index, scene_cx, scene_cy, scene_w, scene_h)
@@ -536,7 +514,6 @@ def _compute_raw_pred_backward(
 			float(pixel_w),
 			float(pixel_h),
 			float(confidence),
-			bool(is_stationary),
 		))
 
 	return raw
@@ -645,8 +622,8 @@ def _apply_blob_snap(
 	    to separate `snap_cx` / `snap_cy` locals so nothing in the read
 	    path can accidentally pick up a post-blob value.
 
-	For each non-endpoint, non-stationary frame three gates must all
-	pass for a blob to be accepted:
+	For each non-endpoint frame three gates must all pass for a blob
+	to be accepted:
 	  1. Proximity: `dist(blob, raw[t]) <= ALPHA * h`.
 	  2. Direction: `dot(blob - raw[t], v_pred) >= 0` (skipped when
 	     `|v_pred| <= VELOCITY_FLOOR`).
@@ -687,9 +664,9 @@ def _apply_blob_snap(
 	num = len(raw)
 
 	# guard: treat an incomplete reader (no read_frame / frame_count) as if
-	# the caller passed None. This keeps the stationary tests and other
-	# synthetic fixtures working on minimal reader stubs without forcing
-	# them to stub the entire video-reader API.
+	# the caller passed None. This keeps synthetic-fixture tests working on
+	# minimal reader stubs without forcing them to stub the entire
+	# video-reader API.
 	reader_ok = (
 		reader is not None
 		and hasattr(reader, "read_frame")
@@ -703,7 +680,7 @@ def _apply_blob_snap(
 		effective_reader = None
 
 	for i in range(num):
-		frame_index, raw_cx, raw_cy, w, h, conf, is_stat = raw[i]
+		frame_index, raw_cx, raw_cy, w, h, conf = raw[i]
 		is_endpoint = (i == 0) or (i == num - 1)
 
 		# default output: pure raw_pred values. Every branch writes
@@ -713,8 +690,8 @@ def _apply_blob_snap(
 		snap_applied = False
 		gate = "skipped"
 
-		# endpoints and stationary-lock intervals: no snap
-		if effective_reader is None or is_endpoint or is_stat:
+		# endpoints and disabled-blob-snap: no snap
+		if effective_reader is None or is_endpoint:
 			# blob_gate is OUTPUT metadata, not a gate input. It is read by
 			# interval_solver._coverage_from_track() for diagnostics only; the
 			# propagator gates themselves read only raw_pred, per contract C5.
@@ -725,14 +702,13 @@ def _apply_blob_snap(
 				"h": float(h),
 				"conf": float(conf),
 				"source": "propagated",
-				"stationary_lock": is_stat,
 				"blob_gate": gate,
 			})
 			continue
 
 		# Destructure neighbors from raw ONLY. No reference to snap_pred.
-		_, raw_prev_cx, raw_prev_cy, _, _, _, _ = raw[i - 1]
-		_, raw_next_cx, raw_next_cy, _, _, _, _ = raw[i + 1]
+		_, raw_prev_cx, raw_prev_cy, _, _, _ = raw[i - 1]
+		_, raw_next_cx, raw_next_cy, _, _, _ = raw[i + 1]
 		# local motion vectors in iteration order
 		v_prev = (raw_cx - raw_prev_cx, raw_cy - raw_prev_cy)
 		v_next = (raw_next_cx - raw_cx, raw_next_cy - raw_cy)
@@ -768,14 +744,10 @@ def _apply_blob_snap(
 			# Gate 1: proximity (against raw[t] only)
 			proximity_ok = dist <= BLOB_SNAP_ALPHA * h
 
-			# Gate 2: direction. Skipped on near-stationary raw_pred.
-			# Note: when both v_prev and v_next are below the floor
-			# (genuinely near-stationary interior frame), both this gate
-			# AND gate 3 (motion path) become vacuous and only proximity
-			# applies. Full stationary-lock intervals are handled earlier
-			# by is_stat; this covers partial-motion frames with weak
-			# local velocity. Proximity alone is adequate because near-
-			# stationary motion makes directional constraints ambiguous.
+			# Gate 2: direction. When v_prev and v_next are both below
+			# the velocity floor, gates 2 and 3 become vacuous and only
+			# proximity applies; this is intentional because near-zero
+			# local velocity makes directional constraints ambiguous.
 			if v_pred_mag > BLOB_SNAP_VELOCITY_FLOOR:
 				direction_ok = (dx * v_pred[0] + dy * v_pred[1]) >= 0.0
 			else:
@@ -833,7 +805,6 @@ def _apply_blob_snap(
 			"h": float(h),
 			"conf": float(conf),
 			"source": "propagated_with_blob_snap" if snap_applied else "propagated",
-			"stationary_lock": is_stat,
 			"blob_gate": gate,
 		})
 
