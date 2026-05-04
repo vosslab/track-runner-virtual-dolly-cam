@@ -243,6 +243,13 @@ def plan_interval_work(
 	return plan
 
 
+# Confidence-tier display labels shared by Stage 3 and Stage 4 formatters.
+_CONFIDENCE_LABELS = {
+	"high": "TRUST", "good": "GOOD", "fair": "FAIR", "low": "WEAK",
+	"pre_race": "PRE-RACE",
+}
+
+
 #============================================
 def _format_interval_result(result: dict, fps: float) -> str:
 	"""Format a single interval result as a summary line.
@@ -271,24 +278,15 @@ def _format_interval_result(result: dict, fps: float) -> str:
 		agree = score.get("agreement", 0.0)
 		vel_cons = score.get("velocity_consistency", 0.0)
 		size_cons = score.get("size_consistency", 0.0)
-		# blob-snap acceptance fractions (FWD/BWD). None means no
-		# candidate blobs were seen at all; format as n/a rather than 0%
-		# so the user can tell "nothing to accept" apart from "nothing
-		# was accepted".
-		fwd_cov = score.get("blob_coverage_fwd")
-		bwd_cov = score.get("blob_coverage_bwd")
-		fwd_str = f"{fwd_cov * 100:.0f}%" if fwd_cov is not None else "n/a"
-		bwd_str = f"{bwd_cov * 100:.0f}%" if bwd_cov is not None else "n/a"
 		# display labels chosen to read honestly: overlap is a between-pass
 		# metric (FWD vs BWD Dice), vel_smooth and size_smooth are
-		# within-track smoothness metrics (not between passes), and
-		# blob_accept clearly says this is blob-snap acceptance.
+		# within-track smoothness metrics (not between passes).
 		metrics_str = (
 			f"overlap={agree:.2f}  "
 			f"vel_smooth={vel_cons:.2f}  "
-			f"size_smooth={size_cons:.2f}  "
-			f"blob_accept={fwd_str}/{bwd_str}"
+			f"size_smooth={size_cons:.2f}"
 		)
+		stage_tag = " [stage3]"
 	else:
 		# v2 legacy format
 		confidence = score.get("confidence", "low")
@@ -300,11 +298,8 @@ def _format_interval_result(result: dict, fps: float) -> str:
 			f"margin={margin:.2f}  "
 			f"identity={identity:.2f}"
 		)
-	_confidence_labels = {
-		"high": "TRUST", "good": "GOOD", "fair": "FAIR", "low": "WEAK",
-		"pre_race": "PRE-RACE",
-	}
-	tag = _confidence_labels.get(confidence, "WEAK")
+		stage_tag = ""
+	tag = _CONFIDENCE_LABELS.get(confidence, "WEAK")
 	if confidence in ("high", "good"):
 		label = f"[{tag}]"
 	else:
@@ -313,7 +308,87 @@ def _format_interval_result(result: dict, fps: float) -> str:
 	line = (
 		f"  interval {start_frame:5d}-{end_frame:5d} "
 		f"({duration_s:.1f}s)  "
-		f"{metrics_str}  {label}"
+		f"{metrics_str}  {label}{stage_tag}"
+	)
+	return line
+
+
+#============================================
+def _format_stage4_interval_result(
+	result: dict,
+	baseline_score: dict,
+	fps: float,
+) -> str:
+	"""Format a single Stage 4 (blob-coupled) interval result as a summary line.
+
+	Mirrors the column layout of `_format_interval_result` so Stage 3 and
+	Stage 4 lines align when scanned vertically. Adds a per-metric delta
+	vs the Stage 3 baseline and shows real blob coverage fractions.
+
+	Stage 4 always produces v3 score dicts (confidence_tier present).
+	No v2 fallback is provided here.
+
+	Args:
+		result: Interval result dict from a blob-coupled
+			`solve_interval_analytical` call.
+		baseline_score: Stage 3 `interval_score` dict for the same
+			pair_idx. When None or missing confidence_tier, deltas are
+			omitted.
+		fps: Video frame rate for duration calculation.
+
+	Returns:
+		One-line summary string ending with `[stage4]`.
+	"""
+	start_frame = result["start_frame"]
+	end_frame = result["end_frame"]
+	duration_s = (end_frame - start_frame) / fps
+	score = result["interval_score"]
+
+	# pull Stage 4 metrics (v3 always present)
+	confidence = score["confidence_tier"]
+	agree = score["agreement"]
+	vel_cons = score["velocity_consistency"]
+	size_cons = score["size_consistency"]
+	reasons = score.get("failure_reasons", [])
+
+	# blob coverage: floats in [0,1] for Stage 4 results
+	fwd_cov = score.get("blob_coverage_fwd")
+	bwd_cov = score.get("blob_coverage_bwd")
+	fwd_str = f"{fwd_cov*100:.0f}%" if fwd_cov is not None else "n/a"
+	bwd_str = f"{bwd_cov*100:.0f}%" if bwd_cov is not None else "n/a"
+
+	# compute deltas vs baseline when baseline is a v3 dict
+	has_baseline = (
+		baseline_score is not None
+		and "confidence_tier" in baseline_score
+	)
+	if has_baseline:
+		d_agree = agree - baseline_score["agreement"]
+		d_vel = vel_cons - baseline_score["velocity_consistency"]
+		d_size = size_cons - baseline_score["size_consistency"]
+		# format each metric with inline delta parenthetical
+		agree_str = f"overlap={agree:.2f} ({d_agree:+.2f})"
+		vel_str = f"vel_smooth={vel_cons:.2f} ({d_vel:+.2f})"
+		size_str = f"size_smooth={size_cons:.2f} ({d_size:+.2f})"
+	else:
+		# no baseline: omit parenthetical
+		agree_str = f"overlap={agree:.2f}"
+		vel_str = f"vel_smooth={vel_cons:.2f}"
+		size_str = f"size_smooth={size_cons:.2f}"
+
+	metrics_str = f"{agree_str}  {vel_str}  {size_str}"
+
+	tag = _CONFIDENCE_LABELS.get(confidence, "WEAK")
+	if confidence in ("high", "good"):
+		label = f"[{tag}]"
+	else:
+		reason_str = ", ".join(reasons) if reasons else "low_confidence"
+		label = f"[{tag}: {reason_str}]"
+
+	line = (
+		f"  interval {start_frame:5d}-{end_frame:5d} "
+		f"({duration_s:.1f}s)  "
+		f"{metrics_str}  blob_accept={fwd_str}/{bwd_str}  {label} [stage4]"
 	)
 	return line
 
@@ -524,7 +599,6 @@ def execute_interval_work(
 		print("    overlap      = FWD/BWD Dice overlap (agreement between passes)")
 		print("    vel_smooth   = within-track velocity smoothness")
 		print("    size_smooth  = within-track box-size smoothness")
-		print("    blob_accept  = fraction of frames with accepted blob snap (FWD/BWD)")
 
 	# pure prior-solved fast-exit: no bar, no pool. Post-loop summary and
 	# accounting assertion still run below.

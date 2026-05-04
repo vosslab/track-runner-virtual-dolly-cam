@@ -1417,6 +1417,16 @@ def _dispatch_blob_pass(
 		seed_end = usable_seeds[pair_idx + 1]
 		tasks.append((pair_idx, seed_start, seed_end, True))
 
+	# capture Stage 3 baseline scores before overwriting with Stage 4 results
+	# so we can compute per-metric deltas in the summary line.
+	baseline_by_pair = {}
+	for pair_idx, _s, _e, _ in tasks:
+		stage3_result = interval_results[pair_idx]
+		if stage3_result is not None and "interval_score" in stage3_result:
+			baseline_by_pair[pair_idx] = stage3_result["interval_score"]
+		else:
+			baseline_by_pair[pair_idx] = None
+
 	# dispatch: in-process if single worker or very few tasks,
 	# pool if multiple workers and enough work to amortize pool setup.
 	use_pool = num_workers >= 2 and len(tasks) >= 4
@@ -1443,17 +1453,6 @@ def _dispatch_blob_pass(
 				for pair_idx, seed_start, seed_end, blob_snap_enabled in tasks:
 					if run_control is not None and run_control.quit_requested:
 						break
-					t_iv = time.time()
-					n_frames = (
-						int(seed_end["frame_index"])
-						- int(seed_start["frame_index"])
-					)
-					print(
-						f"  blob start: pair_idx={pair_idx} "
-						f"frames {seed_start['frame_index']}-"
-						f"{seed_end['frame_index']} ({n_frames} frames)",
-						flush=True,
-					)
 					result_blob = solve_interval_analytical(
 						seed_start, seed_end, context.scene_transform,
 						context.all_seeds_scene, context.fps,
@@ -1463,11 +1462,6 @@ def _dispatch_blob_pass(
 						all_seeds=context.all_seeds,
 						reader=context.reader,
 					)
-					print(
-						f"  blob done:  pair_idx={pair_idx} "
-						f"elapsed={time.time() - t_iv:.2f}s",
-						flush=True,
-					)
 					# overwrite Stage 3 result with blob result
 					fingerprint = compute_interval_fingerprint(
 						seed_start, seed_end,
@@ -1475,6 +1469,11 @@ def _dispatch_blob_pass(
 					if on_interval_solved is not None:
 						on_interval_solved(fingerprint, result_blob)
 					interval_results[pair_idx] = result_blob
+					progress.console.print(
+						solve_queue._format_stage4_interval_result(
+							result_blob, baseline_by_pair[pair_idx], context.fps,
+						)
+					)
 					blob_frame_counter[0] += (
 						int(seed_end["frame_index"])
 						- int(seed_start["frame_index"])
@@ -1502,27 +1501,12 @@ def _dispatch_blob_pass(
 							- int(seed_start["frame_index"])
 						for pair_idx, seed_start, seed_end, _ in tasks
 					}
-					# track submit time per pair_idx for elapsed reporting
-					t_dispatch_by_pair = {}
-					# track completion elapsed per pair_idx for Stage 4 final summary
-					t_complete_by_pair = {}
 					futures = {}
 					for pair_idx, seed_start, seed_end, blob_snap_enabled in tasks:
-						n_frames = (
-							int(seed_end["frame_index"])
-							- int(seed_start["frame_index"])
-						)
-						print(
-							f"  [blob] dispatch pair_idx={pair_idx} "
-							f"frames {seed_start['frame_index']}-"
-							f"{seed_end['frame_index']} ({n_frames} frames)",
-							flush=True,
-						)
 						fut = pool.submit(
 							solver_workers._solve_interval_worker,
 							(pair_idx, seed_start, seed_end, blob_snap_enabled),
 						)
-						t_dispatch_by_pair[pair_idx] = time.time()
 						futures[fut] = pair_idx
 
 					pending = set(futures.keys())
@@ -1536,16 +1520,14 @@ def _dispatch_blob_pass(
 						)
 						for fut in done:
 							pair_idx, fingerprint, result_blob = fut.result()
-							elapsed = time.time() - t_dispatch_by_pair[pair_idx]
-							t_complete_by_pair[pair_idx] = elapsed
-							print(
-								f"  [blob] complete pair_idx={pair_idx} "
-								f"elapsed={elapsed:.2f}s",
-								flush=True,
-							)
 							if on_interval_solved is not None:
 								on_interval_solved(fingerprint, result_blob)
 							interval_results[pair_idx] = result_blob
+							progress.console.print(
+								solve_queue._format_stage4_interval_result(
+									result_blob, baseline_by_pair[pair_idx], context.fps,
+								)
+							)
 							blob_frame_counter[0] += span_by_pair[pair_idx]
 							progress.update(task_id, advance=1)
 

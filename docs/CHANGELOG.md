@@ -2,6 +2,23 @@
 
 ### Behavior or Interface Changes
 
+- **Stage 3 per-interval console lines drop the stale `blob_accept` column; Stage 4 now emits one structured result line per interval replacing four chatter prints.** Stage 3 runs Hermite-only so `blob_accept` was always `n/a/n/a`; the column is removed and a trailing `[stage3]` tag added so solve logs are scannable. Stage 4 replaces `blob start:` / `blob done:` / `[blob] dispatch` / `[blob] complete` with a single line per completed interval that mirrors the Stage 3 column layout, shows real `blob_accept=FF%/BB%` coverage, appends `(+/-X.XX)` deltas vs the Stage 3 baseline for each metric, and ends with `[stage4]`. When no Stage 3 baseline exists (e.g. a seeded refine that bypassed Stage 3), deltas are omitted and the line still emits cleanly. Touched files: [track_runner/solve_queue.py](../track_runner/solve_queue.py), [track_runner/interval_solver.py](../track_runner/interval_solver.py). Reference: plan `~/.claude/plans/floating-launching-wozniak.md`.
+
+  ```
+  Before (Stage 3):
+    interval 16380-16800 (7.0s)  overlap=0.01  vel_smooth=1.00  size_smooth=0.35  blob_accept=n/a/n/a  [WEAK: overlap]
+  Before (Stage 4, four separate lines):
+    blob start: pair_idx=5 frames 16380-16800
+    [blob] dispatch pair_idx=5 frames 16380-16800
+    [blob] complete pair_idx=5 elapsed=3.2s
+    blob done:  pair_idx=5 elapsed=3.2s
+
+  After (Stage 3):
+    interval 16380-16800 (7.0s)  overlap=0.01  vel_smooth=1.00  size_smooth=0.35  [WEAK: overlap] [stage3]
+  After (Stage 4, one line):
+    interval 16380-16800 (7.0s)  overlap=0.42 (+0.41)  vel_smooth=1.00 (+0.00)  size_smooth=0.71 (+0.36)  blob_accept=83%/77%  [GOOD] [stage4]
+  ```
+
 - **`FrameReader` rolled back from PyAV to `cv2.VideoCapture`.** PyAV's bundled libav family (`libavdevice.62.x`) collided in-process with OpenCV's bundled libav (`libavdevice.61.x`), producing the macOS Objective-C duplicate-class warning at every import (`objc[..]: Class AVFFrameReceiver is implemented in both .../cv2/.dylibs/libavdevice.61.3.100.dylib and .../av/.dylibs/libavdevice.62.1.100.dylib`). Decode and encode now share a single libav family. Public API of `FrameReader` is unchanged: `read_frame`, `seek_for_encode`, `__iter__`, `__enter__`, `__exit__`, `close`, plus the `video_path/frame_count/fps/width/height/geometry/bin_factor` properties all behave identically. Internally only two seek strategies remain: strategy 0 (sequential fast-path; no `cap.set` when `frame_index == self._cap_next_index`) and strategy 1 (`cap.set(CAP_PROP_POS_FRAMES, idx)` random access). The 5-strategy waterfall and mkvmerge remux fallback from the pre-PyAV era are not restored; instead `FrameReader.__init__` rejects non-`.mkv` paths with a `ValueError` containing the exact `mkvmerge -o out.mkv in.mov` command. The Stage-4 sequential pre-pass in [track_runner/residual_pre_pass.py](../track_runner/residual_pre_pass.py) was unchanged and continues to absorb scattered random access into bounded per-interval sequential walks (40-frame rolling cap), so the cv2 strategy-1 cost is not on the hot path. Reference: plan `~/.claude/plans/iterative-tickling-dongarra.md`.
 - **Source video format hard-restricted to `.mkv`.** MP4/MOV users must remux losslessly via `mkvmerge -o input.mkv input.mov` once before use. The pipeline does not transcode. [docs/INSTALL.md](INSTALL.md) updated; [common_tools/README.md](../common_tools/README.md) rewritten to describe the cv2-only reader and document the `.mkv` requirement.
 
