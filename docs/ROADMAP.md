@@ -55,21 +55,30 @@ Result serialized in diagnostics JSON.
 Remaining work: parameter tuning on real videos, downstream integration with
 seed recommendation and crop trajectory.
 
-### Per-frame motion-cue observation fusion (implemented)
+### Per-frame motion-cue observation fusion (implemented and shipped)
 
-Residual motion blob tracking is now integrated as a per-frame center-position
-observation channel inside the Hermite kinematic scaffold. Implemented in
-`track_runner/residual_motion.py`, called between `stitch_trajectories()` and
-`anchor_to_seeds()` in the solve pipeline.
+Residual motion blob tracking is integrated as a per-frame center-position
+observation channel inside the analytical solver. Implementation lives in
+[track_runner/residual_motion.py](../track_runner/residual_motion.py)
+(`observe_blob_at`) and is called per non-endpoint frame from inside
+`_apply_blob_snap` in [track_runner/velocity_model.py](../track_runner/velocity_model.py)
+(NOT at a global stitch step). Hermite owns geometry (path shape, size,
+continuity); blob owns center observation only. Three local gates
+(proximity, direction, temporal smoothness) accept or reject each
+observation; gates read only frozen `raw_pred[t-1..t+1]`, never any
+prior accepted blob.
 
-Hermite owns geometry (path shape, size, continuity). Blob owns center
-observation only. Two-tier acceptance gate with temporal continuity as primary
-identity defense. Anisotropic correction: cross-track tighter, along-track
-looser and downweighted.
+The Stage 4 hot-path optimization (M3+M4 of plan
+`~/.claude/plans/memoized-percolating-moler.md`) eliminates scattered random-access
+reads via a per-worker per-interval sequential pre-pass owned by
+[track_runner/residual_pre_pass.py](../track_runner/residual_pre_pass.py);
+`observe_blob_at` reads from the precomputed store on hit.
 
-Remaining work: parameter tuning on real videos, user-pain metric validation
-(intervals flagged for review, seeds needed). See
-[docs/active_plans/MOTION_CUE_OBSERVATION_FUSION.md](active_plans/MOTION_CUE_OBSERVATION_FUSION.md).
+Remaining work: parameter tuning on real videos, user-pain metric
+validation (intervals flagged for review, seeds needed). See
+[docs/CHANGELOG.md](CHANGELOG.md) entries dated 2026-04-17 (initial
+fusion landing) and 2026-05-03 (M3+M4 architectural speedup) for the
+full landing record.
 
 ## Not started
 

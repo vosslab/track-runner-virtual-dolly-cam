@@ -86,18 +86,18 @@ def parse_args() -> argparse.Namespace:
 		"-s", "--scale", dest="scale", type=float, default=1.0,
 		help="Downsample factor, e.g. 0.5 for half resolution (default: 1.0)"
 	)
-	# mutually exclusive: legacy --window (half-window frame count) vs new --window-seconds
-	window_group = parser.add_mutually_exclusive_group()
-	window_group.add_argument(
-		"-w", "--window", dest="half_window", type=int, default=None,
-		help="[DEPRECATED] Half-window for background estimation (default: 4 = 9 frames). "
-			"Use --window-seconds instead."
+	parser.add_argument(
+		"-w", "--window", dest="half_window", type=int,
+		default=residual_motion.DEFAULT_HALF_WINDOW,
+		help="Per-side neighbor count for background estimation "
+			f"(default: {residual_motion.DEFAULT_HALF_WINDOW} = 9-frame window). "
+			"Fixed regardless of fps; time span is controlled by --stride."
 	)
-	window_group.add_argument(
-		"-W", "--window-seconds", dest="window_seconds", type=float,
-		default=residual_motion.DEFAULT_BACKGROUND_WINDOW_SECONDS,
-		help="Background window in seconds (default: 8.0/60.0 ~0.133 s, "
-			"yields half_window=4 at 60 fps, half_window=8 at 120 fps)"
+	parser.add_argument(
+		"-S", "--stride", dest="stride", type=int, default=None,
+		help="Neighbor stride (default: resolved from video fps via "
+			"residual_motion.resolve_stride -- 1 at 60 fps, 2 at 120 fps, "
+			"4 at 240 fps). Override for expert tuning."
 	)
 	parser.add_argument(
 		"-k", "--k-factor", dest="k_factor", type=float,
@@ -106,12 +106,6 @@ def parse_args() -> argparse.Namespace:
 			"3-5 works well on this project's residuals (default: 3.0)"
 	)
 	args = parser.parse_args()
-	# emit deprecation warning if legacy --window was used
-	if args.half_window is not None:
-		print(
-			"[deprecated] --window is legacy; prefer --window-seconds",
-			file=sys.stderr
-		)
 	return args
 
 
@@ -912,7 +906,7 @@ def compute_multiframe_flow(
 	scene_transform: scene_coords.SceneTransform,
 	scale_factor: float,
 	half_window: int = None,
-	window_seconds: float = None,
+	stride: int = None,
 ) -> tuple:
 	"""Detect motion at frame N using aligned temporal background subtraction.
 
@@ -920,42 +914,36 @@ def compute_multiframe_flow(
 	with return_extras=True. Preserves the historical 4-tuple return order
 	so diagnostic PNG panels keep working unchanged.
 
+	Uses the M2 stride model: stride is derived from reader.fps via
+	residual_motion.resolve_stride when not provided explicitly. At 60 fps
+	stride=1, output is byte-identical to the legacy half_window=4 behavior.
+
 	Args:
 		reader: VideoReader instance.
 		frame_index: Center frame index N.
 		scene_transform: SceneTransform for camera compensation.
 		scale_factor: Downsample factor (<1.0 downsamples before warp).
-		half_window: [Legacy] Expert override for frame-count window.
-		window_seconds: [Preferred] Temporal window in seconds; fps resolved
-			from reader.fps.
+		half_window: Expert override for per-side neighbor count. Defaults
+			to residual_motion.DEFAULT_HALF_WINDOW when None.
+		stride: Neighbor stride. When None, resolved from reader.fps.
 
 	Returns:
 		Tuple of (residual_mag, raw_mag_single, validity_mask, display_frame).
 		display_frame is frame N (BGR, possibly resized) for PNG overlay.
 	"""
-	# use window_seconds path if provided; fall back to half_window override
-	if window_seconds is not None:
-		return residual_motion.compute_residual_for_frame(
-			reader=reader,
-			frame_index=frame_index,
-			scene_transform=scene_transform,
-			window_seconds=window_seconds,
-			fps=reader.fps,
-			scale_factor=scale_factor,
-			return_extras=True,
-		)
-	else:
-		# legacy half_window path
-		if half_window is None:
-			half_window = residual_motion.DEFAULT_HALF_WINDOW
-		return residual_motion.compute_residual_for_frame(
-			reader=reader,
-			frame_index=frame_index,
-			scene_transform=scene_transform,
-			half_window=half_window,
-			scale_factor=scale_factor,
-			return_extras=True,
-		)
+	if half_window is None:
+		half_window = residual_motion.DEFAULT_HALF_WINDOW
+	# resolve stride from reader.fps when not passed explicitly
+	effective_stride = stride if stride is not None else residual_motion.resolve_stride(reader.fps)
+	return residual_motion.compute_residual_for_frame(
+		reader=reader,
+		frame_index=frame_index,
+		scene_transform=scene_transform,
+		half_window=half_window,
+		stride=effective_stride,
+		scale_factor=scale_factor,
+		return_extras=True,
+	)
 
 
 #============================================
@@ -970,7 +958,7 @@ def compute_frame_statistics(
 	scale_factor: float,
 	half_window: int = None,
 	k_factor: float = None,
-	window_seconds: float = None,
+	stride: int = None,
 ) -> dict:
 	"""Compute per-frame motion statistics using temporal blob tracking.
 
@@ -986,9 +974,9 @@ def compute_frame_statistics(
 		seeds_list: List of seed dicts.
 		threshold: Motion threshold.
 		scale_factor: Downsample factor.
-		half_window: [Legacy] Half-window frame count override.
+		half_window: Per-side neighbor count override (default DEFAULT_HALF_WINDOW).
 		k_factor: DoG k-factor.
-		window_seconds: [Preferred] Temporal window in seconds.
+		stride: Neighbor stride override. When None, resolved from reader.fps.
 
 	Returns:
 		Dict of statistics for this frame.
@@ -1049,7 +1037,7 @@ def compute_frame_statistics(
 	# compute residual for center frame
 	result = compute_multiframe_flow(
 		reader, frame_index, scene_transform, scale_factor,
-		half_window=half_window, window_seconds=window_seconds,
+		half_window=half_window, stride=stride,
 	)
 	comp_mag, raw_mag, validity_mask, display_frame = result
 	if comp_mag is None:
@@ -1112,7 +1100,7 @@ def compute_frame_statistics(
 		# compute residual for neighbor frame
 		neighbor_result = compute_multiframe_flow(
 			reader, fi, scene_transform, scale_factor,
-			half_window=half_window, window_seconds=window_seconds,
+			half_window=half_window, stride=stride,
 		)
 		n_mag, _, n_validity, _ = neighbor_result
 		if n_mag is None:
@@ -1877,7 +1865,7 @@ def render_flow_video(
 	output_dir: str,
 	half_window: int = None,
 	num_video_frames: int = 100,
-	window_seconds: float = None,
+	stride: int = None,
 ) -> None:
 	"""Render a short video of consecutive residual flow heatmaps.
 
@@ -1891,12 +1879,17 @@ def render_flow_video(
 		threshold: Motion threshold.
 		scale_factor: Downsample factor.
 		output_dir: Output directory.
-		half_window: Frames on each side for averaging.
+		half_window: Per-side neighbor count (default DEFAULT_HALF_WINDOW).
 		num_video_frames: Number of frames to render.
+		stride: Neighbor stride (default: resolved from reader.fps).
 	"""
+	hw_use = half_window if half_window is not None else residual_motion.DEFAULT_HALF_WINDOW
+	stride_use = stride if stride is not None else residual_motion.resolve_stride(reader.fps)
+	# outermost neighbor offset determines the padding needed at sequence boundaries
+	outer_offset = hw_use * stride_use
 	half = num_video_frames // 2
-	start = max(half_window, midpoint - half)
-	end = min(reader.frame_count - half_window - 1, midpoint + half)
+	start = max(outer_offset, midpoint - half)
+	end = min(reader.frame_count - outer_offset - 1, midpoint + half)
 
 	out_w = int(reader.width * scale_factor)
 	out_h = int(reader.height * scale_factor)
@@ -1905,20 +1898,12 @@ def render_flow_video(
 	fourcc = cv2.VideoWriter_fourcc(*"mp4v")
 	writer = cv2.VideoWriter(out_path, fourcc, reader.fps, (out_w, out_h))
 
-	# resolve half_window for display (same logic as main)
-	if window_seconds is not None:
-		hw_display = residual_motion.resolve_half_window(window_seconds, reader.fps)
-	elif half_window is not None:
-		hw_display = half_window
-	else:
-		hw_display = residual_motion.DEFAULT_HALF_WINDOW
-
 	print(f"  rendering flow video: frames {start}-{end} "
-		f"(window={2*hw_display+1}) -> {out_path}")
+		f"(window={2*hw_use+1} samples stride={stride_use}) -> {out_path}")
 	for fi in range(start, end):
 		result = compute_multiframe_flow(
 			reader, fi, scene_transform, scale_factor,
-			half_window=half_window, window_seconds=window_seconds,
+			half_window=hw_use, stride=stride_use,
 		)
 		mag, raw_mag, validity_mask, display_frame = result
 		if mag is None:
@@ -2176,23 +2161,20 @@ def main() -> None:
 	result = load_all_data(args.input_file)
 	reader, motion_track, scene_transform, seeds_list, diagnostics, intervals_data = result
 
-	# resolve half_window for display: legacy --window overrides; otherwise use window_seconds + fps
-	use_window_seconds = args.half_window is None
-	if use_window_seconds:
-		# new path: resolve from window_seconds and fps for display only
-		half_window_display = residual_motion.resolve_half_window(args.window_seconds, reader.fps)
-		window_seconds_pass = args.window_seconds
-		half_window_pass = None
+	# M2 stride model: half_window is fixed; stride is derived from fps
+	half_window_use = int(args.half_window)
+	# if user passed --stride explicitly, use it; otherwise resolve from video fps
+	if args.stride is not None:
+		stride_use = int(args.stride)
 	else:
-		# legacy path: explicit half_window override
-		half_window_display = args.half_window
-		window_seconds_pass = None
-		half_window_pass = args.half_window
-
-	num_frames_in_window = 2 * half_window_display + 1
+		stride_use = residual_motion.resolve_stride(reader.fps)
+	# outermost neighbor lands at half_window * stride frames from center
+	num_frames_in_window = 2 * half_window_use + 1
+	outermost_offset = half_window_use * stride_use
 	print(f"  settings: threshold={args.threshold}px, "
 		f"scale={args.scale}, "
-		f"window={num_frames_in_window} frames (half={half_window_display})")
+		f"window={num_frames_in_window} samples (half={half_window_use} stride={stride_use} "
+		f"outermost_offset={outermost_offset})")
 	print(f"  dog_filter: torso-scale band-pass active (k={args.k_factor:.2f}); "
 		f"blob-extraction threshold -t applies to DoG output")
 
@@ -2217,8 +2199,8 @@ def main() -> None:
 		stats = compute_frame_statistics(
 			frame_info, reader, scene_transform, intervals_data,
 			diagnostics, seeds_list, args.threshold, args.scale,
-			half_window=half_window_pass, k_factor=args.k_factor,
-			window_seconds=window_seconds_pass,
+			half_window=half_window_use, k_factor=args.k_factor,
+			stride=stride_use,
 		)
 		if stats.get("no_data") or stats.get("no_reference"):
 			print(f"  warning: no data/reference for frame {frame_index}")
@@ -2227,7 +2209,7 @@ def main() -> None:
 		# render diagnostic PNG
 		render_diagnostic_png(
 			stats, seeds_list, intervals_data,
-			args.threshold, args.scale, half_window_display, output_dir,
+			args.threshold, args.scale, half_window_use, output_dir,
 		)
 		all_stats.append(stats)
 
@@ -2242,7 +2224,7 @@ def main() -> None:
 	render_flow_video(
 		reader, scene_transform, seeds_list, intervals_data, diagnostics,
 		midpoint, args.threshold, args.scale, output_dir,
-		half_window=half_window_pass, window_seconds=window_seconds_pass,
+		half_window=half_window_use, stride=stride_use,
 	)
 
 	print(f"\nAll outputs in: {output_dir}/")

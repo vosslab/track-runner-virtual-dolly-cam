@@ -108,6 +108,19 @@ that narrows it without evidence is a regression.
   with distinct entries; the concrete `ROI_QUANT` mechanics live in
   [MOTION_CUE_HEAT_MAP.md](MOTION_CUE_HEAT_MAP.md). Locked by
   `test_roi_quantization_collapses_subpixel_jitter`.
+- **Worker-local pre-pass store is image-derived data, not state.**
+  Inside `solve_interval_analytical`, before either pass runs, the
+  worker sequentially walks its interval's frames and builds a local
+  `precomputed_store` dict keyed by `(frame_index, roi)` -> `(residual
+  uint8, validity uint8)`. Both FWD and BWD's `observe_blob_at` calls
+  read from this dict via the `precomputed_store` parameter; on a hit
+  the per-frame residual computation is skipped, on a miss the call
+  falls through to the legacy reader path. The store contains pure
+  image-derived residuals (same data the residual_cache holds, just
+  pre-computed); no FWD/BWD decisions, no per-pass state, no
+  cross-interval information. Per contract clause C5 the store lives
+  only for the duration of one `solve_interval_analytical` call. See
+  [track_runner/residual_pre_pass.py](../track_runner/residual_pre_pass.py).
 - **Seeds are hard anchors in both passes.** Endpoints are never moved
   by blob snap: `_apply_blob_snap` short-circuits on `i == 0` and
   `i == num - 1` (blob_gate = "skipped"). Locked by
@@ -131,13 +144,19 @@ seeds
   v
 fit_interval_curves  (velocity_model.py)
   |
+  +---- precompute_interval_residuals (residual_pre_pass.py)
+  |       |  sequential walk pad_lo..pad_hi; populates
+  |       |  worker-local precomputed_store keyed by (fi, roi)
+  |       v
+  |     precomputed_store -> consumed by both passes below
+  |
   +---- FWD Hermite slopes (backward regression at left seed)
   |       |
   |       v
   |    _compute_raw_pred_forward  -> raw[] (frozen, tuple-valued)
   |       |
   |       v
-  |    _apply_blob_snap  (reads raw[] only; shared residual_cache)
+  |    _apply_blob_snap  (reads raw[] only; precomputed_store + residual_cache)
   |       |
   |       v
   |    forward_path (snap_pred)
@@ -148,7 +167,7 @@ fit_interval_curves  (velocity_model.py)
        _compute_raw_pred_backward -> raw[] (frozen)
           |
           v
-       _apply_blob_snap  (reads raw[] only)
+       _apply_blob_snap  (reads raw[] only; precomputed_store + residual_cache)
           |
           v
        backward_path (snap_pred)

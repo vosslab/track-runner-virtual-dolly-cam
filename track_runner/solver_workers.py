@@ -24,6 +24,7 @@ persistence, and quit handling. No worker writes to stdout or disk.
 """
 
 # Standard Library
+import os
 import atexit
 import dataclasses
 import concurrent.futures
@@ -31,6 +32,11 @@ import concurrent.futures
 # local repo modules
 import interval_solver
 import common_tools.frame_reader
+# residual_motion is imported lazily inside _worker_init and _worker_atexit
+# to avoid a circular import (track_runner.py -> cli -> ... -> solver_workers
+# -> track_runner.residual_motion -> track_runner -> circular). The lazy
+# import is safe because those functions run in worker processes where the
+# import chain is clean, or after the main process finishes initialization.
 
 
 #============================================
@@ -49,6 +55,7 @@ class WorkerContext:
 	all_seeds: list
 	fps: float
 	debug: bool
+	debug_blob: bool = False
 
 
 #============================================
@@ -70,6 +77,7 @@ def _worker_init(
 	debug: bool,
 	bin_factor: int = 1,
 	total_frames: int = 0,
+	debug_blob: bool = False,
 ) -> None:
 	"""Initialize per-process solver state for a pool worker.
 
@@ -85,6 +93,8 @@ def _worker_init(
 		all_seeds: Original seed list (pixel coords).
 		fps: Video frame rate.
 		debug: Debug flag; constant across all tasks in this run.
+		debug_blob: Blob-pass instrumentation flag; passed from
+			ExecutionContext.debug_blob via make_pool initargs.
 	"""
 	global _WORKER_CONTEXT
 	# reopen the video in this process; the main process's reader cannot
@@ -106,7 +116,16 @@ def _worker_init(
 		all_seeds=all_seeds,
 		fps=fps,
 		debug=debug,
+		debug_blob=debug_blob,
 	)
+	# enable per-call instrumentation in frame_reader and residual_motion
+	# when debug_blob is on; zero cost in the default off path.
+	# residual_motion is imported lazily here to avoid circular import at
+	# module load time (see comment near imports at top of file).
+	if debug_blob:
+		import residual_motion as _residual_motion_mod
+		common_tools.frame_reader.enable_blob_debug()
+		_residual_motion_mod.enable_blob_debug_residual()
 	# close the reader when the worker shuts down so file handles do not
 	# leak on the normal path. ProcessPoolExecutor also terminates
 	# workers at pool shutdown.
@@ -120,6 +139,9 @@ def _worker_atexit() -> None:
 	Both VideoReader and FrameReader expose `close()`; FrameReader
 	does not implement the context-manager protocol, so close
 	unconditionally here.
+
+	When debug_blob was enabled, prints a per-pid worker exit summary
+	covering per-strategy read_frame stats and residual timing.
 	"""
 	global _WORKER_CONTEXT
 	ctx = _WORKER_CONTEXT
@@ -129,7 +151,76 @@ def _worker_atexit() -> None:
 			close()
 		else:
 			ctx.reader.__exit__(None, None, None)
-		_WORKER_CONTEXT = None
+
+	# emit debug summary if instrumentation was on for this worker.
+	# lazy import of residual_motion avoids circular import at module load time.
+	if ctx is not None and ctx.debug_blob:
+		import residual_motion as _residual_motion_mod
+		pid = os.getpid()
+		fr_summary = common_tools.frame_reader.get_blob_debug_summary()
+		res_summary = _residual_motion_mod.get_residual_debug_summary()
+
+		# compute total read_frame calls across all strategies
+		total_calls = sum(fr_summary["strategy_calls"].values())
+		# format per-strategy lines
+		strategy_names = ["seq_fast", "seek_frame", "seek_msec", "reopen",
+			"sequential", "remux"]
+		lines = [
+			f"[blob][pid={pid}] WORKER EXIT SUMMARY",
+			f"  read_frame calls: {total_calls}",
+			"  per-strategy:",
+		]
+		for sname in strategy_names:
+			calls = fr_summary["strategy_calls"].get(sname, 0)
+			total_ms = fr_summary["strategy_total_ms"].get(sname, 0.0)
+			failures = fr_summary["strategy_failures"].get(sname, 0)
+			if sname == "sequential":
+				fired = fr_summary["strategy_4_fired"]
+				lines.append(
+					f"    sequential     calls={calls} FIRED={'YES' if fired > 0 else 'NO'}"
+				)
+			elif sname == "remux":
+				fired = fr_summary["strategy_5_fired"]
+				lines.append(
+					f"    remux          fired={fired} total_ms={total_ms:.1f}"
+				)
+			else:
+				# compute median_ms from total/calls
+				median_ms = (total_ms / calls) if calls > 0 else 0.0
+				lines.append(
+					f"    {sname:<14} calls={calls}"
+					f" median_ms={median_ms:.1f}"
+					f" total_ms={total_ms:.1f}"
+					f" failures={failures}"
+				)
+
+		# flag CRITICAL if strategy 4 or 5 fired
+		crit_4 = fr_summary["strategy_4_fired"]
+		crit_5 = fr_summary["strategy_5_fired"]
+		if crit_4 > 0 or crit_5 > 0:
+			lines.append(
+				f"  *** CRITICAL *** sequential_fired={crit_4} remux_fired={crit_5}"
+			)
+
+		# residual line
+		obs = res_summary["observe_calls"]
+		comp = res_summary["compute_calls"]
+		comp_ms = res_summary["compute_total_ms"]
+		hits = res_summary["bgr_cache_hits"]
+		misses = res_summary["bgr_cache_misses"]
+		total_bgr = hits + misses
+		hit_rate = (hits / total_bgr * 100.0) if total_bgr > 0 else 0.0
+		lines.append(
+			f"  residual: observe_calls={obs}"
+			f" compute_calls={comp}"
+			f" compute_total_ms={comp_ms:.1f}"
+			f" bgr_cache_hit_rate={hit_rate:.1f}%"
+		)
+
+		# print all lines at once for cleaner output
+		print("\n".join(lines), flush=True)
+
+	_WORKER_CONTEXT = None
 
 
 #============================================
@@ -177,6 +268,7 @@ def make_pool(
 	debug: bool,
 	bin_factor: int = 1,
 	total_frames: int = 0,
+	debug_blob: bool = False,
 ) -> concurrent.futures.ProcessPoolExecutor:
 	"""Create a ProcessPoolExecutor configured with `_worker_init`.
 
@@ -201,6 +293,8 @@ def make_pool(
 		all_seeds: Seeds in pixel coordinates.
 		fps: Video frame rate.
 		debug: Debug flag.
+		debug_blob: When True, enables per-worker per-frame Stage 4
+			instrumentation. Forwarded to each worker via initargs.
 
 	Returns:
 		A started ProcessPoolExecutor. Caller is responsible for using
@@ -212,7 +306,7 @@ def make_pool(
 		initargs=(
 			video_path, scene_transform, motion_track,
 			all_seeds_scene, all_seeds, fps, debug,
-			bin_factor, total_frames,
+			bin_factor, total_frames, debug_blob,
 		),
 		max_tasks_per_child=1,
 	)

@@ -351,7 +351,6 @@ class HeatMapOverlay(QObject):
 		result = residual_heat_map.compute_heat_map_roi(
 			self._reader, frame_index, self._scene_transform,
 			pred_center, pred_box,
-			window_seconds=self._style["window_seconds"],
 			fps=self._reader.fps,
 			threshold=self._style["threshold"],
 			fixed_max=self._style["fixed_max"],

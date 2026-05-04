@@ -607,6 +607,7 @@ def _apply_blob_snap(
 	scene_transform: object,
 	residual_cache: dict,
 	blob_snap_enabled: bool,
+	precomputed_store: "dict | None" = None,
 ) -> list:
 	"""Stage 2: produce snap_pred from a frozen raw_pred, reading raw only.
 
@@ -655,6 +656,11 @@ def _apply_blob_snap(
 		blob_snap_enabled: Required bool. When False, skip blob observer
 			entirely and return raw_pred values wrapped as state dicts.
 			When True, behavior is byte-identical to prior code path.
+		precomputed_store: Optional per-interval residual store from
+			residual_pre_pass.precompute_interval_residuals. When non-None,
+			observe_blob_at reads from this store before falling through to
+			the legacy reader path. Keyed by (frame_index, roi_tuple).
+			When None, legacy reader path is used (same as prior behavior).
 
 	Returns:
 		snap_pred as a list of state dicts, one per entry in `raw`, in
@@ -731,6 +737,7 @@ def _apply_blob_snap(
 			scene_transform,
 			effective_reader,
 			residual_cache,
+			precomputed_store=precomputed_store,
 		)
 
 		if observation is None:
@@ -818,6 +825,7 @@ def propagate_forward_analytical(
 	blob_snap_enabled: bool,
 	reader: object = None,
 	residual_cache: dict = None,
+	precomputed_store: "dict | None" = None,
 ) -> list:
 	"""Propagate forward using FWD Hermite curve plus optional blob snap.
 
@@ -834,13 +842,20 @@ def propagate_forward_analytical(
 			and propagation reduces to pure Hermite (delete-test mode).
 		residual_cache: Optional per-interval cache. When reader is
 			provided, the solver supplies a shared cache for FWD and BWD.
+		precomputed_store: Optional per-interval residual store from
+			residual_pre_pass.precompute_interval_residuals. When non-None,
+			observe_blob_at reads from this store before the legacy reader
+			path, eliminating scattered seeks. When None, legacy path used.
 
 	Returns:
 		List of tracking state dicts, one per frame from start_frame to
 		end_frame inclusive. Index 0 is at start_frame.
 	"""
 	raw = _compute_raw_pred_forward(interval_curves, scene_transform)
-	states = _apply_blob_snap(raw, reader, scene_transform, residual_cache or {}, blob_snap_enabled)
+	states = _apply_blob_snap(
+		raw, reader, scene_transform, residual_cache or {}, blob_snap_enabled,
+		precomputed_store=precomputed_store,
+	)
 	return states
 
 
@@ -851,6 +866,7 @@ def propagate_backward_analytical(
 	blob_snap_enabled: bool,
 	reader: object = None,
 	residual_cache: dict = None,
+	precomputed_store: "dict | None" = None,
 ) -> list:
 	"""Propagate backward using BWD Hermite curve plus optional blob snap.
 
@@ -864,6 +880,10 @@ def propagate_backward_analytical(
 			pass. Legitimately holds raw residuals and raw blobs only;
 			no per-frame decisions (see residual_motion.observe_blob_at
 			docstring for the cache content boundary).
+		precomputed_store: Optional per-interval residual store from
+			residual_pre_pass.precompute_interval_residuals. When non-None,
+			observe_blob_at reads from this store before the legacy reader
+			path, eliminating scattered seeks. When None, legacy path used.
 
 	Returns:
 		List of tracking state dicts, one per frame from start_frame to
@@ -874,5 +894,8 @@ def propagate_backward_analytical(
 		ordering.
 	"""
 	raw = _compute_raw_pred_backward(interval_curves, scene_transform)
-	states = _apply_blob_snap(raw, reader, scene_transform, residual_cache or {}, blob_snap_enabled)
+	states = _apply_blob_snap(
+		raw, reader, scene_transform, residual_cache or {}, blob_snap_enabled,
+		precomputed_store=precomputed_store,
+	)
 	return states

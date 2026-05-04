@@ -905,18 +905,16 @@ class BaseAnnotationController(QObject):
 	#============================================
 
 	def _load_scene_transform_for_gui(self) -> tuple:
-		"""Find and load the solver's cached motion track for the heat map.
+		"""Find and load the solver's persisted motion track for the heat map.
 
-		Loads the active per-hash camera-motion cache (the file the
-		current solved state binds to via the active.json marker),
-		with a legacy single-file fallback for pre-marker runs. If
-		nothing loads, returns an identity transform so the GUI still
-		opens on fresh videos and the "camera motion not compensated"
-		disclosure badge fires.
+		Loads the canonical camera-motion artifact. If the motion_model
+		does not match the config, or the file is missing, returns an
+		identity transform so the GUI still opens on fresh videos and
+		the "camera motion not compensated" disclosure badge fires.
 
 		Returns:
 			Tuple (scene_transform, available: bool). available is True
-			only when a real cache was loaded; False means identity and
+			only when a real artifact was loaded; False means identity and
 			triggers the "camera motion not compensated" disclosure badge.
 		"""
 		n_frames = max(int(self._reader.frame_count), 1)
@@ -925,7 +923,7 @@ class BaseAnnotationController(QObject):
 		if video_path is not None:
 			try:
 				motion_track = camera_motion.load_active_camera_motion_or_fail(
-					video_path
+					video_path, self._config
 				)
 			except RuntimeError:
 				motion_track = None

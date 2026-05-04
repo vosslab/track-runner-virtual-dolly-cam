@@ -18,7 +18,9 @@ import argparse
 import json
 import math
 import os
+import sys
 import shutil
+import pathlib
 import resource
 import statistics
 import subprocess
@@ -44,6 +46,7 @@ import review
 import tr_crop
 import key_input
 import encode_analysis
+import analyze_report
 import regime_classifier
 import camera_motion
 import race_start
@@ -138,7 +141,8 @@ def _check_identity_mismatch(label: str, path: str) -> None:
 
 	Reads the stored `video_identity` block from the file (JSON or
 	NPZ) and compares it against VIDEO_IDENTITY. Mismatches produce
-	warning messages but do not raise errors.
+	warning messages but do not raise errors (policy: warn only, never
+	reject on identity mismatch).
 
 	Args:
 		label: Human-readable name for the data file (e.g. "seeds").
@@ -159,11 +163,12 @@ def _check_identity_mismatch(label: str, path: str) -> None:
 		stored = data.get("video_identity")
 	if stored is None:
 		return
-	mismatches = tr_video_identity.compare_video_identity(stored, VIDEO_IDENTITY)
-	if mismatches:
+	result = tr_video_identity.compare_video_identity(stored, VIDEO_IDENTITY)
+	if result["blocking"] or result["informational"]:
 		print(f"  warning: {label} file video identity mismatch:")
-		for msg in mismatches:
-			print(f"    {msg}")
+		summary = tr_video_identity.summarize_mismatches(result)
+		for line in summary.split("\n"):
+			print(f"    {line}")
 
 
 #============================================
@@ -463,7 +468,7 @@ def _build_predictions_from_solved_intervals(solved_data: dict) -> dict:
 				}
 				predictions[frame_index] = frame_preds
 		# case 3: all paths missing -> skip silently; caller falls back
-		# to the geometry cache + sidecar path which has populated paths
+		# to the torso_box_coords artifact which has populated paths
 
 	return predictions
 
@@ -552,7 +557,7 @@ def _load_prior_results(intervals_path: str, diag_path: str) -> tuple:
 	"""
 	intervals_file = state_io.load_torso_box_coords(intervals_path)
 	solved = intervals_file.get("solved_intervals", {})
-	# One-time migration of geometry-compatible legacy cache keys. This
+	# One-time migration of geometry-compatible legacy fingerprint keys. This
 	# rewrites on-disk fingerprints that predate the geometry/schema tag
 	# split (e.g. tails carrying `/schema/5` or `/score_schema/4/prerace/4`)
 	# into the current `GEOMETRY_TAG`, so schema bumps no longer force
@@ -562,7 +567,7 @@ def _load_prior_results(intervals_path: str, diag_path: str) -> tuple:
 	if migrated_count > 0:
 		intervals_file["solved_intervals"] = solved
 		state_io.write_torso_box_coords(intervals_path, intervals_file)
-		print(f"  cache: migrated {migrated_count} legacy fingerprint(s) "
+		print(f"  store: migrated {migrated_count} legacy fingerprint(s) "
 			f"to current geometry tag")
 	# merge prior interval_score back onto each geometry entry.
 	# key on (start_frame, end_frame) because interval_scores.json does
@@ -588,7 +593,7 @@ def _load_prior_results(intervals_path: str, diag_path: str) -> tuple:
 	for fingerprint in stale_fingerprints:
 		del solved[fingerprint]
 	if stale_fingerprints:
-		print(f"  cache: dropped {len(stale_fingerprints)} interval(s) "
+		print(f"  store: dropped {len(stale_fingerprints)} interval(s) "
 			f"with missing scores; will re-solve")
 
 	def _on_interval_solved(fingerprint: str, result: dict) -> None:
@@ -816,15 +821,15 @@ def _run_solve(
 	t_solve_start = time.time()
 	prior_ivs, on_solved_cb = _load_prior_results(intervals_path, diag_path)
 
-	# Detect first-run cold-cache condition: check if new hermite/blob
-	# cache namespaces are populated. Non-blocking warning only.
-	cache_dir = tr_paths.ensure_data_dir()
-	hermite_cache_dir = os.path.join(cache_dir, "intervals", "hermite")
-	blob_cache_dir = os.path.join(cache_dir, "intervals", "blob")
-	hermite_exists = os.path.isdir(hermite_cache_dir) and any(
-		os.scandir(hermite_cache_dir)
+	# Detect first-run cold-start condition: check if new hermite/blob
+	# solved-result namespaces are populated. Non-blocking warning only.
+	data_dir = tr_paths.ensure_data_dir()
+	hermite_dir = os.path.join(data_dir, "intervals", "hermite")
+	blob_dir = os.path.join(data_dir, "intervals", "blob")
+	hermite_exists = os.path.isdir(hermite_dir) and any(
+		os.scandir(hermite_dir)
 	)
-	blob_exists = os.path.isdir(blob_cache_dir) and any(os.scandir(blob_cache_dir))
+	blob_exists = os.path.isdir(blob_dir) and any(os.scandir(blob_dir))
 	if not hermite_exists and not blob_exists:
 		print("first run after solve restructure: full recompute expected")
 
@@ -840,7 +845,8 @@ def _run_solve(
 	solve_kwargs = {
 		"num_workers": num_workers,
 		"debug": args.debug,
-		"prior_intervals": prior_ivs,
+		"debug_blob": getattr(args, "debug_blob", False),
+		"prior_solved_intervals": prior_ivs,
 		"on_interval_solved": on_solved_cb,
 		"hermite_only": args.hermite_only,
 		"full_solve": args.full_solve,
@@ -855,16 +861,15 @@ def _run_solve(
 	print("Stage 1: camera motion")
 	t_stage1_start = time.time()
 	# Precompute camera motion for scene coordinate transformation
-	cache_dir = tr_paths.ensure_data_dir()
 	if is_refine:
 		# Refine never recomputes camera motion. Camera motion is a
-		# property of the video, not of the seeds, so refine must
-		# load the exact cache solve bound via the active marker.
-		# Missing marker / cache file -> hard error pointing the
+		# property of the video, not of the seeds, so refine loads
+		# the canonical camera_motion.npz solve produced. Missing
+		# file or motion_model mismatch -> hard error pointing the
 		# user at solve.
 		print("loading camera motion (refine -- not recomputed)...")
 		motion_track = camera_motion.load_active_camera_motion_or_fail(
-			args.input_file,
+			args.input_file, cfg,
 		)
 	else:
 		print("precomputing camera motion...")
@@ -878,7 +883,7 @@ def _run_solve(
 		)
 		try:
 			motion_track = camera_motion.precompute_camera_motion(
-				stage1_reader, cfg, args.input_file, video_info, cache_dir
+				stage1_reader, cfg, args.input_file, video_info
 			)
 		finally:
 			stage1_reader.close()
@@ -1551,7 +1556,7 @@ def _mode_solve(
 		intervals_file = state_io.load_torso_box_coords(intervals_path)
 		prior_complete = intervals_file.get("solve_complete", False)
 		prior_count = len(intervals_file.get("solved_intervals", {}))
-		# --upgrade: keep cache, run Stage 4 promotion only. Skip the
+		# --upgrade: keep store, run Stage 4 promotion only. Skip the
 		# clear-and-re-solve prompt entirely; we do not want to wipe
 		# anything. Falls through to _run_solve below with upgrade=True.
 		if args.upgrade:
@@ -1559,7 +1564,7 @@ def _mode_solve(
 				print("  --upgrade requires a completed prior solve; "
 					"run 'solve --hermite-only --keep' first")
 				return
-			print(f"  --upgrade: running Stage 4 on existing cache "
+			print(f"  --upgrade: running Stage 4 on existing store "
 				f"({prior_count} intervals)")
 		elif prior_complete and prior_count > 0:
 			print(f"  prior solve completed ({prior_count} intervals)")
@@ -1627,14 +1632,14 @@ def _mode_refine(
 	#  1. unchanged seeds -> no computation, no write.
 	#  2. add one seed -> solve exactly 2 intervals.
 	#  3. remove one seed -> solve exactly 1 interval.
-	# cache validity is set membership of fingerprints, not cardinality,
+	# store validity is set membership of fingerprints, not cardinality,
 	# and not the legacy global solve_complete flag. the queue module's
 	# plan_interval_work is the single source of truth for the seed
 	# filter, fingerprint walk, and orphan prune -- solve mode and
-	# refine mode both call it so cache keys match byte-for-byte.
+	# refine mode both call it so fingerprints match byte-for-byte.
 	intervals_file = state_io.load_torso_box_coords(intervals_path)
 	solved_intervals = intervals_file.get("solved_intervals", {})
-	# Migrate geometry-compatible legacy cache keys so refine can reuse
+	# Migrate geometry-compatible legacy fingerprint keys so refine can reuse
 	# them. Write-back is gated on migrated_count > 0; if nothing
 	# changed, we preserve the zero-write guarantee of unchanged-seed
 	# refine.
@@ -1644,7 +1649,7 @@ def _mode_refine(
 	if migrated_count > 0:
 		intervals_file["solved_intervals"] = solved_intervals
 		state_io.write_torso_box_coords(intervals_path, intervals_file)
-		print(f"  cache: migrated {migrated_count} legacy fingerprint(s) "
+		print(f"  store: migrated {migrated_count} legacy fingerprint(s) "
 			f"to current geometry tag")
 	# Drop entries with geometry but no matching score (interrupted prior
 	# solve left npz and interval_scores.json out of sync). These need to
@@ -1670,7 +1675,7 @@ def _mode_refine(
 		intervals_file["solved_intervals"] = solved_intervals
 		state_io.write_torso_box_coords(intervals_path, intervals_file)
 		print(
-			f"  cache: dropped {len(unscored_fps)} intervals with "
+			f"  store: dropped {len(unscored_fps)} intervals with "
 			f"geometry but no score (interrupted solve); will re-solve"
 		)
 	plan = solve_queue.plan_interval_work(seeds, solved_intervals)
@@ -1683,10 +1688,10 @@ def _mode_refine(
 	if plan.pending_count == 0:
 		# solve_complete is advisory, not a correctness gate. if
 		# membership is complete but the legacy completion flag is
-		# false, surface the discrepancy but trust the cache.
+		# false, surface the discrepancy but trust the store.
 		if intervals_file.get("solve_complete") is False:
 			print("  warning: solve_complete=false on disk, "
-				"cache membership complete; trusting cache")
+				"store membership complete; trusting store")
 		print(f"  refine: all {total_expected} intervals already solved, "
 			f"nothing to do")
 		return
@@ -1700,11 +1705,11 @@ def _mode_refine(
 	if pruned_count > 0:
 		intervals_file["solved_intervals"] = dict(plan.pruned_prior)
 		state_io.write_torso_box_coords(intervals_path, intervals_file)
-		print(f"  cache: pruned {pruned_count} stale intervals "
+		print(f"  store: pruned {pruned_count} stale intervals "
 			f"({before} -> {len(plan.pruned_prior)})")
 
 	# contract C6: refine must retain untouched intervals. If the prune
-	# above emptied the prior cache but intervals remain to solve, refine
+	# above emptied the prior store but intervals remain to solve, refine
 	# would be doing a full solve under the refine label. Fail loud and
 	# tell the user to run 'solve' with a reason.
 	if (plan.reused_count == 0 and plan.total_intervals > 0
@@ -1713,7 +1718,7 @@ def _mode_refine(
 			f"refine would re-solve all {plan.total_intervals} intervals "
 			f"(no prior fingerprints matched); this is a full solve -- "
 			f"run 'solve' instead. Likely cause: geometry tag changed "
-			f"without a migration entry, or the cache file is for a "
+			f"without a migration entry, or the store file is for a "
 			f"different seed set."
 		)
 
@@ -1995,6 +2000,63 @@ def _mode_analyze(
 	)
 	print(report)
 
+	# write HTML diagnostic report when --plot is set. Camera motion is
+	# loaded with the same graceful-degradation pattern as encode mode
+	# (see _mode_encode draw_velocity branch around L2270): a missing
+	# artifact is a warning, not an error.
+	if args.write_plots:
+		# Single message string used in both the HTML warnings section and
+		# the stderr line below; defining it once prevents tense drift
+		# between the two surfaces.
+		camera_motion_missing_msg = (
+			"Camera-motion data unavailable; "
+			"camera and speed panels were skipped."
+		)
+		report_warnings = []
+		motion_track = None
+		scene_transform = None
+		try:
+			motion_track = camera_motion.load_active_camera_motion_or_fail(args.input_file, cfg)
+		except RuntimeError:
+			report_warnings.append(camera_motion_missing_msg)
+		if motion_track is None:
+			print(f"  warning: {camera_motion_missing_msg}", file=sys.stderr)
+		else:
+			scene_transform = scene_coords.SceneTransform(motion_track)
+
+		# derive HTML output path: same stem as the YAML report, .html suffix
+		html_path = pathlib.Path(analysis_path).with_suffix('.html')
+		# strip the trailing .encode_analysis from the stem so the HTML's
+		# References section links back to the YAML at <stem>.encode_analysis.yaml
+		stem = html_path.stem
+		if stem.endswith('.encode_analysis'):
+			stem = stem[:-len('.encode_analysis')]
+
+		# tr_crop.trajectory_to_crop_rects pads crop_rects to the full source
+		# frame count via gap-filling, but `trajectory` here is the shorter
+		# post-erasure list. Pad trajectory with None for the missing frames
+		# so panel builders can index trajectory[i] alongside crop_rects[i];
+		# None entries are treated as "no torso geometry" (gaps in the panel
+		# series) per the documented degradation contract.
+		total_frames = video_info["frame_count"]
+		if len(trajectory) < total_frames:
+			trajectory_aligned = list(trajectory) + [None] * (total_frames - len(trajectory))
+		else:
+			trajectory_aligned = trajectory[:total_frames]
+
+		out = analyze_report.write_analyze_report(
+			out_path=html_path,
+			video_stem=stem,
+			trajectory=trajectory_aligned,
+			crop_rects=crop_rects,
+			motion_track=motion_track,
+			scene_transform=scene_transform,
+			fps=fps,
+			config=cfg,
+			warnings=report_warnings,
+		)
+		print(f"wrote diagnostic report: {out}")
+
 
 #============================================
 def _mode_encode(
@@ -2260,15 +2322,13 @@ def _mode_encode(
 		# expressed in the current camera's pixel space.
 		if draw_velocity:
 			scene_transform = None
-			# Load the per-hash camera-motion cache that the active
-			# solve binds to (via the active.json marker), with a
-			# legacy single-file fallback for pre-marker runs. Encode
-			# is read-only and degrades gracefully when nothing is
+			# Load the canonical camera-motion artifact. Encode is
+			# read-only and degrades gracefully when nothing is
 			# available -- it does not hard-error like refine does.
 			motion_track = None
 			try:
 				motion_track = camera_motion.load_active_camera_motion_or_fail(
-					args.input_file
+					args.input_file, cfg
 				)
 			except RuntimeError:
 				motion_track = None
@@ -2276,9 +2336,9 @@ def _mode_encode(
 				scene_transform = scene_coords.SceneTransform(motion_track)
 			else:
 				print(
-					"  warning: no camera_motion cache available; "
+					"  warning: no camera_motion artifact available; "
 					"velocity arrow will use camera-relative motion "
-					"(run 'solve' to populate the cache)"
+					"(run 'solve' to populate the artifact)"
 				)
 			interval_solver_lookback = encoder._VELOCITY_LOOKBACK_FRAMES
 			for i, st in enumerate(frame_states_for_debug):
@@ -2305,7 +2365,7 @@ def _mode_encode(
 					break
 				# Reproject the prior pixel position through scene
 				# coordinates so the arrow direction reflects ground
-				# motion. Falls back to camera-relative when the cache
+				# motion. Falls back to camera-relative when the artifact
 				# is unavailable or the frame index is out of range.
 				if prev_center is not None and scene_transform is not None:
 					try:

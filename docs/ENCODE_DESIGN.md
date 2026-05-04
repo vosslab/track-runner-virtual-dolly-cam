@@ -337,19 +337,18 @@ whitespace-tolerant.
 
 ## Camera-motion identity
 
-Encode loads the camera-motion cache via
-`camera_motion.load_active_camera_motion_or_fail(input_file)`, which
-reads the active.json marker written by solve and resolves to the
-per-hash cache file. This means encode uses EXACTLY the same camera
-motion that solve used to build the torso boxes -- the same
-`(estimator + bin_factor + processed_dims)` identity. There is no
+Encode loads the camera-motion artifact via
+`camera_motion.load_active_camera_motion_or_fail(input_file, config)`,
+which reads the canonical file `<video>.track_runner.camera_motion.npz`
+and validates that the persisted `motion_model` matches the current
+configuration. This ensures encode uses EXACTLY the same camera
+motion that solve used to build the torso boxes. There is no
 silent recompute.
 
-If the active marker is missing, the loader falls back to the legacy
-single-file `<video>.track_runner.camera_motion.npz` for backward
-compatibility with pre-marker runs. If neither exists, the loader
-raises `RuntimeError`; encode catches it and prints a one-line
-warning that the velocity arrow will use camera-relative motion.
+If the artifact file is missing or the stored `motion_model` does not
+match the current config, the loader raises `RuntimeError`; encode
+catches it and prints a one-line warning that the velocity arrow will
+use camera-relative motion.
 
 This is the only reason encode reads camera motion at all. The crop
 trajectory itself does not consult camera motion; it consumes the
@@ -485,4 +484,7 @@ the case, that is a UX bug to file rather than a documentation gap.
   Stage 1 details that encode consumes for the velocity-arrow
   projection.
 - [docs/TRACK_RUNNER_ANALYZE_AND_ENCODE.md](TRACK_RUNNER_ANALYZE_AND_ENCODE.md):
-  pre-encode crop-stability diagnostics.
+  pre-encode crop-stability diagnostics. For pre-encode diagnostics including a
+  per-frame view of zoom stability, camera motion, and runner ground speed, see
+  [docs/modes/ANALYZE.md](modes/ANALYZE.md) and run `analyze --plot` on a solved
+  video to produce a self-contained HTML report.

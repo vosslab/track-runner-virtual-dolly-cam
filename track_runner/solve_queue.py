@@ -3,7 +3,7 @@
 Owns the main-process orchestration that decides WHICH intervals get
 queued and HOW completions are collected:
 
-- `WorkPlan`: pure-data partition of seeds into cache-hits and pending
+- `WorkPlan`: pure-data partition of seeds into prior-solved and pending
   intervals. Same shape whether consumed by solve mode or refine mode.
 - `ExecutionContext`: immutable run configuration (reader, transforms,
   paths, worker count, debug). Keeps `execute_interval_work` callable
@@ -12,7 +12,7 @@ queued and HOW completions are collected:
   `cli._mode_refine` for fast-exit / orphan prune and by
   `interval_solver.solve_all_intervals` for the dispatch loop.
 - `execute_interval_work`: runs the in-process-vs-pool decision, the
-  rich progress bar, the cache-hit fast-exit, the quit/drain path, and
+  rich progress bar, the prior-solved fast-exit, the quit/drain path, and
   the result aggregation. Callbacks stay explicit kwargs; mutable state
   is contained in the local closure.
 
@@ -44,27 +44,27 @@ import tr_paths
 #============================================
 @dataclasses.dataclass(frozen=True)
 class WorkPlan:
-	"""Pure-data partition of seeds into cache-hits and pending intervals.
+	"""Pure-data partition of seeds into prior-solved and pending intervals.
 
-	Built by `plan_interval_work(seeds, prior_intervals)`. Immutable.
+	Built by `plan_interval_work(seeds, prior_solved_intervals)`. Immutable.
 
 	Fields:
 		usable_seeds_sorted: Seeds after filter + sort + dedup, the same
 			list both solve and refine should iterate over.
 		expected_fingerprints: Fingerprint for every interval in seed
 			order. Length equals total_intervals.
-		cached_results_by_idx: Per-pair_idx dict of cached result dicts
-			for intervals whose fingerprint was found in prior_intervals.
+		solved_results_by_idx: Per-pair_idx dict of solved result dicts
+			for intervals whose fingerprint was found in prior_solved_intervals.
 			Keys are pair_idx integers; values are the result payload.
 		pending_pair_indices: pair_idx values whose fingerprint was NOT
-			in prior_intervals; these intervals need fresh solves.
-		pruned_prior: Input prior_intervals filtered to only the keys
+			in prior_solved_intervals; these intervals need fresh solves.
+		pruned_prior: Input prior_solved_intervals filtered to only the keys
 			present in expected_fingerprints. Callers in refine mode
 			write this back to disk as the "orphan prune" operation.
 			Empty input yields empty dict.
 		total_intervals: len(expected_fingerprints); number of adjacent
 			usable-seed pairs.
-		reused_count: len(cached_results_by_idx).
+		reused_count: len(solved_results_by_idx).
 		pending_count: len(pending_pair_indices).
 		phase_by_idx: Dict mapping pair_idx to phase string:
 			"pre_race" if end_frame <= interval_low,
@@ -73,7 +73,7 @@ class WorkPlan:
 	"""
 	usable_seeds_sorted: list
 	expected_fingerprints: list
-	cached_results_by_idx: dict
+	solved_results_by_idx: dict
 	pending_pair_indices: list
 	pruned_prior: dict
 	total_intervals: int
@@ -118,6 +118,9 @@ class ExecutionContext:
 		pre_race_reference: Dict from compute_pre_race_reference or None.
 			Initially None; populated by execute_interval_work after the
 			interval is solved and Stage 2 fine detection runs.
+		debug_blob: When True, enables verbose per-worker per-frame
+			Stage 4 instrumentation. Default False. Wired through
+			`solver_workers.make_pool` to every worker process.
 	"""
 	reader: object
 	scene_transform: object
@@ -132,15 +135,16 @@ class ExecutionContext:
 	race_start_interval: tuple = None
 	pre_race_reference: dict = None
 	bin_factor: int = 1
+	debug_blob: bool = False
 
 
 #============================================
 def plan_interval_work(
 	seeds: list,
-	prior_intervals: dict = None,
+	prior_solved_intervals: dict = None,
 	race_start_interval: tuple = None,
 ) -> WorkPlan:
-	"""Compute the WorkPlan for a seed list + optional cache.
+	"""Compute the WorkPlan for a seed list + optional prior-solved store.
 
 	Pure function: no I/O, no printing, no side-effects. Called by both
 	`interval_solver.solve_all_intervals` and `cli._mode_refine` so solve
@@ -153,8 +157,8 @@ def plan_interval_work(
 
 	Args:
 		seeds: Raw seed list from the seeds file.
-		prior_intervals: Optional fingerprint->result dict (the
-			solved_intervals cache). None or empty means every interval
+		prior_solved_intervals: Optional fingerprint->result dict (the
+			per-interval solved-result store). None or empty means every interval
 			is pending.
 		race_start_interval: Optional tuple (low_frame, high_frame) for
 			race-start interval. When None, no phase classification happens
@@ -175,7 +179,7 @@ def plan_interval_work(
 		empty_plan = WorkPlan(
 			usable_seeds_sorted=usable_sorted,
 			expected_fingerprints=[],
-			cached_results_by_idx={},
+			solved_results_by_idx={},
 			pending_pair_indices=[],
 			pruned_prior={},
 			total_intervals=0,
@@ -184,11 +188,11 @@ def plan_interval_work(
 			phase_by_idx={},
 		)
 		return empty_plan
-	# one fingerprint walk: feeds the cache partition AND the orphan
+	# one fingerprint walk: feeds the prior-solved partition AND the orphan
 	# prune in one pass so refine and solve stay in lock-step.
 	total_intervals = len(usable_sorted) - 1
 	expected_fingerprints = []
-	cached_results_by_idx = {}
+	solved_results_by_idx = {}
 	pending_pair_indices = []
 	phase_by_idx = {}
 	interval_low, interval_high = (race_start_interval if race_start_interval else
@@ -200,10 +204,10 @@ def plan_interval_work(
 			seed_start, seed_end,
 		)
 		expected_fingerprints.append(fingerprint)
-		# cache-hit branch: remember the cached payload so execute can
+		# prior-solved branch: remember the solved payload so execute can
 		# replay callbacks for it without touching the pool.
-		if prior_intervals is not None and fingerprint in prior_intervals:
-			cached_results_by_idx[pair_idx] = prior_intervals[fingerprint]
+		if prior_solved_intervals is not None and fingerprint in prior_solved_intervals:
+			solved_results_by_idx[pair_idx] = prior_solved_intervals[fingerprint]
 		else:
 			pending_pair_indices.append(pair_idx)
 		# phase classification: only when interval is present.
@@ -222,21 +226,21 @@ def plan_interval_work(
 				phase_by_idx[pair_idx] = "post_race"
 	# orphan prune: keep only keys that match a current fingerprint.
 	# Empty input produces empty output; we never fabricate keys.
-	if prior_intervals:
+	if prior_solved_intervals:
 		expected_set = set(expected_fingerprints)
 		pruned_prior = {
-			fp: v for fp, v in prior_intervals.items() if fp in expected_set
+			fp: v for fp, v in prior_solved_intervals.items() if fp in expected_set
 		}
 	else:
 		pruned_prior = {}
 	plan = WorkPlan(
 		usable_seeds_sorted=usable_sorted,
 		expected_fingerprints=expected_fingerprints,
-		cached_results_by_idx=cached_results_by_idx,
+		solved_results_by_idx=solved_results_by_idx,
 		pending_pair_indices=pending_pair_indices,
 		pruned_prior=pruned_prior,
 		total_intervals=total_intervals,
-		reused_count=len(cached_results_by_idx),
+		reused_count=len(solved_results_by_idx),
 		pending_count=len(pending_pair_indices),
 		phase_by_idx=phase_by_idx,
 	)
@@ -354,7 +358,7 @@ def _solve_pre_race_interval(
 		fps: Video frame rate.
 
 	Returns:
-		Interval result dict matching the analytical shape per plan §5b:
+		Interval result dict matching the analytical shape per plan section 5b:
 		start_frame, end_frame, blended_path, interval_score, fingerprint, source.
 	"""
 	import interval_fingerprint as ifp
@@ -419,11 +423,11 @@ def execute_interval_work(
 	run_control: object = None,
 	key_reader: object = None,
 ) -> list:
-	"""Execute the plan: replay cache hits, dispatch pending intervals.
+	"""Execute the plan: replay prior-solved intervals, dispatch pending intervals.
 
 	Runs either in-process or through `solver_workers.make_pool` based
 	on worker count and pending interval count. Fires
-	`on_interval_complete` for every interval (cached + solved);
+	`on_interval_complete` for every interval (prior-solved + solved);
 	`on_interval_solved` only for fresh solves. Returns the seed-ordered
 	result list even when the pool delivers completions out of order.
 
@@ -483,13 +487,13 @@ def execute_interval_work(
 	pending_pre_race = [idx for idx in pending_pair_indices
 		if phase_by_idx.get(idx) == "pre_race"]
 
-	# replay cache hits: the pre-parallel serial loop fired
+	# replay prior-solved intervals: the pre-parallel serial loop fired
 	# on_interval_complete uniformly after every append, and
 	# test_on_interval_complete_fires_for_every_interval locks that.
-	for pair_idx, cached in plan.cached_results_by_idx.items():
-		interval_results[pair_idx] = cached
+	for pair_idx, solved in plan.solved_results_by_idx.items():
+		interval_results[pair_idx] = solved
 		if on_interval_complete is not None:
-			on_interval_complete(cached)
+			on_interval_complete(solved)
 
 	# decide execution mode. in-process when the user asked for one
 	# worker, or when there is very little work to amortize pool setup
@@ -498,19 +502,19 @@ def execute_interval_work(
 	# after normal, so decision is based on normal work only.
 	use_pool = context.num_workers >= 2 and len(pending_normal) >= 4
 
-	# announce work scope after cache partition so the number reflects
+	# announce work scope after prior-solved partition so the number reflects
 	# actual solves, not total intervals. Note: pending_normal does not
 	# include pre-race; those are synthesized fast after Stage 2.
 	pending_normal_total = len(pending_normal)
 	if pending_normal_total == 0 and len(pending_pre_race) == 0:
-		print(f"  all {total_intervals} intervals cached; nothing to solve "
+		print(f"  all {total_intervals} intervals prior-solved; nothing to solve "
 			f"(analytical mode)")
 	elif pending_normal_total == 0 and len(pending_pre_race) > 0:
-		print(f"  all normal intervals cached; {len(pending_pre_race)} pre-race "
+		print(f"  all normal intervals prior-solved; {len(pending_pre_race)} pre-race "
 			f"intervals will be synthesized")
 	elif reused_count > 0:
 		print(f"  solving {pending_normal_total} new intervals, "
-			f"{reused_count} cached (analytical mode)...")
+			f"{reused_count} prior-solved (analytical mode)...")
 	else:
 		print(f"  solving {total_intervals} intervals (analytical mode)...")
 
@@ -526,7 +530,7 @@ def execute_interval_work(
 		print("    size_smooth  = within-track box-size smoothness")
 		print("    blob_accept  = fraction of frames with accepted blob snap (FWD/BWD)")
 
-	# pure cache-hit fast-exit: no bar, no pool. Post-loop summary and
+	# pure prior-solved fast-exit: no bar, no pool. Post-loop summary and
 	# accounting assertion still run below.
 	# Hoist progress and _accept so pre-race synthesis can use them
 	# whether or not pending_normal_total > 0.
@@ -654,7 +658,7 @@ def execute_interval_work(
 	# we do not synthesize twice if somehow the race-start is both cached
 	# and (incorrectly) dispatched to the pool.
 	if (race_start_pair_idx is not None and
-		race_start_pair_idx in plan.cached_results_by_idx):
+		race_start_pair_idx in plan.solved_results_by_idx):
 		_synthesize_pre_race()
 
 	if pending_normal_total > 0:

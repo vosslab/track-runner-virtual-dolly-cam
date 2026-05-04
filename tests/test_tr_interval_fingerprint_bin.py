@@ -6,9 +6,8 @@ upscaling back to source-frame at the boundary. The interval cache
 is keyed on source-frame solver state, so changing --bin must NOT
 invalidate the interval cache.
 
-(Bin invalidation lives only on camera_motion's `config_hash`, which
-caches per-frame phase-correlate output. That is exercised in
-tests/test_tr_camera_motion_bin.py.)
+(Camera motion has its own staleness rule keyed on motion_model; that
+is exercised in tests/test_tr_camera_motion_bin.py.)
 """
 
 # local repo modules

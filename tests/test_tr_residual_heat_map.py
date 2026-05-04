@@ -81,7 +81,6 @@ def test_facade_output_is_roi_scoped_not_full_frame():
 	result = residual_heat_map.compute_heat_map_roi(
 		reader, frame_index=5, scene_transform=transform,
 		pred_center=(960.0, 540.0), pred_box=(40.0, pred_h),
-		window_seconds=style["window_seconds"],
 		fps=reader.fps,
 		threshold=style["threshold"],
 		fixed_max=style["fixed_max"],

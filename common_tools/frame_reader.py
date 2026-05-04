@@ -10,6 +10,7 @@ The temp MKV is cleaned up on close().
 
 # Standard Library
 import os
+import time
 import shutil
 import warnings
 import subprocess
@@ -28,6 +29,102 @@ import common_tools.goodbox
 # this fraction of the scaled axis, FrameReader keeps the full
 # scaled axis and warns once.
 _MAX_CROP_FRACTION = 0.10
+
+# Cache the pid once at module load to avoid repeated os.getpid() calls
+_MODULE_PID = os.getpid()
+
+# Module-level accumulator for blob debug instrumentation.
+# Enabled by calling enable_blob_debug(); read via get_blob_debug_summary().
+# All mutation happens in the worker process where it was enabled.
+_BLOB_DEBUG_STATS = {
+	"enabled": False,
+	# strategy_name -> total call count (successes only)
+	"strategy_calls": {},
+	# strategy_name -> total elapsed ms (successes only)
+	"strategy_total_ms": {},
+	# strategy_name -> count of failures (strategy tried but returned False)
+	"strategy_failures": {},
+	# CRITICAL: count of strategy 4 (sequential walk) firings
+	"strategy_4_fired": 0,
+	# CRITICAL: count of strategy 5 (remux) firings
+	"strategy_5_fired": 0,
+	# total ms spent inside strategy 5 remux calls
+	"remux_total_ms": 0.0,
+}
+
+
+#============================================
+def enable_blob_debug() -> None:
+	"""Enable per-strategy blob debug timing in this process.
+
+	Call from _worker_init when debug_blob is True. Safe to call multiple
+	times; subsequent calls are no-ops (enabled stays True).
+	"""
+	global _MODULE_PID
+	# refresh pid in case this is called from a child process after fork
+	_MODULE_PID = os.getpid()
+	_BLOB_DEBUG_STATS["enabled"] = True
+
+
+#============================================
+def disable_blob_debug() -> None:
+	"""Disable blob debug timing (used in tests for teardown)."""
+	_BLOB_DEBUG_STATS["enabled"] = False
+	# reset counters so tests start clean
+	_BLOB_DEBUG_STATS["strategy_calls"].clear()
+	_BLOB_DEBUG_STATS["strategy_total_ms"].clear()
+	_BLOB_DEBUG_STATS["strategy_failures"].clear()
+	_BLOB_DEBUG_STATS["strategy_4_fired"] = 0
+	_BLOB_DEBUG_STATS["strategy_5_fired"] = 0
+	_BLOB_DEBUG_STATS["remux_total_ms"] = 0.0
+
+
+#============================================
+def get_blob_debug_summary() -> dict:
+	"""Return a shallow copy of _BLOB_DEBUG_STATS for external consumption.
+
+	Returns:
+		Dict with keys: enabled, strategy_calls, strategy_total_ms,
+		strategy_failures, strategy_4_fired, strategy_5_fired, remux_total_ms.
+	"""
+	return {
+		"enabled": _BLOB_DEBUG_STATS["enabled"],
+		"strategy_calls": dict(_BLOB_DEBUG_STATS["strategy_calls"]),
+		"strategy_total_ms": dict(_BLOB_DEBUG_STATS["strategy_total_ms"]),
+		"strategy_failures": dict(_BLOB_DEBUG_STATS["strategy_failures"]),
+		"strategy_4_fired": _BLOB_DEBUG_STATS["strategy_4_fired"],
+		"strategy_5_fired": _BLOB_DEBUG_STATS["strategy_5_fired"],
+		"remux_total_ms": _BLOB_DEBUG_STATS["remux_total_ms"],
+	}
+
+
+#============================================
+def _accumulate_strategy(name: str, elapsed_ms: float) -> None:
+	"""Accumulate a successful strategy call into _BLOB_DEBUG_STATS.
+
+	Only called when _BLOB_DEBUG_STATS["enabled"] is True.
+
+	Args:
+		name: Strategy name string (e.g., "seq_fast", "seek_frame").
+		elapsed_ms: Elapsed time for this call in milliseconds.
+	"""
+	calls = _BLOB_DEBUG_STATS["strategy_calls"]
+	totals = _BLOB_DEBUG_STATS["strategy_total_ms"]
+	calls[name] = calls.get(name, 0) + 1
+	totals[name] = totals.get(name, 0.0) + elapsed_ms
+
+
+#============================================
+def _accumulate_failure(name: str) -> None:
+	"""Accumulate a failed strategy attempt into _BLOB_DEBUG_STATS.
+
+	Only called when _BLOB_DEBUG_STATS["enabled"] is True.
+
+	Args:
+		name: Strategy name that failed.
+	"""
+	failures = _BLOB_DEBUG_STATS["strategy_failures"]
+	failures[name] = failures.get(name, 0) + 1
 
 
 #============================================
@@ -375,6 +472,8 @@ class FrameReader:
 			BGR frame as numpy array, or None if all strategies fail.
 		"""
 		results = {}
+		# check debug flag once so all branches pay only one attribute lookup
+		debug_on = _BLOB_DEBUG_STATS["enabled"]
 
 		# strategy 0: sequential fast-path. No `cap.set(...)`; just
 		# `cap.read()`. The seek capture's position is known
@@ -386,8 +485,18 @@ class FrameReader:
 			self._cap_next_index >= 0
 			and frame_index == self._cap_next_index
 		):
+			if debug_on:
+				t0 = time.perf_counter()
 			ret, frame = self._cap.read()
 			if ret:
+				if debug_on:
+					elapsed_ms = (time.perf_counter() - t0) * 1000.0
+					_accumulate_strategy("seq_fast", elapsed_ms)
+					print(
+						f"[blob][pid={_MODULE_PID}] read_frame fi={frame_index}"
+						f" strategy=seq_fast elapsed={elapsed_ms:.1f}ms",
+						flush=True,
+					)
 				results["seq_fast"] = "OK"
 				# advance tracker for the next call
 				self._cap_next_index = frame_index + 1
@@ -402,9 +511,19 @@ class FrameReader:
 		# POS_MSEC on H.264 mp4/MOV scattered reads (POS_MSEC tends to
 		# force a keyframe re-seek per call). For sequential reads the
 		# strategy 0 fast-path above already skips this entirely.
+		if debug_on:
+			t0 = time.perf_counter()
 		self._cap.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
 		ret, frame = self._cap.read()
 		if ret:
+			if debug_on:
+				elapsed_ms = (time.perf_counter() - t0) * 1000.0
+				_accumulate_strategy("seek_frame", elapsed_ms)
+				print(
+					f"[blob][pid={_MODULE_PID}] read_frame fi={frame_index}"
+					f" strategy=seek_frame elapsed={elapsed_ms:.1f}ms",
+					flush=True,
+				)
 			results["seek_frame"] = "OK"
 			# strategy 1 succeeded: arm the fast-path for the
 			# next consecutive index.
@@ -415,42 +534,110 @@ class FrameReader:
 		# any failed strategy below repositions or re-opens the
 		# capture; invalidate the fast-path tracker.
 		self._cap_next_index = -1
+		if debug_on:
+			_accumulate_failure("seek_frame")
+			print(
+				f"[blob][pid={_MODULE_PID}] read_frame fi={frame_index}"
+				f" STRATEGY_FAIL strategy=seek_frame retry=seek_msec",
+				flush=True,
+			)
 
 		# strategy 2: seek by milliseconds (fallback for codecs where
 		# POS_FRAMES does not honor random access).
+		if debug_on:
+			t0 = time.perf_counter()
 		time_msec = (frame_index / self._fps) * 1000.0
 		self._cap.set(cv2.CAP_PROP_POS_MSEC, time_msec)
 		ret, frame = self._cap.read()
 		if ret:
+			if debug_on:
+				elapsed_ms = (time.perf_counter() - t0) * 1000.0
+				_accumulate_strategy("seek_msec", elapsed_ms)
+				print(
+					f"[blob][pid={_MODULE_PID}] read_frame fi={frame_index}"
+					f" strategy=seek_msec elapsed={elapsed_ms:.1f}ms",
+					flush=True,
+				)
 			results["seek_msec"] = "OK"
 			self._print_debug(frame_index, results)
 			return self._apply_bin(frame)
 		results["seek_msec"] = "FAIL"
+		if debug_on:
+			_accumulate_failure("seek_msec")
+			print(
+				f"[blob][pid={_MODULE_PID}] read_frame fi={frame_index}"
+				f" STRATEGY_FAIL strategy=seek_msec retry=reopen",
+				flush=True,
+			)
 
 		# strategy 3: reopen seek capture and seek by frame index
+		if debug_on:
+			t0 = time.perf_counter()
 		self._cap.release()
 		self._cap = cv2.VideoCapture(self._active_path)
 		if self._cap.isOpened():
 			self._cap.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
 			ret, frame = self._cap.read()
 			if ret:
+				if debug_on:
+					elapsed_ms = (time.perf_counter() - t0) * 1000.0
+					_accumulate_strategy("reopen", elapsed_ms)
+					print(
+						f"[blob][pid={_MODULE_PID}] read_frame fi={frame_index}"
+						f" strategy=reopen elapsed={elapsed_ms:.1f}ms",
+						flush=True,
+					)
 				results["reopen"] = "OK"
 				self._print_debug(frame_index, results)
 				return self._apply_bin(frame)
 		results["reopen"] = "FAIL"
+		if debug_on:
+			_accumulate_failure("reopen")
+			print(
+				f"[blob][pid={_MODULE_PID}] read_frame fi={frame_index}"
+				f" STRATEGY_FAIL strategy=reopen retry=sequential",
+				flush=True,
+			)
 
 		# strategy 4: sequential forward read on dedicated capture
+		last_seq_pos = self._seq_pos
+		if debug_on:
+			t0 = time.perf_counter()
 		frame = self._sequential_read(frame_index)
 		if frame is not None:
+			if debug_on:
+				elapsed_ms = (time.perf_counter() - t0) * 1000.0
+				_BLOB_DEBUG_STATS["strategy_4_fired"] += 1
+				_accumulate_strategy("sequential", elapsed_ms)
+				print(
+					f"[blob][pid={_MODULE_PID}] read_frame fi={frame_index}"
+					f" CRITICAL strategy=sequential"
+					f" walked from {last_seq_pos} to {frame_index}",
+					flush=True,
+				)
 			results["sequential"] = "OK"
 			self._print_debug(frame_index, results)
 			return self._apply_bin(frame)
 		results["sequential"] = "FAIL"
+		if debug_on:
+			_accumulate_failure("sequential")
 
 		# strategy 5: remux to MKV and retry (one-shot, never retried)
 		if not self._remux_attempted:
+			if debug_on:
+				t0_remux = time.perf_counter()
 			remuxed = self._remux_to_mkv()
 			if remuxed:
+				if debug_on:
+					remux_ms = (time.perf_counter() - t0_remux) * 1000.0
+					_BLOB_DEBUG_STATS["strategy_5_fired"] += 1
+					_BLOB_DEBUG_STATS["remux_total_ms"] += remux_ms
+					print(
+						f"[blob][pid={_MODULE_PID}] read_frame fi={frame_index}"
+						f" CRITICAL strategy=remux"
+						f" elapsed={remux_ms / 1000.0:.1f}s (one-shot)",
+						flush=True,
+					)
 				results["remux"] = "OK"
 				# retry strategies 1-4 on the remuxed file
 				frame = self._retry_after_remux(frame_index, results)

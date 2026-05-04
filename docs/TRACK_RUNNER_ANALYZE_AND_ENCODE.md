@@ -13,8 +13,8 @@ The `analyze` subcommand diagnoses crop-path instability before encoding. It doe
 Analyze requires solved intervals. Run the `solve` subcommand first.
 
 ```bash
-source source_me.sh && python emwy_tools/track_runner/cli.py -i VIDEO analyze
-source source_me.sh && python emwy_tools/track_runner/cli.py -i VIDEO analyze --aspect 16:9
+source source_me.sh && python ./track_runner/track_runner.py -i VIDEO analyze
+source source_me.sh && python ./track_runner/track_runner.py -i VIDEO analyze --aspect 16:9
 ```
 
 The analyze subcommand outputs:
@@ -153,6 +153,70 @@ Use these recommendations based on the instability classification.
 
 - Action: Not yet fixable in the crop controller. Use encoder-level post-process filtering (bilateral, hqdn3d) to smooth output.
 - Check: Is shimmer visible only on stationary scenes? If yes, it is subpixel oscillation.
+
+## Diagnostic report (--plot)
+
+Run `analyze --plot` (or `-p`) to produce a self-contained HTML report at
+`tr_config/<stem>.encode_analysis.html`. The file embeds all JS and JSON inline;
+no external dependencies or network access is required.
+
+### Panel reference
+
+**Zoom stability (zoom bouncing).** Plots raw `crop_h` per frame plus a 9-frame
+nan-aware mean overlay as a second series on the same left axis. A twin right
+axis carries `torso_h` and `torso_w`. The visible gap between the raw and
+smoothed `crop_h` curves is the bouncing magnitude. The 9-frame window matches
+the ~6-7 frame time constant of the 0.15 default `crop_post_smooth_size_strength`
+EMA (see 2026-05-02 changelog and the "Smoothing" section above).
+
+**Zoom multiple (achieved vs configured).** Plots `crop_h / torso_h` per frame.
+A dashed horizontal reference line shows the configured `torso_height_multiple`
+from `tr_config/<stem>.yaml` (key nested at
+`config['processing']['torso_height_multiple']`; line is omitted when the key is
+absent or the YAML could not be loaded). A flat line at the reference value means
+the setting is honored throughout the clip. A flat line above the reference
+means a hidden floor -- for example, fit-to-source shrink near a frame edge --
+is overriding the user's zoom setting.
+
+**Camera motion.** Plots `hypot(dx, dy)` per frame on the left axis and `scale`
+on the right axis. Anomalous magnitude spikes explain lateral camera shake in the
+encode output; sudden scale jumps explain perceived zoom jitter that is camera-
+driven rather than crop-path-driven.
+
+**Runner ground speed.** Projects per-frame torso centers to scene coordinates
+via `SceneTransform.pixel_to_scene` and first-differences to get per-frame
+displacement. Plots raw displacement and a 5-frame nan-aware mean overlay.
+Missing or erased trajectory frames record as null and render as gaps (no
+interpolation). A secondary y-axis shows scene units per second when fps is
+known from the video metadata.
+
+### Interaction model
+
+- **Hover:** a tooltip shows frame index, elapsed seconds (when fps is known),
+  and the value of every visible series at that frame.
+- **Drag to zoom:** click and drag horizontally within any panel to select an
+  x-range; the zoom is applied and synced across all panels simultaneously.
+- **Double-click reset:** double-click anywhere in any panel to reset all
+  panels back to the full frame range.
+- **Series checkboxes:** each panel has a row of checkboxes with color swatches
+  below the canvas; toggling a checkbox shows or hides that series without
+  reloading the page. Null values render as gaps regardless of the zoom level.
+
+### Graceful degradation
+
+Warnings are surfaced at the top of the HTML report. Two degradation tiers:
+
+- **Camera-motion data missing:** the camera-motion and runner-speed panels are
+  skipped. Only the two zoom panels render. This happens when `setup --motion`
+  has not been run or when the `.track_runner.camera_motion.npz` artifact is
+  absent.
+- **Scene transform unavailable:** the runner-speed panel is skipped, but the
+  camera-motion panel still renders (it does not need the scene transform).
+  Three panels render in this case.
+
+See [docs/modes/ANALYZE.md](modes/ANALYZE.md) for the CLI reference and quick
+usage guide. See [docs/ENCODE_DESIGN.md](ENCODE_DESIGN.md) for the full encode
+pipeline that produces the crop trajectory these panels diagnose.
 
 ## Encode pipeline overview
 

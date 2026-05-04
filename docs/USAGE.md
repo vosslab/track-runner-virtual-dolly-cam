@@ -19,6 +19,16 @@ Global options must appear before the subcommand.
 | `-w`, `--workers` | Number of parallel workers (default: half of CPU cores). |
 | `--time-range` | Limit processing to a time range in seconds. Format: `START:END`, `START:`, or `:END`. |
 
+## Performance diagnostic flag
+
+`solve` and `refine` accept `--debug-blob` to enable verbose Stage 4 instrumentation: per-worker per-frame `read_frame` strategy timings, residual compute timings, per-pid worker-exit summaries, and a 5-second master heartbeat. Off by default and zero overhead when off; opt in only when investigating Stage 4 wall time.
+
+```
+./track_runner/track_runner.py -i video.mkv solve --bin 4 --debug-blob 2>&1 | tee /tmp/blob_debug.log
+```
+
+See [common_tools/README.md](../common_tools/README.md) for read-pattern cost numbers (sequential vs scattered) and how to interpret the per-strategy histogram.
+
 ## Subcommands
 
 The eight subcommands -- `setup`, `seed`, `solve`, `target`, `refine`, `edit`, `encode`, `analyze` -- each have a dedicated reference page. See [docs/MODES.md](MODES.md) for the index, or jump directly:

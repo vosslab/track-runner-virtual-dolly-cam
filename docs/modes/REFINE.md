@@ -12,7 +12,7 @@ Incremental re-solve that only re-solves changed or new intervals and reuses pri
 
 <!-- BEGIN AUTO HELP: refine -->
 ```text
-usage: track_runner.py refine [-h] [-f | -H] [--bin BIN_FACTOR]
+usage: track_runner.py refine [-h] [-f | -H] [--bin BIN_FACTOR] [--debug-blob]
 
 options:
   -h, --help          show this help message and exit
@@ -26,6 +26,11 @@ options:
                       largest FFT-friendly goodbox not exceeding it (origin-
                       preserving right/bottom crop). Source-frame outputs
                       unchanged.
+  --debug-blob        Enable per-worker per-frame instrumentation for the
+                      Stage 4 blob pass. Prints read_frame strategy timings,
+                      residual compute timings, per-pid summaries on worker
+                      exit, and a 5-second heartbeat from the master driver.
+                      Independent of -d/--debug. Default off.
 ```
 <!-- END AUTO HELP: refine -->
 
@@ -36,8 +41,8 @@ Refine operates within the same stage pipeline as solve (stages 1-4 default, or 
 If refine exits with a message to run solve, heed it. The reason is usually:
 - A bulk seed change that affects the race-start detection or scene transform in a way that invalidates cached upstream state.
 - Structural changes to the seed set that cannot be handled incrementally.
-- Missing camera-motion cache: refine never recomputes Stage 1. It loads the exact camera-motion cache the prior solve bound via the per-video `active.json` marker, and aborts with "Camera-motion cache for this solve is missing. Run solve first." if the marker or cache file is absent.
+- Missing camera-motion artifact: refine never recomputes Stage 1. It loads the canonical `<video>.track_runner.camera_motion.npz` and validates that the persisted `motion_model` matches the current configuration. Refine aborts with "Camera-motion artifact for this solve is missing. Run solve first." if the file is absent or stale.
 
-**`--bin` and refine:** Refine accepts `--bin` for the per-frame residual stages, but refine never recomputes Stage 1 regardless of `--bin`. Camera motion is a property of the video, not of the seeds, so changing `--bin` between solve and refine does not re-run Stage 1; refine reuses the camera-motion cache the prior solve recorded in `active.json`. To rebind Stage 1 to a different `--bin`, run `solve --bin N` (which rewrites the active marker).
+**`--bin` and refine:** Refine accepts `--bin` for the per-frame residual stages, but refine never recomputes Stage 1 regardless of `--bin`. Camera motion is a property of the video, not of the seeds, so changing `--bin` between solve and refine does not re-run Stage 1; refine reuses the canonical camera-motion artifact stored by the prior solve. The motion-model staleness check ensures the artifact matches the current configuration.
 
 For interval independence philosophy, see contract C5 in [../TRACK_RUNNER_CONTRACT.md](../TRACK_RUNNER_CONTRACT.md).

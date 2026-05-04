@@ -124,11 +124,24 @@ setup --> seed --> solve --> (target --> refine)* --> encode
   optional residual-blob snap gates.
 - [track_runner/residual_motion.py](../track_runner/residual_motion.py) --
   per-frame residual-motion cue map, ROI extraction, corridor filter,
-  `observe_blob_at`.
+  `observe_blob_at`. The fps-invariant 9-sample neighbor stack uses
+  `resolve_stride(fps)` (`REFERENCE_FPS = 60`); time span is fixed at
+  ~133 ms regardless of camera fps.
+- [track_runner/residual_pre_pass.py](../track_runner/residual_pre_pass.py)
+  -- per-worker per-interval sequential residual pre-pass that
+  eliminates scattered random-access reads from Stage 4.
+  `precompute_interval_residuals` walks `pad_lo..pad_hi` once via
+  `FrameReader` strategy-0 fast-path and builds a worker-local
+  `(frame_index, roi) -> (uint8 residual, uint8 validity)` store.
+  `observe_blob_at` reads from the store via `precomputed_store`;
+  on a hit it bypasses on-the-fly residual computation.
 - [track_runner/residual_heat_map.py](../track_runner/residual_heat_map.py)
   -- residual heat-map generation for overlays and diagnostics.
 - [track_runner/interval_solver.py](../track_runner/interval_solver.py) --
   `solve_interval_analytical()`, interval merging, trajectory stitching.
+  `_dispatch_blob_pass` owns Stage 4 dispatch including the always-on
+  `[blob] dispatch / complete` UX lines and the `--debug-blob`-gated
+  master-side heartbeat thread + final-summary roll-up.
 - [track_runner/solve_queue.py](../track_runner/solve_queue.py) -- driver
   for solve and refine: seed filtering, fingerprint walk, cache-hit
   partition, pool dispatch, result aggregation. Shared by solve and refine
@@ -161,6 +174,9 @@ setup --> seed --> solve --> (target --> refine)* --> encode
   encoding with optional filter pipeline.
 - [track_runner/encode_analysis.py](../track_runner/encode_analysis.py) --
   post-encode quality analysis and reporting.
+- [track_runner/analyze_report.py](../track_runner/analyze_report.py) --
+  self-contained HTML diagnostic report builder for `analyze --plot`,
+  with embedded JSON and an inlined vanilla-JS canvas renderer.
 - [track_runner/video_io.py](../track_runner/video_io.py) -- `VideoReader`
   and frame decode utilities.
 

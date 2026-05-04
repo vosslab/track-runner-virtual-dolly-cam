@@ -189,25 +189,21 @@ which resolves to:
 tr_config/<basename>.track_runner.camera_motion.npz
 ```
 
-`save_motion_cache` (lines 548-599) writes the following arrays:
+`save_motion_cache` writes the following arrays:
 
 - `motion_model` (utf-8 bytes): one of `fixed_zoom`, `discrete_zoom`,
   `continuous_zoom`.
 - `video_identity_basename` (utf-8 bytes): video basename, used to
   detect mistaken cross-video reuse without re-probing.
 - `frame_count` (int64): expected length of the per-frame arrays.
-- `config_hash` (utf-8 bytes): first 8 hex chars of the md5 of the
-  estimator config dict (`_compute_config_fingerprint`, lines
-  496-510). md5 is used here for cache fingerprinting only, never as
-  a security primitive.
 - `dx`, `dy`, `quality`: float32, length `frame_count`.
 - `scale`: float32, length `frame_count`. Omitted for `fixed_zoom`,
   since it is constant 1.0 by construction.
 
-`load_motion_cache` (lines 603-662) returns `None` if the file is
-missing or its `config_hash` differs from the current
-`expected_config_hash`. A stale hash is treated as cache absence so
-the next call recomputes and overwrites the file in place
+`load_motion_cache` returns `None` if the file is missing or its
+persisted `motion_model` differs from the current config-derived
+`expected_motion_model`. A stale model is treated as artifact absence
+so the next call recomputes and overwrites the file in place
 (`numpy.savez` is atomic enough for this purpose). There is no merge
 or partial reuse. For `fixed_zoom`, the loader synthesizes a constant
 ones `scale` array so downstream `SceneTransform` code sees the same
@@ -217,7 +213,8 @@ Note: `camera_motion.npz` is **not** tracked in
 `tr_schema.SUPPORTED_ARTIFACT_SCHEMAS`; it does not participate in
 the unified `SCHEMA_VERSION` (see
 [docs/TRACK_RUNNER_CONTRACT.md](TRACK_RUNNER_CONTRACT.md) C9).
-Invalidation rides on `config_hash` alone. If a future change makes
+Staleness is determined by comparing the persisted `motion_model`
+against the current configuration. If a future change makes
 camera motion influence the meaning of derived artifacts, that
 contract change is what would justify pulling it under
 `SCHEMA_VERSION`.

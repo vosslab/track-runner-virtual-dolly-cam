@@ -1,5 +1,9 @@
 """Tests for track_runner.camera_motion module."""
 
+# Standard Library
+import os
+import tempfile
+
 # PIP3 modules
 import numpy
 import pytest
@@ -122,7 +126,6 @@ def test_fixed_zoom_omits_scale_on_disk(tmp_path):
 		_make_motion_track([1.0, 1.0, 1.0]), cache_path,
 		motion_model=camera_motion.MOTION_MODEL_FIXED,
 		video_identity=_dummy_identity(),
-		config_hash="abcd1234",
 	)
 	with numpy.load(cache_path, allow_pickle=False) as npz:
 		keys = set(npz.files)
@@ -139,7 +142,6 @@ def test_fixed_zoom_cache_round_trip(tmp_path):
 		motion_orig, cache_path,
 		motion_model=camera_motion.MOTION_MODEL_FIXED,
 		video_identity=_dummy_identity(),
-		config_hash="abcd1234",
 	)
 	loaded = camera_motion.load_motion_cache(cache_path)
 	# round-trip preserves signal; fixed_zoom synthesizes scale=1 on load
@@ -156,26 +158,28 @@ def test_discrete_zoom_cache_preserves_scale(tmp_path):
 		motion_orig, cache_path,
 		motion_model=camera_motion.MOTION_MODEL_DISCRETE,
 		video_identity=_dummy_identity(),
-		config_hash="hash01",
 	)
 	loaded = camera_motion.load_motion_cache(cache_path)
 	assert numpy.allclose(loaded.scale, motion_orig.scale)
 
 
 #============================================
-def test_stale_config_hash_treated_as_miss(tmp_path):
-	"""A mismatched config_hash makes load_motion_cache return None."""
+def test_stale_motion_model_treated_as_miss(tmp_path):
+	"""A mismatched motion_model makes load_motion_cache return None."""
 	cache_path = str(tmp_path / "motion.npz")
 	camera_motion.save_motion_cache(
 		_make_motion_track([1.0, 1.0, 1.0]), cache_path,
 		motion_model=camera_motion.MOTION_MODEL_FIXED,
 		video_identity=_dummy_identity(),
-		config_hash="original",
 	)
-	# expected hash disagrees -> None
-	assert camera_motion.load_motion_cache(cache_path, "different") is None
-	# matching hash -> still loads
-	assert camera_motion.load_motion_cache(cache_path, "original") is not None
+	# expected motion_model disagrees -> None
+	assert camera_motion.load_motion_cache(
+		cache_path, expected_motion_model=camera_motion.MOTION_MODEL_DISCRETE
+	) is None
+	# matching motion_model -> still loads
+	assert camera_motion.load_motion_cache(
+		cache_path, expected_motion_model=camera_motion.MOTION_MODEL_FIXED
+	) is not None
 
 
 #============================================
@@ -191,7 +195,6 @@ def test_loader_rejects_unknown_motion_model(tmp_path):
 			b"t.mkv", dtype=numpy.uint8
 		),
 		frame_count=numpy.asarray(3, dtype=numpy.int64),
-		config_hash=numpy.frombuffer(b"abcd", dtype=numpy.uint8),
 		dx=numpy.zeros(3, dtype=numpy.float32),
 		dy=numpy.zeros(3, dtype=numpy.float32),
 		quality=numpy.ones(3, dtype=numpy.float32),
@@ -213,7 +216,6 @@ def test_loader_rejects_discrete_without_scale(tmp_path):
 			b"t.mkv", dtype=numpy.uint8
 		),
 		frame_count=numpy.asarray(3, dtype=numpy.int64),
-		config_hash=numpy.frombuffer(b"abcd", dtype=numpy.uint8),
 		dx=numpy.zeros(3, dtype=numpy.float32),
 		dy=numpy.zeros(3, dtype=numpy.float32),
 		quality=numpy.ones(3, dtype=numpy.float32),
@@ -239,18 +241,6 @@ def test_median_filter_smoothing():
 	# edge values should be unchanged by median filter
 	assert filtered[0] == arr[0]
 	assert filtered[-1] == arr[-1]
-
-
-#============================================
-def test_config_fingerprint_differs_for_different_config():
-	"""Test that config fingerprint differs for different configs."""
-	config_1 = {"estimator": "FixedZoomEstimator", "window_size": 64}
-	config_2 = {"estimator": "FixedZoomEstimator", "window_size": 128}
-
-	fp_1 = camera_motion._compute_config_fingerprint(config_1)
-	fp_2 = camera_motion._compute_config_fingerprint(config_2)
-
-	assert fp_1 != fp_2
 
 
 #============================================
@@ -341,9 +331,10 @@ def test_cache_round_trip_serial_to_new_loader(tmp_path):
 		original, cache_path,
 		motion_model=camera_motion.MOTION_MODEL_DISCRETE,
 		video_identity=_dummy_identity(frame_count=5),
-		config_hash="abc12345",
 	)
-	loaded = camera_motion.load_motion_cache(cache_path, "abc12345")
+	loaded = camera_motion.load_motion_cache(
+		cache_path, expected_motion_model=camera_motion.MOTION_MODEL_DISCRETE
+	)
 	assert loaded is not None
 	assert numpy.array_equal(loaded.dx, original.dx)
 	assert numpy.array_equal(loaded.dy, original.dy)
@@ -388,3 +379,57 @@ def test_scene_transform_zoom_jump():
 	px_rt, py_rt = transform.scene_to_pixel(5, scene_x, scene_y)
 	assert numpy.isclose(px_rt, 100.0, atol=0.5)
 	assert numpy.isclose(py_rt, 100.0, atol=0.5)
+
+
+#============================================
+def test_load_motion_cache_rejects_frame_count_array_mismatch(tmp_path):
+	"""Verify load_motion_cache rejects frame_count vs array length mismatch.
+
+	Tests the internal consistency check: if persisted frame_count
+	disagrees with len(dx), raise RuntimeError with "frame_count" in message.
+	"""
+	cache_path = tmp_path / "test.camera_motion.npz"
+
+	# Create motion arrays (100 frames)
+	dx = numpy.arange(100, dtype=numpy.float32) * 0.5
+	dy = numpy.ones(100, dtype=numpy.float32) * 0.1
+	quality = numpy.ones(100, dtype=numpy.float32) * 0.9
+	scale = numpy.ones(100, dtype=numpy.float32)
+
+	# Write with corrupted frame_count (claim 50 but have 100)
+	arrays = {
+		"motion_model": numpy.frombuffer(
+			camera_motion.MOTION_MODEL_CONTINUOUS.encode("utf-8"),
+			dtype=numpy.uint8,
+		),
+		"video_identity_basename": numpy.frombuffer(
+			b"test.mp4", dtype=numpy.uint8,
+		),
+		"frame_count": numpy.asarray(50, dtype=numpy.int64),
+		"dx": dx,
+		"dy": dy,
+		"scale": scale,
+		"quality": quality,
+	}
+
+	# Write atomically
+	dir_path = tmp_path
+	fd, tmp_file = tempfile.mkstemp(dir=dir_path, suffix=".tmp.npz")
+	os.close(fd)
+	try:
+		numpy.savez(tmp_file, **arrays)
+		real_tmp = tmp_file if tmp_file.endswith(".npz") else tmp_file + ".npz"
+		os.replace(real_tmp, str(cache_path))
+	except Exception:
+		for candidate in (tmp_file, tmp_file + ".npz"):
+			if os.path.exists(candidate):
+				os.unlink(candidate)
+		raise
+
+	# Load should raise RuntimeError about frame_count
+	with pytest.raises(RuntimeError) as exc_info:
+		camera_motion.load_motion_cache(str(cache_path))
+
+	error_msg = str(exc_info.value).lower()
+	assert "frame_count" in error_msg
+	assert "corrupt" in error_msg or "entries" in error_msg

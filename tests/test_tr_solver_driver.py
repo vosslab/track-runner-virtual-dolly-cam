@@ -89,7 +89,7 @@ def test_full_cache_hit_skips_pool(monkeypatch):
 	motion = _make_motion(300)
 	scene_transform = scene_coords.SceneTransform(motion)
 
-	# pre-build prior_intervals containing every fingerprint.
+	# pre-build prior_solved_intervals containing every fingerprint.
 	prior = {}
 	for i in range(len(seeds) - 1):
 		fp = interval_solver.compute_interval_fingerprint(seeds[i], seeds[i + 1])
@@ -106,7 +106,7 @@ def test_full_cache_hit_skips_pool(monkeypatch):
 	diagnostics = interval_solver.solve_all_intervals(
 		_DummyReader(), seeds, detector=None, config={},
 		scene_transform=scene_transform, motion_track=motion,
-		prior_intervals=prior,
+		prior_solved_intervals=prior,
 		on_interval_solved=lambda fp, r: solved_called.append(fp),
 		num_workers=1,
 	)
@@ -141,7 +141,7 @@ def test_result_list_in_seed_order(monkeypatch):
 	diagnostics = interval_solver.solve_all_intervals(
 		_DummyReader(), seeds, detector=None, config={},
 		scene_transform=scene_transform, motion_track=motion,
-		prior_intervals=prior,
+		prior_solved_intervals=prior,
 		num_workers=1,
 	)
 
@@ -177,7 +177,7 @@ def test_on_interval_solved_fires_once_per_new_fingerprint(monkeypatch):
 	interval_solver.solve_all_intervals(
 		_DummyReader(), seeds, detector=None, config={},
 		scene_transform=scene_transform, motion_track=motion,
-		prior_intervals=prior,
+		prior_solved_intervals=prior,
 		on_interval_solved=lambda fp, r: solved_fingerprints.append(fp),
 		num_workers=1,
 	)
@@ -210,7 +210,7 @@ def test_on_interval_complete_fires_for_every_interval(monkeypatch):
 	interval_solver.solve_all_intervals(
 		_DummyReader(), seeds, detector=None, config={},
 		scene_transform=scene_transform, motion_track=motion,
-		prior_intervals=prior,
+		prior_solved_intervals=prior,
 		on_interval_complete=lambda r: completed.append(r),
 		num_workers=1,
 	)

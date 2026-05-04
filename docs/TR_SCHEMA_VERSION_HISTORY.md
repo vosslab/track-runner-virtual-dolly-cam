@@ -12,6 +12,49 @@ To bump observer/solver behavior in a way that invalidates geometry caches, incr
 
 When an old cache carries a schema-tagged fingerprint (e.g. `/schema/5`), a pre-unification tail (`/score_schema/4/prerace/4`), or the legacy `blob_snap/v1/...` form, `migrate_legacy_fingerprints` rewrites the key into the unified `geometry_schema_v<N>` namespace at load time. Each entry below marks whether it was geometry-affecting; only geometry-affecting bumps are cache invalidators.
 
+## 11 (2026-05-03)
+
+**M2 fps-invariant stride model replaces adaptive-count window.** Geometry-affecting: yes.
+
+- `DEFAULT_BACKGROUND_WINDOW_SECONDS` and `resolve_half_window()` removed from
+  [track_runner/residual_motion.py](../track_runner/residual_motion.py). Replaced by
+  `REFERENCE_FPS = 60` and `resolve_stride(fps)` which computes
+  `stride = max(1, round(fps / REFERENCE_FPS))`.
+- Neighbor offsets in `compute_residual_for_frame` and `_compute_residual_with_extras` are
+  now `k * stride` for `k in range(-DEFAULT_HALF_WINDOW, DEFAULT_HALF_WINDOW + 1) if k != 0`.
+  At 60 fps stride=1, offsets `[-4, -3, -2, -1, 1, 2, 3, 4]` -- byte-identical to the
+  legacy behavior. At 119.94 fps stride=2, offsets `[-8, -6, -4, -2, 2, 4, 6, 8]` --
+  same ~133 ms time span, half the I/O vs the 17-sample window the old model produced.
+  At 240 fps stride=4, quarter the I/O.
+- `precompute_interval_residuals` in [track_runner/residual_pre_pass.py](../track_runner/residual_pre_pass.py)
+  gains a `stride` parameter; padding is `half_window * stride` so the BGR cache covers
+  the wider time-span window at high fps.
+- `observe_blob_at` signature updated: `window_seconds` parameter removed, `stride`
+  parameter added (default None, resolved from `reader.fps` automatically).
+- `compute_heat_map_roi` in [track_runner/residual_heat_map.py](../track_runner/residual_heat_map.py)
+  migrated to stride model; `window_seconds` parameter removed.
+- `tools/diagnose_residual_motion.py` argparse migrated: `--window-seconds` removed,
+  `--stride` added (default: resolved from video fps).
+- `GEOMETRY_AFFECTING_SCHEMAS` now includes 11 (was {3, 6, 7, 8, 9, 10}).
+- `SUPPORTED_ARTIFACT_SCHEMAS["torso_box_coords"]` is `{10, 11}`. On-disk layout is
+  unchanged from v10; v10 files remain readable. Only the residual-sampling semantics
+  changed, so cache invalidation happens naturally via the geometry fingerprint.
+- `SUPPORTED_ARTIFACT_SCHEMAS["diagnostics"]` adds 11 (stable metadata JSON shape).
+- Plan: `~/.claude/plans/memoized-percolating-moler.md` M2.
+
+## 10 (2026-05-03)
+
+**Per-frame coordinate arrays changed dtype: float32 -> uint16 per C12.4.** Geometry-affecting: yes.
+
+- Per-frame torso-box coordinate arrays (`i<k>_blended_cx`, `i<k>_blended_cy`, `i<k>_blended_w`, `i<k>_blended_h` and their FWD/BWD counterparts) are now stored as `uint16` (pixel-snapped integers, 0-65535 range covers up to ~16K frame dimensions) instead of `float32`.
+- Rationale: Coordinates are rounded to nearest integer before storage (subpixel precision is fictional after interval fingerprinting rounds to 2 decimals). uint16 saves disk space and matches the resolution of the persisted data; the dtype change affects deserialization and reconstruction so an artifact-schema version bump is required.
+- Hard-cut cache policy: `SUPPORTED_ARTIFACT_SCHEMAS["torso_box_coords"]` is now `{10}` only; v8 and v9 are dropped. User must re-solve all intervals. This is acceptable per user feedback: "everything else is gonna have to be recalculated anyway" when schema changes affect geometry.
+- Writer [track_runner/state_io.py](../track_runner/state_io.py) `write_torso_box_coords()` rounds float coords to nearest int, clips to [0, 65535], and casts to uint16 before storage. Defensive clipping guards against future >16K source frames.
+- Loader [track_runner/state_io.py](../track_runner/state_io.py) `load_torso_box_coords()` reconstructs loaded uint16 arrays as Python `int` (not numpy types) so downstream consumers do not silently overflow on arithmetic. Improved error message for rejected schemas directs users to re-solve.
+- Tests [tests/test_tr_state_io.py](../tests/test_tr_state_io.py) verify round-trip rounding tolerance (+-1), uint16 on-disk dtype, and v9 rejection with clear error.
+- `GEOMETRY_AFFECTING_SCHEMAS` now includes 10 (was {3, 6, 7, 8, 9}).
+- `SUPPORTED_ARTIFACT_SCHEMAS["diagnostics"]` adds 10 (stable metadata JSON shape); `SUPPORTED_ARTIFACT_SCHEMAS["torso_box_coords"]` hard-cuts to {10}.
+
 ## 9 (2026-05-01)
 
 **Residual-motion geometry changed: adaptive heat map window resolution.** Geometry-affecting: yes.

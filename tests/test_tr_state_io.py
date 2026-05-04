@@ -13,6 +13,8 @@ hardcoded-constant asserts, no brittle checks on derived schema versions.
 
 # Standard Library
 import json
+import os
+import tempfile
 
 # PIP3 modules
 import numpy
@@ -385,3 +387,170 @@ def test_torso_box_coords_round_trip_hermite_only(tmp_path):
 		for path_key in ("forward_path", "backward_path", "blended_path"):
 			path = interval_data[path_key]
 			assert all(numpy.isfinite(s["cx"]) and numpy.isfinite(s["cy"]) for s in path)
+
+
+#============================================
+
+def test_torso_box_coords_uint16_round_trip(tmp_path):
+	"""V10 round-trip: coords are rounded to int, stored as uint16, and loaded as int.
+
+	Per C12.4, per-frame coordinates are rounded to nearest integer and
+	stored as uint16 (pixel-snapped, no subpixel precision). On load,
+	they are reconstructed as Python ints, not numpy types.
+
+	This test verifies:
+	- Float coords are rounded to nearest int before storage
+	- On-disk arrays have dtype == uint16
+	- Loaded values are Python ints within +-1 of rounded originals
+	- Round-trip preserves integer-level accuracy
+	"""
+	# create a single interval with float coords
+	blended_path = [
+		{"cx": 100.3, "cy": 200.7, "w": 30.1, "h": 60.9},
+		{"cx": 101.5, "cy": 201.5, "w": 30.5, "h": 61.5},
+		{"cx": 102.9, "cy": 202.1, "w": 31.9, "h": 62.1},
+	]
+	cache_data = {
+		"solved_intervals": {
+			"fp_test": {
+				"start_frame": 10,
+				"end_frame": 20,
+				"forward_path": None,
+				"backward_path": None,
+				"blended_path": blended_path,
+			}
+		}
+	}
+
+	coords_path = tmp_path / "torso_box_coords.npz"
+	state_io.write_torso_box_coords(str(coords_path), cache_data)
+
+	# verify on-disk arrays are uint16
+	with numpy.load(str(coords_path), allow_pickle=False) as npz:
+		assert npz["i0_blended_cx"].dtype == numpy.uint16
+		assert npz["i0_blended_cy"].dtype == numpy.uint16
+		assert npz["i0_blended_w"].dtype == numpy.uint16
+		assert npz["i0_blended_h"].dtype == numpy.uint16
+
+	# load and verify reconstructed coords are Python ints within tolerance
+	loaded = state_io.load_torso_box_coords(str(coords_path))
+	loaded_interval = loaded["solved_intervals"]["fp_test"]
+	loaded_blended = loaded_interval["blended_path"]
+
+	# verify each coordinate matches the rounded original (within +-1)
+	expected_rounded = [
+		{"cx": 100, "cy": 201, "w": 30, "h": 61},
+		{"cx": 102, "cy": 202, "w": 31, "h": 62},
+		{"cx": 103, "cy": 202, "w": 32, "h": 62},
+	]
+	for loaded_frame, expected_frame in zip(loaded_blended, expected_rounded):
+		for key in ("cx", "cy", "w", "h"):
+			loaded_val = loaded_frame[key]
+			expected_val = expected_frame[key]
+			assert isinstance(loaded_val, int), f"loaded {key} should be int, got {type(loaded_val)}"
+			assert abs(loaded_val - expected_val) <= 1, \
+				f"coord {key} mismatch: expected ~{expected_val}, got {loaded_val}"
+
+
+#============================================
+
+def test_torso_box_coords_rejects_old_schema(tmp_path):
+	"""V10 loader rejects v9 schema with clear error message.
+
+	When loading a v9 torso_box_coords.npz, the loader should raise
+	RuntimeError with a message directing the user to re-solve.
+	"""
+	# hand-craft a v9 NPZ file with minimal content
+	arrays = {
+		"schema_version": numpy.asarray(9, dtype=numpy.int32),
+		"manifest": numpy.frombuffer(json.dumps([]).encode("utf-8"), dtype=numpy.uint8),
+	}
+	coords_path = tmp_path / "torso_box_coords_v9.npz"
+	dir_path = str(coords_path.parent)
+	fd, tmp_file = tempfile.mkstemp(dir=dir_path, suffix=".tmp.npz")
+	os.close(fd)
+	try:
+		numpy.savez(tmp_file, **arrays)
+		real_tmp = tmp_file if tmp_file.endswith(".npz") else tmp_file + ".npz"
+		os.replace(real_tmp, str(coords_path))
+	except Exception:
+		for candidate in (tmp_file, tmp_file + ".npz"):
+			if os.path.exists(candidate):
+				os.unlink(candidate)
+		raise
+
+	# loading should raise RuntimeError
+	with pytest.raises(RuntimeError) as exc_info:
+		state_io.load_torso_box_coords(str(coords_path))
+
+	# verify error message mentions re-solve
+	assert "re-solve" in str(exc_info.value).lower() or "upgrade" in str(exc_info.value).lower()
+
+
+#============================================
+def test_load_torso_box_coords_rejects_frame_count_mismatch(tmp_path):
+	"""Verify load_torso_box_coords rejects frame_count vs manifest mismatch.
+
+	Tests the internal consistency check: if video_identity frame_count
+	is less than max(end_frame) in the manifest, raise RuntimeError with
+	"frame_count" in the message.
+	"""
+	coords_path = tmp_path / "torso_box_coords.npz"
+	dir_path = tmp_path
+
+	# Build a valid torso_box_coords file
+	manifest = [
+		{
+			"fingerprint": "test_fp",
+			"array_index": 0,
+			"start_frame": 10,
+			"end_frame": 200,
+		}
+	]
+
+	# Create torso box arrays for 191 frames (frames 10-200)
+	frame_count_arrays = 191
+	arrays = {
+		"schema_version": numpy.asarray(state_io.SCHEMA_VERSION, dtype=numpy.int64),
+		"manifest": numpy.frombuffer(
+			json.dumps(manifest).encode("utf-8"), dtype=numpy.uint8
+		),
+		"i0_blended_cx": numpy.arange(frame_count_arrays, dtype=numpy.uint16),
+		"i0_blended_cy": numpy.arange(frame_count_arrays, dtype=numpy.uint16),
+		"i0_blended_w": numpy.ones(frame_count_arrays, dtype=numpy.uint16) * 100,
+		"i0_blended_h": numpy.ones(frame_count_arrays, dtype=numpy.uint16) * 100,
+		# Corrupt: claim frame_count=100, but manifest has end_frame=200
+		"video_identity": numpy.frombuffer(
+			json.dumps({
+				"basename": "test.mp4",
+				"size_bytes": 1000000,
+				"width": 1920,
+				"height": 1080,
+				"fps": 30.0,
+				"frame_count": 100,
+				"duration_s": 33.0,
+			}).encode("utf-8"),
+			dtype=numpy.uint8,
+		),
+	}
+
+	# Write to temp file then move to final path
+	fd, tmp_file = tempfile.mkstemp(dir=dir_path, suffix=".tmp.npz")
+	os.close(fd)
+	try:
+		numpy.savez(tmp_file, **arrays)
+		real_tmp = tmp_file if tmp_file.endswith(".npz") else tmp_file + ".npz"
+		os.replace(real_tmp, str(coords_path))
+	except Exception:
+		for candidate in (tmp_file, tmp_file + ".npz"):
+			if os.path.exists(candidate):
+				os.unlink(candidate)
+		raise
+
+	# Load should raise RuntimeError about frame_count
+	with pytest.raises(RuntimeError) as exc_info:
+		state_io.load_torso_box_coords(str(coords_path))
+
+	error_msg = str(exc_info.value).lower()
+	assert "frame_count" in error_msg
+	assert "corrupt" in error_msg or "trimmed" in error_msg

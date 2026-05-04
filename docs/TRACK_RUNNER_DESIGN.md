@@ -61,6 +61,14 @@ The pipeline's cost philosophy: "Spend expensive evidence only where cheap evide
 
 Default solve runs Stages 1-4. `--hermite-only` stops after Stage 3 for diagnostics. `--full` runs Stages 1-5. Refine mode respects the same stage selection: refined intervals enter at Stage 3 and optionally promote to Stage 4 per their confidence score.
 
+### Stage 4 internal step: per-worker per-interval residual pre-pass
+
+Inside each Stage 4 worker, before FWD/BWD blob snap runs, the worker performs a sequential pre-pass over its interval's frame range and builds a worker-local residual store keyed by `(frame_index, roi)`. The pre-pass is implemented in [track_runner/residual_pre_pass.py](../track_runner/residual_pre_pass.py) and called from [track_runner/interval_solver.py](../track_runner/interval_solver.py) `solve_interval_analytical`. Both FWD and BWD passes then read residuals from the store via the `precomputed_store` parameter on `observe_blob_at`; on a miss the legacy reader path still works (used by diagnostic tools).
+
+This is NOT a separate pipeline stage. Per contract clause C5, intervals are independent and the pre-pass is scoped to one interval, owned by one worker, destroyed when the worker process exits. There is no global / master-side walk and no shared memory across intervals.
+
+The pre-pass eliminates scattered random-access reads from Stage 4. On HEVC HDR source video those reads can cost 2-4 seconds per call due to keyframe-relative decode cost; sequential reads on the same file are 6-14 ms per frame. See [common_tools/README.md](../common_tools/README.md) for measured numbers and a strategy table.
+
 ## Why bounded interval solving
 
 Seeds are hard anchors, not suggestions. Each inter-seed interval is solved

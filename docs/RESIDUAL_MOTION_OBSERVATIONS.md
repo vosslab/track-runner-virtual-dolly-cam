@@ -32,13 +32,25 @@ Optional parameters for measurement control:
 
 | Parameter | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `window_seconds` | float | 8.0/60.0 | Background window in seconds |
-| `fps` | float or None | reader.fps | Frame rate used to resolve `half_window` |
-| `half_window` | int or None | None | Expert override: skip resolution and use this half-window directly |
+| `fps` | float or None | reader.fps | Frame rate; resolves `stride` when `stride` is None |
+| `stride` | int or None | resolve_stride(fps) | Per-side neighbor stride (frames between samples). Default 1 at 60 fps, 2 at 119.94 fps, 4 at 240 fps; same time span across fps |
+| `half_window` | int | DEFAULT_HALF_WINDOW (4) | Per-side neighbor count. Total samples = 2 * half_window (k=0 skipped). Fixed regardless of fps |
+| `precomputed_store` | dict or None | None | Worker-local store from `track_runner.residual_pre_pass`. On a `(frame_index, roi)` hit, bypasses on-the-fly residual computation. On miss, falls through to the legacy reader path |
 
-Production code paths should pass `window_seconds` and let `fps` be derived
-from the reader. The `half_window` parameter is retained for diagnose tool
-and tests as an expert override; production must not pass it.
+Production code paths in Stage 4 (`solve_interval_analytical`) construct a
+`precomputed_store` once via `precompute_interval_residuals` and pass it
+through `_apply_blob_snap` so every per-frame `observe_blob_at` call hits
+the store and avoids scattered random-access reads on the source video.
+Diagnostic tools (e.g., `tools/diagnose_residual_motion.py`) pass
+`precomputed_store=None` and use the legacy reader path; that path still
+works but pays the per-call decode cost.
+
+The `stride` model replaces the older `window_seconds`/`resolve_half_window`
+model (removed at SCHEMA_VERSION 11). Time span between center frame and
+edge sample is fixed at ~133 ms regardless of camera fps; the stride
+controls how many source frames separate consecutive samples. See
+[TR_MOTION_CUE_HEAT_MAP.md](TR_MOTION_CUE_HEAT_MAP.md) for the rationale
+and [TR_SCHEMA_VERSION_HISTORY.md](TR_SCHEMA_VERSION_HISTORY.md) v11.
 
 ## Pipeline in five steps
 

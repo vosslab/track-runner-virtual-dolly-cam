@@ -1,9 +1,9 @@
 """Low-level interval fingerprint and seed-filter helpers.
 
-Holds the cache-key primitives (`SOLVER_FINGERPRINT_TAG`,
-`compute_interval_fingerprint`) and the seed-filter
+Holds the fingerprint primitives for the per-interval solved-result store
+(`SOLVER_FINGERPRINT_TAG`, `compute_interval_fingerprint`) and the seed-filter
 (`filter_usable_seeds_sorted`) that callers use to compute identical
-interval cache keys.
+interval fingerprints.
 
 This module exists so the queue driver (`solve_queue`) and refine-mode
 CLI can depend on the fingerprint helpers without pulling in the heavy
@@ -26,17 +26,17 @@ import state_io
 # affecting schema version. An interval's identity is determined by its
 # seed-pair geometry (frame indices and positions) plus schema version.
 # How the interval was solved (hermite vs blob propagator) is metadata
-# on the result, not part of the cache key.
+# on the result, not part of the fingerprint key.
 #
-# * GEOMETRY_TAG -- the unified cache-key suffix, keyed off the latest
+# * GEOMETRY_TAG -- the unified fingerprint suffix, keyed off the latest
 #   geometry-affecting schema (from tr_schema.GEOMETRY_AFFECTING_SCHEMAS).
 #   Format: `schema_v<N>` where N is the geometry-affecting schema version.
 #
 # * SOLVER_FINGERPRINT_TAG -- the informational/telemetry tag. Includes
 #   GEOMETRY_TAG plus full `/schema/<SCHEMA_VERSION>`. Used for diagnostics
-#   headers and log lines. NEVER used as a cache key.
+#   headers and log lines. NEVER used as a fingerprint key.
 #
-# Cache invalidation rules:
+# Fingerprint invalidation rules:
 #   - Adding a version to GEOMETRY_AFFECTING_SCHEMAS (e.g. for an
 #     observer or solver algorithm change) bumps GEOMETRY_TAG.
 #   - Bumping SCHEMA_VERSION alone (without adding to the affecting set)
@@ -45,7 +45,7 @@ import state_io
 # (BLOB_OBSERVER_VERSION, etc.) to bypass this scheme.
 
 def build_geometry_tag() -> str:
-	"""Build the unified geometry cache-key tag.
+	"""Build the unified geometry fingerprint tag.
 
 	Encodes only the latest geometry-affecting schema version. Tuning
 	blob-snap constants or changing which propagator ran does not change
@@ -56,9 +56,9 @@ def build_geometry_tag() -> str:
 	final torso boxes), and per-frame computations cross the bin
 	boundary independently inside camera_motion and residual_motion,
 	upscaling back to source-frame before the interval solver consumes
-	them. Bin participates in the camera-motion `config_hash` (which
-	caches per-frame phase-correlate output) but not in interval cache
-	keys, so changing `--bin` between runs reuses the interval cache.
+	them. Camera motion is recomputed if `motion_model` changes, but
+	bin_factor itself does not invalidate interval fingerprints, so
+	changing `--bin` between runs reuses the interval store.
 
 	Returns:
 		Geometry tag string: `schema_v<N>`.
@@ -74,7 +74,7 @@ GEOMETRY_TAG = build_geometry_tag()
 def build_solver_fingerprint_tag() -> str:
 	"""Build the full informational tag (geometry + schema).
 
-	Use for diagnostics headers and telemetry, NOT cache keys.
+	Use for diagnostics headers and telemetry, NOT fingerprint keys.
 
 	Returns:
 		Full tag including `/schema/<SCHEMA_VERSION>`.
@@ -94,16 +94,16 @@ def compute_interval_fingerprint(
 ) -> str:
 	"""Fingerprint wrapper that includes the unified geometry tag.
 
-	Every caller that computes an interval cache key MUST go through this
+	Every caller that computes an interval fingerprint MUST go through this
 	helper (or pass the tag to `state_io.interval_fingerprint` directly)
-	so solve-mode and refine-mode cache keys line up byte-for-byte.
+	so solve-mode and refine-mode fingerprints line up byte-for-byte.
 	Do NOT pass `SOLVER_FINGERPRINT_TAG` here -- that tag carries
-	schema-version metadata and would couple cache keys to schema bumps.
+	schema-version metadata and would couple fingerprints to schema bumps.
 
 	Note: bin_factor is intentionally NOT a parameter here. Per-frame
 	bin-aware computations cross the source<->processed boundary inside
 	camera_motion and residual_motion, upscaling back to source-frame
-	before the interval solver consumes them. Interval-level cache keys
+	before the interval solver consumes them. Interval-level fingerprints
 	therefore stay bin-invariant.
 
 	Args:

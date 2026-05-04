@@ -10,8 +10,10 @@ at load time and discarded at write time; it never appears on disk.
 
 Torso-box-coords files (NPZ) store the solved per-frame blended interval path
 under the format rule "dense per-frame numeric series -> NPZ". Per
-interval, four float32 arrays (cx/cy/w/h) plus a small JSON manifest
-mapping fingerprint to array_index. No scoring content.
+interval, four uint16 arrays (cx/cy/w/h) plus a small JSON manifest
+mapping fingerprint to array_index. Coordinates are rounded to nearest
+integer before storage (pixel-snapped, no subpixel precision retained).
+No scoring content.
 
 Interval-scores files (JSON) are the sole owner of per-interval
 scoring and review summary data (agreement, confidence tier, race
@@ -474,10 +476,10 @@ def _write_npz_atomic(path: str, arrays: dict) -> None:
 def load_torso_box_coords(path: str) -> dict:
 	"""Load a unified torso_box_coords.npz file with all three paths merged.
 
-	The unified artifact contains per-frame torso boxes (cx/cy/w/h) for all
-	three interval paths: forward (FWD), backward (BWD), and blended (the
-	production trajectory). Per-interval keys in the NPZ follow the pattern:
-	`i<k>_{fwd,bwd,blended}_{cx,cy,w,h}` (float32 arrays).
+	The unified artifact (a durable solved-result store) contains per-frame torso
+	boxes (cx/cy/w/h) for all three interval paths: forward (FWD), backward (BWD),
+	and blended (the production trajectory). Per-interval keys in the NPZ follow
+	the pattern: `i<k>_{fwd,bwd,blended}_{cx,cy,w,h}` (uint16 arrays per schema v10+).
 
 	Pre-race intervals (synthesized, scene-anchored per C4) write only the
 	blended arrays; forward and backward keys are absent. The loader
@@ -530,8 +532,9 @@ def load_torso_box_coords(path: str) -> dict:
 		):
 			supported = sorted(tr_schema.SUPPORTED_ARTIFACT_SCHEMAS["torso_box_coords"])
 			raise RuntimeError(
-				f"torso_box_coords schema unsupported in {path}: "
-				f"expected schema_version in {supported}, got {schema_version}"
+				f"torso_box_coords schema v{schema_version} is no longer supported; "
+				f"expected version in {supported}. "
+				f"Please re-solve the video to upgrade to schema v{max(supported)}"
 			)
 		# manifest is a 0-d bytes array containing JSON
 		manifest_bytes = bytes(npz["manifest"])
@@ -564,10 +567,10 @@ def load_torso_box_coords(path: str) -> dict:
 				h_arr = npz[h_key]
 				blended_path = [
 					{
-						"cx": float(cx_arr[i]),
-						"cy": float(cy_arr[i]),
-						"w": float(w_arr[i]),
-						"h": float(h_arr[i]),
+						"cx": int(cx_arr[i]),
+						"cy": int(cy_arr[i]),
+						"w": int(w_arr[i]),
+						"h": int(h_arr[i]),
 					}
 					for i in range(len(cx_arr))
 				]
@@ -584,10 +587,10 @@ def load_torso_box_coords(path: str) -> dict:
 				h_arr = npz[fwd_keys[3]]
 				forward_path = [
 					{
-						"cx": float(cx_arr[i]),
-						"cy": float(cy_arr[i]),
-						"w": float(w_arr[i]),
-						"h": float(h_arr[i]),
+						"cx": int(cx_arr[i]),
+						"cy": int(cy_arr[i]),
+						"w": int(w_arr[i]),
+						"h": int(h_arr[i]),
 					}
 					for i in range(len(cx_arr))
 				]
@@ -603,10 +606,10 @@ def load_torso_box_coords(path: str) -> dict:
 				h_arr = npz[bwd_keys[3]]
 				backward_path = [
 					{
-						"cx": float(cx_arr[i]),
-						"cy": float(cy_arr[i]),
-						"w": float(w_arr[i]),
-						"h": float(h_arr[i]),
+						"cx": int(cx_arr[i]),
+						"cy": int(cy_arr[i]),
+						"w": int(w_arr[i]),
+						"h": int(h_arr[i]),
 					}
 					for i in range(len(cx_arr))
 				]
@@ -617,6 +620,18 @@ def load_torso_box_coords(path: str) -> dict:
 				"backward_path": backward_path,
 				"blended_path": blended_path,
 			}
+	# Internal consistency check: if video_identity is present, verify
+	# its frame_count is consistent with the maximum end_frame from the
+	# manifest. Mismatches indicate file corruption or a trimmed file.
+	if video_identity is not None and "frame_count" in video_identity:
+		persisted_frame_count = int(video_identity["frame_count"])
+		max_end_frame = max((iv["end_frame"] for iv in solved.values()), default=0)
+		if max_end_frame > 0 and persisted_frame_count < max_end_frame:
+			raise RuntimeError(
+				f"torso_box_coords.npz frame_count={persisted_frame_count} "
+				f"but manifest has end_frame up to {max_end_frame}; "
+				f"file is corrupt or was trimmed"
+			)
 	result = {
 		INTERVALS_HEADER_KEY: INTERVALS_HEADER_VALUE,
 		"solved_intervals": solved,
@@ -629,15 +644,33 @@ def load_torso_box_coords(path: str) -> dict:
 
 #============================================
 
+def _round_clip_uint16(arr: numpy.ndarray) -> numpy.ndarray:
+	"""Round float coords to nearest int, clip to [0, 65535], cast to uint16.
+
+	Per C12.4, per-frame torso-box coords are pixel-snapped on disk. uint16
+	covers up to ~16K frame dimensions (max 65535); existing footage fits
+	easily. See docs/TR_SCHEMA_VERSION_HISTORY.md v10 for the policy.
+	"""
+	clipped = numpy.clip(numpy.round(arr), 0, 65535)
+	out = clipped.astype(numpy.uint16)
+	return out
+
+
+#============================================
+
 def write_torso_box_coords(path: str, cache_data: dict) -> None:
 	"""Write unified torso box coordinates to an NPZ file.
 
 	Extracts forward_path, backward_path, and blended_path (list-of-dicts
 	with cx/cy/w/h) from each solved interval and writes three sets of
-	four float32 arrays per interval when all three paths are present:
+	four uint16 arrays per interval when all three paths are present:
 	- `i<k>_fwd_{cx,cy,w,h}` for forward interval path
 	- `i<k>_bwd_{cx,cy,w,h}` for backward interval path
 	- `i<k>_blended_{cx,cy,w,h}` for blended interval path
+
+	Per C12.4, coordinates are rounded to nearest integer and cast to
+	uint16 (pixel-snapped, no subpixel precision). Bounds are clipped
+	to [0, 65535] to cover up to ~16K frame dimensions (uint16 max=65535).
 
 	Pre-race intervals (per C4) write only the blended arrays; forward and
 	backward arrays are omitted. The loader reconstructs forward_path = None
@@ -655,7 +688,8 @@ def write_torso_box_coords(path: str, cache_data: dict) -> None:
 			at minimum `{"solved_intervals": {fp: {start_frame, end_frame,
 			forward_path, backward_path, blended_path}}}`. Unknown top-level
 			keys are tolerated; only `video_identity` and `solve_complete`
-			are persisted beyond the manifest and per-interval arrays.
+			are persisted beyond the manifest and per-interval arrays. The
+			per-interval solved data is a durable artifact, not cache.
 	"""
 	solved_intervals = cache_data.get("solved_intervals", {}) or {}
 	manifest = []
@@ -668,41 +702,25 @@ def write_torso_box_coords(path: str, cache_data: dict) -> None:
 		blended = entry.get("blended_path") or []
 		# always write blended path
 		for direction_tag, track in (("blended", blended),):
-			cx = numpy.asarray(
-				[float(s["cx"]) for s in track], dtype=numpy.float32
-			)
-			cy = numpy.asarray(
-				[float(s["cy"]) for s in track], dtype=numpy.float32
-			)
-			w = numpy.asarray(
-				[float(s["w"]) for s in track], dtype=numpy.float32
-			)
-			h = numpy.asarray(
-				[float(s["h"]) for s in track], dtype=numpy.float32
-			)
-			arrays[f"i{idx}_{direction_tag}_cx"] = cx
-			arrays[f"i{idx}_{direction_tag}_cy"] = cy
-			arrays[f"i{idx}_{direction_tag}_w"] = w
-			arrays[f"i{idx}_{direction_tag}_h"] = h
+			cx_in = numpy.asarray([float(s["cx"]) for s in track], dtype=numpy.float32)
+			cy_in = numpy.asarray([float(s["cy"]) for s in track], dtype=numpy.float32)
+			w_in = numpy.asarray([float(s["w"]) for s in track], dtype=numpy.float32)
+			h_in = numpy.asarray([float(s["h"]) for s in track], dtype=numpy.float32)
+			arrays[f"i{idx}_{direction_tag}_cx"] = _round_clip_uint16(cx_in)
+			arrays[f"i{idx}_{direction_tag}_cy"] = _round_clip_uint16(cy_in)
+			arrays[f"i{idx}_{direction_tag}_w"] = _round_clip_uint16(w_in)
+			arrays[f"i{idx}_{direction_tag}_h"] = _round_clip_uint16(h_in)
 		# write forward and backward only if both present (post-race intervals)
 		if fwd is not None and bwd is not None:
 			for direction_tag, track in (("fwd", fwd), ("bwd", bwd)):
-				cx = numpy.asarray(
-					[float(s["cx"]) for s in track], dtype=numpy.float32
-				)
-				cy = numpy.asarray(
-					[float(s["cy"]) for s in track], dtype=numpy.float32
-				)
-				w = numpy.asarray(
-					[float(s["w"]) for s in track], dtype=numpy.float32
-				)
-				h = numpy.asarray(
-					[float(s["h"]) for s in track], dtype=numpy.float32
-				)
-				arrays[f"i{idx}_{direction_tag}_cx"] = cx
-				arrays[f"i{idx}_{direction_tag}_cy"] = cy
-				arrays[f"i{idx}_{direction_tag}_w"] = w
-				arrays[f"i{idx}_{direction_tag}_h"] = h
+				cx_in = numpy.asarray([float(s["cx"]) for s in track], dtype=numpy.float32)
+				cy_in = numpy.asarray([float(s["cy"]) for s in track], dtype=numpy.float32)
+				w_in = numpy.asarray([float(s["w"]) for s in track], dtype=numpy.float32)
+				h_in = numpy.asarray([float(s["h"]) for s in track], dtype=numpy.float32)
+				arrays[f"i{idx}_{direction_tag}_cx"] = _round_clip_uint16(cx_in)
+				arrays[f"i{idx}_{direction_tag}_cy"] = _round_clip_uint16(cy_in)
+				arrays[f"i{idx}_{direction_tag}_w"] = _round_clip_uint16(w_in)
+				arrays[f"i{idx}_{direction_tag}_h"] = _round_clip_uint16(h_in)
 		manifest.append({
 			"fingerprint": fingerprint,
 			"start_frame": start_frame,
@@ -735,17 +753,17 @@ def interval_fingerprint(
 
 	The fingerprint encodes frame_index and position (cx, cy, w, h rounded
 	to 2 decimal places) for both seeds. Any change in seed position or
-	frame index produces a different key, so stale results are never reused.
+	frame index produces a different fingerprint, so stale results are never reused.
 
 	When `solver_tag` is non-empty, it is appended. This lets the interval
-	solver invalidate the cache when its own semantics change (new gates,
+	solver invalidate the store when its own semantics change (new gates,
 	new blend rule, observer version bump) without requiring seed edits.
 	Both `solve_all_intervals` and `cli._mode_refine` MUST pass the same
-	solver_tag for cache hits to work.
+	solver_tag for store hits to work.
 
 	The unified `solver_tag` encodes the geometry-affecting schema version
 	only (format: `schema_v<N>`). How an interval was solved (hermite vs
-	blob propagator) is metadata on the result, not part of the cache key.
+	blob propagator) is metadata on the result, not part of the fingerprint.
 
 	Args:
 		seed_start: Seed state dict at the start of the interval.

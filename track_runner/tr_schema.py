@@ -20,7 +20,7 @@ Public surface:
 
 #============================================
 # the one and only schema version constant
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 11
 
 #============================================
 # Schema versions that altered solved-geometry semantics. Membership is
@@ -39,7 +39,14 @@ SCHEMA_VERSION = 9
 # changed from fixed-frame-count (half_window=4) to adaptive (window_seconds).
 # This alters the motion-cue observation semantics; cached intervals using the
 # prior frame-count window are invalidated.
-GEOMETRY_AFFECTING_SCHEMAS: set = {3, 6, 7, 8, 9}
+# v10 enters the set because per-frame torso-box coordinate arrays switched
+# from float32 to uint16 dtype per contract C12.4; the pixel-snapped int
+# representation changes how the persisted data is decoded and reconstructed.
+# v11 enters the set because the M2 fps-invariant stride model changes the
+# residual sampling pattern (neighbor offsets = k * stride instead of k).
+# The on-disk layout is unchanged from v10; v10 files remain readable.
+# Cache invalidation happens naturally via the geometry fingerprint.
+GEOMETRY_AFFECTING_SCHEMAS: set = {3, 6, 7, 8, 9, 10, 11}
 
 
 #============================================
@@ -68,11 +75,14 @@ def latest_geometry_affecting_schema() -> int:
 # considered the layout impact" step on every bump.
 SUPPORTED_ARTIFACT_SCHEMAS: dict = {
 	# diagnostics JSON: shape was migrated from flat (v2) to nested
-	# (v3+) at load time; v3-v9 share the nested shape.
-	"diagnostics": {2, 3, 4, 5, 6, 7, 8, 9},
-	# torso_box_coords.npz: unified artifact (v8+). Layout stable
-	# from v8 onward.
-	"torso_box_coords": {8, 9},
+	# (v3+) at load time; v3-v10 share the nested shape.
+	"diagnostics": {2, 3, 4, 5, 6, 7, 8, 9, 10, 11},
+	# torso_box_coords.npz: per-frame coordinate arrays changed dtype
+	# from float32 (v8, v9) to uint16 (v10+) per C12.4. Hard-cut at v10:
+	# v8 and v9 are no longer readable; cache invalidation required.
+	# v11 adds stride-model sampling but on-disk layout is unchanged from
+	# v10; both v10 and v11 files remain readable.
+	"torso_box_coords": {10, 11},
 }
 
 

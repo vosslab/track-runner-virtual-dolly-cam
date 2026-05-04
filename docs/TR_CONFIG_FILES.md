@@ -5,7 +5,12 @@ One row per video, plus a single global default. Covers on-disk schema,
 reader/writer functions, lifecycle rules, and the two things that most
 often surprise a first-time reader: why seeds files are so small now
 (they used to carry dead appearance data) and where the camera-motion
-cache lives.
+solved artifact lives.
+
+**Durable Artifacts:** On-disk files in this directory are persistent
+solved data with explicit reuse rules. They are not cache. The word
+"cache" in this codebase is reserved for in-memory ephemeral state.
+See contract C12.2 in [docs/TRACK_RUNNER_CONTRACT.md](TRACK_RUNNER_CONTRACT.md).
 
 ## Purpose of tr_config
 
@@ -41,7 +46,6 @@ This single rule dictates every file format below.
 | `<video>.track_runner.seeds.json` | JSON | 5-50 KB | `state_io.write_seeds` | `state_io.load_seeds` |
 | `<video>.track_runner.interval_scores.json` | JSON | ~100 KB | `state_io.write_solver_diagnostics` | `state_io.load_diagnostics` |
 | `<video>.track_runner.torso_box_coords.npz` | NPZ | 100 KB - 3 MB | `state_io.write_torso_box_coords` | `state_io.load_torso_box_coords` |
-| `<video>.track_runner.debug_paths.npz` | NPZ (opt-in) | 2-8x torso_box_coords | `state_io.write_debug_paths` | `state_io.load_debug_paths` |
 | `<video>.track_runner.camera_motion.npz` | NPZ | 150-300 KB | `camera_motion.save_motion_cache` | `camera_motion.load_motion_cache` |
 | `<video>.track_runner.agreement_debug.json` | JSON | varies | `state_io.write_agreement_debug_sidecar` | manual |
 | `track_runner.config.yaml` (root) | YAML | ~250 B | hand-edited | merged under every per-video config |
@@ -118,18 +122,18 @@ per seed). The one-shot migration tool
 
 ## Torso-box-coords NPZ
 
-File: `<video>.track_runner.torso_box_coords.npz`. This is the **cache
-of solved per-frame trajectory geometry that the encoder consumes.**
-Reader `state_io.load_torso_box_coords`, writer
+File: `<video>.track_runner.torso_box_coords.npz`. This is the **per-interval
+solved-result store of per-frame trajectory geometry that refine mode and
+the encoder consume.** Reader `state_io.load_torso_box_coords`, writer
 `state_io.write_torso_box_coords`.
 
 ### Top-level keys (NPZ)
 
 | Key | Type | Notes |
 | --- | --- | --- |
-| `schema_version` | int32 | Required value is `2`. |
+| `schema_version` | int32 | Current writer emits `11`; readers also accept `10` (per `tr_schema.SUPPORTED_ARTIFACT_SCHEMAS["torso_box_coords"] = {10, 11}`). The on-disk uint16 layout is identical between v10 and v11; v11 differs only in the residual sampling pattern used to compute the stored coordinates. |
 | `manifest` | bytes (JSON-encoded) | List of per-interval entries mapping fingerprint to an `array_index` plus `start_frame`/`end_frame`. |
-| `i<k>_cx`, `i<k>_cy`, `i<k>_w`, `i<k>_h` | float32 arrays | Per-interval blended-interval-path arrays (the combined FWD+BWD output trajectory); `<k>` is the manifest's `array_index` for that interval. Array length equals `end_frame - start_frame + 1`. |
+| `i<k>_cx`, `i<k>_cy`, `i<k>_w`, `i<k>_h` | uint16 arrays | Per-interval blended-interval-path arrays (the combined FWD+BWD output trajectory); `<k>` is the manifest's `array_index` for that interval. Array length equals `end_frame - start_frame + 1`. Pixel-snapped integers, range [0, 65535]. |
 | `video_identity` | bytes (JSON-encoded) | Optional; same shape as elsewhere. |
 | `solve_complete` | bool | Whether the solve completed vs. was interrupted. |
 
@@ -148,7 +152,7 @@ Reader `state_io.load_torso_box_coords`, writer
                 # blended interval path: combined FWD+BWD output
                 # trajectory for this interval. Output artifact only;
                 # never used for FWD/BWD agreement scoring.
-                {"cx": float, "cy": float, "w": float, "h": float},
+                {"cx": int, "cy": int, "w": int, "h": int},
                 ...
             ],
         },
@@ -165,30 +169,29 @@ unchanged; only the read site changes.
 
 - `interval_score` -- lives exclusively in `interval_scores.json`.
 - `forward_path`, `backward_path` -- the per-pass forward and
-  backward interval paths. Live in the opt-in debug interval paths
-  sidecar (`debug_paths.npz` on disk) when solve runs with
-  `--debug-paths`.
+  backward interval paths are computed during solve and produce the
+  blended output, but are not persisted to disk.
 - Per-frame extras (`conf`, `source`, `blend_flag`, `occlusion_risk`,
-  `blob_gate`) -- not read by production code from a loaded cache;
+  `blob_gate`) -- not read by production code from a loaded store;
   dropped at write.
 
 ### Fingerprint format
 
 Computed by `state_io.interval_fingerprint(seed_start, seed_end,
 solver_tag)`. Derived `cx/cy/w/h` from the bracketing seeds are
-serialized with `:.2f`; the two-decimal format is a cache-key
-choice, not a claim that seeds carry subpixel precision.
+serialized with `:.2f`; the two-decimal format is a fingerprint
+component, not a claim that seeds carry subpixel precision.
 
 ```
 49|1635.00|754.50|64.00|81.00|56|1630.50|756.50|69.00|87.00||blob_snap/v1/a0.600/...
 ```
 
-### Cache semantics
+### Reuse semantics
 
 Solve computes a fingerprint for each (start-seed, end-seed,
-solver-tag) triple. Matching entries are reused from the cache;
+solver-tag) triple. Matching entries are reused from the store;
 others are solved and added. Refine uses the same fingerprint so its
-cache hits align with solve's. Deleting the file forces a full
+store hits align with solve's. Deleting the file forces a full
 re-solve; nothing else depends on it.
 
 ## Interval scores JSON
@@ -235,45 +238,10 @@ No per-frame trajectory data -- trajectory lives in
 `torso_box_coords.npz`. This file is exclusively the scoring summary
 consumed by review tooling.
 
-## Debug interval paths NPZ (opt-in)
-
-Canonical prose name: **debug interval paths sidecar**. On-disk
-filename: `debug_paths.npz`.
-
-File: `<video>.track_runner.debug_paths.npz`. Written only when
-solve runs with `--debug-paths`. Reader `state_io.load_debug_paths`,
-writer `state_io.write_debug_paths`.
-
-### Top-level keys (NPZ)
-
-| Key | Type | Notes |
-| --- | --- | --- |
-| `schema_version` | int32 | Required value is `1`. |
-| `manifest` | bytes (JSON-encoded) | List of per-interval entries (fingerprint, start_frame, end_frame, array_index). |
-| `i<k>_fwd_cx`, `i<k>_fwd_cy`, `i<k>_fwd_w`, `i<k>_fwd_h` | float32 | Forward interval path per interval (legacy: "forward propagation track"). |
-| `i<k>_bwd_cx`, `i<k>_bwd_cy`, `i<k>_bwd_w`, `i<k>_bwd_h` | float32 | Backward interval path per interval (legacy: "backward propagation track"). |
-
-### Lifecycle
-
-Each manifest entry's `fingerprint` is intersected against the
-current `torso_box_coords.npz` manifest fingerprints on load;
-non-matching entries are ignored with a per-interval warning.
-`--debug-tracks` solve atomically overwrites the file with fresh
-tracks.
-
-### Consumers
-
-Only the debug overlay code in
-[track_runner/cli.py](../track_runner/cli.py) and the benchmark
-script `tools/benchmark_solver_gates.py`. Absent this sidecar, the
-FWD/BWD overlay silently degrades to empty and a one-line
-"run solve with --debug-tracks to regenerate" message prints per
-process.
-
 ## Camera motion NPZ
 
-File: `<video>.track_runner.camera_motion.npz`. Single file per
-video; cache identity lives inside the file. Reader
+File: `<video>.track_runner.camera_motion.npz`. Single durable solved
+artifact per video; motion-model identity lives inside the file. Reader
 `camera_motion.load_motion_cache`, writer
 `camera_motion.save_motion_cache`.
 
@@ -281,10 +249,9 @@ video; cache identity lives inside the file. Reader
 
 | Key | Type | Notes |
 | --- | --- | --- |
-| `motion_model` | bytes (UTF-8) | One of `fixed_zoom`, `discrete_zoom`, `continuous_zoom`. |
+| `motion_model` | bytes (UTF-8) | One of `fixed_zoom`, `discrete_zoom`, `continuous_zoom`. Staleness determined by comparing persisted model against the current configuration. |
 | `video_identity_basename` | bytes (UTF-8) | Basename of the source video. |
 | `frame_count` | int64 | Frame count from video probe. |
-| `config_hash` | bytes (UTF-8) | MD5-8 of the estimator config dict. Loader compares against the current config; mismatch means stale and triggers recompute + overwrite. No merge, no partial reuse. |
 
 ### Per-model arrays (float32)
 
@@ -298,17 +265,17 @@ video; cache identity lives inside the file. Reader
 `quality` stays because `scoring.py` uses it for `motion_quality` in
 the interval scoring.
 
-### Lifecycle
+### Reuse semantics
 
 - Computed once per video by `precompute_camera_motion`. The result
-  is written alongside the video's other `tr_config/` files.
-- On the next run, the loader reads `config_hash` and returns the
-  cached track only if the hash matches the current config. On
-  mismatch, the file is treated as absent, the estimator runs, and
+  is written as the canonical file alongside the video's other
+  `tr_config/` files.
+- On the next run, the loader reads `motion_model` from the stored
+  artifact and compares against the current config-derived motion model.
+  On mismatch, the file is treated as absent, the estimator runs, and
   `save_motion_cache` atomically overwrites.
-- Reused by solve, refine, encode, and the UI. The UI heat-map
-  overlay now reads the single canonical filename directly (no more
-  glob pattern).
+- Reused by solve, refine, encode, and the UI. All readers access the
+  single canonical filename directly.
 
 ## tr_config/archive
 
@@ -346,20 +313,14 @@ Once the migration has run successfully, the script may be deleted
 - **Where is the camera-motion track stored?** In
   `<video>.track_runner.camera_motion.npz`. Keys are `dx`, `dy`,
   `quality` (plus `scale` for discrete/continuous zoom), and
-  cache-identity metadata (`motion_model`, `config_hash`,
+  artifact-identity metadata (`motion_model`,
   `video_identity_basename`, `frame_count`).
 - **Can I delete `tr_config/archive/`?** Yes. Nothing reads it.
-- **Can I delete `<video>.track_runner.debug_paths.npz`?** Yes. It
-  is optional; regenerate by re-running solve with `--debug-paths`.
 - **What happens if I hand-edit a per-video config YAML?** The next
   run reloads it; per-video values override the merged defaults.
 - **Does re-saving seeds.json introduce legacy fields?** No.
   `write_seeds` is strict: it emits only the canonical four fields
   regardless of what the in-memory dict carries.
-- **How do I get FWD/BWD overlays back?** Run
-  `... solve --debug-paths`. The sidecar writer produces
-  `<video>.track_runner.debug_paths.npz`, and the overlay reader
-  merges it into the in-memory intervals dict by fingerprint.
 
 ## Related docs
 

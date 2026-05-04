@@ -180,91 +180,21 @@ def default_output_path(input_file: str) -> str:
 #============================================
 
 def default_camera_motion_path(input_file: str) -> str:
-	"""Return the legacy single-file camera-motion cache path.
+	"""Return the canonical single-file camera-motion artifact path.
 
-	Backward-compatibility / diagnostic-tool path only. Production
-	loaders should call
-	`camera_motion.load_active_camera_motion_or_fail`, which reads
-	the active.json marker and resolves to the per-hash cache file
-	via `camera_motion_cache_path_for_hash`. The active path lets
-	`--bin 1` and `--bin 4` runs each persist their own cache
-	without overwriting one another, and binds refine to the exact
-	cache identity that solve produced.
-
-	This function still exists because (1) refine's load path falls
-	back to the legacy file when no marker is present, so old solve
-	outputs keep refining; and (2) standalone diagnostic tools under
-	`tools/` read this path directly. Do not add new production
-	call sites here.
+	This is the single authoritative location for the camera-motion
+	NPZ file. The motion_model is recorded as in-NPZ metadata. On load,
+	mismatch with the current camera.zoom_type config triggers recompute
+	and atomic overwrite.
 
 	Args:
 		input_file: Input media file path.
 
 	Returns:
-		str: Camera motion cache NPZ file path inside tr_config/.
+		str: Camera motion artifact NPZ file path inside tr_config/.
 	"""
 	motion_path = _data_file_path(input_file, ".track_runner.camera_motion.npz")
 	return motion_path
-
-
-#============================================
-def camera_motion_cache_dir(input_file: str) -> str:
-	"""Return the per-video camera-motion cache directory.
-
-	Caches live under
-	`<tr_config>/<video_basename>.track_runner.camera_motion/`. Each
-	resolved (estimator config + bin_factor + processed dims) writes
-	to its own file inside this directory, so back-to-back runs at
-	different `--bin` values keep both results on disk and never
-	clobber a higher-quality cache with a lower-quality recompute.
-
-	Args:
-		input_file: Input media file path.
-
-	Returns:
-		str: Directory path. Caller is responsible for creating the
-		directory before writing.
-	"""
-	cache_dir = _data_file_path(input_file, ".track_runner.camera_motion")
-	return cache_dir
-
-
-#============================================
-def camera_motion_active_marker_path(input_file: str) -> str:
-	"""Return the path to the small JSON marker recording the
-	camera-motion identity bound to the current solved state.
-
-	Solve writes this marker after Stage 1; refine reads it to select
-	the exact cache file to load. Refine never recomputes Stage 1, so
-	if this marker (or the cache file it names) is missing, refine
-	fails loud with "Run solve first".
-	"""
-	cache_dir = camera_motion_cache_dir(input_file)
-	return os.path.join(cache_dir, "active.json")
-
-
-#============================================
-def camera_motion_cache_path_for_hash(
-	input_file: str,
-	motion_model: str,
-	config_hash: str,
-) -> str:
-	"""Resolve the per-hash camera-motion cache file path.
-
-	Args:
-		input_file: Input media file path.
-		motion_model: Motion model label
-			(`MOTION_MODEL_FIXED`/`DISCRETE`/`CONTINUOUS`).
-		config_hash: 8-char config fingerprint for this run.
-
-	Returns:
-		str: NPZ path of the form
-		`<cache_dir>/<motion_model>_<config_hash>.npz`.
-	"""
-	cache_dir = camera_motion_cache_dir(input_file)
-	filename = f"{motion_model}_{config_hash}.npz"
-	cache_path = os.path.join(cache_dir, filename)
-	return cache_path
 
 #============================================
 

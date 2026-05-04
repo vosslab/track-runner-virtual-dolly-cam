@@ -13,7 +13,7 @@ Full solve runs through multiple stages: camera motion precompute, race-start id
 <!-- BEGIN AUTO HELP: solve -->
 ```text
 usage: track_runner.py solve [-h] [-y | --keep | --upgrade] [-f | -H]
-                             [--bin BIN_FACTOR]
+                             [--bin BIN_FACTOR] [--debug-blob]
 
 options:
   -h, --help          show this help message and exit
@@ -24,7 +24,7 @@ options:
                       Use this for scripted runs that should only solve
                       missing videos.
   --upgrade           Run Stage 4 blob promotion on the existing
-                      torso_box_coords cache without re-doing Stage 3. Use
+                      torso_box_coords store without re-doing Stage 3. Use
                       after a 'solve --hermite-only' batch to upgrade weak
                       intervals to blob results.
   -f, --full          Run Stage 5: blob pass on every post-race interval
@@ -37,6 +37,11 @@ options:
                       largest FFT-friendly goodbox not exceeding it (origin-
                       preserving right/bottom crop). Source-frame outputs
                       unchanged.
+  --debug-blob        Enable per-worker per-frame instrumentation for the
+                      Stage 4 blob pass. Prints read_frame strategy timings,
+                      residual compute timings, per-pid summaries on worker
+                      exit, and a 5-second heartbeat from the master driver.
+                      Independent of -d/--debug. Default off.
 ```
 <!-- END AUTO HELP: solve -->
 
@@ -54,6 +59,6 @@ options:
 
 **First run after upgrade note:** The first solve run after the 2026-04-25 staging restructure will print "first run after solve restructure: full recompute expected" because the cache namespaces are new. Subsequent runs hit the cache normally. Run `--hermite-only` for a quick first-pass read if full solve time is a concern.
 
-**`--bin N` (optional, speed-focused):** Applies a spatial downsample to the camera-motion (Stage 1) and residual-motion stages, leaving every persisted output in source-frame pixels. Helpful on 4K input. Goodbox crop is automatic when `bin > 1` (right/bottom edges only, capped at 10% per-axis loss). Each `--bin` value writes its own per-hash camera-motion cache file under `<video>.track_runner.camera_motion/`, so back-to-back solves at different `--bin` values do not overwrite one another. Solve writes an `active.json` marker pointing at the cache file the current solve binds to; refine reuses that exact file. The interval cache is bin-invariant (per-frame work crosses the source<->processed boundary inside the per-frame stages and emits source-frame outputs).
+**`--bin N` (optional, speed-focused):** Applies a spatial downsample to the camera-motion (Stage 1) and residual-motion stages, leaving every persisted output in source-frame pixels. Helpful on 4K input. Goodbox crop is automatic when `bin > 1` (right/bottom edges only, capped at 10% per-axis loss). The interval cache is bin-invariant (per-frame work crosses the source<->processed boundary inside the per-frame stages and emits source-frame outputs). The canonical `<video>.track_runner.camera_motion.npz` file is written once per video per motion-model; changing `--bin` between runs reuses the same camera motion artifact because bin and processed geometry are not part of the motion-model staleness check.
 
 For the pipeline philosophy, see [../TRACK_RUNNER_DESIGN.md](../TRACK_RUNNER_DESIGN.md) (stages and signal hierarchy). For the camera motion method, see [../TR_CAMERA_MOTION_METHOD.md](../TR_CAMERA_MOTION_METHOD.md).

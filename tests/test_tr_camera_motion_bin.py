@@ -112,22 +112,28 @@ def test_bin1_and_bin2_agree_in_source_frame(translating_video):
 
 
 #============================================
-def test_config_fingerprint_responds_to_bin():
-	# changing bin_factor or processed_width/height must change the
-	# camera-motion config_hash so old caches miss cleanly.
-	config = {"type": "fixed"}
-	geom_a = {"bin_factor": 1, "processed_width": 1920, "processed_height": 1080}
-	geom_b = {"bin_factor": 2, "processed_width": 960, "processed_height": 540}
-	fp_a = camera_motion._compute_config_fingerprint(config, geom_a)
-	fp_b = camera_motion._compute_config_fingerprint(config, geom_b)
-	assert fp_a != fp_b
+def test_bin_factor_does_not_invalidate_camera_motion_cache(tmp_path):
+	# Property under C12.3: after retiring config_hash the only
+	# staleness signal is motion_model. A cache file written under one
+	# bin_factor must remain a hit for a load that nominally would
+	# correspond to a different bin, because bin is not part of the
+	# cache identity any more.
+	cache_path = str(tmp_path / "video.track_runner.camera_motion.npz")
+	motion = camera_motion.MotionTrack(
+		dx=numpy.zeros(4, dtype=numpy.float32),
+		dy=numpy.zeros(4, dtype=numpy.float32),
+		scale=numpy.ones(4, dtype=numpy.float32),
+		quality=numpy.ones(4, dtype=numpy.float32),
+	)
+	video_identity = {"basename": "video.mp4", "frame_count": 4}
+	camera_motion.save_motion_cache(
+		motion, cache_path, camera_motion.MOTION_MODEL_FIXED, video_identity,
+	)
+	# Loader receives the same motion_model; bin_factor is not even
+	# part of the API. Cache must hit.
+	cached = camera_motion.load_motion_cache(
+		cache_path, expected_motion_model=camera_motion.MOTION_MODEL_FIXED,
+	)
+	assert cached is not None
 
 
-#============================================
-def test_config_fingerprint_stable_under_same_geometry():
-	# property: same config + same geometry => same fingerprint
-	config = {"type": "fixed"}
-	geom = {"bin_factor": 4, "processed_width": 960, "processed_height": 528}
-	fp1 = camera_motion._compute_config_fingerprint(config, geom)
-	fp2 = camera_motion._compute_config_fingerprint(config, geom)
-	assert fp1 == fp2

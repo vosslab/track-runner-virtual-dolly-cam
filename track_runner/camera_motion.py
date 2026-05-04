@@ -1,13 +1,11 @@
 """Camera motion estimation from video frames.
 
 Estimates per-frame camera translation (dx, dy) and scale from consecutive
-frame pairs using phase correlation. Caches results for reuse across runs.
+frame pairs using phase correlation. Stores results as durable artifacts for reuse across runs.
 """
 
 # Standard Library
 import concurrent.futures
-import hashlib
-import json
 import multiprocessing
 import os
 import time
@@ -136,7 +134,7 @@ def _pair_scale_logpolar(
 
 
 #============================================
-# Motion model identifiers used by the cache and the chunked workers.
+# Motion model identifiers used by the persisted artifact and the chunked workers.
 # Defined here (above the estimators) so they are picklable through the
 # multiprocessing boundary alongside _measure_pairs_in_range without
 # forward-reference gymnastics.
@@ -291,7 +289,7 @@ def _measure_pairs_in_range(
 		ValueError: If `model_name` is not a known motion model.
 		RuntimeError: If the anchor frame at `start_idx - 1` cannot be
 			read. Fail loudly so callers cannot accidentally save a
-			zero-filled cache; this matches the historical FixedZoom
+			zero-filled artifact; this matches the historical FixedZoom
 			behavior and tightens the looser Discrete/Continuous
 			fall-through to all-zero motion.
 	"""
@@ -934,36 +932,6 @@ class ContinuousZoomEstimator(MotionEstimator):
 
 
 #============================================
-def _compute_config_fingerprint(
-	config: dict,
-	geometry_extras: dict | None = None,
-) -> str:
-	"""Compute a hash fingerprint of the motion estimation config.
-
-	Args:
-		config: Configuration dict (typically motion.estimator settings).
-		geometry_extras: Optional dict of run-time geometry inputs that
-			affect phase correlation (bin_factor, processed_width,
-			processed_height). Mixed into the hash so cached caches
-			from a different binning miss naturally.
-
-	Returns:
-		Hex string representing the config state.
-	"""
-	# combine config and geometry_extras under disjoint top-level keys
-	# so the hash input is structured and stable.
-	hashed = {"config": config}
-	if geometry_extras:
-		hashed["geometry"] = geometry_extras
-	config_json = json.dumps(hashed, sort_keys=True, default=str)
-	# md5 used for cache fingerprinting, not security
-	fingerprint = hashlib.md5(
-		config_json.encode(), usedforsecurity=False,
-	).hexdigest()
-	return fingerprint
-
-
-#============================================
 
 # Per-model required array sets. Fixed zoom carries no scale because
 # it is constant 1.0 by construction; writing it would be pure ballast.
@@ -990,36 +958,48 @@ def _estimator_type_to_model(estimator_type: str) -> str:
 	raise ValueError(f"unsupported estimator type: {estimator_type}")
 
 
+def _motion_model_from_config(config: dict) -> str:
+	"""Resolve the motion_model label implied by the current config.
+
+	Reads `motion.estimator.type` if present; otherwise falls back to the
+	`camera.zoom_type` alias (`fixed`/`discrete`/`continuous`); otherwise
+	defaults to `fixed`. Both keys are optional in the YAML schema, so
+	chained-default `.get(...)` is intentional here.
+	"""
+	estimator_config = config.get("motion", {}).get("estimator", {})
+	estimator_type = estimator_config.get("type")
+	if estimator_type is None:
+		estimator_type = config.get("camera", {}).get("zoom_type", "fixed")
+	motion_model = _estimator_type_to_model(estimator_type)
+	return motion_model
+
+
 #============================================
 def save_motion_cache(
 	motion_track: MotionTrack,
 	cache_path: str,
 	motion_model: str,
 	video_identity: dict,
-	config_hash: str,
 ) -> None:
 	"""Save motion track to the canonical camera_motion.npz file.
 
 	Writes per-model arrays (fixed_zoom omits `scale`; discrete and
 	continuous include it) plus `motion_model`, `video_identity_basename`,
-	`frame_count`, and `config_hash` as cache-identity metadata. All
-	per-frame arrays are stored as float32. No `event_flags`.
+	and `frame_count` as artifact-identity metadata. All per-frame arrays
+	are stored as float32. No `event_flags`. This is a durable solved-result
+	artifact, not cache.
 
 	Args:
 		motion_track: MotionTrack instance to save.
-		cache_path: Target NPZ file path. Production callers pass a
-			per-hash path under
-			`<video>.track_runner.camera_motion/<motion_model>_<config_hash>.npz`
-			so each (estimator + bin_factor + processed dims)
-			identity gets its own file. Legacy callers may still
-			pass the single-file
-			`<video>.track_runner.camera_motion.npz` path.
+		cache_path: Target NPZ file path at
+			`<video>.track_runner.camera_motion.npz`. This is the
+			canonical single-file solved artifact per video. If motion_model
+			differs from the stored value on load, the stored version is
+			treated as stale and recomputed.
 		motion_model: One of MOTION_MODEL_{FIXED,DISCRETE,CONTINUOUS}.
 		video_identity: dict carrying at least `basename` and
-			`frame_count`; persisted so a stale cache can be detected
+			`frame_count`; persisted so a stale artifact can be detected
 			without re-probing the video.
-		config_hash: MD5-8 of the estimator config dict. Loader
-			compares to the current config; mismatch triggers recompute.
 	"""
 	if motion_model not in VALID_MOTION_MODELS:
 		raise ValueError(f"unknown motion_model: {motion_model}")
@@ -1034,9 +1014,6 @@ def save_motion_cache(
 		),
 		"frame_count": numpy.asarray(
 			int(video_identity["frame_count"]), dtype=numpy.int64,
-		),
-		"config_hash": numpy.frombuffer(
-			config_hash.encode("utf-8"), dtype=numpy.uint8
 		),
 		"dx": numpy.asarray(motion_track.dx, dtype=numpy.float32),
 		"dy": numpy.asarray(motion_track.dy, dtype=numpy.float32),
@@ -1053,14 +1030,14 @@ def save_motion_cache(
 #============================================
 def load_motion_cache(
 	cache_path: str,
-	expected_config_hash: str | None = None,
+	expected_motion_model: str | None = None,
 ) -> MotionTrack | None:
 	"""Load motion track from camera_motion.npz.
 
 	Returns None if the file does not exist OR the persisted
-	`config_hash` differs from `expected_config_hash`. A stale cache
-	(mismatched hash) is treated as absent so the caller recomputes
-	and overwrites atomically. No merge, no partial reuse.
+	`motion_model` differs from `expected_motion_model`. A stale artifact
+	(mismatched motion_model) is treated as absent so the caller
+	recomputes and overwrites atomically. No merge, no partial reuse.
 
 	For `fixed_zoom`, the on-disk file carries no `scale` array; the
 	loader synthesizes an all-ones scale array so downstream
@@ -1068,9 +1045,10 @@ def load_motion_cache(
 
 	Args:
 		cache_path: Path to `<video>.track_runner.camera_motion.npz`.
-		expected_config_hash: Current config's md5-8 hash; if provided
-			and disagreeing with the stored value, the cache is
-			treated as stale and None is returned.
+		expected_motion_model: Current motion_model derived from config
+			(one of MOTION_MODEL_*); if provided and disagreeing with
+			the stored value, the artifact is treated as stale and None
+			is returned.
 
 	Returns:
 		MotionTrack instance, or None if missing / stale / unknown
@@ -1089,15 +1067,14 @@ def load_motion_cache(
 				f"unknown motion_model {motion_model!r} in {cache_path}; "
 				f"run tools/_migrate_tr_config.py to archive and regenerate"
 			)
-		stored_hash = bytes(npz["config_hash"]).decode("utf-8")
-		# stale cache: behave as if file is absent so caller recomputes
-		if expected_config_hash is not None and stored_hash != expected_config_hash:
+		# stale artifact: behave as if file is absent so caller recomputes
+		if expected_motion_model is not None and motion_model != expected_motion_model:
 			return None
 		required = _REQUIRED_ARRAYS[motion_model]
 		for key in required:
 			if key not in npz.files:
 				raise RuntimeError(
-					f"motion cache missing required array {key!r} "
+					f"motion artifact missing required array {key!r} "
 					f"for model {motion_model} in {cache_path}"
 				)
 		dx = numpy.asarray(npz["dx"], dtype=numpy.float32)
@@ -1109,87 +1086,56 @@ def load_motion_cache(
 			scale = numpy.ones(len(dx), dtype=numpy.float32)
 		else:
 			scale = numpy.asarray(npz["scale"], dtype=numpy.float32)
+		# Internal consistency check: if frame_count is persisted, verify
+		# it agrees with the length of the dx array. Mismatches indicate
+		# file corruption or a partially-written file.
+		if "frame_count" in npz.files:
+			persisted_frame_count = int(npz["frame_count"])
+			actual_length = len(dx)
+			if persisted_frame_count != actual_length:
+				raise RuntimeError(
+					f"camera_motion.npz frame_count={persisted_frame_count} "
+					f"but dx array has {actual_length} entries; file is corrupt"
+				)
 	motion = MotionTrack(dx=dx, dy=dy, scale=scale, quality=quality)
 	return motion
 
 
 #============================================
-def _write_active_marker(
+def load_active_camera_motion_or_fail(
 	input_file: str,
-	motion_model: str,
-	config_hash: str,
-	bin_factor: int,
-	processed_width: int,
-	processed_height: int,
-) -> None:
-	"""Record the camera-motion identity bound to the current solved
-	state. Solve writes the marker after Stage 1; refine reads it.
-	"""
-	tr_paths.ensure_data_dir()
-	marker_path = tr_paths.camera_motion_active_marker_path(input_file)
-	tr_paths.ensure_parent_dir(marker_path)
-	payload = {
-		"motion_model": motion_model,
-		"config_hash": config_hash,
-		"bin_factor": int(bin_factor),
-		"processed_width": int(processed_width),
-		"processed_height": int(processed_height),
-	}
-	# atomic write via sibling temp file + os.replace
-	tmp_path = marker_path + ".tmp"
-	with open(tmp_path, "w") as f:
-		json.dump(payload, f, sort_keys=True)
-	os.replace(tmp_path, marker_path)
+	config: dict,
+) -> MotionTrack:
+	"""Load the canonical camera-motion artifact from disk.
 
-
-#============================================
-def load_active_camera_motion_or_fail(input_file: str) -> MotionTrack:
-	"""Load the camera-motion track identified by the active marker.
-
-	Refine entry point. Reads the active marker written by solve, then
-	loads the cache file the marker names. Raises if either the marker
-	or the cache file is missing -- refine never recomputes Stage 1.
+	Refine entry point. Loads the canonical solved artifact file
+	`<video>.track_runner.camera_motion.npz`. Refine never recomputes
+	Stage 1, so a missing file or a stored motion_model that disagrees
+	with the current config raises with a "run solve first" message.
 
 	Args:
 		input_file: Path to the input video.
+		config: Configuration dict with motion estimator settings.
 
 	Returns:
-		MotionTrack from the cache file recorded in the active marker.
+		MotionTrack from the canonical solved artifact file.
 
 	Raises:
-		RuntimeError: If the marker or the cache file it names is
-			missing. Tells the caller to run solve first.
+		RuntimeError: If the artifact file is missing or its stored
+			motion_model does not match the current config. Tells the
+			caller to run solve first.
 	"""
-	marker_path = tr_paths.camera_motion_active_marker_path(input_file)
-	if not os.path.isfile(marker_path):
-		# fallback: a pre-active-marker run wrote the legacy
-		# single-file camera_motion.npz. If it exists, accept it as
-		# the active cache so old solve outputs still refine.
-		legacy_path = tr_paths.default_camera_motion_path(input_file)
-		if os.path.isfile(legacy_path):
-			cached = load_motion_cache(legacy_path, expected_config_hash=None)
-			if cached is not None:
-				return cached
-		raise RuntimeError(
-			"Camera-motion cache for this solve is missing."
-			" Run solve first."
-		)
-	with open(marker_path, "r") as f:
-		payload = json.load(f)
-	cache_path = tr_paths.camera_motion_cache_path_for_hash(
-		input_file, payload["motion_model"], payload["config_hash"],
-	)
+	expected_motion_model = _motion_model_from_config(config)
+	cache_path = tr_paths.default_camera_motion_path(input_file)
 	if not os.path.isfile(cache_path):
 		raise RuntimeError(
-			"Camera-motion cache for this solve is missing."
+			"Camera-motion artifact for this solve is missing."
 			" Run solve first."
 		)
-	# load without enforcing the expected hash; the marker already
-	# certifies which file to use.
-	cached = load_motion_cache(cache_path, expected_config_hash=None)
+	cached = load_motion_cache(cache_path, expected_motion_model)
 	if cached is None:
 		raise RuntimeError(
-			"Camera-motion cache for this solve is missing."
+			"Camera-motion artifact for this solve is missing."
 			" Run solve first."
 		)
 	return cached
@@ -1201,98 +1147,33 @@ def precompute_camera_motion(
 	config: dict,
 	input_file: str,
 	video_info: dict,
-	cache_dir: str,
 ) -> MotionTrack:
-	"""Estimate camera motion, checking the single-file cache first.
+	"""Estimate camera motion, checking the single-file store first.
 
-	The cache lives at `<video>.track_runner.camera_motion.npz`. If
-	present and the stored `config_hash` matches the current
-	estimator-config hash, returns the cached track. Otherwise the
-	estimator runs and the cache is atomically overwritten.
+	The solved artifact lives at `<video>.track_runner.camera_motion.npz`. If
+	present and the stored motion_model matches the current config's
+	motion_model, returns the stored track. Otherwise the estimator runs
+	and the artifact is atomically overwritten.
 
 	Args:
 		reader: FrameReader instance with read_frame() and frame_count.
 		config: Configuration dict with motion estimator settings.
-		input_file: Path to the input video file (used for cache path).
+		input_file: Path to the input video file (used for artifact path).
 		video_info: Video probe info dict (width, height, fps, etc.).
-		cache_dir: Directory where cache files are stored. Ignored for
-			path selection (tr_paths resolves to tr_config/); kept in
-			the signature for callsite compatibility.
 
 	Returns:
 		MotionTrack with per-frame motion data.
 	"""
-	del cache_dir  # retained for callsite compatibility; path from tr_paths
-	# build video identity for cache validation
+	# build video identity for artifact validation
 	video_identity = tr_video_identity.make_video_identity(
 		input_file, video_info,
 	)
-	# get estimator config (default to FixedZoomEstimator if not specified)
-	estimator_config = config.get("motion", {}).get("estimator", {})
-	estimator_type = estimator_config.get("type")
-	# fall back to camera.zoom_type alias when motion.estimator.type absent
-	if estimator_type is None:
-		zoom_type = config.get("camera", {}).get("zoom_type", "fixed")
-		estimator_type = zoom_type
-	motion_model = _estimator_type_to_model(estimator_type)
-	# mix run-time geometry (bin_factor, processed_width,
-	# processed_height) into the config fingerprint. Phase
-	# correlation responds differently to different processed dims,
-	# so a cache from a different bin is not reusable.
-	bin_factor, processed_w, processed_h = _reader_geometry(reader)
-	geometry_extras = {
-		"bin_factor": int(bin_factor),
-		"processed_width": int(processed_w),
-		"processed_height": int(processed_h),
-	}
-	config_fp = _compute_config_fingerprint(
-		estimator_config, geometry_extras=geometry_extras,
-	)
-	config_hash = config_fp[:8]
-	# Per-hash cache file: each (estimator + bin + processed dims)
-	# combination persists to its own filename inside the per-video
-	# camera-motion cache directory. This preserves better-quality
-	# caches when the user re-runs at a different --bin value.
-	per_hash_path = tr_paths.camera_motion_cache_path_for_hash(
-		input_file, motion_model, config_hash,
-	)
-	cached_motion = load_motion_cache(per_hash_path, config_hash)
+	motion_model = _motion_model_from_config(config)
+	# Check canonical artifact file and return if motion_model matches
+	canonical_path = tr_paths.default_camera_motion_path(input_file)
+	cached_motion = load_motion_cache(canonical_path, expected_motion_model=motion_model)
 	if cached_motion is not None:
-		# rebind the active marker so refine knows which file solve
-		# selected (cheap; idempotent on repeat solve runs).
-		_write_active_marker(
-			input_file, motion_model, config_hash,
-			bin_factor, processed_w, processed_h,
-		)
 		return cached_motion
-	# Backward compat: a pre-bin run wrote a single legacy file at
-	# `<video>.track_runner.camera_motion.npz`. Probe it; if its
-	# embedded config_hash matches today's hash, reuse it (this is
-	# the common case when bin_factor==1 and no other config has
-	# changed since the file was written). Mismatched legacy files
-	# stay on disk untouched -- they are not deleted, just not used.
-	legacy_path = tr_paths.default_camera_motion_path(input_file)
-	if os.path.isfile(legacy_path):
-		legacy_motion = load_motion_cache(legacy_path, config_hash)
-		if legacy_motion is not None:
-			# legacy file already at the right hash; record the
-			# active marker so refine has an explicit pointer.
-			_write_active_marker(
-				input_file, motion_model, config_hash,
-				bin_factor, processed_w, processed_h,
-			)
-			return legacy_motion
-	# one-line notice on a config-driven cache miss; helps users
-	# understand why a recompute is happening when bin/config changes.
-	if os.path.isfile(legacy_path) or os.path.isdir(
-		tr_paths.camera_motion_cache_dir(input_file)
-	):
-		print(
-			f"  camera-motion cache for this config not found"
-			f" (bin_factor={bin_factor}); computing fresh."
-			f" Existing caches at other settings are preserved."
-		)
-	cache_path = per_hash_path
 	# select the matching estimator implementation
 	if motion_model == MOTION_MODEL_FIXED:
 		estimator = FixedZoomEstimator()
@@ -1305,22 +1186,12 @@ def precompute_camera_motion(
 	n_chunks = _pick_chunk_count(reader.frame_count)
 	# Pass the full config so estimators can reach top-level keys
 	# they need (DiscreteZoomEstimator reads camera.zoom_levels).
-	# The narrow estimator_config above is still used for cache
-	# fingerprinting -- only estimator-specific knobs invalidate the
-	# camera_motion.npz cache.
 	motion = estimator.estimate(
 		reader, config, n_chunks=n_chunks,
 	)
-	# save to cache atomically (numpy.savez overwrites in place).
-	# Per-hash filename means a different bin's cache file (already
-	# on disk for a previous solve) is not overwritten by this run.
+	# save to canonical artifact path atomically (numpy.savez overwrites
+	# in place).
 	save_motion_cache(
-		motion, cache_path, motion_model, video_identity, config_hash,
-	)
-	# bind the active marker to this freshly-computed identity so
-	# subsequent refine runs reuse exactly this cache file.
-	_write_active_marker(
-		input_file, motion_model, config_hash,
-		bin_factor, processed_w, processed_h,
+		motion, canonical_path, motion_model, video_identity,
 	)
 	return motion

@@ -29,6 +29,8 @@ track-runner-virtual-dolly-cam/
 |   |-- scene_coords.py            pixel-to-scene coordinate transform
 |   |-- velocity_model.py          Hermite FWD/BWD propagation
 |   |-- residual_motion.py         per-frame residual cue pipeline
+|   |-- residual_pre_pass.py       per-worker per-interval sequential
+|   |                              residual pre-pass (Stage 4 inner step)
 |   |-- residual_heat_map.py       residual heat-map generation
 |   |-- interval_solver.py         analytical interval solver
 |   |-- interval_fingerprint.py    per-interval cache-key fingerprinting
@@ -42,6 +44,7 @@ track-runner-virtual-dolly-cam/
 |   |-- tr_crop.py                 adaptive crop trajectory
 |   |-- encoder.py                 ffmpeg encoding
 |   |-- encode_analysis.py         post-encode quality analysis
+|   |-- analyze_report.py          HTML diagnostic report (analyze --plot)
 |   |-- tr_detection.py            YOLOv8n person detection (optional)
 |   |-- state_io.py                seed / geometry / scores / motion I/O
 |   |-- tr_config.py               YAML config parsing and migration
@@ -72,6 +75,11 @@ track-runner-virtual-dolly-cam/
 |   |-- frame_filters.py           frame filtering
 |   |-- frame_reader.py            frame reading
 |   `-- tools_common.py            shared tool helpers
+|
+|-- data/                          non-Python build-time assets
+|   `-- js/
+|       `-- analyze_report_renderer.js  vanilla-JS canvas renderer for
+|                                        analyze --plot HTML reports
 |
 |-- tools/                         analysis and batch scripts
 |   |-- analyze_crop_path_stability.py
@@ -112,6 +120,9 @@ track-runner-virtual-dolly-cam/
 |       |-- test_interval_fingerprint.py
 |       |-- test_race_phases.py
 |       |-- test_residual_heat_map.py
+|       |-- test_tr_residual_pre_pass.py
+|       |-- test_tr_debug_blob_flag.py
+|       |-- test_tr_debug_blob_instrumentation.py
 |       |-- test_review.py
 |       |-- test_scene_coords.py
 |       |-- test_scoring.py
@@ -120,9 +131,11 @@ track-runner-virtual-dolly-cam/
 |       |-- test_solve_queue.py
 |       |-- test_solver_integration.py
 |       |-- test_solver_parallelism.py
+|       |-- test_tr_analyze_report.py
 |       |-- test_tr_config_migration.py
 |       |-- test_tr_detection.py
-|       `-- test_velocity_model.py
+|       |-- test_velocity_model.py
+|       `-- analyze_report_fixtures.py    shared fixtures for analyze_report tests
 |
 |-- devel/                         developer tooling
 |   |-- commit_changelog.py        changelog commit automation

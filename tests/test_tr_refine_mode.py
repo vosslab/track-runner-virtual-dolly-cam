@@ -2,11 +2,11 @@
 
 C6 requires that refine mode only re-solves intervals whose seed endpoints
 changed. Intervals whose bracketing seeds are unchanged must be retained
-from the prior cache.
+from the prior solved-result store.
 
 These tests drive `solve_queue.plan_interval_work` directly -- no video
 I/O and no solver execution. They assert on the partition between
-`plan.cached_results_by_idx` (retained) and `plan.pending_pair_indices`
+`plan.solved_results_by_idx` (retained) and `plan.pending_pair_indices`
 (re-solve) for the edit / add / remove / no-change / pre-race-edit
 scenarios.
 """
@@ -86,7 +86,7 @@ def test_edit_post_race_seed_only_touches_adjacent_intervals():
 	# edited seed
 	assert len(plan.pending_pair_indices) == 2
 	# every other pair_idx must be a cache hit
-	retained = set(plan.cached_results_by_idx.keys())
+	retained = set(plan.solved_results_by_idx.keys())
 	assert len(retained) == plan.total_intervals - 2
 
 
@@ -138,7 +138,7 @@ def test_edit_pre_race_seed_only_touches_adjacent_intervals():
 		edited, prior, race_start_interval=(10, 50),
 	)
 	assert len(plan.pending_pair_indices) == 2
-	retained = set(plan.cached_results_by_idx.keys())
+	retained = set(plan.solved_results_by_idx.keys())
 	assert len(retained) == plan.total_intervals - 2
 
 

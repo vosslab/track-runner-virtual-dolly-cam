@@ -25,6 +25,8 @@ There is intentionally no per-module BLOB_OBSERVER_VERSION constant.
 """
 
 # Standard Library
+import os
+import time
 import warnings
 import dataclasses
 
@@ -61,31 +63,28 @@ DOG_K_FACTOR_DEFAULT = 5.0
 # Callers passing smaller diameters get the input array unchanged.
 DOG_MIN_DIAMETER = 4.0
 
-# Default background-rejection window expressed in seconds. The value
-# 8.0/60.0 is chosen so the canonical 60 fps case yields the legacy
-# half_window=4 (9-frame window) exactly via resolve_half_window, while
-# a 120 fps clip yields half_window=8 (17-frame window) -- the same
-# ~133 ms of background context regardless of frame rate. See the
-# heat-map design doc for why a temporal window matters: at higher
-# frame rates the runner moves less per frame, so a fixed-frame window
-# leaves the runner's pixels overlapping across all neighbors and the
-# nanmedian collapses runner pixels into the background estimate.
-DEFAULT_BACKGROUND_WINDOW_SECONDS = 8.0 / 60.0
+# Reference fps anchor for the stride model. Neighbor stride is
+# round(fps / REFERENCE_FPS), so 60 fps -> stride 1 (byte-identical
+# to legacy 60 fps behavior), 120 fps -> stride 2, 240 fps -> stride 4.
+# Total neighbor count stays 8 (4 each side). Time span is fixed at
+# ~133 ms regardless of fps. See M2 of plan memoized-percolating-moler.md.
+REFERENCE_FPS = 60
 
-# Legacy half-window default (4 = 9-frame window). Retained as an
-# expert override for diagnose tool and tests; production paths must
-# pass (window_seconds, fps) and rely on resolve_half_window.
+# Default per-side neighbor count for residual computation. The window
+# is 2 * DEFAULT_HALF_WINDOW + 1 = 9 samples total, of which 8 are
+# actually used (k=0 is skipped). Fixed regardless of fps; the time
+# span is controlled by stride instead.
 DEFAULT_HALF_WINDOW = 4
 
 # upper bound on the per-interval grayscale frame cache. Each cached
 # frame at 2816x1584 float32 is ~17.8 MB; an unbounded cache filled the
 # entire interval (hundreds of frames per worker, tens of GB across the
 # pool) and was the cause of the 2026-04-25 batch-solve OOM crashes.
-# compute_residual_for_frame only needs the half_window=4 -> 9-frame
-# neighborhood of the current frame; 24 entries leave generous slack
-# for the rolling window plus FWD/BWD overlap and cap the cache at
-# ~430 MB/worker regardless of interval length.
-MAX_GRAY_CACHE_FRAMES = 24
+# With the M2 stride model, the worst-case neighbor offset is
+# DEFAULT_HALF_WINDOW * stride. At 240 fps stride=4, so the outermost
+# neighbor lands at frame +/-16; a cache cap of 40 entries covers the
+# rolling window (33 frames) plus FWD/BWD overlap at any fps.
+MAX_GRAY_CACHE_FRAMES = 40
 
 # ROI multiplier: crop region is this many times the torso box height
 ROI_MULTIPLIER = 8.0
@@ -108,6 +107,61 @@ TANGENT_FALLBACK_SPAN = 10
 
 # tangent estimation: minimum confidence for primary window
 TANGENT_CONFIDENCE_THRESHOLD = 0.5
+
+# cache the pid once at module load; refreshed by enable_blob_debug_residual()
+_RESIDUAL_MODULE_PID = os.getpid()
+
+# Per-pid accumulator for residual_motion blob debug instrumentation.
+# Enabled by enable_blob_debug_residual(); read via get_residual_debug_summary().
+_BLOB_DEBUG_RESIDUAL_ENABLED = False
+_BLOB_DEBUG_RESIDUAL_STATS = {
+	"observe_calls": 0,
+	"compute_calls": 0,
+	"compute_total_ms": 0.0,
+	"bgr_cache_hits": 0,
+	"bgr_cache_misses": 0,
+}
+
+
+#============================================
+def enable_blob_debug_residual() -> None:
+	"""Enable per-call residual timing in this process.
+
+	Call from _worker_init when debug_blob is True.
+	"""
+	global _BLOB_DEBUG_RESIDUAL_ENABLED, _RESIDUAL_MODULE_PID
+	_RESIDUAL_MODULE_PID = os.getpid()
+	_BLOB_DEBUG_RESIDUAL_ENABLED = True
+
+
+#============================================
+def disable_blob_debug_residual() -> None:
+	"""Disable residual timing and reset counters (used in tests for teardown)."""
+	global _BLOB_DEBUG_RESIDUAL_ENABLED
+	_BLOB_DEBUG_RESIDUAL_ENABLED = False
+	_BLOB_DEBUG_RESIDUAL_STATS["observe_calls"] = 0
+	_BLOB_DEBUG_RESIDUAL_STATS["compute_calls"] = 0
+	_BLOB_DEBUG_RESIDUAL_STATS["compute_total_ms"] = 0.0
+	_BLOB_DEBUG_RESIDUAL_STATS["bgr_cache_hits"] = 0
+	_BLOB_DEBUG_RESIDUAL_STATS["bgr_cache_misses"] = 0
+
+
+#============================================
+def get_residual_debug_summary() -> dict:
+	"""Return a shallow copy of _BLOB_DEBUG_RESIDUAL_STATS plus the enabled flag.
+
+	The `enabled` key mirrors the `enabled` key in
+	`common_tools.frame_reader.get_blob_debug_summary()` so that callers
+	can probe whether instrumentation is on without reaching into the
+	private module-level `_BLOB_DEBUG_RESIDUAL_ENABLED`.
+
+	Returns:
+		Dict with keys: enabled, observe_calls, compute_calls,
+		compute_total_ms, bgr_cache_hits, bgr_cache_misses.
+	"""
+	summary = dict(_BLOB_DEBUG_RESIDUAL_STATS)
+	summary["enabled"] = _BLOB_DEBUG_RESIDUAL_ENABLED
+	return summary
 
 
 #============================================
@@ -428,72 +482,37 @@ def _compute_roi(
 
 
 #============================================
-def resolve_half_window(
-	window_seconds: float,
-	fps: float,
-	min_half_window: int = 2,
-	max_half_window: int = 12,
-) -> int:
-	"""Convert a temporal background window to a half-window frame count.
+def resolve_stride(fps: float) -> int:
+	"""Resolve the neighbor stride for the residual sampling pattern.
 
-	Background-rejection windows are temporal phenomena. The frame count
-	used by the nanmedian stack is a derived quantity from
-	(window_seconds, fps); fixing the frame count instead of the time
-	span couples the algorithm to sampling rate and breaks at high fps.
+	The neighbor window is 9 samples (DEFAULT_HALF_WINDOW=4 each side
+	plus center, with center skipped). Stride controls the TIME between
+	samples so that higher-fps inputs span the same ~133 ms window the
+	60 fps default produces. The runner moves roughly the same physical
+	distance between samples no matter what fps the camera was set to.
+
+	At 60 fps: stride=1, offsets [-4, -3, -2, -1, 1, 2, 3, 4].
+	  Byte-identical to the legacy fixed half_window=4 behavior.
+	At 119.94 fps: stride=2, offsets [-8, -6, -4, -2, 2, 4, 6, 8].
+	  Same ~133 ms span, half the I/O vs the prior adaptive-count model.
+	At 240 fps: stride=4, offsets [-16, -12, -8, -4, 4, 8, 12, 16].
+	  Same ~133 ms span, quarter the I/O.
 
 	Args:
-		window_seconds: Total temporal span of the background window.
-			Must be > 0.
 		fps: Source video frame rate. Must be > 0.
-		min_half_window: Lower clamp; ensures the median has enough
-			neighbors even at very low fps. Default 2.
-		max_half_window: Upper clamp; protects high-fps footage from
-			runaway compute and over-smoothing. Default 12.
 
 	Returns:
-		Integer half-window suitable for compute_residual_for_frame.
+		Integer stride >= 1.
 
 	Raises:
-		ValueError: window_seconds <= 0 or fps <= 0.
+		ValueError: fps is None, zero, or negative.
 	"""
-	if not (window_seconds > 0):
-		raise ValueError(
-			f"window_seconds must be > 0, got {window_seconds}"
-		)
-	if not (fps > 0):
-		raise ValueError(f"fps must be > 0, got {fps}")
-	# half_window = round(window_seconds * fps / 2); clamp to bounds
-	hw = int(round(window_seconds * fps / 2.0))
-	hw = max(min_half_window, min(max_half_window, hw))
-	return hw
-
-
-#============================================
-def _resolve_half_window_for_call(
-	half_window,
-	window_seconds: float,
-	fps,
-	reader,
-):
-	"""Internal: pick the right half_window for a residual call.
-
-	Precedence: explicit half_window override > resolved from
-	(window_seconds, fps). fps may be passed explicitly or pulled from
-	`reader.fps`; missing or non-positive fps raises ValueError. There
-	is no silent fallback to a hard-coded fps.
-	"""
-	if half_window is not None:
-		# expert override path; trust the caller
-		return int(half_window)
-	if fps is None:
-		fps = getattr(reader, "fps", None)
 	if fps is None or not (fps > 0):
 		raise ValueError(
-			"observe_blob_at / compute_residual_for_frame require a "
-			"positive fps. Pass fps explicitly or use a reader with a "
-			f"fps attribute. Got fps={fps!r}."
+			f"resolve_stride requires positive fps; got {fps!r}"
 		)
-	return resolve_half_window(window_seconds, fps)
+	stride = max(1, round(fps / REFERENCE_FPS))
+	return int(stride)
 
 
 #============================================
@@ -501,19 +520,26 @@ def compute_residual_for_frame(
 	reader: object,
 	frame_index: int,
 	scene_transform: object,
-	half_window: int = None,
+	half_window: int = DEFAULT_HALF_WINDOW,
 	cache: dict = None,
 	roi: tuple = None,
 	scale_factor: float = 1.0,
 	return_extras: bool = False,
-	window_seconds: float = DEFAULT_BACKGROUND_WINDOW_SECONDS,
 	fps: float = None,
+	stride: int = None,
 ) -> tuple:
 	"""Compute residual magnitude and validity mask for one frame.
 
 	Warps neighboring frames into frame_index's camera position, builds
 	a median background from the aligned stack, and subtracts it to
 	reveal moving objects.
+
+	The neighbor offsets use the M2 fps-invariant stride model:
+	  offsets = [k * stride for k in range(-half_window, half_window+1) if k != 0]
+	where stride = resolve_stride(fps) when stride is None. At 60 fps
+	stride=1, so offsets are [-4, -3, -2, -1, 1, 2, 3, 4] -- byte-identical
+	to the legacy behavior. At 119.94 fps stride=2, so offsets are
+	[-8, -6, -4, -2, 2, 4, 6, 8] -- same ~133 ms time span, half the I/O.
 
 	When roi is provided, only processes that region of each frame,
 	reducing compute cost proportional to the area ratio.
@@ -524,16 +550,13 @@ def compute_residual_for_frame(
 		reader: VideoReader instance.
 		frame_index: Center frame index.
 		scene_transform: SceneTransform instance.
-		half_window: Expert override for the per-side neighbor count.
-			Production callers should leave this None and pass
-			(window_seconds, fps) so the window stays temporal. When None
-			(default), resolved from (window_seconds, fps) via
-			resolve_half_window. When set explicitly, used as-is.
-		window_seconds: Temporal background window in seconds. Default
-			DEFAULT_BACKGROUND_WINDOW_SECONDS (~0.133 s). Ignored when
-			half_window is explicit.
-		fps: Source video fps. If None, pulled from reader.fps. Required
-			(non-positive raises ValueError) unless half_window is set.
+		half_window: Per-side neighbor count. Fixed at DEFAULT_HALF_WINDOW=4
+			regardless of fps; time span is controlled by stride instead.
+		fps: Source video fps. Used to resolve stride when stride is None.
+			If None, pulled from reader.fps. Required (non-positive raises
+			ValueError) when stride is also None.
+		stride: Neighbor stride derived from fps via resolve_stride. When
+			None, resolved automatically from fps or reader.fps.
 		cache: Optional dict for frame caching. Modified in place.
 		roi: Optional (x1, y1, x2, y2) bounds to restrict computation.
 			Blob centroids are returned in ROI coordinates; caller must
@@ -552,13 +575,17 @@ def compute_residual_for_frame(
 		The 4-tuple order matches tools/diagnose_residual_motion.py's
 		historical compute_multiframe_flow contract.
 	"""
-	# resolve the temporal window to a frame-count half_window. Explicit
-	# half_window wins; otherwise (window_seconds, fps) -> half_window
-	# via resolve_half_window. fps is pulled from reader.fps when not
-	# passed explicitly; missing/non-positive fps raises ValueError.
-	half_window = _resolve_half_window_for_call(
-		half_window, window_seconds, fps, reader,
-	)
+	# resolve stride from fps when not provided explicitly
+	if stride is None:
+		effective_fps = fps if fps is not None else getattr(reader, "fps", None)
+		if effective_fps is None or not (effective_fps > 0):
+			raise ValueError(
+				"compute_residual_for_frame requires positive fps to resolve "
+				"stride. Pass fps or stride explicitly, or use a reader with "
+				f"a fps attribute. Got fps={effective_fps!r}."
+			)
+		stride = resolve_stride(effective_fps)
+	stride = int(stride)
 
 	# guard incompatible option combos
 	if return_extras and roi is not None:
@@ -572,12 +599,18 @@ def compute_residual_for_frame(
 	if return_extras or scale_factor < 1.0:
 		return _compute_residual_with_extras(
 			reader, frame_index, scene_transform, half_window,
-			scale_factor, return_extras,
+			scale_factor, return_extras, stride=stride,
 		)
 
 	# production code path: grayscale cache + optional ROI; no extras.
 	if cache is None:
 		cache = {}
+
+	# start timing and count this call when blob debug is enabled
+	debug_on = _BLOB_DEBUG_RESIDUAL_ENABLED
+	if debug_on:
+		t0_compute = time.perf_counter()
+		_BLOB_DEBUG_RESIDUAL_STATS["compute_calls"] += 1
 
 	# read center frame as grayscale float (full frame, cached)
 	center_full = _read_gray_frame(reader, frame_index, cache)
@@ -606,22 +639,33 @@ def compute_residual_for_frame(
 
 	# collect aligned neighbor frames into a stack for median computation
 	aligned_stack = []
+	# track BGR cache hit/miss within this call for debug output
+	bgr_hits_local = 0
+	bgr_misses_local = 0
+	neighbors_read = 0
+	# stride-spaced neighbor offsets: k * stride for k in [-half_window..+half_window] \ {0}
+	# at stride=1 (60 fps) this is contiguous [-4..-1, 1..4] -- byte-identical to legacy
+	# at stride=2 (120 fps) this is [-8, -6, -4, -2, 2, 4, 6, 8] -- same time span, half I/O
 	for k in range(-half_window, half_window + 1):
 		if k == 0:
 			continue
-		fi_other = frame_index + k
+		fi_other = frame_index + k * stride
 		if fi_other < 0 or fi_other >= reader.frame_count:
 			continue
+		neighbors_read += 1
 
 		# read neighbor frame as BGR for warping (use cache to avoid re-reads)
 		cache_key_bgr = ("bgr", fi_other)
 		if cache_key_bgr in cache:
 			other_bgr = cache[cache_key_bgr]
+			bgr_hits_local += 1
 		else:
 			other_bgr = reader.read_frame(fi_other)
 			if other_bgr is None:
+				bgr_misses_local += 1
 				continue
 			cache[cache_key_bgr] = other_bgr
+			bgr_misses_local += 1
 		if other_bgr is None:
 			continue
 
@@ -665,6 +709,20 @@ def compute_residual_for_frame(
 	residual = numpy.abs(center_float - median_bg)
 	residual[validity_mask == 0] = 0.0
 
+	if debug_on:
+		elapsed_ms = (time.perf_counter() - t0_compute) * 1000.0
+		_BLOB_DEBUG_RESIDUAL_STATS["compute_total_ms"] += elapsed_ms
+		_BLOB_DEBUG_RESIDUAL_STATS["bgr_cache_hits"] += bgr_hits_local
+		_BLOB_DEBUG_RESIDUAL_STATS["bgr_cache_misses"] += bgr_misses_local
+		print(
+			f"[blob][pid={_RESIDUAL_MODULE_PID}] compute_residual"
+			f" fi={frame_index}"
+			f" neighbors={neighbors_read}"
+			f" elapsed={elapsed_ms:.1f}ms"
+			f" cache_hits={bgr_hits_local}/{bgr_hits_local + bgr_misses_local}",
+			flush=True,
+		)
+
 	return (residual, validity_mask)
 
 
@@ -676,6 +734,7 @@ def _compute_residual_with_extras(
 	half_window: int,
 	scale_factor: float,
 	return_extras: bool,
+	stride: int = 1,
 ) -> tuple:
 	"""Diagnose-compatible residual computation with optional extras.
 
@@ -683,6 +742,10 @@ def _compute_residual_with_extras(
 	tools/diagnose_residual_motion.compute_multiframe_flow. Keeps the
 	same frame-read order (BGR -> resize -> cvtColor) so diagnostic PNG
 	output matches the pre-refactor reference byte-for-byte.
+
+	The stride parameter comes from the M2 fps-invariant model. At
+	stride=1 (60 fps) the neighbor offsets are contiguous and the
+	output is byte-identical to the pre-M2 behavior.
 
 	Returns a 4-tuple when return_extras is True:
 		(residual_mag, raw_mag_single, validity_mask, display_frame)
@@ -711,11 +774,12 @@ def _compute_residual_with_extras(
 	center_float = gray_center.astype(numpy.float32)
 
 	# collect aligned neighbor frames into a stack for median computation
+	# stride-spaced offsets match the production path (M2 fps-invariant model)
 	aligned_stack = []
 	for k in range(-half_window, half_window + 1):
 		if k == 0:
 			continue
-		fi_other = frame_index + k
+		fi_other = frame_index + k * stride
 		if fi_other < 0 or fi_other >= reader.frame_count:
 			continue
 
@@ -923,9 +987,10 @@ def observe_blob_at(
 	reader: object,
 	residual_cache: dict,
 	threshold: float = DEFAULT_THRESHOLD,
-	half_window: int = None,
-	window_seconds: float = DEFAULT_BACKGROUND_WINDOW_SECONDS,
+	half_window: int = DEFAULT_HALF_WINDOW,
 	fps: float = None,
+	stride: int = None,
+	precomputed_store: "dict | None" = None,
 ) -> BlobObservation:
 	"""Return the best blob observation at one frame, or None.
 
@@ -978,19 +1043,35 @@ def observe_blob_at(
 			creates this empty per interval and drops it after both
 			passes complete.
 		threshold: Motion intensity threshold for blob extraction.
-		half_window: Expert override for per-side neighbor count.
-			Production callers should leave this None and pass
-			(window_seconds, fps); the helper resolves the temporal
-			window to a frame count.
-		window_seconds: Temporal background window in seconds. Default
-			DEFAULT_BACKGROUND_WINDOW_SECONDS (~0.133 s).
-		fps: Source video fps. Pulled from reader.fps when None.
+		half_window: Per-side neighbor count (default DEFAULT_HALF_WINDOW=4).
+			Fixed regardless of fps; time span is controlled by stride.
+		fps: Source video fps. Used to resolve stride when stride is None.
+			Pulled from reader.fps when None.
+		stride: Neighbor stride from resolve_stride(fps). When None,
+			resolved from fps or reader.fps automatically.
+		precomputed_store: Optional per-interval residual store produced
+			by residual_pre_pass.precompute_interval_residuals. Keyed by
+			(frame_index, roi_tuple) -> (residual_uint8, validity_uint8).
+			When non-None and a hit is found, bypasses
+			compute_residual_for_frame entirely and populates
+			residual_cache so subsequent calls within the same interval
+			find the result without rechecking. The store is read-only
+			from this function's perspective. When None, legacy reader
+			path is used (same as prior behavior).
 
 	Returns:
 		BlobObservation for the best in-corridor candidate, or None
 		when no residual was computable, no blobs were extracted, or
 		no extracted blob fell inside the corridor.
 	"""
+	# print observe entry when blob debug is enabled (gated to zero cost when off)
+	if _BLOB_DEBUG_RESIDUAL_ENABLED:
+		_BLOB_DEBUG_RESIDUAL_STATS["observe_calls"] += 1
+		print(
+			f"[blob][pid={_RESIDUAL_MODULE_PID}] observe_blob_at fi={frame_index}",
+			flush=True,
+		)
+
 	# Bin boundary (entry): pred_center/pred_box are source-frame per
 	# the public contract. ROI and blob extraction must run in
 	# processed-frame coordinates, which is the frame the reader
@@ -1022,14 +1103,32 @@ def observe_blob_at(
 	# BlobObservation.
 	cached = residual_cache.get(cache_key)
 	if cached is None:
-		# nested cache for raw frame reads (keyed by frame_index alone;
-		# frame bytes are ROI-independent).
-		frame_read_cache = residual_cache.setdefault("_frames", {})
-		residual, validity_mask = compute_residual_for_frame(
-			reader, frame_index, scene_transform,
-			half_window, frame_read_cache, roi,
-			window_seconds=window_seconds, fps=fps,
-		)
+		# M3+M4: check the sequential pre-pass store before falling through
+		# to compute_residual_for_frame (which does scattered reads). On a
+		# hit, treat the stored uint8 arrays as if just computed; populate
+		# residual_cache so future calls within this interval find it.
+		# The store is read-only here; we never write into it.
+		if precomputed_store is not None and cache_key in precomputed_store:
+			residual_u8, validity_u8 = precomputed_store[cache_key]
+			# convert back to float32 for the downstream DoG/blob pipeline
+			residual = residual_u8.astype(numpy.float32)
+			validity_mask = validity_u8
+		else:
+			# nested cache for raw frame reads (keyed by frame_index alone;
+			# frame bytes are ROI-independent).
+			frame_read_cache = residual_cache.setdefault("_frames", {})
+			# resolve stride once at the call site; pass explicitly so
+			# compute_residual_for_frame does not re-derive it from fps
+			effective_fps = fps if fps is not None else getattr(reader, "fps", None)
+			effective_stride = stride if stride is not None else resolve_stride(
+				effective_fps if effective_fps is not None and effective_fps > 0
+				else float(REFERENCE_FPS)
+			)
+			residual, validity_mask = compute_residual_for_frame(
+				reader, frame_index, scene_transform,
+				half_window, frame_read_cache, roi,
+				fps=effective_fps, stride=effective_stride,
+			)
 		if residual is None:
 			# negative-result entry avoids re-attempts; holds no decisions
 			residual_cache[cache_key] = {"raw_blobs_processed": []}

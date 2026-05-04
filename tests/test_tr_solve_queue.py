@@ -49,8 +49,10 @@ def test_plan_empty_when_fewer_than_two_seeds():
 	plan_one = solve_queue.plan_interval_work([_make_seed(10)], None)
 	assert plan_empty.total_intervals == 0
 	assert plan_empty.pending_count == 0
+	assert plan_empty.reused_count == 0
 	assert plan_one.total_intervals == 0
 	assert plan_one.pending_count == 0
+	assert plan_one.reused_count == 0
 
 
 #============================================
@@ -81,8 +83,8 @@ def test_plan_partitions_between_cache_and_pending():
 	prior = {fp_first: {"start_frame": 10, "end_frame": 100, "dummy": True}}
 	plan = solve_queue.plan_interval_work(seeds, prior)
 	assert plan.pending_pair_indices == [1]
-	assert 0 in plan.cached_results_by_idx
-	assert plan.cached_results_by_idx[0]["dummy"] is True
+	assert 0 in plan.solved_results_by_idx
+	assert plan.solved_results_by_idx[0]["dummy"] is True
 
 
 #============================================
@@ -337,7 +339,7 @@ def test_pre_race_synthesis_classified_by_phase():
 	race_start_interval = (20, 30)
 
 	plan = solve_queue.plan_interval_work(
-		seeds, prior_intervals=None, race_start_interval=race_start_interval,
+		seeds, prior_solved_intervals=None, race_start_interval=race_start_interval,
 	)
 
 	phases = list(plan.phase_by_idx.values())
@@ -362,11 +364,11 @@ def test_pre_race_pending_disjoint_from_cached():
 	prior = {fp_pre_0: {"dummy": True}, fp_pre_1: {"dummy": True}}
 
 	plan = solve_queue.plan_interval_work(
-		seeds, prior_intervals=prior, race_start_interval=(20, 30),
+		seeds, prior_solved_intervals=prior, race_start_interval=(20, 30),
 	)
 
 	pending_set = set(plan.pending_pair_indices)
-	cached_set = set(plan.cached_results_by_idx)
+	cached_set = set(plan.solved_results_by_idx)
 	# Round-trip invariant: every interval is either reused or pending.
 	assert plan.reused_count + plan.pending_count == plan.total_intervals
 	# Disjointness: cached and pending never overlap.
