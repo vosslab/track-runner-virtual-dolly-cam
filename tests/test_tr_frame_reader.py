@@ -1,8 +1,9 @@
-"""Unit tests for FrameReader bin_factor + FrameGeometry.
+"""Unit tests for FrameReader: bin_factor, FrameGeometry, .mkv guard.
 
-The bin path needs a real video. We use a tiny fixture video
-generated on the fly via cv2.VideoWriter into pytest's tmp_path
-so the tests stay deterministic and self-contained.
+The bin path needs a real video. We use a tiny fixture video generated
+on the fly via cv2.VideoWriter into pytest's tmp_path so the tests stay
+deterministic and self-contained. FFV1 in MKV is lossless and supported
+by the cv2 FFmpeg backend on the platforms this repo targets.
 """
 
 # Standard Library
@@ -18,16 +19,12 @@ import common_tools.frame_reader
 import common_tools.goodbox
 
 
-_FOURCC = cv2.VideoWriter_fourcc(*"mp4v")
+_FOURCC = cv2.VideoWriter_fourcc(*"FFV1")
 
 
 #============================================
 def _write_synthetic_video(path: str, width: int, height: int, n_frames: int = 5, fps: float = 30.0) -> None:
-	"""Write a tiny synthetic MP4 with a known gradient pattern.
-
-	Each frame is a horizontal gradient so we can sanity-check the
-	bin path without depending on a real clip.
-	"""
+	"""Write a tiny synthetic .mkv with a known constant pattern."""
 	writer = cv2.VideoWriter(path, _FOURCC, fps, (width, height))
 	if not writer.isOpened():
 		raise RuntimeError(f"cv2.VideoWriter failed to open {path}")
@@ -49,8 +46,21 @@ def _open(path: str, n_frames: int, fps: float = 30.0, **kwargs):
 
 
 #============================================
+def test_rejects_non_mkv_path():
+	# .mkv-only restriction: a .mov path must raise before any decode
+	# is attempted, with a message naming mkvmerge so the user knows
+	# how to remux.
+	with pytest.raises(ValueError, match="mkvmerge"):
+		common_tools.frame_reader.FrameReader(
+			video_path="/tmp/not_real.mov",
+			fps=30.0,
+			total_frames=10,
+		)
+
+
+#============================================
 def test_bin_factor_default_is_one(tmp_path):
-	video = str(tmp_path / "v.mp4")
+	video = str(tmp_path / "v.mkv")
 	_write_synthetic_video(video, 320, 240, n_frames=3)
 	reader = _open(video, n_frames=3)
 	assert reader.bin_factor == 1
@@ -67,7 +77,7 @@ def test_bin_factor_default_is_one(tmp_path):
 #============================================
 def test_bin_one_byte_identical(tmp_path):
 	# bin_factor == 1 must short-circuit the resize path entirely
-	video = str(tmp_path / "v.mp4")
+	video = str(tmp_path / "v.mkv")
 	_write_synthetic_video(video, 128, 96, n_frames=3)
 	reader1 = _open(video, n_frames=3, bin_factor=1)
 	frame1 = reader1.read_frame(0)
@@ -82,7 +92,7 @@ def test_bin_one_byte_identical(tmp_path):
 
 #============================================
 def test_bin_factor_validation(tmp_path):
-	video = str(tmp_path / "v.mp4")
+	video = str(tmp_path / "v.mkv")
 	_write_synthetic_video(video, 64, 64, n_frames=2)
 	with pytest.raises(ValueError):
 		_open(video, n_frames=2, bin_factor=0)
@@ -96,7 +106,7 @@ def test_bin_factor_validation(tmp_path):
 def test_bin_two_dims_and_processed_frame(tmp_path):
 	# 320 x 240 binned by 2 -> 160 x 120, both already goodboxes
 	# (160 = 2^5 * 5, 160 % 16 == 0; 120 = 2^3 * 3 * 5, 120 % 8 == 0)
-	video = str(tmp_path / "v.mp4")
+	video = str(tmp_path / "v.mkv")
 	_write_synthetic_video(video, 320, 240, n_frames=3)
 	reader = _open(video, n_frames=3, bin_factor=2)
 	geom = reader.geometry

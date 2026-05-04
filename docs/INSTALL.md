@@ -10,12 +10,23 @@ brew install python@3.12
 
 ## System dependencies
 
-- **ffmpeg** -- video encoding and decoding.
+- **ffmpeg** -- video encoding and decoding (used by `cv2.VideoCapture` and `cv2.VideoWriter`).
 - **mediainfo** -- video metadata probing.
+- **mkvtoolnix** -- `mkvmerge` for losslessly remuxing MP4/MOV sources to MKV.
 
 ```bash
-brew install ffmpeg mediainfo
+brew install ffmpeg mediainfo mkvtoolnix
 ```
+
+## Source video format
+
+`FrameReader` requires `.mkv` source video. MP4/MOV users must remux losslessly once before use:
+
+```bash
+mkvmerge -o input.mkv input.mov
+```
+
+The pipeline does not transcode; remux is a fast, lossless container repackage.
 
 ## Pip dependencies
 
@@ -25,9 +36,7 @@ Install runtime dependencies:
 pip3 install -r pip_requirements.txt
 ```
 
-This installs av (PyAV for video decode), numpy, opencv-python, PySide6, pyyaml, rich, and scipy.
-
-PyAV requires FFmpeg/libavcodec on your system (listed above in system dependencies).
+This installs numpy, opencv-python, PySide6, pyyaml, rich, and scipy.
 
 For development tools (pytest, pyflakes, bandit):
 

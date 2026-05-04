@@ -16,12 +16,12 @@ import common_tools.frame_reader
 import camera_motion
 
 
-_FOURCC = cv2.VideoWriter_fourcc(*"mp4v")
+_FOURCC = cv2.VideoWriter_fourcc(*"FFV1")
 
 
 #============================================
 def _write_translating_video(path: str, width: int, height: int, n_frames: int, dx_per_frame: int) -> None:
-	"""Write an MP4 of a textured patch translating right by `dx_per_frame` source pixels per frame."""
+	"""Write an MKV of a textured patch translating right by `dx_per_frame` source pixels per frame."""
 	# random texture stays consistent across re-renders so phase
 	# correlation has stable content to lock onto.
 	rng = numpy.random.default_rng(seed=42)
@@ -59,7 +59,7 @@ def _estimate_source_dx(video_path: str, fps: float, total: int, bin_factor: int
 @pytest.fixture(scope="module")
 def translating_video(tmp_path_factory):
 	# 256 x 128 frames so bin_factor=2 yields 128x64 (already a goodbox)
-	path = str(tmp_path_factory.mktemp("cm") / "trans.mp4")
+	path = str(tmp_path_factory.mktemp("cm") / "trans.mkv")
 	_write_translating_video(
 		path, width=256, height=128, n_frames=8, dx_per_frame=2,
 	)

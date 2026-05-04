@@ -13,7 +13,7 @@ for json in tr_config/*.seeds.json; do
   echo "$video"
   echo "================================="
   file "$video"
-  ./track_runner/track_runner.py -i $video solve --hermite-only --keep
+  ./track_runner/track_runner.py --workers 1 -i $video solve --yes
   sleep 5
 done
 

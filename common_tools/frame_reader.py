@@ -1,17 +1,28 @@
-"""Reliable frame reader for video via PyAV decode backend.
+"""Reliable frame reader for video via cv2.VideoCapture.
 
-FrameReader wraps PyAV (av module) for video decode and provides a public API
+FrameReader wraps cv2.VideoCapture for video decode and provides a public API
 for frame reading: read_frame(index), frame_count, fps, width, height, geometry,
 bin_factor. Supports bin_factor downsample and goodbox snap (origin-preserving
 crop to FFT-friendly dimensions) on every frame, regardless of bin_factor value.
+
+Two seek strategies fire in read_frame:
+  - Strategy 0 (sequential fast-path): when frame_index == self._cap_next_index,
+    no cap.set is called; cap.read() advances the decoder cursor.
+  - Strategy 1 (random access): cap.set(CAP_PROP_POS_FRAMES, idx) followed by
+    cap.read(). FFmpeg seeks to the nearest preceding keyframe and decodes
+    forward to the target frame.
+
+No further fallbacks are kept. Source videos must be .mkv; MP4/MOV users
+should remux losslessly via `mkvmerge -o out.mkv in.mov` before use.
 """
 
 # Standard Library
+import os
 import warnings
 import dataclasses
 
 # PIP3 modules
-import av
+import cv2
 import numpy
 
 # local repo modules
@@ -161,14 +172,16 @@ def _snap_or_keep(scaled_dim: int, axis_name: str) -> int:
 
 #============================================
 class FrameReader:
-	"""Read video frames via PyAV decode backend.
+	"""Read video frames via cv2.VideoCapture.
 
-	Decodes frames using PyAV (av module) with lazy keyframe seek for random
-	access. Sequential reads of consecutive frame indices efficiently use the
-	last-PTS cache (one decoded packet per consecutive pair).
+	Decodes frames using cv2.VideoCapture with a sequential fast-path for
+	consecutive reads (no cap.set when frame_index == cap_next_index) and
+	a single random-access seek strategy (cap.set(CAP_PROP_POS_FRAMES, idx))
+	for non-sequential reads. No further fallback strategies are kept; source
+	videos must be .mkv.
 
 	Args:
-		video_path: Path to the video file.
+		video_path: Path to the video file. Must end in .mkv.
 		fps: Video frame rate (frames per second).
 		total_frames: Total number of frames in the video.
 		debug: If True, print per-frame debug output.
@@ -190,7 +203,7 @@ class FrameReader:
 		"""Initialize FrameReader with a video file.
 
 		Args:
-			video_path: Path to the video file.
+			video_path: Path to the video file. Must end in .mkv.
 			fps: Video frame rate.
 			total_frames: Total number of frames in the video.
 			debug: Enable verbose per-frame debug output.
@@ -208,6 +221,15 @@ class FrameReader:
 				4K) a small bottom-edge sliver is cropped (1080 ->
 				1056, 2160 -> 2112, 24-48 px depending on source).
 		"""
+		# .mkv-only restriction: the rollback from PyAV dropped the
+		# 5-strategy seek waterfall and mkvmerge remux fallback that
+		# made HEVC-in-MOV decode work. MP4/MOV users must remux to
+		# MKV losslessly before use.
+		if os.path.splitext(video_path)[1].lower() != ".mkv":
+			raise ValueError(
+				f"FrameReader requires a .mkv source, got {video_path!r}."
+				f" Remux losslessly with: mkvmerge -o out.mkv in.mov"
+			)
 		# bin_factor validation
 		if not isinstance(bin_factor, int):
 			raise TypeError(
@@ -223,15 +245,21 @@ class FrameReader:
 		self._debug = debug
 		self._bin_factor = bin_factor
 
-		# Initialize PyAV backend
-		self._init_pyav_backend(video_path)
+		# Initialize cv2 backend
+		self._init_cv2_backend(video_path)
 
 		# resolve scaled and processed dims; FrameGeometry is the
 		# single source of coordinate-conversion truth and exposes
-		# the resolved dims downstream.
-		self._geometry = _resolve_frame_geometry(
-			self._source_width, self._source_height, bin_factor
-		)
+		# the resolved dims downstream. If geometry resolution
+		# raises, release the capture so we do not leak the FD.
+		try:
+			self._geometry = _resolve_frame_geometry(
+				self._source_width, self._source_height, bin_factor
+			)
+		except Exception:
+			self._cap.release()
+			self._cap = None
+			raise
 		# public width/height return processed dims; image consumers
 		# downstream do not need to know bin_factor exists, but
 		# coordinate-aware callers should use FrameReader.geometry.
@@ -239,51 +267,47 @@ class FrameReader:
 		self._height = self._geometry.processed_height
 
 	#============================================
-	def _init_pyav_backend(self, video_path: str) -> None:
-		"""Initialize PyAV backend."""
-		# Open the container
-		self._av_container = av.open(video_path)
-
-		# Get the video stream
-		self._av_stream = self._av_container.streams.video[0]
-
-		# Read source dimensions from the stream
-		self._source_width = self._av_stream.codec_context.width
-		self._source_height = self._av_stream.codec_context.height
-
-		# Decoder iterator state
-		self._av_iter = None
-		# Last successfully decoded frame PTS (in stream time_base units)
-		self._av_last_pts = -1
+	def _init_cv2_backend(self, video_path: str) -> None:
+		"""Initialize cv2.VideoCapture backend."""
+		self._cap = cv2.VideoCapture(video_path)
+		if not self._cap.isOpened():
+			raise RuntimeError(
+				f"cv2.VideoCapture failed to open {video_path!r}"
+			)
+		self._source_width = int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+		self._source_height = int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+		# strategy-0 cursor: index of the frame the next cap.read() will
+		# return. -1 means cursor is invalid (force a cap.set on next read).
+		self._cap_next_index = 0
 
 	#============================================
 	@property
 	def video_path(self) -> str:
-		"""Path to the input video file (public; matches VideoReader)."""
+		"""Path to the input video file."""
 		return self._video_path
 
 	#============================================
 	@property
 	def frame_count(self) -> int:
-		"""Total number of frames in the video (public; matches VideoReader)."""
+		"""Total number of frames in the video."""
 		return self._total_frames
 
 	#============================================
 	@property
 	def fps(self) -> float:
-		"""Video frame rate (public; matches VideoReader)."""
+		"""Video frame rate."""
 		return self._fps
 
 	#============================================
 	@property
 	def width(self) -> int:
-		"""Frame width in pixels (public; matches VideoReader)."""
+		"""Frame width in pixels (processed dims)."""
 		return self._width
 
 	#============================================
 	@property
 	def height(self) -> int:
-		"""Frame height in pixels (public; matches VideoReader)."""
+		"""Frame height in pixels (processed dims)."""
 		return self._height
 
 	#============================================
@@ -311,70 +335,48 @@ class FrameReader:
 		if frame is None:
 			return None
 		geom = self._geometry
-		# PyAV can resize during reformat, so the reader stays cv2-free.
-		# When binning is requested, ask PyAV for the scaled size directly.
+		# bin via cv2.INTER_AREA when requested
 		if self._bin_factor > 1:
-			frame = self._resize_with_pyav(
-				frame, geom.scaled_width, geom.scaled_height
+			frame = cv2.resize(
+				frame,
+				(geom.scaled_width, geom.scaled_height),
+				interpolation=cv2.INTER_AREA,
 			)
-		# origin-preserving right/bottom crop to goodbox-snapped dims
+		# origin-preserving right/bottom crop to goodbox-snapped dims.
+		# numpy.ascontiguousarray forces a copy so the returned frame
+		# does not pin the full-resolution decoded buffer via its base
+		# reference -- significant in the Stage 4 rolling buffer where
+		# up to 40 frames are held simultaneously per worker.
 		if (
 			frame.shape[0] != geom.processed_height
 			or frame.shape[1] != geom.processed_width
 		):
-			frame = frame[
-				0 : geom.processed_height, 0 : geom.processed_width
-			]
+			frame = numpy.ascontiguousarray(
+				frame[0 : geom.processed_height, 0 : geom.processed_width]
+			)
 		return frame
 
 	#============================================
-	def _resize_with_pyav(
-		self, frame: numpy.ndarray, width: int, height: int
-	) -> numpy.ndarray:
-		"""Resize a BGR frame through PyAV without importing cv2.
-
-		PyAV delegates to libswscale for resize here, which keeps the
-		decode path free of OpenCV's bundled FFmpeg libraries.
-		"""
-		av_frame = av.VideoFrame.from_ndarray(frame, format="bgr24")
-		resized = av_frame.reformat(width=width, height=height, format="bgr24")
-		return resized.to_ndarray()
-
-	#============================================
 	def seek_for_encode(self, start_frame: int) -> None:
-		"""Seek to start_frame and arm the sequential fast-path."""
+		"""Seek to start_frame and arm the sequential fast-path.
+
+		The next read_frame(start_frame) hits strategy 0 with no
+		additional cap.set call.
+		"""
 		if start_frame < 0 or start_frame >= self._total_frames:
 			raise ValueError(
 				f"start_frame={start_frame} out of range [0, {self._total_frames})"
 			)
-		# PyAV backend: perform a seek and arm for sequential continuation
-		self._seek_pyav(start_frame)
-		self._av_last_pts = start_frame - 1
+		self._cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+		self._cap_next_index = start_frame
 
 	#============================================
 	def read_frame(self, frame_index: int) -> numpy.ndarray | None:
-		"""Read a single frame by index using lazy keyframe seek.
+		"""Read a single frame by index.
 
-		When frame_index is not sequential (frame_index != last_decoded_pts + 1),
-		seeks to the keyframe at-or-before the target and decodes forward to it.
-		Maintains a last-PTS cache so consecutive reads decode one packet.
-
-		Args:
-			frame_index: Target frame index (0-based).
-
-		Returns:
-			BGR frame as numpy array, or None if decode fails.
-		"""
-		return self._read_frame_pyav(frame_index)
-
-	#============================================
-	def _read_frame_pyav(self, frame_index: int) -> numpy.ndarray | None:
-		"""Read a frame using the PyAV backend with lazy keyframe seek.
-
-		Implements lazy keyframe seek: when read_frame(N) is called for
-		N != last_decoded_pts + 1, seek to the keyframe at-or-before N
-		and decode forward to N. Maintains _av_last_pts cache so
-		read_frame(N) then read_frame(N+1) decodes exactly one packet.
+		Strategy 0 fires when frame_index == self._cap_next_index: no
+		cap.set is called; cap.read() advances the cursor. Strategy 1
+		fires otherwise: cap.set(CAP_PROP_POS_FRAMES, idx) then cap.read().
 
 		Args:
 			frame_index: Target frame index (0-based).
@@ -382,107 +384,17 @@ class FrameReader:
 		Returns:
 			BGR frame as numpy array, or None if decode fails.
 		"""
-		# Check if we need to seek (not sequential continuation)
-		if self._av_iter is None or frame_index != self._av_last_pts + 1:
-			# Need a fresh seek
-			self._seek_pyav(frame_index)
-
-		# Decode forward to target frame
-		frame = self._decode_next_pyav(frame_index)
-		if frame is None:
+		if frame_index != self._cap_next_index:
+			# strategy 1: random-access seek
+			self._cap.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
+		# strategy 0 falls through: cap.read() reads the next frame
+		ret, frame = self._cap.read()
+		if not ret or frame is None:
+			# invalidate cursor so a subsequent read forces a cap.set
+			self._cap_next_index = -1
 			return None
-
-		# Update cache to mark this frame as decoded
-		self._av_last_pts = frame_index
-
-		# Apply bin + goodbox crop semantics
+		self._cap_next_index = frame_index + 1
 		return self._apply_bin(frame)
-
-	#============================================
-	def _seek_pyav(self, target_frame_index: int) -> None:
-		"""Seek to keyframe at-or-before target_frame_index.
-
-		Computes PTS in the stream's time_base and seeks backward to
-		the nearest keyframe. After seek, _av_iter is reset so the next
-		decode starts from the keyframe.
-
-		Args:
-			target_frame_index: Target frame index (0-based).
-		"""
-		# Convert frame index to PTS in stream time_base units
-		# frame_index -> time in seconds -> PTS in stream time_base
-		time_sec = target_frame_index / self._fps
-		time_base = self._av_stream.time_base
-		# Approximate PTS; stream start_time may not be 0
-		target_pts = int(time_sec / float(time_base))
-
-		# Seek backward to keyframe at-or-before target_pts
-		self._av_container.seek(
-			target_pts,
-			stream=self._av_stream,
-			backward=True,
-			any_frame=False,
-		)
-
-		# Reset the iterator so the next call to decode_next_pyav
-		# starts fresh from the seeked position
-		self._av_iter = None
-
-	#============================================
-	def _decode_next_pyav(self, target_frame_index: int) -> numpy.ndarray | None:
-		"""Decode forward from current position to target_frame_index.
-
-		Lazily opens the iterator if needed, then walks forward,
-		comparing frame.dts to the target frame's expected PTS.
-		Returns the first frame at-or-after the target PTS.
-
-		Args:
-			target_frame_index: Target frame index (0-based).
-
-		Returns:
-			BGR uint8 ndarray of shape (height, width, 3), or None on failure.
-		"""
-		# Lazy-open the iterator
-		if self._av_iter is None:
-			self._av_iter = self._av_container.decode(self._av_stream)
-
-		# Compute the target PTS in stream time_base units
-		time_sec = target_frame_index / self._fps
-		time_base = self._av_stream.time_base
-		target_pts = int(time_sec / float(time_base))
-
-		# Walk forward until we reach the target PTS
-		for av_frame in self._av_iter:
-			# Get the frame's PTS; use dts as fallback
-			frame_pts = av_frame.pts if av_frame.pts is not None else av_frame.dts
-			if frame_pts is None:
-				continue
-
-			# Check if we've reached or passed the target PTS
-			if frame_pts >= target_pts:
-				# Convert to BGR uint8 ndarray
-				return self._frame_to_bgr_pyav(av_frame)
-
-		# Reached end of stream without finding target
-		return None
-
-	#============================================
-	def _frame_to_bgr_pyav(self, av_frame) -> numpy.ndarray:
-		"""Convert a PyAV VideoFrame to BGR uint8 ndarray.
-
-		Reformats from the frame's native format to BGR24.
-
-		Args:
-			av_frame: PyAV VideoFrame object.
-
-		Returns:
-			BGR uint8 ndarray of shape (height, width, 3).
-		"""
-		# Reformat to BGR24 (OpenCV standard)
-		av_frame_bgr = av_frame.reformat(format="bgr24")
-		# Convert to numpy ndarray
-		bgr_array = av_frame_bgr.to_ndarray()
-		return bgr_array
 
 	#============================================
 	def __iter__(self):
@@ -493,24 +405,18 @@ class FrameReader:
 
 		Yields:
 			(frame_index, frame) tuples where frame_index goes from 0 to
-			frame_count-1 and frame is the BGR numpy array (or None if
-			stream ends).
+			frame_count-1 and frame is the BGR numpy array. Stops early
+			if the stream ends before frame_count.
 		"""
-		yield from self._iter_pyav()
-
-	#============================================
-	def _iter_pyav(self):
-		"""Iterate over frames using PyAV backend."""
-		# Seek to frame 0 and reset iterator
-		self._seek_pyav(0)
-		self._av_last_pts = -1
+		self._cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+		self._cap_next_index = 0
 		frame_index = 0
 		while frame_index < self._total_frames:
-			frame = self._decode_next_pyav(frame_index)
-			if frame is None:
+			ret, frame = self._cap.read()
+			if not ret or frame is None:
+				self._cap_next_index = -1
 				break
-			# Update last-PTS cache for sequential continuation
-			self._av_last_pts = frame_index
+			self._cap_next_index = frame_index + 1
 			yield (frame_index, self._apply_bin(frame))
 			frame_index += 1
 
@@ -526,8 +432,9 @@ class FrameReader:
 
 	#============================================
 	def close(self) -> None:
-		"""Release PyAV container and iterator."""
-		if self._av_container is not None:
-			self._av_container.close()
-			self._av_container = None
-		self._av_iter = None
+		"""Release the cv2.VideoCapture."""
+		# getattr handles partial __init__ where _cap was never set
+		cap = getattr(self, "_cap", None)
+		if cap is not None:
+			cap.release()
+			self._cap = None

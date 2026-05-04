@@ -1,5 +1,18 @@
 ## 2026-05-04
 
+### Behavior or Interface Changes
+
+- **`FrameReader` rolled back from PyAV to `cv2.VideoCapture`.** PyAV's bundled libav family (`libavdevice.62.x`) collided in-process with OpenCV's bundled libav (`libavdevice.61.x`), producing the macOS Objective-C duplicate-class warning at every import (`objc[..]: Class AVFFrameReceiver is implemented in both .../cv2/.dylibs/libavdevice.61.3.100.dylib and .../av/.dylibs/libavdevice.62.1.100.dylib`). Decode and encode now share a single libav family. Public API of `FrameReader` is unchanged: `read_frame`, `seek_for_encode`, `__iter__`, `__enter__`, `__exit__`, `close`, plus the `video_path/frame_count/fps/width/height/geometry/bin_factor` properties all behave identically. Internally only two seek strategies remain: strategy 0 (sequential fast-path; no `cap.set` when `frame_index == self._cap_next_index`) and strategy 1 (`cap.set(CAP_PROP_POS_FRAMES, idx)` random access). The 5-strategy waterfall and mkvmerge remux fallback from the pre-PyAV era are not restored; instead `FrameReader.__init__` rejects non-`.mkv` paths with a `ValueError` containing the exact `mkvmerge -o out.mkv in.mov` command. The Stage-4 sequential pre-pass in [track_runner/residual_pre_pass.py](../track_runner/residual_pre_pass.py) was unchanged and continues to absorb scattered random access into bounded per-interval sequential walks (40-frame rolling cap), so the cv2 strategy-1 cost is not on the hot path. Reference: plan `~/.claude/plans/iterative-tickling-dongarra.md`.
+- **Source video format hard-restricted to `.mkv`.** MP4/MOV users must remux losslessly via `mkvmerge -o input.mkv input.mov` once before use. The pipeline does not transcode. [docs/INSTALL.md](INSTALL.md) updated; [common_tools/README.md](../common_tools/README.md) rewritten to describe the cv2-only reader and document the `.mkv` requirement.
+
+### Removals and Deprecations
+
+- **`av` (PyAV) dropped from `pip_requirements.txt`.** Local installs may keep `av` for a while; the manifest no longer requires it. Users may run `python3 -m pip uninstall av` to free the duplicate libav dylibs from the environment. The PyAV-specific test files referenced in the prior 2026-05-04 entry (`test_pyav_decode_backend.py`, `test_pyav_smoke.py`, `test_pyav_residual_consistency.py`, `test_frame_reader_protocol.py`) had already been cleaned up before the rollback; one new test file [tests/test_frame_reader.py](../tests/test_frame_reader.py) replaces them with two focused tests (smoke read + non-mkv rejection).
+
+### Fixes and Maintenance
+
+- **Synthetic test fixtures switched from `.mp4` (mp4v fourcc) to `.mkv` (FFV1 fourcc).** [tests/test_tr_frame_reader_bin.py](../tests/test_tr_frame_reader_bin.py) and [tests/test_tr_camera_motion_bin.py](../tests/test_tr_camera_motion_bin.py) write their throwaway test videos as MKV so they pass the new `.mkv` init guard; FFV1 in MKV is lossless and supported by the cv2 FFmpeg backend. Both files now use `cv2.VideoWriter_fourcc(*"FFV1")` and `tmp_path / "v.mkv"` (or `trans.mkv`).
+
 ### Additions and New Features
 
 - **`interval_solver.collect_erased_frames(seeds, fps, total_frames)`** new public helper that returns the set of frame indices `_apply_trajectory_erasure` would wipe for a given seed list, mirroring the per-seed `not_in_frame` radius logic without mutating any trajectory. analyze --plot uses it to emit a `frames_erased: [bool]` array in the HTML report JSON so the renderer can distinguish user-flagged dropouts from generic tracker gaps (both still serialize as null in the panel series). Reference: plan `~/.claude/plans/rustling-juggling-creek.md` P1-1.
