@@ -1,23 +1,17 @@
-"""Reliable frame reader for video tools.
+"""Reliable frame reader for video via PyAV decode backend.
 
-Wraps cv2.VideoCapture with multiple seeking strategies and a sequential
-fallback for codecs where random-access seeking is unreliable.
-
-When all strategies fail (common with HEVC in QuickTime MOV containers),
-the reader automatically remuxes the video to MKV via mkvmerge and retries.
-The temp MKV is cleaned up on close().
+FrameReader wraps PyAV (av module) for video decode and provides a public API
+for frame reading: read_frame(index), frame_count, fps, width, height, geometry,
+bin_factor. Supports bin_factor downsample and goodbox snap (origin-preserving
+crop to FFT-friendly dimensions) on every frame, regardless of bin_factor value.
 """
 
 # Standard Library
-import os
-import time
-import shutil
 import warnings
-import subprocess
-import tempfile
 import dataclasses
 
 # PIP3 modules
+import av
 import cv2
 import numpy
 
@@ -29,102 +23,6 @@ import common_tools.goodbox
 # this fraction of the scaled axis, FrameReader keeps the full
 # scaled axis and warns once.
 _MAX_CROP_FRACTION = 0.10
-
-# Cache the pid once at module load to avoid repeated os.getpid() calls
-_MODULE_PID = os.getpid()
-
-# Module-level accumulator for blob debug instrumentation.
-# Enabled by calling enable_blob_debug(); read via get_blob_debug_summary().
-# All mutation happens in the worker process where it was enabled.
-_BLOB_DEBUG_STATS = {
-	"enabled": False,
-	# strategy_name -> total call count (successes only)
-	"strategy_calls": {},
-	# strategy_name -> total elapsed ms (successes only)
-	"strategy_total_ms": {},
-	# strategy_name -> count of failures (strategy tried but returned False)
-	"strategy_failures": {},
-	# CRITICAL: count of strategy 4 (sequential walk) firings
-	"strategy_4_fired": 0,
-	# CRITICAL: count of strategy 5 (remux) firings
-	"strategy_5_fired": 0,
-	# total ms spent inside strategy 5 remux calls
-	"remux_total_ms": 0.0,
-}
-
-
-#============================================
-def enable_blob_debug() -> None:
-	"""Enable per-strategy blob debug timing in this process.
-
-	Call from _worker_init when debug_blob is True. Safe to call multiple
-	times; subsequent calls are no-ops (enabled stays True).
-	"""
-	global _MODULE_PID
-	# refresh pid in case this is called from a child process after fork
-	_MODULE_PID = os.getpid()
-	_BLOB_DEBUG_STATS["enabled"] = True
-
-
-#============================================
-def disable_blob_debug() -> None:
-	"""Disable blob debug timing (used in tests for teardown)."""
-	_BLOB_DEBUG_STATS["enabled"] = False
-	# reset counters so tests start clean
-	_BLOB_DEBUG_STATS["strategy_calls"].clear()
-	_BLOB_DEBUG_STATS["strategy_total_ms"].clear()
-	_BLOB_DEBUG_STATS["strategy_failures"].clear()
-	_BLOB_DEBUG_STATS["strategy_4_fired"] = 0
-	_BLOB_DEBUG_STATS["strategy_5_fired"] = 0
-	_BLOB_DEBUG_STATS["remux_total_ms"] = 0.0
-
-
-#============================================
-def get_blob_debug_summary() -> dict:
-	"""Return a shallow copy of _BLOB_DEBUG_STATS for external consumption.
-
-	Returns:
-		Dict with keys: enabled, strategy_calls, strategy_total_ms,
-		strategy_failures, strategy_4_fired, strategy_5_fired, remux_total_ms.
-	"""
-	return {
-		"enabled": _BLOB_DEBUG_STATS["enabled"],
-		"strategy_calls": dict(_BLOB_DEBUG_STATS["strategy_calls"]),
-		"strategy_total_ms": dict(_BLOB_DEBUG_STATS["strategy_total_ms"]),
-		"strategy_failures": dict(_BLOB_DEBUG_STATS["strategy_failures"]),
-		"strategy_4_fired": _BLOB_DEBUG_STATS["strategy_4_fired"],
-		"strategy_5_fired": _BLOB_DEBUG_STATS["strategy_5_fired"],
-		"remux_total_ms": _BLOB_DEBUG_STATS["remux_total_ms"],
-	}
-
-
-#============================================
-def _accumulate_strategy(name: str, elapsed_ms: float) -> None:
-	"""Accumulate a successful strategy call into _BLOB_DEBUG_STATS.
-
-	Only called when _BLOB_DEBUG_STATS["enabled"] is True.
-
-	Args:
-		name: Strategy name string (e.g., "seq_fast", "seek_frame").
-		elapsed_ms: Elapsed time for this call in milliseconds.
-	"""
-	calls = _BLOB_DEBUG_STATS["strategy_calls"]
-	totals = _BLOB_DEBUG_STATS["strategy_total_ms"]
-	calls[name] = calls.get(name, 0) + 1
-	totals[name] = totals.get(name, 0.0) + elapsed_ms
-
-
-#============================================
-def _accumulate_failure(name: str) -> None:
-	"""Accumulate a failed strategy attempt into _BLOB_DEBUG_STATS.
-
-	Only called when _BLOB_DEBUG_STATS["enabled"] is True.
-
-	Args:
-		name: Strategy name that failed.
-	"""
-	failures = _BLOB_DEBUG_STATS["strategy_failures"]
-	failures[name] = failures.get(name, 0) + 1
 
 
 #============================================
@@ -145,8 +43,10 @@ class FrameGeometry:
 		scaled_height: floor(source_height / bin_factor).
 		processed_width: scaled_width snapped down to the largest
 			goodbox not exceeding it (or scaled_width when the
-			safety floor disables the crop on this axis or when
-			bin_factor == 1).
+			safety floor disables the crop on this axis). The snap
+			applies at any bin_factor including 1; only the safety
+			floor (when the crop would discard >10% of the axis)
+			can disable it.
 		processed_height: same rule, for height.
 	"""
 
@@ -185,43 +85,34 @@ def _resolve_frame_geometry(
 ) -> FrameGeometry:
 	"""Resolve a FrameGeometry from raw source dims and a bin factor.
 
-	bin_factor == 1 short-circuits: source == scaled == processed.
-
-	Otherwise: scaled = floor(source / bin_factor), then snap each
-	axis to the largest goodbox not exceeding it. If snapping
-	would discard more than _MAX_CROP_FRACTION of the scaled axis,
-	the snap is skipped on that axis (warned once); the other axis
-	can still snap.
+	scaled = floor(source / bin_factor), then snap each axis down to
+	the largest goodbox not exceeding it. The snap applies at any
+	bin_factor (including 1) so Stage 1 phase correlate and Stage 4
+	residual array shapes are always FFT-friendly. If snapping would
+	discard more than _MAX_CROP_FRACTION of the scaled axis, the
+	snap is skipped on that axis (warned once); the other axis can
+	still snap.
 	"""
-	# bin == 1 short-circuit; no resize, no crop
-	if bin_factor == 1:
-		return FrameGeometry(
-			source_width=source_width,
-			source_height=source_height,
-			bin_factor=1,
-			scaled_width=source_width,
-			scaled_height=source_height,
-			processed_width=source_width,
-			processed_height=source_height,
-		)
-	# divisibility warnings: a fractional source-pixel column or row
-	# is silently dropped by floor division below.
-	if source_width % bin_factor != 0:
-		warnings.warn(
-			f"FrameReader: source_width={source_width} is not"
-			f" divisible by bin_factor={bin_factor}; the rightmost"
-			f" {source_width % bin_factor} source-pixel column(s)"
-			f" will be dropped by INTER_AREA downsample.",
-			stacklevel=3,
-		)
-	if source_height % bin_factor != 0:
-		warnings.warn(
-			f"FrameReader: source_height={source_height} is not"
-			f" divisible by bin_factor={bin_factor}; the bottom"
-			f" {source_height % bin_factor} source-pixel row(s)"
-			f" will be dropped by INTER_AREA downsample.",
-			stacklevel=3,
-		)
+	# divisibility warnings only meaningful when binning is requested:
+	# a fractional source-pixel column or row is silently dropped by
+	# the floor division below.
+	if bin_factor > 1:
+		if source_width % bin_factor != 0:
+			warnings.warn(
+				f"FrameReader: source_width={source_width} is not"
+				f" divisible by bin_factor={bin_factor}; the rightmost"
+				f" {source_width % bin_factor} source-pixel column(s)"
+				f" will be dropped by INTER_AREA downsample.",
+				stacklevel=3,
+			)
+		if source_height % bin_factor != 0:
+			warnings.warn(
+				f"FrameReader: source_height={source_height} is not"
+				f" divisible by bin_factor={bin_factor}; the bottom"
+				f" {source_height % bin_factor} source-pixel row(s)"
+				f" will be dropped by INTER_AREA downsample.",
+				stacklevel=3,
+			)
 	scaled_width = source_width // bin_factor
 	scaled_height = source_height // bin_factor
 	processed_width = _snap_or_keep(scaled_width, "width")
@@ -271,31 +162,21 @@ def _snap_or_keep(scaled_dim: int, axis_name: str) -> int:
 
 #============================================
 class FrameReader:
-	"""Read video frames reliably using multiple seek strategies.
+	"""Read video frames via PyAV decode backend.
 
-	Tries five strategies in order:
-	1. Seek by milliseconds on the existing capture
-	2. Seek by frame index on the existing capture
-	3. Reopen capture and seek by frame index
-	4. Sequential forward read on a dedicated capture (never touched by 1-3)
-	5. Remux to MKV via mkvmerge, reopen all captures, retry from strategy 1
-
-	Strategies 1-3 share one cv2.VideoCapture (self._cap) for seek-based access.
-	Strategy 4 uses a separate cv2.VideoCapture (self._seq_cap) so that seek
-	operations in 1-3 never corrupt the sequential reader's position.
-
-	Strategy 5 fires once: on first all-fail it remuxes the source video to a
-	temp MKV file, reopens both captures on the MKV, and retries. This fixes
-	HEVC/H.265 in QuickTime MOV containers where OpenCV cannot seek at all.
-
-	Strategy 4 is efficient when candidates are processed in ascending order,
-	since total sequential reads across all candidates is at most total_frames.
+	Decodes frames using PyAV (av module) with lazy keyframe seek for random
+	access. Sequential reads of consecutive frame indices efficiently use the
+	last-PTS cache (one decoded packet per consecutive pair).
 
 	Args:
 		video_path: Path to the video file.
 		fps: Video frame rate (frames per second).
 		total_frames: Total number of frames in the video.
-		debug: If True, print per-frame strategy results.
+		debug: If True, print per-frame debug output.
+		bin_factor: Integer downsample factor (>= 1). When > 1, every frame
+			is downsampled via cv2.INTER_AREA to floor(W/bin) x floor(H/bin).
+			At any bin_factor the goodbox snap applies (largest FFT-friendly box
+			not exceeding scaled dims, cropping only from right/bottom edges).
 	"""
 
 	#============================================
@@ -317,12 +198,16 @@ class FrameReader:
 			bin_factor: optional integer downsample factor (>= 1).
 				When > 1, every frame returned by `read_frame` is
 				downsampled by `cv2.INTER_AREA` to floor(W/bin)
-				x floor(H/bin) and then snapped to the largest
-				FFT-friendly goodbox not exceeding each scaled
-				dim, cropping only from the right and bottom edges
-				(origin-preserving). bin_factor=1 short-circuits
-				both the resize and the crop branch and is
-				byte-identical to the pre-bin reader.
+				x floor(H/bin). The goodbox snap (largest
+				FFT-friendly box not exceeding each scaled dim,
+				cropping only from the right and bottom edges --
+				origin-preserving) applies at any bin_factor,
+				including 1, so downstream FFT consumers always see
+				FFT-friendly dims. At bin_factor=1 with a
+				goodbox-sized source the snap is a no-op; with a
+				non-goodbox source (e.g. 1080-row HD or 2160-row
+				4K) a small bottom-edge sliver is cropped (1080 ->
+				1056, 2160 -> 2112, 24-48 px depending on source).
 		"""
 		# bin_factor validation
 		if not isinstance(bin_factor, int):
@@ -338,47 +223,39 @@ class FrameReader:
 		self._total_frames = total_frames
 		self._debug = debug
 		self._bin_factor = bin_factor
-		# path currently used for captures (changes if remuxed)
-		self._active_path = video_path
-		# temp MKV path, set if remux occurs
-		self._temp_mkv = None
-		# whether remux has already been attempted (only try once)
-		self._remux_attempted = False
-		# seek-based capture used by strategies 1-3
-		self._cap = cv2.VideoCapture(video_path)
-		if not self._cap.isOpened():
-			raise RuntimeError(f"cannot open video: {video_path}")
-		# source-frame dimensions read from the capture
-		source_width = int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-		source_height = int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+		# Initialize PyAV backend
+		self._init_pyav_backend(video_path)
+
 		# resolve scaled and processed dims; FrameGeometry is the
 		# single source of coordinate-conversion truth and exposes
 		# the resolved dims downstream.
 		self._geometry = _resolve_frame_geometry(
-			source_width, source_height, bin_factor
+			self._source_width, self._source_height, bin_factor
 		)
 		# public width/height return processed dims; image consumers
 		# downstream do not need to know bin_factor exists, but
 		# coordinate-aware callers should use FrameReader.geometry.
 		self._width = self._geometry.processed_width
 		self._height = self._geometry.processed_height
-		# dedicated sequential capture used only by strategy 4
-		# lazily opened on first sequential read to avoid wasting resources
-		self._seq_cap = None
-		# sequential position tracker (-1 means not initialized)
-		self._seq_pos = -1
-		# Sequential fast-path tracker on the seek capture (`self._cap`).
-		# Populated after a successful read; -1 means "not in a known
-		# sequential state -- next read_frame must seek." Mirrors the
-		# `_next_frame` trick from VideoReader: when the requested
-		# index equals this value, we call `cap.read()` directly with
-		# no `cap.set(...)` call, which is dramatically faster on
-		# codecs/containers where `set(POS_MSEC)` triggers a keyframe
-		# re-seek per frame (observed 100x+ penalty on H.264 mp4).
-		# Strategies 2-5 invalidate the tracker (they reposition the
-		# seek capture or the active source), so the fast-path always
-		# self-disarms when a non-sequential access fires.
-		self._cap_next_index = -1
+
+	#============================================
+	def _init_pyav_backend(self, video_path: str) -> None:
+		"""Initialize PyAV backend."""
+		# Open the container
+		self._av_container = av.open(video_path)
+
+		# Get the video stream
+		self._av_stream = self._av_container.streams.video[0]
+
+		# Read source dimensions from the stream
+		self._source_width = self._av_stream.codec_context.width
+		self._source_height = self._av_stream.codec_context.height
+
+		# Decoder iterator state
+		self._av_iter = None
+		# Last successfully decoded frame PTS (in stream time_base units)
+		self._av_last_pts = -1
 
 	#============================================
 	@property
@@ -426,386 +303,220 @@ class FrameReader:
 	def _apply_bin(self, frame: numpy.ndarray | None) -> numpy.ndarray | None:
 		"""Apply bin + origin-preserving goodbox crop to a raw frame.
 
-		Returns frame unchanged when bin_factor == 1.
+		The goodbox crop applies at any bin_factor, including 1, so
+		downstream FFT consumers (Stage 1 phase correlate, Stage 4
+		residual algorithms) always see FFT-friendly dimensions. At
+		bin_factor == 1 with a goodbox-sized source, the crop is a
+		no-op and the frame is returned unchanged.
 		"""
 		if frame is None:
 			return None
-		if self._bin_factor == 1:
-			return frame
 		geom = self._geometry
-		# downsample with INTER_AREA (best for shrink); use
-		# (scaled_width, scaled_height) as the (cols, rows) target
-		scaled = cv2.resize(
-			frame,
-			(geom.scaled_width, geom.scaled_height),
-			interpolation=cv2.INTER_AREA,
-		)
-		# origin-preserving right/bottom crop to processed dims
+		# downsample only when binning is requested
+		if self._bin_factor > 1:
+			frame = cv2.resize(
+				frame,
+				(geom.scaled_width, geom.scaled_height),
+				interpolation=cv2.INTER_AREA,
+			)
+		# origin-preserving right/bottom crop to goodbox-snapped dims
 		if (
-			scaled.shape[0] != geom.processed_height
-			or scaled.shape[1] != geom.processed_width
+			frame.shape[0] != geom.processed_height
+			or frame.shape[1] != geom.processed_width
 		):
-			scaled = scaled[
+			frame = frame[
 				0 : geom.processed_height, 0 : geom.processed_width
 			]
-		return scaled
+		return frame
+
+	#============================================
+	def seek_for_encode(self, start_frame: int) -> None:
+		"""Seek to start_frame and arm the sequential fast-path."""
+		if start_frame < 0 or start_frame >= self._total_frames:
+			raise ValueError(
+				f"start_frame={start_frame} out of range [0, {self._total_frames})"
+			)
+		# PyAV backend: perform a seek and arm for sequential continuation
+		self._seek_pyav(start_frame)
+		self._av_last_pts = start_frame - 1
 
 	#============================================
 	def read_frame(self, frame_index: int) -> numpy.ndarray | None:
-		"""Read a single frame by index, trying multiple strategies.
+		"""Read a single frame by index using lazy keyframe seek.
 
-		Strategy 0 (sequential fast-path): when `frame_index ==
-		self._cap_next_index`, call `cap.read()` directly with no
-		`cap.set(...)` call. On many codecs/containers `set(POS_MSEC)`
-		causes a keyframe re-seek per frame; the fast-path is the
-		main reason VideoReader's sequential reads were so much
-		faster than FrameReader's. Strategies 1-5 are unchanged and
-		still fire for non-sequential access; any of them that
-		repositions or re-opens the seek capture invalidates the
-		tracker so the fast-path self-disarms when a scattered
-		access fires.
+		When frame_index is not sequential (frame_index != last_decoded_pts + 1),
+		seeks to the keyframe at-or-before the target and decodes forward to it.
+		Maintains a last-PTS cache so consecutive reads decode one packet.
 
 		Args:
 			frame_index: Target frame index (0-based).
 
 		Returns:
-			BGR frame as numpy array, or None if all strategies fail.
+			BGR frame as numpy array, or None if decode fails.
 		"""
-		results = {}
-		# check debug flag once so all branches pay only one attribute lookup
-		debug_on = _BLOB_DEBUG_STATS["enabled"]
-
-		# strategy 0: sequential fast-path. No `cap.set(...)`; just
-		# `cap.read()`. The seek capture's position is known
-		# (`self._cap_next_index`) only when the previous read
-		# succeeded via strategy 0 or strategy 1. Anything that
-		# reseats the capture (strategies 2/3, the remux path,
-		# `__init__` initialization to -1) invalidates the tracker.
-		if (
-			self._cap_next_index >= 0
-			and frame_index == self._cap_next_index
-		):
-			if debug_on:
-				t0 = time.perf_counter()
-			ret, frame = self._cap.read()
-			if ret:
-				if debug_on:
-					elapsed_ms = (time.perf_counter() - t0) * 1000.0
-					_accumulate_strategy("seq_fast", elapsed_ms)
-					print(
-						f"[blob][pid={_MODULE_PID}] read_frame fi={frame_index}"
-						f" strategy=seq_fast elapsed={elapsed_ms:.1f}ms",
-						flush=True,
-					)
-				results["seq_fast"] = "OK"
-				# advance tracker for the next call
-				self._cap_next_index = frame_index + 1
-				self._print_debug(frame_index, results)
-				return self._apply_bin(frame)
-			# fast-path failed: tracker was wrong (EOF or hiccup);
-			# fall through to the existing seek strategies.
-			self._cap_next_index = -1
-			results["seq_fast"] = "FAIL"
-
-		# strategy 1: seek by frame index. POS_FRAMES is faster than
-		# POS_MSEC on H.264 mp4/MOV scattered reads (POS_MSEC tends to
-		# force a keyframe re-seek per call). For sequential reads the
-		# strategy 0 fast-path above already skips this entirely.
-		if debug_on:
-			t0 = time.perf_counter()
-		self._cap.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
-		ret, frame = self._cap.read()
-		if ret:
-			if debug_on:
-				elapsed_ms = (time.perf_counter() - t0) * 1000.0
-				_accumulate_strategy("seek_frame", elapsed_ms)
-				print(
-					f"[blob][pid={_MODULE_PID}] read_frame fi={frame_index}"
-					f" strategy=seek_frame elapsed={elapsed_ms:.1f}ms",
-					flush=True,
-				)
-			results["seek_frame"] = "OK"
-			# strategy 1 succeeded: arm the fast-path for the
-			# next consecutive index.
-			self._cap_next_index = frame_index + 1
-			self._print_debug(frame_index, results)
-			return self._apply_bin(frame)
-		results["seek_frame"] = "FAIL"
-		# any failed strategy below repositions or re-opens the
-		# capture; invalidate the fast-path tracker.
-		self._cap_next_index = -1
-		if debug_on:
-			_accumulate_failure("seek_frame")
-			print(
-				f"[blob][pid={_MODULE_PID}] read_frame fi={frame_index}"
-				f" STRATEGY_FAIL strategy=seek_frame retry=seek_msec",
-				flush=True,
-			)
-
-		# strategy 2: seek by milliseconds (fallback for codecs where
-		# POS_FRAMES does not honor random access).
-		if debug_on:
-			t0 = time.perf_counter()
-		time_msec = (frame_index / self._fps) * 1000.0
-		self._cap.set(cv2.CAP_PROP_POS_MSEC, time_msec)
-		ret, frame = self._cap.read()
-		if ret:
-			if debug_on:
-				elapsed_ms = (time.perf_counter() - t0) * 1000.0
-				_accumulate_strategy("seek_msec", elapsed_ms)
-				print(
-					f"[blob][pid={_MODULE_PID}] read_frame fi={frame_index}"
-					f" strategy=seek_msec elapsed={elapsed_ms:.1f}ms",
-					flush=True,
-				)
-			results["seek_msec"] = "OK"
-			self._print_debug(frame_index, results)
-			return self._apply_bin(frame)
-		results["seek_msec"] = "FAIL"
-		if debug_on:
-			_accumulate_failure("seek_msec")
-			print(
-				f"[blob][pid={_MODULE_PID}] read_frame fi={frame_index}"
-				f" STRATEGY_FAIL strategy=seek_msec retry=reopen",
-				flush=True,
-			)
-
-		# strategy 3: reopen seek capture and seek by frame index
-		if debug_on:
-			t0 = time.perf_counter()
-		self._cap.release()
-		self._cap = cv2.VideoCapture(self._active_path)
-		if self._cap.isOpened():
-			self._cap.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
-			ret, frame = self._cap.read()
-			if ret:
-				if debug_on:
-					elapsed_ms = (time.perf_counter() - t0) * 1000.0
-					_accumulate_strategy("reopen", elapsed_ms)
-					print(
-						f"[blob][pid={_MODULE_PID}] read_frame fi={frame_index}"
-						f" strategy=reopen elapsed={elapsed_ms:.1f}ms",
-						flush=True,
-					)
-				results["reopen"] = "OK"
-				self._print_debug(frame_index, results)
-				return self._apply_bin(frame)
-		results["reopen"] = "FAIL"
-		if debug_on:
-			_accumulate_failure("reopen")
-			print(
-				f"[blob][pid={_MODULE_PID}] read_frame fi={frame_index}"
-				f" STRATEGY_FAIL strategy=reopen retry=sequential",
-				flush=True,
-			)
-
-		# strategy 4: sequential forward read on dedicated capture
-		last_seq_pos = self._seq_pos
-		if debug_on:
-			t0 = time.perf_counter()
-		frame = self._sequential_read(frame_index)
-		if frame is not None:
-			if debug_on:
-				elapsed_ms = (time.perf_counter() - t0) * 1000.0
-				_BLOB_DEBUG_STATS["strategy_4_fired"] += 1
-				_accumulate_strategy("sequential", elapsed_ms)
-				print(
-					f"[blob][pid={_MODULE_PID}] read_frame fi={frame_index}"
-					f" CRITICAL strategy=sequential"
-					f" walked from {last_seq_pos} to {frame_index}",
-					flush=True,
-				)
-			results["sequential"] = "OK"
-			self._print_debug(frame_index, results)
-			return self._apply_bin(frame)
-		results["sequential"] = "FAIL"
-		if debug_on:
-			_accumulate_failure("sequential")
-
-		# strategy 5: remux to MKV and retry (one-shot, never retried)
-		if not self._remux_attempted:
-			if debug_on:
-				t0_remux = time.perf_counter()
-			remuxed = self._remux_to_mkv()
-			if remuxed:
-				if debug_on:
-					remux_ms = (time.perf_counter() - t0_remux) * 1000.0
-					_BLOB_DEBUG_STATS["strategy_5_fired"] += 1
-					_BLOB_DEBUG_STATS["remux_total_ms"] += remux_ms
-					print(
-						f"[blob][pid={_MODULE_PID}] read_frame fi={frame_index}"
-						f" CRITICAL strategy=remux"
-						f" elapsed={remux_ms / 1000.0:.1f}s (one-shot)",
-						flush=True,
-					)
-				results["remux"] = "OK"
-				# retry strategies 1-4 on the remuxed file
-				frame = self._retry_after_remux(frame_index, results)
-				if frame is not None:
-					self._print_debug(frame_index, results)
-					return self._apply_bin(frame)
-			else:
-				results["remux"] = "FAIL"
-
-		self._print_debug(frame_index, results)
-		return None
+		return self._read_frame_pyav(frame_index)
 
 	#============================================
-	def _remux_to_mkv(self) -> bool:
-		"""Remux the source video to a temporary MKV file via mkvmerge.
+	def _read_frame_pyav(self, frame_index: int) -> numpy.ndarray | None:
+		"""Read a frame using the PyAV backend with lazy keyframe seek.
 
-		HEVC/H.265 in QuickTime MOV containers causes OpenCV seek failures.
-		Remuxing to MKV (lossless, just repackaging) fixes the seeking.
-
-		Returns:
-			True if remux succeeded and captures were reopened.
-		"""
-		self._remux_attempted = True
-		# check if mkvmerge is available
-		mkvmerge_path = shutil.which("mkvmerge")
-		if mkvmerge_path is None:
-			if self._debug:
-				print("  remux: mkvmerge not found, skipping")
-			return False
-		# create temp MKV file next to the original video
-		video_dir = os.path.dirname(self._video_path) or "."
-		video_base = os.path.basename(self._video_path)
-		stem = os.path.splitext(video_base)[0]
-		# use tempfile to get a unique name, but keep it in the same directory
-		fd, temp_path = tempfile.mkstemp(suffix=".mkv", prefix=f".{stem}_remux_", dir=video_dir)
-		os.close(fd)
-		print(f"  remuxing to MKV for reliable seeking: {video_base}")
-		# run mkvmerge to remux (lossless, just repackages the streams)
-		cmd = [mkvmerge_path, self._video_path, "-o", temp_path]
-		result = subprocess.run(cmd, capture_output=True, text=True)
-		if result.returncode not in (0, 1):
-			# mkvmerge returns 1 for warnings, 2 for errors
-			if self._debug:
-				print(f"  remux failed: {result.stderr.strip()}")
-			# clean up partial temp file
-			if os.path.isfile(temp_path):
-				os.remove(temp_path)
-			return False
-		self._temp_mkv = temp_path
-		self._active_path = temp_path
-		# release old captures and reopen on the MKV
-		self._cap.release()
-		self._cap = cv2.VideoCapture(temp_path)
-		if self._seq_cap is not None:
-			self._seq_cap.release()
-			self._seq_cap = None
-		self._seq_pos = -1
-		if not self._cap.isOpened():
-			if self._debug:
-				print("  remux: cannot open remuxed MKV")
-			return False
-		print("  remux complete, reopened on MKV")
-		return True
-
-	#============================================
-	def _retry_after_remux(self, frame_index: int, results: dict) -> numpy.ndarray | None:
-		"""Retry strategies 1-4 after successful remux.
+		Implements lazy keyframe seek: when read_frame(N) is called for
+		N != last_decoded_pts + 1, seek to the keyframe at-or-before N
+		and decode forward to N. Maintains _av_last_pts cache so
+		read_frame(N) then read_frame(N+1) decodes exactly one packet.
 
 		Args:
-			frame_index: Target frame index.
-			results: Strategy results dict to update.
+			frame_index: Target frame index (0-based).
 
 		Returns:
-			BGR frame as numpy array, or None if still failing.
+			BGR frame as numpy array, or None if decode fails.
 		"""
-		# retry strategy 1: seek by msec on remuxed file
-		time_msec = (frame_index / self._fps) * 1000.0
-		self._cap.set(cv2.CAP_PROP_POS_MSEC, time_msec)
-		ret, frame = self._cap.read()
-		if ret:
-			results["retry_seek_msec"] = "OK"
-			return frame
-		results["retry_seek_msec"] = "FAIL"
-		# retry strategy 2: seek by frame index on remuxed file
-		self._cap.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
-		ret, frame = self._cap.read()
-		if ret:
-			results["retry_seek_frame"] = "OK"
-			return frame
-		results["retry_seek_frame"] = "FAIL"
-		# retry strategy 4: sequential on remuxed file
-		frame = self._sequential_read(frame_index)
-		if frame is not None:
-			results["retry_sequential"] = "OK"
-			return frame
-		results["retry_sequential"] = "FAIL"
-		return None
+		# Check if we need to seek (not sequential continuation)
+		if self._av_iter is None or frame_index != self._av_last_pts + 1:
+			# Need a fresh seek
+			self._seek_pyav(frame_index)
+
+		# Decode forward to target frame
+		frame = self._decode_next_pyav(frame_index)
+		if frame is None:
+			return None
+
+		# Update cache to mark this frame as decoded
+		self._av_last_pts = frame_index
+
+		# Apply bin + goodbox crop semantics
+		return self._apply_bin(frame)
 
 	#============================================
-	def _sequential_read(self, frame_index: int) -> numpy.ndarray | None:
-		"""Read forward sequentially to the target frame.
+	def _seek_pyav(self, target_frame_index: int) -> None:
+		"""Seek to keyframe at-or-before target_frame_index.
 
-		Uses a dedicated capture (self._seq_cap) that is never touched
-		by seek-based strategies, so its position is always reliable.
-
-		If target is behind the current sequential position, reopens
-		the capture from the beginning.
+		Computes PTS in the stream's time_base and seeks backward to
+		the nearest keyframe. After seek, _av_iter is reset so the next
+		decode starts from the keyframe.
 
 		Args:
-			frame_index: Target frame index.
-
-		Returns:
-			BGR frame as numpy array, or None on failure.
+			target_frame_index: Target frame index (0-based).
 		"""
-		# if target is behind current position or cap not initialized, reopen
-		if self._seq_cap is None or frame_index <= self._seq_pos or self._seq_pos < 0:
-			if self._seq_cap is not None:
-				self._seq_cap.release()
-			self._seq_cap = cv2.VideoCapture(self._active_path)
-			if not self._seq_cap.isOpened():
-				return None
-			self._seq_pos = -1
+		# Convert frame index to PTS in stream time_base units
+		# frame_index -> time in seconds -> PTS in stream time_base
+		time_sec = target_frame_index / self._fps
+		time_base = self._av_stream.time_base
+		# Approximate PTS; stream start_time may not be 0
+		target_pts = int(time_sec / float(time_base))
 
-		# read forward, discarding frames until we reach target
-		frame = None
-		while self._seq_pos < frame_index:
-			ret, frame = self._seq_cap.read()
-			if not ret:
-				return None
-			self._seq_pos += 1
-
-		# self._seq_pos should now equal frame_index
-		return frame
-
-	#============================================
-	def _print_debug(self, frame_index: int, results: dict) -> None:
-		"""Print per-frame debug output showing strategy results.
-
-		Args:
-			frame_index: Frame index that was read.
-			results: Dict mapping strategy name to "OK" or "FAIL".
-		"""
-		if not self._debug:
-			return
-		# build a compact status string
-		parts = []
-		strategy_order = (
-			"seek_msec", "seek_frame", "reopen", "sequential",
-			"remux", "retry_seek_msec", "retry_seek_frame", "retry_sequential",
+		# Seek backward to keyframe at-or-before target_pts
+		self._av_container.seek(
+			target_pts,
+			stream=self._av_stream,
+			backward=True,
+			any_frame=False,
 		)
-		for strategy in strategy_order:
-			if strategy in results:
-				parts.append(f"{strategy}={results[strategy]}")
-		status_str = " ".join(parts)
-		print(f"  frame {frame_index}: {status_str}")
+
+		# Reset the iterator so the next call to decode_next_pyav
+		# starts fresh from the seeked position
+		self._av_iter = None
+
+	#============================================
+	def _decode_next_pyav(self, target_frame_index: int) -> numpy.ndarray | None:
+		"""Decode forward from current position to target_frame_index.
+
+		Lazily opens the iterator if needed, then walks forward,
+		comparing frame.dts to the target frame's expected PTS.
+		Returns the first frame at-or-after the target PTS.
+
+		Args:
+			target_frame_index: Target frame index (0-based).
+
+		Returns:
+			BGR uint8 ndarray of shape (height, width, 3), or None on failure.
+		"""
+		# Lazy-open the iterator
+		if self._av_iter is None:
+			self._av_iter = self._av_container.decode(self._av_stream)
+
+		# Compute the target PTS in stream time_base units
+		time_sec = target_frame_index / self._fps
+		time_base = self._av_stream.time_base
+		target_pts = int(time_sec / float(time_base))
+
+		# Walk forward until we reach the target PTS
+		for av_frame in self._av_iter:
+			# Get the frame's PTS; use dts as fallback
+			frame_pts = av_frame.pts if av_frame.pts is not None else av_frame.dts
+			if frame_pts is None:
+				continue
+
+			# Check if we've reached or passed the target PTS
+			if frame_pts >= target_pts:
+				# Convert to BGR uint8 ndarray
+				return self._frame_to_bgr_pyav(av_frame)
+
+		# Reached end of stream without finding target
+		return None
+
+	#============================================
+	def _frame_to_bgr_pyav(self, av_frame) -> numpy.ndarray:
+		"""Convert a PyAV VideoFrame to BGR uint8 ndarray.
+
+		Reformats from the frame's native format to BGR24.
+
+		Args:
+			av_frame: PyAV VideoFrame object.
+
+		Returns:
+			BGR uint8 ndarray of shape (height, width, 3).
+		"""
+		# Reformat to BGR24 (OpenCV standard)
+		av_frame_bgr = av_frame.reformat(format="bgr24")
+		# Convert to numpy ndarray
+		bgr_array = av_frame_bgr.to_ndarray()
+		return bgr_array
+
+	#============================================
+	def __iter__(self):
+		"""Iterate over all frames, yielding (frame_index, frame) tuples.
+
+		Resets to frame 0 at iteration start. Each frame is returned via
+		_apply_bin so bin/goodbox semantics are honored.
+
+		Yields:
+			(frame_index, frame) tuples where frame_index goes from 0 to
+			frame_count-1 and frame is the BGR numpy array (or None if
+			stream ends).
+		"""
+		yield from self._iter_pyav()
+
+	#============================================
+	def _iter_pyav(self):
+		"""Iterate over frames using PyAV backend."""
+		# Seek to frame 0 and reset iterator
+		self._seek_pyav(0)
+		self._av_last_pts = -1
+		frame_index = 0
+		while frame_index < self._total_frames:
+			frame = self._decode_next_pyav(frame_index)
+			if frame is None:
+				break
+			# Update last-PTS cache for sequential continuation
+			self._av_last_pts = frame_index
+			yield (frame_index, self._apply_bin(frame))
+			frame_index += 1
+
+	#============================================
+	def __enter__(self):
+		"""Context manager entry: return self."""
+		return self
+
+	#============================================
+	def __exit__(self, exc_type, exc_value, traceback):
+		"""Context manager exit: call close()."""
+		self.close()
 
 	#============================================
 	def close(self) -> None:
-		"""Release video captures and clean up temp MKV if created."""
-		if self._cap is not None:
-			self._cap.release()
-			self._cap = None
-		if self._seq_cap is not None:
-			self._seq_cap.release()
-			self._seq_cap = None
-		# remove temporary remuxed MKV
-		if self._temp_mkv is not None and os.path.isfile(self._temp_mkv):
-			os.remove(self._temp_mkv)
-			if self._debug:
-				print(f"  cleaned up temp MKV: {self._temp_mkv}")
-			self._temp_mkv = None
+		"""Release PyAV container and iterator."""
+		if self._av_container is not None:
+			self._av_container.close()
+			self._av_container = None
+		self._av_iter = None

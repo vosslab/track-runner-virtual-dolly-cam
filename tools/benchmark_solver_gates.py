@@ -12,7 +12,6 @@ Outputs:
 
 # Standard Library
 import os
-import json
 import statistics
 import subprocess
 import sys
@@ -31,14 +30,16 @@ sys.path.insert(0, os.path.join(REPO_ROOT, "track_runner"))
 import numpy
 
 # local repo modules (bare imports matching runtime behavior)
+sys.path.insert(0, os.path.join(REPO_ROOT, "common_tools"))
 import camera_motion
+import frame_reader
 import interval_solver
+import probe_video
 import scene_coords
 import scoring
 import state_io
 import tr_config
 import tr_paths
-import video_io
 
 # ============================================================
 # Path constants
@@ -116,47 +117,6 @@ def parse_args():
 	)
 	args = parser.parse_args()
 	return args
-
-
-#============================================
-def probe_video(video_path: str) -> dict:
-	"""Probe video metadata via mediainfo.
-
-	Args:
-		video_path: Path to video file.
-
-	Returns:
-		Dict with width, height, fps, frame_count, duration_s.
-	"""
-	cmd = ["mediainfo", "--Output=JSON", video_path]
-	result = subprocess.run(cmd, capture_output=True, text=True)
-	if result.returncode != 0:
-		raise RuntimeError(f"mediainfo failed: {result.stderr}")
-	info_json = json.loads(result.stdout)
-	tracks = info_json.get("media", {}).get("track", [])
-	video_track = None
-	general_track = None
-	for t in tracks:
-		if t.get("@type") == "Video":
-			video_track = t
-		elif t.get("@type") == "General":
-			general_track = t
-	if video_track is None:
-		raise RuntimeError(f"no video track in {video_path}")
-	width = int(video_track["Width"])
-	height = int(video_track["Height"])
-	fps = float(video_track.get("FrameRate", "30.0"))
-	frame_count = int(
-		video_track.get("FrameCount") or general_track.get("FrameCount", 0)
-	)
-	duration_s = float(
-		video_track.get("Duration") or general_track.get("Duration", 0)
-	)
-	video_info = {
-		"width": width, "height": height, "fps": fps,
-		"frame_count": frame_count, "duration_s": duration_s,
-	}
-	return video_info
 
 
 #============================================
@@ -255,13 +215,16 @@ def solve_video(video_name: str) -> dict:
 	cfg = tr_config.load_config(cpath)
 
 	# probe video metadata
-	video_info = probe_video(vpath)
+	video_info = probe_video.probe_video(vpath)
 
 	# precompute camera motion
 	cache_dir = tr_paths.ensure_data_dir()
 	print(f"  precomputing camera motion for {video_name}...")
 	t_start = time.time()
-	with video_io.VideoReader(vpath) as reader:
+	probe_info = video_info
+	with frame_reader.FrameReader(
+		vpath, probe_info["fps"], probe_info["frame_count"],
+	) as reader:
 		# camera_motion expects total_frames attribute on reader
 		reader.total_frames = reader.frame_count
 		motion_track = camera_motion.precompute_camera_motion(
@@ -281,7 +244,9 @@ def solve_video(video_name: str) -> dict:
 	# run analytical solver
 	print(f"  solving intervals ({len(spatial_seeds)} spatial seeds "
 		f"of {len(seed_list)} total)...")
-	with video_io.VideoReader(vpath) as reader:
+	with frame_reader.FrameReader(
+		vpath, probe_info["fps"], probe_info["frame_count"],
+	) as reader:
 		# camera_motion expects total_frames attribute on reader
 		reader.total_frames = reader.frame_count
 		diagnostics = interval_solver.solve_all_intervals(

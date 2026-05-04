@@ -56,15 +56,21 @@ _TRACK_RUNNER_DIR = os.path.join(_REPO_ROOT, "track_runner")
 if _TRACK_RUNNER_DIR not in sys.path:
 	sys.path.insert(0, _TRACK_RUNNER_DIR)
 
+# add common_tools directory to path
+_COMMON_TOOLS_DIR = os.path.join(_REPO_ROOT, "common_tools")
+if _COMMON_TOOLS_DIR not in sys.path:
+	sys.path.insert(0, _COMMON_TOOLS_DIR)
+
 # local repo modules (none in stdlib or pip beyond what the solver pulls)
 import camera_motion
+import frame_reader
 import interval_fingerprint
+import probe_video
 import residual_motion
 import scene_coords
 import state_io
 import tr_paths
 import velocity_model
-import video_io
 
 
 #============================================
@@ -1441,14 +1447,16 @@ def main() -> None:
 			"run 'track_runner.py -i VIDEO solve' first."
 		)
 	transform = scene_coords.SceneTransform(motion_track)
-	reader = video_io.VideoReader(args.input_file)
-	info = reader.get_info()
-	fps = float(info["fps"])
+	probe_info = probe_video.probe_video(args.input_file)
+	reader = frame_reader.FrameReader(
+		args.input_file, probe_info["fps"], probe_info["frame_count"],
+	)
+	fps = float(probe_info["fps"])
 	print(f"loaded {len(all_seeds)} seeds from {seeds_path}")
 	print(f"loaded motion track ({motion_track.dx.shape[0]} frames)")
 	print(
-		f"video: {info['width']}x{info['height']} "
-		f"@ {fps:.3f} fps, {info['frame_count']} frames"
+		f"video: {probe_info['width']}x{probe_info['height']} "
+		f"@ {fps:.3f} fps, {probe_info['frame_count']} frames"
 	)
 
 	# reuse the solver's usable-seed filter so interval enumeration
@@ -1699,6 +1707,7 @@ def main() -> None:
 	finally:
 		if csv_fh is not None:
 			csv_fh.close()
+		reader.close()
 
 	_print_summary(per_interval_results, fps)
 

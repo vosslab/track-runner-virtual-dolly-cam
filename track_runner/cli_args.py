@@ -45,27 +45,6 @@ def _add_seed_interval_arg(parser: argparse.ArgumentParser) -> None:
 	)
 
 
-def _add_debug_blob_arg(parser: argparse.ArgumentParser) -> None:
-	"""Register --debug-blob on solve and refine subparsers.
-
-	Gates per-worker per-frame Stage 4 instrumentation: read_frame
-	strategy timings, residual compute timings, per-pid summaries on
-	worker exit, and a 5-second master-side heartbeat. Default off and
-	zero overhead when off. Independent of -d/--debug.
-	"""
-	parser.add_argument(
-		"--debug-blob", dest="debug_blob", action="store_true",
-		help=(
-			"Enable per-worker per-frame instrumentation for the Stage 4 "
-			"blob pass. Prints read_frame strategy timings, residual "
-			"compute timings, per-pid summaries on worker exit, and a "
-			"5-second heartbeat from the master driver. Independent of "
-			"-d/--debug. Default off."
-		),
-	)
-	parser.set_defaults(debug_blob=False)
-
-
 #============================================
 def _add_severity_arg(parser: argparse.ArgumentParser, help_text: str) -> None:
 	"""Register -s/--severity on a subparser.
@@ -369,7 +348,6 @@ def parse_args() -> argparse.Namespace:
 	solve_parser.set_defaults(assume_yes=False, keep_prior=False,
 		upgrade=False, full_solve=False, hermite_only=False)
 	_add_bin_arg(solve_parser)
-	_add_debug_blob_arg(solve_parser)
 
 	# -- refine mode --
 	refine_parser = subparsers.add_parser(
@@ -387,7 +365,6 @@ def parse_args() -> argparse.Namespace:
 	)
 	refine_parser.set_defaults(full_solve=False, hermite_only=False)
 	_add_bin_arg(refine_parser)
-	_add_debug_blob_arg(refine_parser)
 
 	# -- encode mode --
 	encode_parser = subparsers.add_parser(

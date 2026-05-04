@@ -9,6 +9,11 @@ No cross-frame state lives in this module. The chained/global motion-cue
 fusion that previously existed here was removed when the propagator took
 over per-frame correction directly.
 
+Residual observer contract (M6): the residual pre-pass observer and the
+on-the-fly compute_residual_for_frame path produce byte-identical results
+for any given (frame_index, roi) pair when both use the same backend
+(PyAV or cv2). The PyAV backend is the canonical reference for M6+.
+
 Public surface:
   - observe_blob_at(...): primary API; returns BlobObservation or None.
   - BlobObservation: dataclass carrying a single per-frame measurement.
@@ -25,8 +30,6 @@ There is intentionally no per-module BLOB_OBSERVER_VERSION constant.
 """
 
 # Standard Library
-import os
-import time
 import warnings
 import dataclasses
 
@@ -107,62 +110,6 @@ TANGENT_FALLBACK_SPAN = 10
 
 # tangent estimation: minimum confidence for primary window
 TANGENT_CONFIDENCE_THRESHOLD = 0.5
-
-# cache the pid once at module load; refreshed by enable_blob_debug_residual()
-_RESIDUAL_MODULE_PID = os.getpid()
-
-# Per-pid accumulator for residual_motion blob debug instrumentation.
-# Enabled by enable_blob_debug_residual(); read via get_residual_debug_summary().
-_BLOB_DEBUG_RESIDUAL_ENABLED = False
-_BLOB_DEBUG_RESIDUAL_STATS = {
-	"observe_calls": 0,
-	"compute_calls": 0,
-	"compute_total_ms": 0.0,
-	"bgr_cache_hits": 0,
-	"bgr_cache_misses": 0,
-}
-
-
-#============================================
-def enable_blob_debug_residual() -> None:
-	"""Enable per-call residual timing in this process.
-
-	Call from _worker_init when debug_blob is True.
-	"""
-	global _BLOB_DEBUG_RESIDUAL_ENABLED, _RESIDUAL_MODULE_PID
-	_RESIDUAL_MODULE_PID = os.getpid()
-	_BLOB_DEBUG_RESIDUAL_ENABLED = True
-
-
-#============================================
-def disable_blob_debug_residual() -> None:
-	"""Disable residual timing and reset counters (used in tests for teardown)."""
-	global _BLOB_DEBUG_RESIDUAL_ENABLED
-	_BLOB_DEBUG_RESIDUAL_ENABLED = False
-	_BLOB_DEBUG_RESIDUAL_STATS["observe_calls"] = 0
-	_BLOB_DEBUG_RESIDUAL_STATS["compute_calls"] = 0
-	_BLOB_DEBUG_RESIDUAL_STATS["compute_total_ms"] = 0.0
-	_BLOB_DEBUG_RESIDUAL_STATS["bgr_cache_hits"] = 0
-	_BLOB_DEBUG_RESIDUAL_STATS["bgr_cache_misses"] = 0
-
-
-#============================================
-def get_residual_debug_summary() -> dict:
-	"""Return a shallow copy of _BLOB_DEBUG_RESIDUAL_STATS plus the enabled flag.
-
-	The `enabled` key mirrors the `enabled` key in
-	`common_tools.frame_reader.get_blob_debug_summary()` so that callers
-	can probe whether instrumentation is on without reaching into the
-	private module-level `_BLOB_DEBUG_RESIDUAL_ENABLED`.
-
-	Returns:
-		Dict with keys: enabled, observe_calls, compute_calls,
-		compute_total_ms, bgr_cache_hits, bgr_cache_misses.
-	"""
-	summary = dict(_BLOB_DEBUG_RESIDUAL_STATS)
-	summary["enabled"] = _BLOB_DEBUG_RESIDUAL_ENABLED
-	return summary
-
 
 #============================================
 def build_warp_matrix(
@@ -546,6 +493,11 @@ def compute_residual_for_frame(
 
 	Uses cache dict to avoid re-reading full frames in sequential processing.
 
+	M6 contract: When called via a reader with a given backend (PyAV or cv2),
+	the output is byte-identical to the precomputed residual store produced
+	by the residual pre-pass for the same backend. The PyAV backend is the
+	canonical reference for M6+.
+
 	Args:
 		reader: VideoReader instance.
 		frame_index: Center frame index.
@@ -606,12 +558,6 @@ def compute_residual_for_frame(
 	if cache is None:
 		cache = {}
 
-	# start timing and count this call when blob debug is enabled
-	debug_on = _BLOB_DEBUG_RESIDUAL_ENABLED
-	if debug_on:
-		t0_compute = time.perf_counter()
-		_BLOB_DEBUG_RESIDUAL_STATS["compute_calls"] += 1
-
 	# read center frame as grayscale float (full frame, cached)
 	center_full = _read_gray_frame(reader, frame_index, cache)
 	if center_full is None:
@@ -639,9 +585,6 @@ def compute_residual_for_frame(
 
 	# collect aligned neighbor frames into a stack for median computation
 	aligned_stack = []
-	# track BGR cache hit/miss within this call for debug output
-	bgr_hits_local = 0
-	bgr_misses_local = 0
 	neighbors_read = 0
 	# stride-spaced neighbor offsets: k * stride for k in [-half_window..+half_window] \ {0}
 	# at stride=1 (60 fps) this is contiguous [-4..-1, 1..4] -- byte-identical to legacy
@@ -658,14 +601,11 @@ def compute_residual_for_frame(
 		cache_key_bgr = ("bgr", fi_other)
 		if cache_key_bgr in cache:
 			other_bgr = cache[cache_key_bgr]
-			bgr_hits_local += 1
 		else:
 			other_bgr = reader.read_frame(fi_other)
 			if other_bgr is None:
-				bgr_misses_local += 1
 				continue
 			cache[cache_key_bgr] = other_bgr
-			bgr_misses_local += 1
 		if other_bgr is None:
 			continue
 
@@ -708,20 +648,6 @@ def compute_residual_for_frame(
 	# compute residual: absolute difference between center and median background
 	residual = numpy.abs(center_float - median_bg)
 	residual[validity_mask == 0] = 0.0
-
-	if debug_on:
-		elapsed_ms = (time.perf_counter() - t0_compute) * 1000.0
-		_BLOB_DEBUG_RESIDUAL_STATS["compute_total_ms"] += elapsed_ms
-		_BLOB_DEBUG_RESIDUAL_STATS["bgr_cache_hits"] += bgr_hits_local
-		_BLOB_DEBUG_RESIDUAL_STATS["bgr_cache_misses"] += bgr_misses_local
-		print(
-			f"[blob][pid={_RESIDUAL_MODULE_PID}] compute_residual"
-			f" fi={frame_index}"
-			f" neighbors={neighbors_read}"
-			f" elapsed={elapsed_ms:.1f}ms"
-			f" cache_hits={bgr_hits_local}/{bgr_hits_local + bgr_misses_local}",
-			flush=True,
-		)
 
 	return (residual, validity_mask)
 
@@ -1064,14 +990,6 @@ def observe_blob_at(
 		when no residual was computable, no blobs were extracted, or
 		no extracted blob fell inside the corridor.
 	"""
-	# print observe entry when blob debug is enabled (gated to zero cost when off)
-	if _BLOB_DEBUG_RESIDUAL_ENABLED:
-		_BLOB_DEBUG_RESIDUAL_STATS["observe_calls"] += 1
-		print(
-			f"[blob][pid={_RESIDUAL_MODULE_PID}] observe_blob_at fi={frame_index}",
-			flush=True,
-		)
-
 	# Bin boundary (entry): pred_center/pred_box are source-frame per
 	# the public contract. ROI and blob extraction must run in
 	# processed-frame coordinates, which is the frame the reader

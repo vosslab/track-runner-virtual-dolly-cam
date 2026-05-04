@@ -1,126 +1,16 @@
-"""Basic video I/O helpers.
+"""Video I/O helpers using ffmpeg for writing.
 
-This module is suitable for simple sequential frame reads and
-ffmpeg-backed video writing. It intentionally uses OpenCV for
-lightweight access.
-
-Do not use VideoReader when exact metadata or reliable random frame
-access is required. OpenCV-reported metadata and seeking can be
-unreliable for some MOV/HEVC files. For scattered frame reads,
-contact sheets, or anything that depends on exact frame numbers, use
-common_tools.frame_reader.FrameReader with the MediaInfo-backed
-metadata path instead.
+This module provides VideoWriter for encoding frames to video files via ffmpeg.
+For video reading, use common_tools.frame_reader.FrameReader, which uses
+MediaInfo-backed metadata for reliability and exact frame access.
 """
 
 # Standard Library
-import os
 import shutil
 import subprocess
 
 # PIP3 modules
-import cv2
 import numpy
-
-
-#============================================
-class VideoReader:
-	"""Read video frames using OpenCV VideoCapture."""
-
-	def __init__(self, video_path: str):
-		"""Open video file for reading.
-
-		Args:
-			video_path: Path to input video file.
-
-		Raises:
-			RuntimeError: If the video file cannot be opened.
-		"""
-		if not os.path.isfile(video_path):
-			raise RuntimeError(f"Video file not found: {video_path}")
-		self.video_path = video_path
-		self.cap = cv2.VideoCapture(video_path)
-		if not self.cap.isOpened():
-			raise RuntimeError(f"Cannot open video: {video_path}")
-		# store video metadata
-		self.frame_count = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
-		self.fps = self.cap.get(cv2.CAP_PROP_FPS)
-		self.width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-		self.height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-		# track position so sequential reads skip expensive seeks
-		self._next_frame = 0
-
-	#============================================
-	def __iter__(self):
-		"""Yield (frame_index, frame) tuples from the start.
-
-		Yields:
-			Tuple of (int, numpy.ndarray) for each frame.
-		"""
-		# reset to beginning of video
-		self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-		self._next_frame = 0
-		frame_index = 0
-		while True:
-			ret, frame = self.cap.read()
-			if not ret:
-				break
-			self._next_frame = frame_index + 1
-			yield (frame_index, frame)
-			frame_index += 1
-
-	#============================================
-	def read_frame(self, frame_index: int) -> numpy.ndarray | None:
-		"""Read a specific frame by index.
-
-		Skips the seek when reading the next consecutive frame, which
-		avoids an expensive MKV keyframe search on every call.
-
-		Args:
-			frame_index: 0-based frame number.
-
-		Returns:
-			Frame as numpy array (BGR), or None if beyond end.
-		"""
-		if frame_index < 0 or frame_index >= self.frame_count:
-			return None
-		# only seek when the requested frame is not the next in sequence
-		if frame_index != self._next_frame:
-			self.cap.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
-		ret, frame = self.cap.read()
-		if not ret:
-			return None
-		self._next_frame = frame_index + 1
-		return frame
-
-	#============================================
-	def get_info(self) -> dict:
-		"""Return video metadata dict.
-
-		Returns:
-			Dict with keys: frame_count, fps, width, height.
-		"""
-		info = {
-			"frame_count": self.frame_count,
-			"fps": self.fps,
-			"width": self.width,
-			"height": self.height,
-		}
-		return info
-
-	#============================================
-	def close(self) -> None:
-		"""Release the video capture."""
-		if self.cap is not None:
-			self.cap.release()
-			self.cap = None
-
-	#============================================
-	def __enter__(self):
-		return self
-
-	#============================================
-	def __exit__(self, *args):
-		self.close()
 
 
 #============================================

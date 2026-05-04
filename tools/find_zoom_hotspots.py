@@ -37,6 +37,10 @@ import numpy
 
 # local repo modules
 import assess_pixel_zoom
+import sys
+sys.path.insert(0, _REPO_ROOT)
+import common_tools.probe_video
+import common_tools.frame_reader
 
 
 #============================================
@@ -87,18 +91,21 @@ def compute_log_scale_series(
 		Tuple (log_scale, fps, total_frames) where log_scale is a numpy
 		array of length total_frames; element 0 is 0.0 by convention.
 	"""
-	cap = cv2.VideoCapture(video_path)
-	if not cap.isOpened():
-		raise RuntimeError(f"Cannot open video: {video_path}")
+	# Probe video to get metadata
+	try:
+		fps, total_frames, width, height = common_tools.probe_video.probe_video(video_path)
+	except RuntimeError as e:
+		raise RuntimeError(f"Cannot probe video: {video_path}: {e}")
 
-	# read frame metadata
-	width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-	height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-	fps = float(cap.get(cv2.CAP_PROP_FPS))
-	total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 	if total_frames <= 1:
-		cap.release()
 		raise RuntimeError(f"Video has too few frames: {total_frames}")
+
+	# Open reader
+	reader = common_tools.frame_reader.FrameReader(
+		video_path=video_path,
+		fps=fps,
+		total_frames=total_frames,
+	)
 
 	# build edge mask and Hann window (one-time setup)
 	edge_mask = assess_pixel_zoom.build_edge_mask(height, width, weighting)
@@ -112,9 +119,9 @@ def compute_log_scale_series(
 
 	lp_prev = None
 	frame_index = 0
-	while True:
-		ret, frame = cap.read()
-		if not ret:
+	for frame_index in range(total_frames):
+		frame = reader.read_frame(frame_index)
+		if frame is None:
 			break
 		gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 		lp_curr = assess_pixel_zoom.compute_fft_log_polar(
@@ -128,8 +135,7 @@ def compute_log_scale_series(
 			# numpy.log handles the (0.80, 1.25) clamped range safely
 			log_scale[frame_index] = numpy.log(max(scale_val, 1e-6))
 		lp_prev = lp_curr
-		frame_index += 1
-	cap.release()
+	reader.close()
 
 	# trim trailing zeros if the file declared more frames than it had
 	if frame_index < total_frames:

@@ -22,6 +22,8 @@ import video_io
 import key_input
 import draw_utils
 import common_tools.frame_filters as frame_filters
+import common_tools.frame_reader
+import common_tools.probe_video
 
 
 #============================================
@@ -113,7 +115,7 @@ def copy_audio(
 
 #============================================
 def encode_cropped_video(
-	reader: video_io.VideoReader,
+	reader: common_tools.frame_reader.FrameReader,
 	crop_rects: list,
 	output_path: str,
 	crop_width: int,
@@ -136,7 +138,7 @@ def encode_cropped_video(
 	tier semantics.
 
 	Args:
-		reader: An open VideoReader instance.
+		reader: An open FrameReader instance.
 		crop_rects: List of (x, y, w, h) tuples, one per frame.
 		output_path: Path for the output video file.
 		crop_width: Output frame width after resize.
@@ -149,8 +151,7 @@ def encode_cropped_video(
 		draw_debug: Draw the developer overlay (implies tracking).
 		draw_velocity: Draw the per-frame motion arrow.
 	"""
-	info = reader.get_info()
-	fps = info["fps"]
+	fps = reader.fps
 	# build ffmpeg vf string from encode filters
 	vf_string = ""
 	if encode_filters:
@@ -743,9 +744,11 @@ def _encode_segment(
 	Returns:
 		Path to the encoded segment file.
 	"""
-	reader = video_io.VideoReader(video_path)
-	info = reader.get_info()
-	fps = info["fps"]
+	probe_info = common_tools.probe_video.probe_video(video_path)
+	fps = probe_info["fps"]
+	reader = common_tools.frame_reader.FrameReader(
+		video_path, fps, probe_info["frame_count"],
+	)
 	# build ffmpeg vf string from encode filters
 	vf_string = ""
 	if encode_filters:
@@ -761,11 +764,11 @@ def _encode_segment(
 			f"  worker {worker_id + 1}/{total_workers}",
 			total=chunk_size,
 		)
-		# seek to start_frame and read sequentially
-		reader.cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+		# seek to start_frame and read sequentially via fast-path
+		reader.seek_for_encode(start_frame)
 		for local_idx in range(chunk_size):
-			ret, frame = reader.cap.read()
-			if not ret:
+			frame = reader.read_frame(start_frame + local_idx)
+			if frame is None:
 				break
 			# crop and resize
 			crop_rect = crop_rects_chunk[local_idx]
@@ -847,7 +850,10 @@ def encode_cropped_video_parallel(
 	"""
 	# fall back to sequential if only 1 worker
 	if workers <= 1:
-		with video_io.VideoReader(video_path) as reader:
+		probe_info = common_tools.probe_video.probe_video(video_path)
+		with common_tools.frame_reader.FrameReader(
+			video_path, probe_info["fps"], probe_info["frame_count"],
+		) as reader:
 			encode_cropped_video(
 				reader, crop_rects, output_path,
 				crop_width, crop_height,

@@ -39,16 +39,22 @@ _TRACK_RUNNER_DIR = os.path.join(_REPO_ROOT, "track_runner")
 if _TRACK_RUNNER_DIR not in sys.path:
 	sys.path.insert(0, _TRACK_RUNNER_DIR)
 
+# add common_tools directory to path
+_COMMON_TOOLS_DIR = os.path.join(_REPO_ROOT, "common_tools")
+if _COMMON_TOOLS_DIR not in sys.path:
+	sys.path.insert(0, _COMMON_TOOLS_DIR)
+
 # PIP3 modules
 import cv2
 
 # local repo modules
 import camera_motion
+import frame_reader
+import probe_video
 import residual_motion
 import scene_coords
 import state_io
 import tr_paths
-import video_io
 
 
 # default statuses included when --status is not provided. not_in_frame
@@ -611,12 +617,14 @@ def main() -> None:
 	transform = scene_coords.SceneTransform(motion_track)
 
 	# open video reader
-	reader = video_io.VideoReader(args.input_file)
-	info = reader.get_info()
-	fps = float(info["fps"])
-	frame_count = int(info["frame_count"])
+	probe_info = probe_video.probe_video(args.input_file)
+	reader = frame_reader.FrameReader(
+		args.input_file, probe_info["fps"], probe_info["frame_count"],
+	)
+	fps = float(probe_info["fps"])
+	frame_count = int(probe_info["frame_count"])
 	print(
-		f"video: {info['width']}x{info['height']} "
+		f"video: {probe_info['width']}x{probe_info['height']} "
 		f"@ {fps:.3f} fps, {frame_count} frames"
 	)
 
@@ -718,6 +726,7 @@ def main() -> None:
 	finally:
 		if csv_fh is not None:
 			csv_fh.close()
+		reader.close()
 
 	# summary + outputs
 	print_console_summary(results, total_seeds_in_file, args.roi_multiple)

@@ -118,9 +118,6 @@ class ExecutionContext:
 		pre_race_reference: Dict from compute_pre_race_reference or None.
 			Initially None; populated by execute_interval_work after the
 			interval is solved and Stage 2 fine detection runs.
-		debug_blob: When True, enables verbose per-worker per-frame
-			Stage 4 instrumentation. Default False. Wired through
-			`solver_workers.make_pool` to every worker process.
 	"""
 	reader: object
 	scene_transform: object
@@ -135,7 +132,6 @@ class ExecutionContext:
 	race_start_interval: tuple = None
 	pre_race_reference: dict = None
 	bin_factor: int = 1
-	debug_blob: bool = False
 
 
 #============================================

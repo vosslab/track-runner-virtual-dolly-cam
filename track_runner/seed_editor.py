@@ -19,6 +19,7 @@ import overlay_config
 
 # local repo modules
 import common_tools.frame_reader as frame_reader
+import common_tools.probe_video as probe_video
 import seed_color
 import ui.workspace as workspace_module
 import ui.edit_controller as edit_controller_module
@@ -375,15 +376,10 @@ def edit_seeds(
 	else:
 		filtered_indices = list(range(len(work_seeds)))
 
-	# open the video to get metadata
-	cap = cv2.VideoCapture(video_path)
-	if not cap.isOpened():
-		raise RuntimeError(f"cannot open video: {video_path}")
-	fps = cap.get(cv2.CAP_PROP_FPS)
-	total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-	cap.release()
-	if fps <= 0:
-		raise RuntimeError(f"invalid fps from video: {video_path}")
+	# probe the video to get metadata
+	probe_info = probe_video.probe_video(video_path)
+	fps = probe_info["fps"]
+	total_frames = probe_info["frame_count"]
 
 	# create reliable frame reader
 	reader = frame_reader.FrameReader(video_path, fps, total_frames, debug=debug)

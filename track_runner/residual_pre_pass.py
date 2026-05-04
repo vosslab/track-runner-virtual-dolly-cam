@@ -11,6 +11,10 @@ via the precomputed_store parameter. On a hit the function bypasses
 compute_residual_for_frame entirely; on a miss it falls through to the
 legacy reader path.
 
+M6 contract (PyAV canonical): the precomputed store is byte-identical to
+the on-the-fly compute_residual_for_frame path when both use the same
+backend (PyAV or cv2). The PyAV backend is the canonical reference for M6+.
+
 Memory safety (M6, 2026-05-04 OOM hotfix):
 - The first M3+M4 ship held the entire interval+padding range of
   frames in a single dict with no eviction. At --bin 2 across 7 workers
@@ -97,6 +101,10 @@ def precompute_interval_residuals(
 	precomputed_store parameter. On a cache hit the function bypasses
 	compute_residual_for_frame; on a miss it falls through to the legacy
 	reader path.
+
+	M6 contract: the output is byte-identical to the on-the-fly
+	compute_residual_for_frame path for all (frame_index, roi) keys when
+	both use the same backend. The PyAV backend is canonical for M6+.
 
 	Args:
 		reader: FrameReader with read_frame, frame_count, width, height.

@@ -16,6 +16,12 @@ from pathlib import Path
 import cv2
 import numpy
 
+# local repo modules
+import sys
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+import common_tools.probe_video
+import common_tools.frame_reader
+
 #============================================
 
 def parse_args():
@@ -193,14 +199,18 @@ def analyze_video_zoom(
 		dict with keys: frame_data, summary, analysis_info, valid_frames,
 		anchor_scale, local_scale, zoom_velocity_log, zoom_jerk
 	"""
-	cap = cv2.VideoCapture(video_path)
-	if not cap.isOpened():
-		raise ValueError(f"Cannot open video: {video_path}")
+	# Probe video to get metadata
+	try:
+		fps, total_frames, width, height = common_tools.probe_video.probe_video(video_path)
+	except RuntimeError as e:
+		raise ValueError(f"Cannot probe video: {video_path}: {e}")
 
-	width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-	height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-	fps = cap.get(cv2.CAP_PROP_FPS)
-	total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+	# Open reader
+	reader = common_tools.frame_reader.FrameReader(
+		video_path=video_path,
+		fps=fps,
+		total_frames=total_frames,
+	)
 
 	# determine frame range
 	if max_frames <= 0:
@@ -239,10 +249,6 @@ def analyze_video_zoom(
 	zoom_jerk = []
 	valid_frames = []
 
-	# skip to start_frame
-	for _ in range(start_frame):
-		cap.read()
-
 	lp_prev = None
 	lp_anchor = None
 	cumulative_zoom_raw = 0.0
@@ -254,8 +260,9 @@ def analyze_video_zoom(
 	print(f"Analyzing {frames_to_analyze} frames...")
 
 	for frame_index in range(frames_to_analyze):
-		ret, frame = cap.read()
-		if not ret:
+		absolute_frame = start_frame + frame_index
+		frame = reader.read_frame(absolute_frame)
+		if frame is None:
 			break
 
 		absolute_frame = start_frame + frame_index
@@ -373,7 +380,7 @@ def analyze_video_zoom(
 
 		lp_prev = lp_curr
 
-	cap.release()
+	reader.close()
 
 	# compute summary
 	summary = compute_zoom_summary(frame_data, fps)

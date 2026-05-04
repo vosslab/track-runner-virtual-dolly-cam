@@ -25,7 +25,9 @@ Install runtime dependencies:
 pip3 install -r pip_requirements.txt
 ```
 
-This installs numpy, opencv-python, PySide6, pyyaml, rich, and scipy.
+This installs av (PyAV for video decode), numpy, opencv-python, PySide6, pyyaml, rich, and scipy.
+
+PyAV requires FFmpeg/libavcodec on your system (listed above in system dependencies).
 
 For development tools (pytest, pyflakes, bandit):
 

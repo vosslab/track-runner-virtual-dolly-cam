@@ -6,11 +6,11 @@ Seeds are returned in the v2 JSON format (no full-person estimation).
 """
 
 # PIP3 modules
-import cv2
 from PySide6.QtWidgets import QApplication
 
 # local repo modules
 import common_tools.frame_reader as frame_reader
+import common_tools.probe_video as probe_video
 import ui.workspace as workspace_module
 import ui.seed_controller as seed_controller_module
 import ui.target_controller as target_controller_module
@@ -49,8 +49,9 @@ def collect_seeds(
 		pass_number: Which collection pass this is (default 1 = initial).
 		existing_seeds: Optional list of already-collected seeds to append to.
 		pre_provided_seeds: Optional list of pre-built seed dicts for testing.
-		frame_count_override: Optional frame count from ffprobe to use instead
-			of OpenCV's CAP_PROP_FRAME_COUNT (which can be inaccurate).
+		frame_count_override: Optional frame count to use instead of the
+			value probed via mediainfo (e.g. when the caller already
+			has a verified count in hand from another tool).
 		debug: Enable verbose frame-reading output.
 		save_callback: Optional callable(seeds_list) invoked after each new
 			seed is collected, for crash-safe incremental saving.
@@ -70,19 +71,15 @@ def collect_seeds(
 	# start with a copy of any existing seeds
 	all_seeds = list(existing_seeds) if existing_seeds else []
 
-	# open the video file to get metadata
-	cap = cv2.VideoCapture(video_path)
-	if not cap.isOpened():
-		raise RuntimeError(f"cannot open video: {video_path}")
-	fps = cap.get(cv2.CAP_PROP_FPS)
-	# prefer ffprobe frame count over OpenCV (which can be inaccurate)
+	# probe the video file to get metadata
+	probe_info = probe_video.probe_video(video_path)
+	fps = probe_info["fps"]
+	# use caller-supplied frame count when provided; otherwise the
+	# value probed via mediainfo
 	if frame_count_override is not None:
 		total_frames = frame_count_override
 	else:
-		total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-	cap.release()
-	if fps <= 0:
-		raise RuntimeError(f"invalid fps from video: {video_path}")
+		total_frames = probe_info["frame_count"]
 	# create reliable frame reader with sequential fallback
 	reader = frame_reader.FrameReader(video_path, fps, total_frames, debug=debug)
 
@@ -205,15 +202,10 @@ def collect_seeds_at_frames(
 	# start with a copy of any existing seeds
 	all_seeds = list(existing_seeds) if existing_seeds else []
 
-	# open the video file to get metadata
-	cap = cv2.VideoCapture(video_path)
-	if not cap.isOpened():
-		raise RuntimeError(f"cannot open video: {video_path}")
-	fps = cap.get(cv2.CAP_PROP_FPS)
-	total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-	cap.release()
-	if fps <= 0:
-		raise RuntimeError(f"invalid fps from video: {video_path}")
+	# probe the video file to get metadata
+	probe_info = probe_video.probe_video(video_path)
+	fps = probe_info["fps"]
+	total_frames = probe_info["frame_count"]
 	# create reliable frame reader with sequential fallback
 	reader = frame_reader.FrameReader(video_path, fps, total_frames, debug=debug)
 

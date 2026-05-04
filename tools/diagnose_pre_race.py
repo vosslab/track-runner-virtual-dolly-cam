@@ -48,6 +48,11 @@ _TRACK_RUNNER_DIR = os.path.join(_REPO_ROOT, "track_runner")
 if _TRACK_RUNNER_DIR not in sys.path:
 	sys.path.insert(0, _TRACK_RUNNER_DIR)
 
+# add common_tools directory to path
+_COMMON_TOOLS_DIR = os.path.join(_REPO_ROOT, "common_tools")
+if _COMMON_TOOLS_DIR not in sys.path:
+	sys.path.insert(0, _COMMON_TOOLS_DIR)
+
 # PIP3 modules
 import numpy
 import tabulate
@@ -57,13 +62,14 @@ import matplotlib.pyplot as plt
 
 # local repo modules
 import camera_motion
+import frame_reader
 import interval_fingerprint
+import probe_video
 import race_start
 import residual_motion
 import scene_coords
 import state_io
 import tr_paths
-import video_io
 
 
 #============================================
@@ -97,9 +103,12 @@ def load_all_data(input_file: str) -> tuple:
 		Tuple (reader, motion_track, scene_transform, seeds_list,
 			intervals_data_or_none).
 	"""
-	reader = video_io.VideoReader(input_file)
-	print(f"  video: {reader.frame_count} frames, {reader.fps:.2f} fps, "
-		f"{reader.width}x{reader.height}")
+	probe_info = probe_video.probe_video(input_file)
+	reader = frame_reader.FrameReader(
+		input_file, probe_info["fps"], probe_info["frame_count"],
+	)
+	print(f"  video: {probe_info['frame_count']} frames, {probe_info['fps']:.2f} fps, "
+		f"{probe_info['width']}x{probe_info['height']}")
 
 	basename = os.path.basename(input_file)
 	cache_pattern = os.path.join(tr_paths.DATA_DIR, f"{basename}.*.npz")
@@ -924,6 +933,8 @@ def main() -> None:
 		)
 	else:
 		print("  (torso_residual.png not written; no race_start_frame)")
+
+	reader.close()
 
 
 #============================================

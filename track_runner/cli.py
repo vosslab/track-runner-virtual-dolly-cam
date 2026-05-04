@@ -33,8 +33,8 @@ import state_io
 import tr_paths
 import tr_video_identity
 import encoder
-import video_io
 import common_tools.frame_reader
+import common_tools.probe_video
 import seeding
 import scoring
 import seed_editor
@@ -845,7 +845,6 @@ def _run_solve(
 	solve_kwargs = {
 		"num_workers": num_workers,
 		"debug": args.debug,
-		"debug_blob": getattr(args, "debug_blob", False),
 		"prior_solved_intervals": prior_ivs,
 		"on_interval_solved": on_solved_cb,
 		"hermite_only": args.hermite_only,
@@ -2399,7 +2398,10 @@ def _mode_encode(
 				draw_velocity=draw_velocity,
 			)
 		else:
-			with video_io.VideoReader(args.input_file) as reader:
+			probe_info = common_tools.probe_video.probe_video(args.input_file)
+			with common_tools.frame_reader.FrameReader(
+				args.input_file, probe_info["fps"], probe_info["frame_count"],
+			) as reader:
 				encoder.encode_cropped_video(
 					reader, crop_rects, temp_video,
 					crop_w, crop_h,

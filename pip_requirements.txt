@@ -1,3 +1,4 @@
+av  # PyAV: video decode via FFmpeg/libavcodec
 numpy  # array operations and numerical computing
 opencv-python  # computer vision, video I/O, and DNN inference
 PySide6  # Qt6 GUI framework for annotation interface

@@ -38,16 +38,22 @@ _TRACK_RUNNER_DIR = os.path.join(_REPO_ROOT, "track_runner")
 if _TRACK_RUNNER_DIR not in sys.path:
 	sys.path.insert(0, _TRACK_RUNNER_DIR)
 
+# add common_tools directory to path
+_COMMON_TOOLS_DIR = os.path.join(_REPO_ROOT, "common_tools")
+if _COMMON_TOOLS_DIR not in sys.path:
+	sys.path.insert(0, _COMMON_TOOLS_DIR)
+
 # PIP3 modules
 import cv2
 import numpy
 
 # local repo modules
 import camera_motion
+import frame_reader
+import probe_video
 import scene_coords
 import state_io
 import tr_paths
-import video_io
 import residual_motion
 
 # track scoring weights (cross-track penalty dominates)
@@ -121,9 +127,12 @@ def load_all_data(input_file: str) -> tuple:
 		diagnostics, intervals_data).
 	"""
 	# load video
-	reader = video_io.VideoReader(input_file)
-	print(f"  video: {reader.frame_count} frames, {reader.fps:.1f} fps, "
-		f"{reader.width}x{reader.height}")
+	probe_info = probe_video.probe_video(input_file)
+	reader = frame_reader.FrameReader(
+		input_file, probe_info["fps"], probe_info["frame_count"],
+	)
+	print(f"  video: {probe_info['frame_count']} frames, {probe_info['fps']:.1f} fps, "
+		f"{probe_info['width']}x{probe_info['height']}")
 
 	# load camera motion cache
 	# cache files use a computed key, not a fixed path; glob for matching npz
@@ -901,7 +910,7 @@ def find_interval_info(
 
 #============================================
 def compute_multiframe_flow(
-	reader: video_io.VideoReader,
+	reader: frame_reader.FrameReader,
 	frame_index: int,
 	scene_transform: scene_coords.SceneTransform,
 	scale_factor: float,
@@ -919,7 +928,7 @@ def compute_multiframe_flow(
 	stride=1, output is byte-identical to the legacy half_window=4 behavior.
 
 	Args:
-		reader: VideoReader instance.
+		reader: FrameReader instance.
 		frame_index: Center frame index N.
 		scene_transform: SceneTransform for camera compensation.
 		scale_factor: Downsample factor (<1.0 downsamples before warp).
@@ -949,7 +958,7 @@ def compute_multiframe_flow(
 #============================================
 def compute_frame_statistics(
 	frame_info: dict,
-	reader: video_io.VideoReader,
+	reader: frame_reader.FrameReader,
 	scene_transform: scene_coords.SceneTransform,
 	intervals_data: dict,
 	diagnostics: dict,
@@ -1854,7 +1863,7 @@ def find_weakest_gap_midpoint(
 
 #============================================
 def render_flow_video(
-	reader: video_io.VideoReader,
+	reader: frame_reader.FrameReader,
 	scene_transform: scene_coords.SceneTransform,
 	seeds_list: list,
 	intervals_data: dict,
@@ -1870,7 +1879,7 @@ def render_flow_video(
 	"""Render a short video of consecutive residual flow heatmaps.
 
 	Args:
-		reader: VideoReader instance.
+		reader: FrameReader instance.
 		scene_transform: SceneTransform for camera compensation.
 		seeds_list: List of seed dicts.
 		intervals_data: Solved intervals data.
@@ -2228,6 +2237,8 @@ def main() -> None:
 	)
 
 	print(f"\nAll outputs in: {output_dir}/")
+
+	reader.close()
 
 
 #============================================

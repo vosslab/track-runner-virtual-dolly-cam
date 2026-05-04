@@ -41,9 +41,10 @@ if _TOOLS_DIR not in sys.path:
 	sys.path.insert(0, _TOOLS_DIR)
 if _TRACK_RUNNER_DIR not in sys.path:
 	sys.path.insert(0, _TRACK_RUNNER_DIR)
+if _REPO_ROOT not in sys.path:
+	sys.path.insert(0, _REPO_ROOT)
 
 # PIP3 modules
-import cv2
 import numpy
 import scipy.stats
 import matplotlib
@@ -57,6 +58,9 @@ import find_zoom_hotspots
 import interval_solver
 import state_io
 import tr_paths
+
+# local repo modules (common_tools)
+import common_tools.probe_video
 
 
 #============================================
@@ -100,15 +104,12 @@ def parse_args() -> argparse.Namespace:
 
 #============================================
 def get_source_dimensions(source_file: str) -> tuple:
-	"""Return (source_width, source_height) from the source video metadata.
+	"""Return (source_width, source_height, fps) from the source video metadata.
 	"""
-	cap = cv2.VideoCapture(source_file)
-	if not cap.isOpened():
-		raise RuntimeError(f"Cannot open source video: {source_file}")
-	width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-	height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-	fps = float(cap.get(cv2.CAP_PROP_FPS))
-	cap.release()
+	try:
+		fps, total_frames, width, height = common_tools.probe_video.probe_video(source_file)
+	except RuntimeError as e:
+		raise RuntimeError(f"Cannot probe source video: {source_file}: {e}")
 	if width <= 0 or height <= 0:
 		raise RuntimeError(f"Invalid source dimensions: {width}x{height}")
 	return (width, height, fps)

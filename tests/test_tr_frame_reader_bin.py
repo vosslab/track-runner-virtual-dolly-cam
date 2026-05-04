@@ -113,23 +113,44 @@ def test_bin_two_dims_and_processed_frame(tmp_path):
 
 
 #============================================
-def test_bin_with_goodbox_snap(tmp_path):
-	# Pick dims that fail the goodbox predicate after binning so the
-	# snap + origin-preserving crop is exercised.
-	# 540 -> snap to 528 (drop 12 pixels, 12/540 ~= 2.2%, under floor)
-	# 320 stays 320 (already goodbox)
-	video = str(tmp_path / "v.mp4")
-	_write_synthetic_video(video, 320, 540, n_frames=2)
-	reader = _open(video, n_frames=2, bin_factor=1)  # placeholder
-	reader.close()
-	# Now bin_factor=1 keeps full dims; do bin via composite
-	# Use a video sized so bin=1 still triggers the snap path.
-	# Easier: just construct geometry directly via the helper.
+def test_goodbox_snap_applies_at_bin_one(tmp_path):
+	# Property: the goodbox snap applies at any bin_factor including 1.
+	# A non-goodbox source dim like 540 gets snapped down to 528 even
+	# with no binning, so downstream FFT consumers always see
+	# FFT-friendly dims.
 	geom = common_tools.frame_reader._resolve_frame_geometry(540, 540, 1)
-	# bin=1 short-circuits even when the dim is not a goodbox
-	assert geom.processed_width == 540
-	geom2 = common_tools.frame_reader._resolve_frame_geometry(540, 540, 1)
-	assert geom2.scaled_width == 540
+	# scaled stays at the source dim because there is no resize
+	assert geom.scaled_width == 540
+	assert geom.scaled_height == 540
+	# processed snaps down to the largest goodbox <= 540
+	assert geom.processed_width == 528
+	assert geom.processed_height == 528
+
+
+#============================================
+def test_bin_one_no_snap_when_already_goodbox():
+	# 320 and 240 are both goodboxes, so bin=1 leaves them unchanged.
+	geom = common_tools.frame_reader._resolve_frame_geometry(320, 240, 1)
+	assert geom.scaled_width == 320 and geom.scaled_height == 240
+	assert geom.processed_width == 320 and geom.processed_height == 240
+
+
+#============================================
+def test_bin_one_hd_1080_snaps_to_1056():
+	# Real-world example: 1920x1080 source has 1920 (goodbox) and
+	# 1080 (not goodbox; snap to 1056). bin=1 still applies the snap.
+	geom = common_tools.frame_reader._resolve_frame_geometry(1920, 1080, 1)
+	assert geom.processed_width == 1920
+	assert geom.processed_height == 1056
+
+
+#============================================
+def test_bin_one_uhd_2160_snaps_to_2112():
+	# Real-world example: 3840x2160 source has 3840 (goodbox) and
+	# 2160 (not goodbox; snap to 2112). bin=1 still applies the snap.
+	geom = common_tools.frame_reader._resolve_frame_geometry(3840, 2160, 1)
+	assert geom.processed_width == 3840
+	assert geom.processed_height == 2112
 
 
 #============================================

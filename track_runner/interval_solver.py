@@ -6,8 +6,6 @@ stitches results into a full trajectory.
 """
 
 # Standard Library
-import statistics
-import threading
 import concurrent.futures
 import math
 import time
@@ -1446,7 +1444,6 @@ def _dispatch_blob_pass(
 			else:
 				# pool blob pass
 				import solver_workers
-				debug_blob_pool = getattr(context, "debug_blob", False)
 				with solver_workers.make_pool(
 					num_workers=num_workers,
 					video_path=video_path,
@@ -1458,7 +1455,6 @@ def _dispatch_blob_pass(
 					debug=debug,
 					bin_factor=getattr(context, "bin_factor", 1),
 					total_frames=getattr(context, "video_frame_count", 0),
-					debug_blob=debug_blob_pool,
 				) as pool:
 					# Frame span lookup keyed by pair_idx so the pool's
 					# completion order doesn't matter for ETA accuracy.
@@ -1489,74 +1485,6 @@ def _dispatch_blob_pass(
 						)
 						t_dispatch_by_pair[pair_idx] = time.time()
 						futures[fut] = pair_idx
-
-					# heartbeat thread: prints in-flight intervals every 5 s
-					# when debug_blob is on; zero cost in the default off path.
-					heartbeat_stop = threading.Event()
-					heartbeat_thread = None
-					if debug_blob_pool:
-						t_stage_ref = stage_start
-
-						def _heartbeat_worker(
-							stop_event: threading.Event,
-							dispatch_map: dict,
-							complete_map: dict,
-							total_count: int,
-							t_start: float,
-						) -> None:
-							"""Print a heartbeat summary every 5 s."""
-							while not stop_event.wait(5.0):
-								now = time.time()
-								# Snapshot both maps before iterating. The main thread
-								# writes to dispatch_map at task submit and to
-								# complete_map at task completion; concurrent
-								# dict.__setitem__ during dict iteration raises
-								# RuntimeError("dictionary changed size during
-								# iteration") in CPython. dict() copy is atomic
-								# enough for diagnostic-only output.
-								dispatch_snap = dict(dispatch_map)
-								complete_snap = dict(complete_map)
-								# build in-flight list: dispatched but not completed
-								in_flight = [
-									p for p in dispatch_snap
-									if p not in complete_snap
-								]
-								done_count = len(complete_snap)
-								# format total elapsed as M:SS
-								total_secs = int(now - t_start)
-								elapsed_fmt = (
-									f"{total_secs // 60}:{total_secs % 60:02d}"
-								)
-								# per-interval age strings
-								ages = []
-								for p in in_flight:
-									age_s = int(now - dispatch_snap[p])
-									ages.append(
-										f"pair_idx={p}"
-										f" age={age_s // 60}:{age_s % 60:02d}"
-									)
-								age_str = "[" + ", ".join(ages) + "]"
-								print(
-									f"[blob][heartbeat]"
-									f" in_flight={len(in_flight)}"
-									f" done={done_count}/{total_count}"
-									f" elapsed={elapsed_fmt}"
-									f" intervals={age_str}",
-									flush=True,
-								)
-
-						heartbeat_thread = threading.Thread(
-							target=_heartbeat_worker,
-							args=(
-								heartbeat_stop,
-								t_dispatch_by_pair,
-								t_complete_by_pair,
-								len(tasks),
-								t_stage_ref,
-							),
-							daemon=True,
-						)
-						heartbeat_thread.start()
 
 					pending = set(futures.keys())
 					try:
@@ -1592,39 +1520,8 @@ def _dispatch_blob_pass(
 										continue
 									pair_idx, fingerprint, result_blob = fut.result()
 									interval_results[pair_idx] = result_blob
-					# stop heartbeat thread regardless of how pool exits
-					finally:
-						heartbeat_stop.set()
-						if heartbeat_thread is not None:
-							heartbeat_thread.join(timeout=1.0)
-
-					# Stage 4 final summary (only when debug_blob is on)
-					if debug_blob_pool and t_complete_by_pair:
-						n_dispatched = len(t_dispatch_by_pair)
-						n_completed = len(t_complete_by_pair)
-						elapsed_stage = time.time() - stage_start
-						stage_fmt = (
-							f"{int(elapsed_stage) // 60}:"
-							f"{int(elapsed_stage) % 60:02d}"
-						)
-						# per-interval elapsed times for percentile stats
-						elapsed_list = sorted(t_complete_by_pair.values())
-						p50 = statistics.median(elapsed_list)
-						# P95: index at 95th percentile position
-						p95_idx = max(0, int(len(elapsed_list) * 0.95) - 1)
-						p95 = elapsed_list[p95_idx]
-						max_elapsed = elapsed_list[-1]
-						print(
-							f"[blob] Stage 4 final summary\n"
-							f"  intervals dispatched: {n_dispatched}\n"
-							f"  intervals completed:  {n_completed}\n"
-							f"  total stage wall:     {stage_fmt}\n"
-							f"  per-interval elapsed:"
-							f" P50={p50:.1f}s"
-							f" P95={p95:.1f}s"
-							f" max={max_elapsed:.1f}s",
-							flush=True,
-						)
+					except Exception:
+						pass
 
 	stage_elapsed = time.time() - stage_start
 	print(f"  {stage_name} complete: {len(pair_indices)} intervals, "
@@ -1639,7 +1536,6 @@ def solve_all_intervals(
 	config: dict,
 	num_workers: int = 1,
 	debug: bool = False,
-	debug_blob: bool = False,
 	on_interval_complete: object = None,
 	prior_solved_intervals: dict = None,
 	on_interval_solved: object = None,
@@ -1767,7 +1663,6 @@ def solve_all_intervals(
 		race_start_interval=race_start_interval,
 		pre_race_reference=pre_race_reference,
 		bin_factor=bin_factor,
-		debug_blob=debug_blob,
 	)
 	interval_results = solve_queue.execute_interval_work(
 		plan, context,
