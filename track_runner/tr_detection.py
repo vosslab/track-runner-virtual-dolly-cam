@@ -94,79 +94,82 @@ class YoloDetector:
 				confidence: detection confidence score
 				class_id: always 0 (person)
 		"""
-		frame_h, frame_w = frame.shape[:2]
-		# preprocess: letterbox to 640x640 without cropping
-		blob = cv2.dnn.blobFromImage(
-			frame,
-			scalefactor=1 / 255.0,
-			size=(YOLO_INPUT_SIZE, YOLO_INPUT_SIZE),
-			swapRB=True,
-			crop=False,
-		)
-		self.net.setInput(blob)
-		# forward pass: output shape [1, 84, 8400]
-		outputs = self.net.forward()
-		# transpose to [8400, 84] for easier parsing
-		predictions = outputs[0].transpose()
-		# compute letterbox scale and offsets
-		scale = min(
-			YOLO_INPUT_SIZE / frame_h,
-			YOLO_INPUT_SIZE / frame_w,
-		)
-		offset_x = (YOLO_INPUT_SIZE - frame_w * scale) / 2.0
-		offset_y = (YOLO_INPUT_SIZE - frame_h * scale) / 2.0
-		# collect candidate boxes and scores for person class
-		boxes = []
-		scores = []
-		for row in predictions:
-			# first 4 values are cx, cy, w, h in 640x640 space
-			cx, cy, bw, bh = row[0], row[1], row[2], row[3]
-			# remaining 80 values are class scores
-			class_scores = row[4:84]
-			class_id = int(numpy.argmax(class_scores))
-			score = float(class_scores[class_id])
-			# only keep person detections above threshold
-			if class_id != PERSON_CLASS_ID:
-				continue
-			if score < self.confidence_threshold:
-				continue
-			# convert center coords to top-left corner in 640 space
-			x_640 = cx - bw / 2.0
-			y_640 = cy - bh / 2.0
-			# scale back to original frame coordinates
-			x_real = (x_640 - offset_x) / scale
-			y_real = (y_640 - offset_y) / scale
-			w_real = bw / scale
-			h_real = bh / scale
-			# clamp to frame boundaries
-			x_real = max(0.0, x_real)
-			y_real = max(0.0, y_real)
-			w_real = min(w_real, frame_w - x_real)
-			h_real = min(h_real, frame_h - y_real)
-			# skip degenerate boxes
-			if w_real < 1.0 or h_real < 1.0:
-				continue
-			boxes.append([int(x_real), int(y_real), int(w_real), int(h_real)])
-			scores.append(score)
-		# apply non-maximum suppression
-		if len(boxes) == 0:
-			return []
-		indices = cv2.dnn.NMSBoxes(
-			boxes, scores,
-			self.confidence_threshold, self.nms_threshold,
-		)
-		# build result list
-		results = []
-		for idx in indices:
-			# NMSBoxes returns flat array or nested depending on version
-			i = int(idx) if numpy.ndim(idx) == 0 else int(idx[0])
-			detection = {
-				"bbox": boxes[i],
-				"confidence": scores[i],
-				"class_id": PERSON_CLASS_ID,
-			}
-			results.append(detection)
-		return results
+		try:
+			frame_h, frame_w = frame.shape[:2]
+			# preprocess: letterbox to 640x640 without cropping
+			blob = cv2.dnn.blobFromImage(
+				frame,
+				scalefactor=1 / 255.0,
+				size=(YOLO_INPUT_SIZE, YOLO_INPUT_SIZE),
+				swapRB=True,
+				crop=False,
+			)
+			self.net.setInput(blob)
+			# forward pass: output shape [1, 84, 8400]
+			outputs = self.net.forward()
+			# transpose to [8400, 84] for easier parsing
+			predictions = outputs[0].transpose()
+			# compute letterbox scale and offsets
+			scale = min(
+				YOLO_INPUT_SIZE / frame_h,
+				YOLO_INPUT_SIZE / frame_w,
+			)
+			offset_x = (YOLO_INPUT_SIZE - frame_w * scale) / 2.0
+			offset_y = (YOLO_INPUT_SIZE - frame_h * scale) / 2.0
+			# collect candidate boxes and scores for person class
+			boxes = []
+			scores = []
+			for row in predictions:
+				# first 4 values are cx, cy, w, h in 640x640 space
+				cx, cy, bw, bh = row[0], row[1], row[2], row[3]
+				# remaining 80 values are class scores
+				class_scores = row[4:84]
+				class_id = int(numpy.argmax(class_scores))
+				score = float(class_scores[class_id])
+				# only keep person detections above threshold
+				if class_id != PERSON_CLASS_ID:
+					continue
+				if score < self.confidence_threshold:
+					continue
+				# convert center coords to top-left corner in 640 space
+				x_640 = cx - bw / 2.0
+				y_640 = cy - bh / 2.0
+				# scale back to original frame coordinates
+				x_real = (x_640 - offset_x) / scale
+				y_real = (y_640 - offset_y) / scale
+				w_real = bw / scale
+				h_real = bh / scale
+				# clamp to frame boundaries
+				x_real = max(0.0, x_real)
+				y_real = max(0.0, y_real)
+				w_real = min(w_real, frame_w - x_real)
+				h_real = min(h_real, frame_h - y_real)
+				# skip degenerate boxes
+				if w_real < 1.0 or h_real < 1.0:
+					continue
+				boxes.append([int(x_real), int(y_real), int(w_real), int(h_real)])
+				scores.append(score)
+			# apply non-maximum suppression
+			if len(boxes) == 0:
+				return []
+			indices = cv2.dnn.NMSBoxes(
+				boxes, scores,
+				self.confidence_threshold, self.nms_threshold,
+			)
+			# build result list
+			results = []
+			for idx in indices:
+				# NMSBoxes returns flat array or nested depending on version
+				i = int(idx) if numpy.ndim(idx) == 0 else int(idx[0])
+				detection = {
+					"bbox": boxes[i],
+					"confidence": scores[i],
+					"class_id": PERSON_CLASS_ID,
+				}
+				results.append(detection)
+			return results
+		except cv2.error as exc:
+			raise RuntimeError(f"YOLO detection failed: {exc}") from exc
 
 	#============================================
 	def detect_roi(
@@ -194,58 +197,61 @@ class YoloDetector:
 				confidence: detection confidence score
 				class_id: always 0 (person)
 		"""
-		frame_h, frame_w = frame.shape[:2]
-		cx, cy = roi_center
-		w, h = roi_size
+		try:
+			frame_h, frame_w = frame.shape[:2]
+			cx, cy = roi_center
+			w, h = roi_size
 
-		# Compute crop region: expand bbox by padding_factor
-		crop_w = w * padding_factor
-		crop_h = h * padding_factor
+			# Compute crop region: expand bbox by padding_factor
+			crop_w = w * padding_factor
+			crop_h = h * padding_factor
 
-		# Enforce minimum crop size of 320x320 for YOLO context
-		min_crop_size = 320.0
-		crop_w = max(crop_w, min_crop_size)
-		crop_h = max(crop_h, min_crop_size)
+			# Enforce minimum crop size of 320x320 for YOLO context
+			min_crop_size = 320.0
+			crop_w = max(crop_w, min_crop_size)
+			crop_h = max(crop_h, min_crop_size)
 
-		# Compute crop top-left corner
-		x1 = cx - crop_w / 2.0
-		y1 = cy - crop_h / 2.0
+			# Compute crop top-left corner
+			x1 = cx - crop_w / 2.0
+			y1 = cy - crop_h / 2.0
 
-		# Clamp to frame boundaries
-		x1 = max(0.0, x1)
-		y1 = max(0.0, y1)
-		x2 = x1 + crop_w
-		y2 = y1 + crop_h
+			# Clamp to frame boundaries
+			x1 = max(0.0, x1)
+			y1 = max(0.0, y1)
+			x2 = x1 + crop_w
+			y2 = y1 + crop_h
 
-		# Adjust if crop exceeds frame bounds
-		if x2 > frame_w:
-			x2 = frame_w
-			x1 = max(0.0, x2 - crop_w)
-		if y2 > frame_h:
-			y2 = frame_h
-			y1 = max(0.0, y2 - crop_h)
+			# Adjust if crop exceeds frame bounds
+			if x2 > frame_w:
+				x2 = frame_w
+				x1 = max(0.0, x2 - crop_w)
+			if y2 > frame_h:
+				y2 = frame_h
+				y1 = max(0.0, y2 - crop_h)
 
-		# Convert to integer pixel coordinates
-		x1 = int(x1)
-		y1 = int(y1)
-		x2 = int(x2)
-		y2 = int(y2)
+			# Convert to integer pixel coordinates
+			x1 = int(x1)
+			y1 = int(y1)
+			x2 = int(x2)
+			y2 = int(y2)
 
-		# Crop the frame using numpy slicing: [y1:y2, x1:x2]
-		crop = frame[y1:y2, x1:x2]
+			# Crop the frame using numpy slicing: [y1:y2, x1:x2]
+			crop = frame[y1:y2, x1:x2]
 
-		# Run YOLO detection on the crop
-		detections = self.detect(crop)
+			# Run YOLO detection on the crop
+			detections = self.detect(crop)
 
-		# Transform detections back to full-frame coordinates
-		for detection in detections:
-			bbox = detection["bbox"]
-			# bbox is [x, y, w, h] relative to crop; offset by (x1, y1)
-			bbox[0] += x1
-			bbox[1] += y1
-			detection["bbox"] = bbox
+			# Transform detections back to full-frame coordinates
+			for detection in detections:
+				bbox = detection["bbox"]
+				# bbox is [x, y, w, h] relative to crop; offset by (x1, y1)
+				bbox[0] += x1
+				bbox[1] += y1
+				detection["bbox"] = bbox
 
-		return detections
+			return detections
+		except cv2.error as exc:
+			raise RuntimeError(f"YOLO ROI detection failed: {exc}") from exc
 
 
 #============================================

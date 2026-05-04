@@ -728,3 +728,33 @@ def test_integration_scene_transform_missing_skips_speed(tmp_path, monkeypatch):
 	data = _extract_embedded_json(body)
 	panel_ids = [p['id'] for p in data['panels']]
 	assert panel_ids == ['zoom-stability', 'zoom-multiple', 'camera-motion']
+
+
+def test_frames_erased_default_all_false_when_no_set_supplied(tmp_path, monkeypatch):
+	"""Without an erased_frames argument the JSON exposes an all-False mask."""
+	trajectory = [{'cx': 100.0, 'cy': 50.0, 'w': 20.0, 'h': 40.0}] * 4
+	crop_rects = [(0, 0, 200, 200)] * 4
+	_out, body = _call_write(
+		monkeypatch, tmp_path,
+		trajectory=trajectory, crop_rects=crop_rects,
+	)
+	data = _extract_embedded_json(body)
+	assert data['frames_erased'] == [False, False, False, False]
+
+
+def test_frames_erased_marks_intentional_dropouts(tmp_path, monkeypatch):
+	"""Frames listed in erased_frames serialize as True in the JSON mask.
+
+	Locks in P1-1 from /Users/vosslab/.claude/plans/rustling-juggling-creek.md:
+	the renderer needs to distinguish user-flagged not_in_frame dropouts from
+	generic tracker gaps even though the trajectory entries are None for both.
+	"""
+	trajectory = [None, {'cx': 100.0, 'cy': 50.0, 'w': 20.0, 'h': 40.0}, None, None]
+	crop_rects = [(0, 0, 200, 200)] * 4
+	_out, body = _call_write(
+		monkeypatch, tmp_path,
+		trajectory=trajectory, crop_rects=crop_rects,
+		erased_frames={2, 3},
+	)
+	data = _extract_embedded_json(body)
+	assert data['frames_erased'] == [False, False, True, True]

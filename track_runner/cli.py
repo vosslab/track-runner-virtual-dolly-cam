@@ -32,7 +32,6 @@ import tr_config
 import state_io
 import tr_paths
 import tr_video_identity
-import encoder
 import common_tools.frame_reader
 import common_tools.probe_video
 import seeding
@@ -51,7 +50,6 @@ import regime_classifier
 import camera_motion
 import race_start
 import scene_coords
-import common_tools.frame_filters as frame_filters
 
 # module-level video identity, set once in main() and treated as read-only
 VIDEO_IDENTITY = None
@@ -1775,6 +1773,9 @@ def _apply_encode_overrides(args: argparse.Namespace, cfg: dict) -> None:
 		args: Parsed argparse namespace.
 		cfg: Configuration dict, mutated in place.
 	"""
+	# Keep the OpenCV-backed filter registry out of CLI startup so
+	# non-encode commands do not load cv2 or its FFmpeg bundle.
+
 	cfg.setdefault("processing", {})
 	processing = cfg["processing"]
 	# aspect is the legacy override flag; still honored here
@@ -1819,6 +1820,10 @@ def _resolve_encode_filters(args: argparse.Namespace, proc_cfg: dict) -> list:
 	Returns:
 		List of validated filter name strings, or empty list.
 	"""
+	# Lazy import for the same reason as _apply_encode_overrides():
+	# only encode mode needs the OpenCV-backed filter registry.
+	import common_tools.frame_filters as frame_filters
+
 	# --no-filters short-circuit (parse-time validation already rejects
 	# the --no-filters + -F combination, so reaching here means -F is
 	# None whenever no_filters is True; defensive check kept for direct
@@ -2043,6 +2048,14 @@ def _mode_analyze(
 		else:
 			trajectory_aligned = trajectory[:total_frames]
 
+		# Tag the frames `_apply_trajectory_erasure` wiped on purpose so the
+		# HTML report can distinguish user-flagged dropouts from tracker gaps;
+		# both still serialize as null in the panel JSON, but the renderer
+		# can read `frames_erased` to color the two states differently.
+		erased_frames = interval_solver.collect_erased_frames(
+			all_seeds, fps, total_frames,
+		)
+
 		out = analyze_report.write_analyze_report(
 			out_path=html_path,
 			video_stem=stem,
@@ -2053,6 +2066,7 @@ def _mode_analyze(
 			fps=fps,
 			config=cfg,
 			warnings=report_warnings,
+			erased_frames=erased_frames,
 		)
 		print(f"wrote diagnostic report: {out}")
 
@@ -2079,6 +2093,9 @@ def _mode_encode(
 		intervals_path: Path to solved-intervals JSON file.
 			If None, derived from input_file.
 	"""
+	# Import encoder lazily so non-encode commands do not load OpenCV.
+	import encoder
+
 	# apply CLI overrides (aspect + phase-4 encode-only flags)
 	_apply_encode_overrides(args, cfg)
 

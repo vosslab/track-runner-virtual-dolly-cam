@@ -805,8 +805,8 @@ def compute_trajectory_tangent(
 
 		# for primary span, check confidence threshold
 		if span == TANGENT_MIN_SPAN:
-			conf_lo = float(entry_lo.get("conf", 0.0) or 0.0)
-			conf_hi = float(entry_hi.get("conf", 0.0) or 0.0)
+			conf_lo = float(entry_lo["conf"])
+			conf_hi = float(entry_hi["conf"])
 			if conf_lo < TANGENT_CONFIDENCE_THRESHOLD or conf_hi < TANGENT_CONFIDENCE_THRESHOLD:
 				# try fallback span
 				continue

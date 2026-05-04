@@ -8,7 +8,6 @@ mouse drawing for seed collection.
 # (none)
 
 # PIP3 modules
-import cv2
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QWidget, QHBoxLayout, QLabel, QPushButton
 
@@ -321,8 +320,9 @@ class SeedController(BaseAnnotationController):
 		# run YOLO detection on current frame
 		try:
 			detections = detector.detect(self._current_bgr)
-		except (RuntimeError, cv2.error):
-			# ONNX inference or OpenCV DNN failure, no suggestions
+		except RuntimeError:
+			# Detector failures are normalized in tr_detection.py, so this
+			# path stays cv2-free and treats any detector error as "no suggestions".
 			self._suggestion = {
 				"candidates": [],
 				"suggestion_index": None,

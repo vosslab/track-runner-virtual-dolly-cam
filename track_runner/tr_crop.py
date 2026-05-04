@@ -972,13 +972,16 @@ def trajectory_to_crop_rects(
 ) -> list:
 	"""Compute crop rectangles from a solved trajectory with gap filling.
 
-	Fills None gaps in the trajectory with a center-frame fallback state
-	before passing to compute_crop_trajectory. Pads or trims to match
-	the total frame count from video_info.
+	Fills None gaps in the trajectory with a hold-last-known state (or a
+	center-frame fallback before any state is known). When the input is
+	shorter than total_frames (e.g. analyze mode on a post-erasure list),
+	the tail is padded with the same hold/fallback policy. The result is
+	always exactly total_frames long.
 
 	Args:
 		trajectory: List of tracking state dicts from interval_solver.
-			May contain None entries for unsolved frames.
+			May contain None entries for unsolved frames; may be shorter
+			than total_frames but never longer.
 		video_info: Dict with frame_count, width, height, fps.
 		config: Project configuration dict.
 
@@ -988,6 +991,13 @@ def trajectory_to_crop_rects(
 	frame_width = video_info["width"]
 	frame_height = video_info["height"]
 	total_frames = video_info["frame_count"]
+	# A trajectory longer than the source frame count is always a wiring
+	# bug (mismatched video_info, stale solve cache); fail loudly rather
+	# than silently truncate, which would hide the upstream defect.
+	assert len(trajectory) <= total_frames, (
+		f"trajectory longer than total_frames: "
+		f"{len(trajectory)} > {total_frames}"
+	)
 
 	# fill any None gaps by holding last known position with decaying confidence
 	# instead of snapping to center-frame which pulls the crop away from the runner

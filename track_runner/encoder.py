@@ -162,62 +162,66 @@ def encode_cropped_video(
 	)
 	frame_count = len(crop_rects)
 	# Shared progress bar: identical column layout to solve Stages 1/3/4.
-	with interval_solver.make_solve_progress() as progress:
-		task = progress.add_task("  encoding", total=frame_count)
-		for frame_index, frame in reader:
-			# stop once we have processed all provided crop rects
-			if frame_index >= frame_count:
-				break
-			# crop the frame using the crop module
-			crop_rect = crop_rects[frame_index]
-			cropped = tr_crop.apply_crop(frame, crop_rect)
-			# adaptive interpolation: INTER_AREA for downscaling (avoids aliasing),
-			# INTER_LANCZOS4 for upscaling (preserves detail)
-			crop_h = crop_rect[3]
-			interp = cv2.INTER_AREA if crop_h >= crop_height else cv2.INTER_LANCZOS4
-			resized = cv2.resize(cropped, (crop_width, crop_height), interpolation=interp)
-			# apply opencv encode filters after resize
-			if encode_filters:
-				resized = frame_filters.apply_filter_pipeline(resized, encode_filters)
-			# draw overlays on the cropped frame when any tier requested.
-			# prev_center is precomputed on the driver side and stashed
-			# on each per-frame state dict so the parallel encoder path
-			# sees correct lookback across chunk boundaries (a chunk-local
-			# walk would miss valid priors from preceding chunks).
-			any_overlay = draw_tracking or draw_debug or draw_velocity
-			if any_overlay and frame_states is not None:
-				state = frame_states[frame_index] if frame_index < len(frame_states) else None
-				prev_center = state.get("prev_center") if state is not None else None
-				draw_debug_overlay_cropped(
-					resized, state, crop_rect, crop_width, crop_height,
-					draw_tracking=draw_tracking,
-					draw_debug=draw_debug,
-					draw_velocity=draw_velocity,
-					prev_center=prev_center,
-				)
-			writer.write_frame(resized)
-			progress.update(task, advance=1)
-			# poll for quit key every 30 frames (pause not supported during encode)
-			if run_control is not None and frame_index % 30 == 0:
-				if key_reader_obj is not None:
-					ch = key_reader_obj.poll()
-					if ch is not None and ch.lower() == "q":
-						run_control.request_quit()
-						key_input._quit_trace("KEY_HANDLE", quit_requested=True)
-						progress.console.print("  Q pressed, finishing current interval...")
-				if run_control.quit_requested:
-					key_input._quit_trace(
-						"MAIN_LOOP", context="encode_sequential",
-						quit_requested=True, frame=frame_index,
-					)
-					progress.console.print(
-						f"  encoding interrupted at frame {frame_index}/{frame_count}"
-					)
+	# try/finally guarantees writer.close() runs even if the loop raises;
+	# without it the ffmpeg subprocess is left with an unflushed stdin pipe.
+	try:
+		with interval_solver.make_solve_progress() as progress:
+			task = progress.add_task("  encoding", total=frame_count)
+			for frame_index, frame in reader:
+				# stop once we have processed all provided crop rects
+				if frame_index >= frame_count:
 					break
-	# ffmpeg may still be encoding frames through its filter pipeline
-	# after all input has been written (especially with heavy filters)
-	print("  finalizing ffmpeg encode...", flush=True)
-	writer.close()
+				# crop the frame using the crop module
+				crop_rect = crop_rects[frame_index]
+				cropped = tr_crop.apply_crop(frame, crop_rect)
+				# adaptive interpolation: INTER_AREA for downscaling (avoids aliasing),
+				# INTER_LANCZOS4 for upscaling (preserves detail)
+				crop_h = crop_rect[3]
+				interp = cv2.INTER_AREA if crop_h >= crop_height else cv2.INTER_LANCZOS4
+				resized = cv2.resize(cropped, (crop_width, crop_height), interpolation=interp)
+				# apply opencv encode filters after resize
+				if encode_filters:
+					resized = frame_filters.apply_filter_pipeline(resized, encode_filters)
+				# draw overlays on the cropped frame when any tier requested.
+				# prev_center is precomputed on the driver side and stashed
+				# on each per-frame state dict so the parallel encoder path
+				# sees correct lookback across chunk boundaries (a chunk-local
+				# walk would miss valid priors from preceding chunks).
+				any_overlay = draw_tracking or draw_debug or draw_velocity
+				if any_overlay and frame_states is not None:
+					state = frame_states[frame_index] if frame_index < len(frame_states) else None
+					prev_center = state.get("prev_center") if state is not None else None
+					draw_debug_overlay_cropped(
+						resized, state, crop_rect, crop_width, crop_height,
+						draw_tracking=draw_tracking,
+						draw_debug=draw_debug,
+						draw_velocity=draw_velocity,
+						prev_center=prev_center,
+					)
+				writer.write_frame(resized)
+				progress.update(task, advance=1)
+				# poll for quit key every 30 frames (pause not supported during encode)
+				if run_control is not None and frame_index % 30 == 0:
+					if key_reader_obj is not None:
+						ch = key_reader_obj.poll()
+						if ch is not None and ch.lower() == "q":
+							run_control.request_quit()
+							key_input._quit_trace("KEY_HANDLE", quit_requested=True)
+							progress.console.print("  Q pressed, finishing current interval...")
+					if run_control.quit_requested:
+						key_input._quit_trace(
+							"MAIN_LOOP", context="encode_sequential",
+							quit_requested=True, frame=frame_index,
+						)
+						progress.console.print(
+							f"  encoding interrupted at frame {frame_index}/{frame_count}"
+						)
+						break
+	finally:
+		# ffmpeg may still be encoding frames through its filter pipeline
+		# after all input has been written (especially with heavy filters)
+		print("  finalizing ffmpeg encode...", flush=True)
+		writer.close()
 	# trace early return on quit
 	if run_control is not None and run_control.quit_requested:
 		key_input._quit_trace(

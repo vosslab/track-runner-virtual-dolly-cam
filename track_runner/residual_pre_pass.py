@@ -81,7 +81,7 @@ def precompute_interval_residuals(
 	stride: int = 1,
 	debug_stats: dict = None,
 	read_log: list = None,
-) -> "dict | None":
+) -> dict | None:
 	"""Pre-compute residuals for an entire interval via a sequential frame read.
 
 	Walks frame range pad_lo..pad_hi in monotonic order so FrameReader's
@@ -159,8 +159,8 @@ def precompute_interval_residuals(
 	pad_lo = max(0, start_frame - pad_extent)
 	pad_hi = min(frame_count - 1, end_frame + pad_extent)
 
-	frame_w = getattr(reader, "width", 1920)
-	frame_h = getattr(reader, "height", 1080)
+	frame_w = reader.width
+	frame_h = reader.height
 
 	# geometry for bin conversion (same path as observe_blob_at)
 	geometry = getattr(reader, "geometry", None)

@@ -12,7 +12,6 @@ import dataclasses
 
 # PIP3 modules
 import av
-import cv2
 import numpy
 
 # local repo modules
@@ -312,12 +311,11 @@ class FrameReader:
 		if frame is None:
 			return None
 		geom = self._geometry
-		# downsample only when binning is requested
+		# PyAV can resize during reformat, so the reader stays cv2-free.
+		# When binning is requested, ask PyAV for the scaled size directly.
 		if self._bin_factor > 1:
-			frame = cv2.resize(
-				frame,
-				(geom.scaled_width, geom.scaled_height),
-				interpolation=cv2.INTER_AREA,
+			frame = self._resize_with_pyav(
+				frame, geom.scaled_width, geom.scaled_height
 			)
 		# origin-preserving right/bottom crop to goodbox-snapped dims
 		if (
@@ -328,6 +326,19 @@ class FrameReader:
 				0 : geom.processed_height, 0 : geom.processed_width
 			]
 		return frame
+
+	#============================================
+	def _resize_with_pyav(
+		self, frame: numpy.ndarray, width: int, height: int
+	) -> numpy.ndarray:
+		"""Resize a BGR frame through PyAV without importing cv2.
+
+		PyAV delegates to libswscale for resize here, which keeps the
+		decode path free of OpenCV's bundled FFmpeg libraries.
+		"""
+		av_frame = av.VideoFrame.from_ndarray(frame, format="bgr24")
+		resized = av_frame.reformat(width=width, height=height, format="bgr24")
+		return resized.to_ndarray()
 
 	#============================================
 	def seek_for_encode(self, start_frame: int) -> None:

@@ -465,6 +465,7 @@ def _build_analyze_report_data(
 	scene_transform: object,
 	fps: float | None,
 	config: dict | None,
+	erased_frames: set | None = None,
 ) -> dict:
 	"""Build the JSON-serializable data payload for the report.
 
@@ -509,10 +510,20 @@ def _build_analyze_report_data(
 	else:
 		fps_value = None
 
+	# build a parallel boolean array marking frames erased on purpose
+	# (not_in_frame seeds) so the renderer can distinguish them from
+	# generic tracker gaps. Length matches frame_count; default all False
+	# when no erasure set was supplied.
+	if erased_frames is None:
+		frames_erased = [False] * frame_count
+	else:
+		frames_erased = [i in erased_frames for i in range(frame_count)]
+
 	report_data = {
 		'video_stem': video_stem,
 		'fps': fps_value,
 		'frames': frames,
+		'frames_erased': frames_erased,
 		'panels': panels,
 		# warnings filled by _write_analyze_report_html from its parameter
 		'warnings': [],
@@ -683,6 +694,7 @@ def write_analyze_report(
 	fps: float | None,
 	config: dict | None,
 	warnings: list,
+	erased_frames: set | None = None,
 ) -> pathlib.Path:
 	"""Write one HTML diagnostic report; return the path written.
 
@@ -711,6 +723,7 @@ def write_analyze_report(
 		scene_transform=scene_transform,
 		fps=fps,
 		config=config,
+		erased_frames=erased_frames,
 	)
 
 	# write HTML to disk, threading in the caller-supplied warnings

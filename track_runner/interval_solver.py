@@ -867,6 +867,45 @@ def _apply_trajectory_erasure(
 	return trajectory
 
 
+#============================================
+def collect_erased_frames(
+	seeds: list,
+	fps: float,
+	total_frames: int,
+) -> set:
+	"""Return frame indices intentionally erased by `_apply_trajectory_erasure`.
+
+	Mirrors the per-seed radius logic so analyze callers can distinguish a
+	user-flagged dropout (not_in_frame seed) from a tracker gap. visible
+	and partial seed frames are protected and excluded from the set.
+
+	Args:
+		seeds: List of all seed dicts (any status).
+		fps: Video frame rate for converting seconds to frames.
+		total_frames: Total source frame count for clamping.
+
+	Returns:
+		Set of frame indices erased on purpose.
+	"""
+	protected_frames = set()
+	for seed in seeds:
+		if seed.get("status") in ("visible", "partial"):
+			protected_frames.add(int(seed["frame_index"]))
+	erased = set()
+	for seed in seeds:
+		if seed.get("status") != "not_in_frame":
+			continue
+		radius_frames = int(round(NOT_IN_FRAME_ERASE_RADIUS_S * fps))
+		seed_frame = int(seed["frame_index"])
+		erase_start = max(0, seed_frame - radius_frames)
+		erase_end = min(total_frames - 1, seed_frame + radius_frames)
+		for fi in range(erase_start, erase_end + 1):
+			if fi in protected_frames:
+				continue
+			erased.add(fi)
+	return erased
+
+
 # anchor interpolation constants
 ANCHOR_PROXIMITY_SKIP = 7        # frames near seeds to skip (~0.23s at 30fps)
 ANCHOR_BLEND_SCALE_XY = 0.5     # max blend for cx/cy at zero confidence
@@ -1487,41 +1526,38 @@ def _dispatch_blob_pass(
 						futures[fut] = pair_idx
 
 					pending = set(futures.keys())
-					try:
-						while pending:
-							if run_control is not None and run_control.quit_requested:
-								break
-							done, pending = concurrent.futures.wait(
-								pending,
-								timeout=0.25,
-								return_when=concurrent.futures.FIRST_COMPLETED,
+					while pending:
+						if run_control is not None and run_control.quit_requested:
+							break
+						done, pending = concurrent.futures.wait(
+							pending,
+							timeout=0.25,
+							return_when=concurrent.futures.FIRST_COMPLETED,
+						)
+						for fut in done:
+							pair_idx, fingerprint, result_blob = fut.result()
+							elapsed = time.time() - t_dispatch_by_pair[pair_idx]
+							t_complete_by_pair[pair_idx] = elapsed
+							print(
+								f"  [blob] complete pair_idx={pair_idx} "
+								f"elapsed={elapsed:.2f}s",
+								flush=True,
 							)
-							for fut in done:
-								pair_idx, fingerprint, result_blob = fut.result()
-								elapsed = time.time() - t_dispatch_by_pair[pair_idx]
-								t_complete_by_pair[pair_idx] = elapsed
-								print(
-									f"  [blob] complete pair_idx={pair_idx} "
-									f"elapsed={elapsed:.2f}s",
-									flush=True,
-								)
-								if on_interval_solved is not None:
-									on_interval_solved(fingerprint, result_blob)
-								interval_results[pair_idx] = result_blob
-								blob_frame_counter[0] += span_by_pair[pair_idx]
-								progress.update(task_id, advance=1)
+							if on_interval_solved is not None:
+								on_interval_solved(fingerprint, result_blob)
+							interval_results[pair_idx] = result_blob
+							blob_frame_counter[0] += span_by_pair[pair_idx]
+							progress.update(task_id, advance=1)
 
-							# on quit, cancel pending and drain
-							if run_control is not None and run_control.quit_requested:
-								for fut in list(pending):
-									fut.cancel()
-								for fut in concurrent.futures.as_completed(pending):
-									if fut.cancelled():
-										continue
-									pair_idx, fingerprint, result_blob = fut.result()
-									interval_results[pair_idx] = result_blob
-					except Exception:
-						pass
+						# on quit, cancel pending and drain
+						if run_control is not None and run_control.quit_requested:
+							for fut in list(pending):
+								fut.cancel()
+							for fut in concurrent.futures.as_completed(pending):
+								if fut.cancelled():
+									continue
+								pair_idx, fingerprint, result_blob = fut.result()
+								interval_results[pair_idx] = result_blob
 
 	stage_elapsed = time.time() - stage_start
 	print(f"  {stage_name} complete: {len(pair_indices)} intervals, "
