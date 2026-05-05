@@ -518,3 +518,95 @@ def test_stabilize_cx_cy_passthrough_byte_identical_for_every_method():
 		)
 		assert numpy.array_equal(out["cx"], coords["cx"]), method
 		assert numpy.array_equal(out["cy"], coords["cy"]), method
+
+
+#============================================
+# Per-stage zoom-bounce bisect (lucky-napping-lake.md)
+#============================================
+
+def _make_trajectory_constant(
+	n_frames: int = 200,
+	cx: float = 960.0, cy: float = 540.0,
+	w: float = 60.0, h: float = 100.0,
+) -> list:
+	"""List-of-state-dicts trajectory with constant per-frame values.
+
+	A stationary runner with a zero-velocity zoom: every pipeline stage
+	must report log_velocity_p95 == 0 on this fixture (no frame-to-frame
+	scale change anywhere).
+	"""
+	return [{"cx": cx, "cy": cy, "w": w, "h": h} for _ in range(n_frames)]
+
+
+def _minimal_video_info(width: int = 1920, height: int = 1080, fps: float = 30.0) -> dict:
+	return {"width": width, "height": height, "fps": fps}
+
+
+def _minimal_cfg() -> dict:
+	"""Minimal config exposing the keys compute_pre_encode_crop_signals reads."""
+	return {
+		"processing": {
+			"crop_aspect": "1:1",
+			"torso_height_multiple": 3.33,
+			"crop_post_smooth_size_strength": 0.15,
+			"crop_centered_fit_to_source": True,
+		},
+	}
+
+
+def test_compute_pre_encode_crop_signals_emits_all_six_stages():
+	"""The helper must expose S0..S5 each with `h` and `w` float64 arrays.
+
+	Behavioral invariant: the six-stage dict is shape-correct so the
+	per-stage metrics helper has well-defined inputs (WP-A1 acceptance).
+	"""
+	trajectory = _make_trajectory_constant(n_frames=120)
+	video_info = _minimal_video_info()
+	cfg = _minimal_cfg()
+	signals = analyze_torso_box_noise.compute_pre_encode_crop_signals(
+		trajectory, video_info, cfg,
+	)
+	expected_keys = ("S0_raw", "S1_w_h_avg", "S2_ema_1", "S3_fit_1", "S4_ema_2", "S5_fit_2")
+	for key in expected_keys:
+		assert key in signals, f"missing stage key: {key}"
+		stage = signals[key]
+		assert "h" in stage and "w" in stage, f"stage {key} missing h/w"
+		assert len(stage["h"]) == len(trajectory), f"stage {key} h length mismatch"
+		assert len(stage["w"]) == len(trajectory), f"stage {key} w length mismatch"
+		assert stage["h"].dtype == numpy.float64, f"stage {key} h dtype"
+		assert stage["w"].dtype == numpy.float64, f"stage {key} w dtype"
+	# legacy keys preserved
+	for key in ("raw_cx", "raw_cy", "raw_w", "raw_h",
+				"desired_crop_h", "smoothed_crop_h",
+				"final_smoothed_h", "final_smoothed_w",
+				"edge_clamped", "edge_clamped_S3"):
+		assert key in signals, f"missing legacy key: {key}"
+
+
+def test_compute_per_stage_zoom_metrics_zero_on_stationary_trajectory():
+	"""Stationary trajectory -> zero log_velocity and zero hotspot at every stage.
+
+	Behavioral invariant: with constant per-frame torso h/w, no stage of
+	the crop pipeline can introduce frame-to-frame scale change. Both
+	the geometric-mean log_velocity_p95 and the hotspot severity must
+	be at the float-noise floor for every stage S0..S5.
+	"""
+	trajectory = _make_trajectory_constant(n_frames=200)
+	video_info = _minimal_video_info()
+	cfg = _minimal_cfg()
+	signals = analyze_torso_box_noise.compute_pre_encode_crop_signals(
+		trajectory, video_info, cfg,
+	)
+	rows = analyze_torso_box_noise.compute_per_stage_zoom_metrics(
+		signals, fps=float(video_info["fps"]),
+	)
+	# canonical S0..S5 order
+	assert [r["stage_id"] for r in rows] == list(analyze_torso_box_noise.STAGE_IDS)
+	for row in rows:
+		assert row["log_velocity_p95"] <= 1e-12, (
+			f"stage {row['stage_id']} log_velocity_p95 = {row['log_velocity_p95']}"
+		)
+		assert row["hotspot_severity"] <= 1e-12, (
+			f"stage {row['stage_id']} hotspot_severity = {row['hotspot_severity']}"
+		)
+		assert row["n_frames_finite"] >= len(trajectory) - 1

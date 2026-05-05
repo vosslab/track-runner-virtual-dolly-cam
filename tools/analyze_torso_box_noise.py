@@ -134,6 +134,15 @@ def parse_args() -> argparse.Namespace:
 		default=5000,
 		help="Frame-count tolerance for video vs trajectory alignment. Default 5000.",
 	)
+	parser.add_argument(
+		"--bisect-stages", dest="bisect_stages", action="store_true",
+		help=(
+			"Emit a per-stage zoom-bounce table (Markdown) and a "
+			"per-frame stage trace CSV covering S0..S5 of "
+			"tr_crop.direct_center_crop_trajectory. See plan "
+			"~/.claude/plans/lucky-napping-lake.md."
+		),
+	)
 	args = parser.parse_args()
 	return args
 
@@ -196,10 +205,18 @@ def compute_pre_encode_crop_signals(
 
 	The production `tr_crop.direct_center_crop_trajectory` returns only
 	integer crop rectangles. To diagnose torso-vs-crop noise we need
-	the intermediate float signals: desired_crop_h (W+H average),
-	smoothed_crop_h (post-EMA, pre-fit), and the final post-fit
-	smoothed_h. This helper reimplements just enough of the math to
-	expose those values without modifying production code.
+	the intermediate float signals at every pipeline stage. This helper
+	reimplements just enough of the math (by reusing the production
+	primitives directly) to expose those values without modifying
+	production code.
+
+	Stages exposed (see plan `~/.claude/plans/lucky-napping-lake.md`):
+	  S0_raw      raw torso, scale-normalized to crop units
+	  S1_w_h_avg  post W+H average (desired_crop_h)
+	  S2_ema_1    post EMA pass 1
+	  S3_fit_1    post fit-to-source pass 1
+	  S4_ema_2    post EMA pass 2 (== S3 when alpha_size == 0)
+	  S5_fit_2    post fit-to-source pass 2 (the existing gate point)
 
 	Args:
 		trajectory: Per-frame state list (from interval_solver after
@@ -213,8 +230,13 @@ def compute_pre_encode_crop_signals(
 		  desired_crop_h (W+H average; the pre-EMA crop-size estimate),
 		  smoothed_crop_h (post-EMA, pre-fit),
 		  final_smoothed_h, final_smoothed_w (post-Step 3.6),
-		  edge_clamped (bool: True where Step 3.6 shrank the EMA
-		    output).
+		  edge_clamped (bool: True where Step 3.6 pass-2 shrank the
+		    EMA output),
+		  edge_clamped_S3 (bool: True where Step 3.6 pass-1 shrank
+		    the EMA pass-1 output),
+		  S0_raw, S1_w_h_avg, S2_ema_1, S3_fit_1, S4_ema_2, S5_fit_2
+		    (each a sub-dict with `h` and `w` numpy arrays of length
+		    n_frames).
 	"""
 	processing = cfg.get("processing", {})
 	aspect_str = processing.get("crop_aspect", "1:1")
@@ -238,12 +260,22 @@ def compute_pre_encode_crop_signals(
 		raw_w[i] = float(state["w"])
 		raw_h[i] = float(state["h"])
 
-	# desired_crop_h: W+H average per tr_crop.direct_center_crop_trajectory
+	frame_w = int(video_info["width"])
+	frame_h = int(video_info["height"])
+
+	# S0: scale-normalized raw torso. Not equal to S1 by construction;
+	# kept as a "before any crop construction" reference signal.
+	s0_h = raw_h * torso_multiple
+	s0_w = raw_w * torso_multiple
+
+	# S1: W+H average per tr_crop.direct_center_crop_trajectory
 	desired_h_from_h = raw_h * torso_multiple
 	desired_h_from_w = (raw_w * torso_multiple) / aspect_ratio
 	desired_crop_h = 0.5 * (desired_h_from_h + desired_h_from_w)
+	s1_h = desired_crop_h
+	s1_w = s1_h * aspect_ratio
 
-	# smoothed_crop_h: forward-backward EMA on desired_crop_h
+	# S2: forward-backward EMA pass 1 on desired_crop_h
 	if alpha_size > 0:
 		smoothed_h_pre_fit = tr_crop._forward_backward_ema(desired_crop_h, alpha_size)
 	else:
@@ -252,38 +284,50 @@ def compute_pre_encode_crop_signals(
 	# don't need it for the size diagnostic.
 	smoothed_h_pre_fit = numpy.maximum(smoothed_h_pre_fit, 1.0)
 	smoothed_w_pre_fit = numpy.maximum(smoothed_h_pre_fit * aspect_ratio, 1.0)
+	s2_h = smoothed_h_pre_fit.copy()
+	s2_w = smoothed_w_pre_fit.copy()
 
-	# Step 3.6: centered-fit-to-source. Re-implement the same per-frame
-	# fit and second-pass EMA + re-fit. Use the production helper.
-	final_h = smoothed_h_pre_fit.copy()
-	final_w = smoothed_w_pre_fit.copy()
+	# S3: fit-to-source pass 1. When fit_to_source is False, S3 == S2.
+	s3_h = s2_h.copy()
+	s3_w = s2_w.copy()
 	if fit_to_source:
-		# first fit pass
 		for i in range(n):
 			fit_w, fit_h = tr_crop._max_centered_fit_size(
 				raw_cx[i], raw_cy[i],
-				final_w[i],
-				int(video_info["width"]), int(video_info["height"]),
+				s3_w[i],
+				frame_w, frame_h,
 				aspect_ratio,
 			)
-			final_w[i] = max(fit_w, 1.0)
-			final_h[i] = max(fit_h, 1.0)
-		# second-pass EMA + re-fit when alpha_size > 0
-		if alpha_size > 0:
-			final_h = tr_crop._forward_backward_ema(final_h, alpha_size)
-			final_w = final_h * aspect_ratio
-			for i in range(n):
-				fit_w, fit_h = tr_crop._max_centered_fit_size(
-					raw_cx[i], raw_cy[i],
-					final_w[i],
-					int(video_info["width"]), int(video_info["height"]),
-					aspect_ratio,
-				)
-				final_w[i] = max(fit_w, 1.0)
-				final_h[i] = max(fit_h, 1.0)
+			s3_w[i] = max(fit_w, 1.0)
+			s3_h[i] = max(fit_h, 1.0)
+	edge_clamped_s3 = s3_h < (s2_h - 0.5)
 
-	# edge_clamped: True where the fit pass shrank the EMA output
-	edge_clamped = final_h < (smoothed_h_pre_fit - 0.5)
+	# S4: forward-backward EMA pass 2 on the fit output. Only runs in
+	# production when both fit_to_source and alpha_size > 0; otherwise
+	# S4 == S3.
+	s4_h = s3_h.copy()
+	s4_w = s3_w.copy()
+	if fit_to_source and alpha_size > 0:
+		s4_h = tr_crop._forward_backward_ema(s3_h, alpha_size)
+		s4_w = s4_h * aspect_ratio
+
+	# S5: fit-to-source pass 2. Only runs in production when both
+	# fit_to_source and alpha_size > 0; otherwise S5 == S4 == S3.
+	s5_h = s4_h.copy()
+	s5_w = s4_w.copy()
+	if fit_to_source and alpha_size > 0:
+		for i in range(n):
+			fit_w, fit_h = tr_crop._max_centered_fit_size(
+				raw_cx[i], raw_cy[i],
+				s5_w[i],
+				frame_w, frame_h,
+				aspect_ratio,
+			)
+			s5_w[i] = max(fit_w, 1.0)
+			s5_h[i] = max(fit_h, 1.0)
+
+	# edge_clamped: True where the final fit pass shrank its input
+	edge_clamped = s5_h < (s4_h - 0.5) if (fit_to_source and alpha_size > 0) else edge_clamped_s3
 
 	return {
 		"raw_cx": raw_cx,
@@ -292,9 +336,16 @@ def compute_pre_encode_crop_signals(
 		"raw_h": raw_h,
 		"desired_crop_h": desired_crop_h,
 		"smoothed_crop_h": smoothed_h_pre_fit,
-		"final_smoothed_h": final_h,
-		"final_smoothed_w": final_w,
+		"final_smoothed_h": s5_h,
+		"final_smoothed_w": s5_w,
 		"edge_clamped": edge_clamped,
+		"edge_clamped_S3": edge_clamped_s3,
+		"S0_raw":     {"h": s0_h, "w": s0_w},
+		"S1_w_h_avg": {"h": s1_h, "w": s1_w},
+		"S2_ema_1":   {"h": s2_h, "w": s2_w},
+		"S3_fit_1":   {"h": s3_h, "w": s3_w},
+		"S4_ema_2":   {"h": s4_h, "w": s4_w},
+		"S5_fit_2":   {"h": s5_h, "w": s5_w},
 	}
 
 
@@ -415,6 +466,54 @@ def compute_simulated_hotspot_severity(
 		working[mask_start:mask_end] = -numpy.inf
 	severity = float(sum(v for _, v in hotspots))
 	return {"severity": severity, "hotspots": hotspots}
+
+
+#============================================
+STAGE_IDS = ("S0_raw", "S1_w_h_avg", "S2_ema_1", "S3_fit_1", "S4_ema_2", "S5_fit_2")
+
+
+#============================================
+def compute_per_stage_zoom_metrics(
+	signals: dict, fps: float,
+) -> list:
+	"""Per-stage log_velocity_p95 and hotspot severity for S0..S5.
+
+	For each stage the geometric-mean log_size is
+	`log(sqrt(stage_h * stage_w))`. log_velocity at frame i is
+	`abs(log_size[i] - log_size[i-1])` with index 0 set to NaN. The
+	p95 is computed over the finite tail. hotspot severity reuses
+	`compute_simulated_hotspot_severity` per stage.
+
+	Args:
+		signals: Output of `compute_pre_encode_crop_signals`.
+		fps: Source video frame rate.
+
+	Returns:
+		List of six dicts, in canonical S0..S5 order, each with keys
+		`stage_id, log_velocity_p95, hotspot_severity, n_frames_finite`.
+	"""
+	rows = []
+	for stage_id in STAGE_IDS:
+		stage = signals[stage_id]
+		stage_h = numpy.asarray(stage["h"], dtype=numpy.float64)
+		stage_w = numpy.asarray(stage["w"], dtype=numpy.float64)
+		# geometric-mean log size; non-positive or non-finite -> NaN
+		area = numpy.sqrt(numpy.maximum(stage_w * stage_h, 0.0))
+		stage_log_v = log_velocity(area)
+		finite = stage_log_v[numpy.isfinite(stage_log_v)]
+		n_finite = int(finite.size)
+		if n_finite >= 2:
+			log_v_p95 = float(numpy.percentile(finite, 95))
+		else:
+			log_v_p95 = float("nan")
+		hotspot = compute_simulated_hotspot_severity(stage_log_v, fps)
+		rows.append({
+			"stage_id": stage_id,
+			"log_velocity_p95": log_v_p95,
+			"hotspot_severity": float(hotspot["severity"]),
+			"n_frames_finite": n_finite,
+		})
+	return rows
 
 
 #============================================
@@ -972,6 +1071,188 @@ def main() -> None:
 		float(video_info["fps"]),
 	)
 	print(f"  wrote: {summary_path}")
+
+	# --bisect-stages: emit per-frame stage trace CSV + per-stage table
+	if args.bisect_stages:
+		stage_csv_path = os.path.join(output_dir, "crop_zoom_stage_trace.csv")
+		write_stage_trace_csv(stage_csv_path, signals)
+		print(f"  wrote: {stage_csv_path}")
+		stage_rows = compute_per_stage_zoom_metrics(
+			signals, float(video_info["fps"]),
+		)
+		stage_md_name = (
+			"stage_bisect.md" if args.stabilizer_method == "none"
+			else f"stage_bisect_{args.stabilizer_method}_w{args.stabilizer_window}.md"
+		)
+		stage_md_path = os.path.join(output_dir, stage_md_name)
+		write_stage_bisect_md(
+			stage_md_path, basename, stage_rows, float(video_info["fps"]),
+		)
+		print(f"  wrote: {stage_md_path}")
+
+
+#============================================
+def write_stage_trace_csv(output_path: str, signals: dict) -> None:
+	"""Per-frame trace CSV covering all six pipeline stages S0..S5.
+
+	One row per frame. Columns:
+	  frame, torso_w, torso_h,
+	  S0_h, S0_w, S0_log_size, S1_h, S1_w, S1_log_size, ...
+	  S5_h, S5_w, S5_log_size,
+	  edge_clamped_S3, edge_clamped_S5,
+	  log_velocity_S0, log_velocity_S1, ..., log_velocity_S5
+
+	`log_velocity_*[0]` is NaN by definition (no prior frame).
+	"""
+	n = len(signals["raw_cx"])
+	# precompute log_size and log_velocity per stage (geometric mean)
+	stage_log_size = {}
+	stage_log_v = {}
+	for stage_id in STAGE_IDS:
+		stage = signals[stage_id]
+		stage_h = numpy.asarray(stage["h"], dtype=numpy.float64)
+		stage_w = numpy.asarray(stage["w"], dtype=numpy.float64)
+		area = numpy.sqrt(numpy.maximum(stage_w * stage_h, 0.0))
+		log_size = numpy.full(n, numpy.nan, dtype=numpy.float64)
+		positive = numpy.isfinite(area) & (area > 0)
+		log_size[positive] = numpy.log(area[positive])
+		stage_log_size[stage_id] = log_size
+		stage_log_v[stage_id] = log_velocity(area)
+
+	header = ["frame", "torso_w", "torso_h"]
+	for stage_id in STAGE_IDS:
+		header += [f"{stage_id}_h", f"{stage_id}_w", f"{stage_id}_log_size"]
+	header += ["edge_clamped_S3", "edge_clamped_S5"]
+	for stage_id in STAGE_IDS:
+		header += [f"log_velocity_{stage_id}"]
+
+	edge_s3 = signals["edge_clamped_S3"]
+	edge_s5 = signals["edge_clamped"]
+	with open(output_path, "w", newline="") as fh:
+		writer = csv.writer(fh)
+		writer.writerow(header)
+		for i in range(n):
+			row = [
+				i,
+				f"{signals['raw_w'][i]:.4f}",
+				f"{signals['raw_h'][i]:.4f}",
+			]
+			for stage_id in STAGE_IDS:
+				stage = signals[stage_id]
+				row.append(f"{stage['h'][i]:.4f}")
+				row.append(f"{stage['w'][i]:.4f}")
+				ls = stage_log_size[stage_id][i]
+				row.append("" if not numpy.isfinite(ls) else f"{ls:.6f}")
+			row.append(int(bool(edge_s3[i])))
+			row.append(int(bool(edge_s5[i])))
+			for stage_id in STAGE_IDS:
+				lv = stage_log_v[stage_id][i]
+				row.append("" if not numpy.isfinite(lv) else f"{lv:.6f}")
+			writer.writerow(row)
+
+
+#============================================
+def format_per_stage_table(stage_rows: list) -> str:
+	"""Render a Markdown table of per-stage zoom metrics.
+
+	Columns: stage | log_velocity_p95 | hotspot_severity | delta vs S0 | delta vs prev.
+	delta values are absolute differences in log_velocity_p95 (positive
+	means more bouncy than the reference).
+	"""
+	out = ""
+	out += (
+		"| stage | log_velocity_p95 | hotspot_severity | "
+		"delta vs S0 | delta vs prev |\n"
+	)
+	out += (
+		"| --- | --- | --- | --- | --- |\n"
+	)
+	if not stage_rows:
+		return out
+	s0_p95 = stage_rows[0]["log_velocity_p95"]
+	prev_p95 = s0_p95
+	for row in stage_rows:
+		p95 = row["log_velocity_p95"]
+		sev = row["hotspot_severity"]
+		delta_s0 = p95 - s0_p95 if numpy.isfinite(p95) and numpy.isfinite(s0_p95) else float("nan")
+		delta_prev = p95 - prev_p95 if numpy.isfinite(p95) and numpy.isfinite(prev_p95) else float("nan")
+		out += (
+			f"| {row['stage_id']} | {p95:.6f} | {sev:.6f} | "
+			f"{delta_s0:+.6f} | {delta_prev:+.6f} |\n"
+		)
+		prev_p95 = p95
+	return out
+
+
+#============================================
+def write_stage_bisect_md(
+	output_path: str, basename: str,
+	stage_rows: list, fps: float,
+) -> None:
+	"""Per-video summary Markdown for the --bisect-stages mode.
+
+	Names the first responsible stage using the >=50%-of-S5 rule, with
+	hotspot-severity / >20%-transition fallback when the primary rule
+	is inconclusive.
+	"""
+	out = ""
+	out += f"# Per-stage zoom metrics: {basename}\n\n"
+	out += f"fps: {fps:.4f}\n\n"
+	out += format_per_stage_table(stage_rows)
+	out += "\n"
+	# bisect call
+	if not stage_rows:
+		out += "_No stage data._\n"
+	else:
+		s5 = stage_rows[-1]["log_velocity_p95"]
+		responsible = None
+		fallback_used = ""
+		if numpy.isfinite(s5) and s5 >= 5e-3:
+			# primary rule: smallest stage with p95 >= 0.5 * S5
+			threshold = 0.5 * s5
+			for row in stage_rows:
+				p95 = row["log_velocity_p95"]
+				if numpy.isfinite(p95) and p95 >= threshold:
+					responsible = row["stage_id"]
+					break
+		if responsible is None:
+			# fallback: hotspot severity + >20% transition rule
+			fallback_used = (
+				"S5 is below the noise floor or the 50% rule was "
+				"inconclusive; using hotspot severity and the >20% "
+				"transition rule instead."
+			)
+			for i in range(1, len(stage_rows)):
+				prev = stage_rows[i - 1]["hotspot_severity"]
+				cur = stage_rows[i]["hotspot_severity"]
+				if numpy.isfinite(prev) and prev > 0 and numpy.isfinite(cur):
+					if cur > 1.2 * prev:
+						responsible = stage_rows[i]["stage_id"]
+						break
+		# amplification flags (always reported)
+		amplifying = []
+		for i in range(1, len(stage_rows)):
+			prev = stage_rows[i - 1]["log_velocity_p95"]
+			cur = stage_rows[i]["log_velocity_p95"]
+			if numpy.isfinite(prev) and prev > 0 and numpy.isfinite(cur):
+				if cur > 1.2 * prev:
+					amplifying.append(stage_rows[i]["stage_id"])
+		out += "## Bisect call\n\n"
+		if responsible is not None:
+			out += f"First responsible stage: **{responsible}**.\n\n"
+		else:
+			out += "First responsible stage: **inconclusive**.\n\n"
+		if fallback_used:
+			out += fallback_used + "\n\n"
+		if amplifying:
+			out += (
+				"Amplifying stages (>20% jump in log_velocity_p95 vs prior stage): "
+				+ ", ".join(amplifying) + ".\n\n"
+			)
+		else:
+			out += "No stage amplifies the metric by >20%.\n\n"
+	with open(output_path, "w") as fh:
+		fh.write(out)
 
 
 #============================================
