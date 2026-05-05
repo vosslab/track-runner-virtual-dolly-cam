@@ -163,27 +163,36 @@ Allowed:
 
 ## C11. Torso box information should be solved and stored for all frames
 
-- when targeting frames for seeds in 'target' mode, predicted torso boxes should
-  be display or the interval should be consider 'unsolved'. 'solved' intervals
-  have torso boxes
+- When targeting frames for seeds in target mode, predicted torso boxes should
+    be displayed. If predicted torso boxes are missing, the interval should be
+    considered unsolved.
+- Solved intervals have torso boxes for all frames.
 
 ## C12. Limit per frame content to only content that is needed
 
-- per frame stats and metadata are discourged if unused. torso box is x,y,w,h;
-  scaling, shifts, and confidence are all fine for camera motion. But we do not
-  need things like source frame size or binning, motion model stored for EACH frame
-  is it just a bunch of garbage for parameters that are not frame based
+- Per-frame stats and metadata are discouraged if unused.
+- Torso box data is x, y, w, h.
+- Scaling, shifts, and confidence are fine for camera motion.
+- Do not store parameters per frame when they are not frame-based, such as
+    source frame size, binning, or motion model. That is unneeded data.
 
 ## C13. Cleaner configuration files
-(1) NO directories in tr_config
-(2) cache is temporary and never saved nor depended on, if it is needed it is not cache
-(3) remove all use of a config_hash field for bookkeeping/diagnostics, it is too fragile
-and often, for example:
-  basename       <-- filename string (broke on .MOV -> .mkv rename)
-  size_bytes     <-- container size (broke on MOV -> MKV remux: 2.96GB -> 2.95GB)
-(4) frame based data is minimal, prefer ints over floats, and stored in .npz
-(5) interval/seed data is usually JSON
-(6) time stamps are not relevant for solve quality, only rejected if needed data is missing
+
+- No directories in tr_config.
+- Cache is temporary and never saved or depended on. If it is needed, it is not
+    cache.
+- Frame-based data is minimal, stored in .npz, and should prefer integers over
+    floats.
+- Interval and seed data is usually JSON.
+- Reject intervals only if needed data is missing. 
+    Time stamps are not relevant for solve quality. 
+- Do not use a config_hash field for bookkeeping or diagnostics. It is too
+    fragile.
+
+Examples of fragile values:
+basename       <-- filename string (broke on .MOV -> .mkv rename)
+size_bytes     <-- container size (broke on MOV -> MKV remux: 2.96GB -> 2.95GB)
+
 
 ## Relationship to other docs
 
