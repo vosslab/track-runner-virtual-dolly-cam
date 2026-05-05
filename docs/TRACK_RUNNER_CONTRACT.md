@@ -68,7 +68,25 @@ range reflects human annotation noise, not runner motion.
 - Code that treats pre-race seeds as independent measurements of a moving
   target violates this rule.
 
-## C5. Intervals after race start are independent
+## C5. Torso boxes are correct-object, imprecise-boundary annotations
+
+A torso box identifies the correct runner torso, but its exact boundary is not
+perfectly defined. If a human draws a box around the same runner in the same
+frame many times, the boxes will differ slightly. Machine-produced boxes have
+the same boundary-imprecision problem.
+
+- Code must treat torso-box coordinates and dimensions as imprecise
+  measurements of the correct object, not exact object boundaries.
+- Small frame-to-frame changes in `x`, `y`, `w`, or `h` must not automatically
+  be treated as true runner motion or true runner scale change.
+- Crop zoom must not react directly to single-frame torso-width or
+  torso-height jitter without robust stabilization.
+- Position tracking and size tracking should be separable. A stable center with
+  noisy `w`/`h` must not create zoom bounce.
+- Seeds remain truth anchors under C1 and C3, but seed boxes still have finite
+  boundary precision.
+  
+## C6. Intervals after race start are independent
 
 Seeds are hard anchors. An interval runs seed -> seed.
 
@@ -82,12 +100,12 @@ Seeds are hard anchors. An interval runs seed -> seed.
 - Future interval-to-interval smoothing, if added, is a separate pass
   layered on top of solve and refine. It never lives inside them.
 
-## C6. Refine mode only modifies after race start intervals with new seeds
+## C7. Refine mode only modifies after race start intervals with new seeds
 - refine mode should never force a full solve. If a full solve is needed,
   exit and tell the user to run solve with a reason.
 - recalculating race_start_frame is fine, but I just want to make sure untouched intervals are retained
 
-## C7. Jersey color and runner-appearance template matching are not reliable
+## C8. Jersey color and runner-appearance template matching are not reliable
 
 - Jersey and clothing color, color-histogram matching, and
   runner-appearance template matching are banned as identity or
@@ -102,7 +120,7 @@ Seeds are hard anchors. An interval runs seed -> seed.
   [TRACK_RUNNER_DESIGN.md](TRACK_RUNNER_DESIGN.md) and may evolve. This
   clause only forbids re-introducing the unreliable cues.
 
-## C8. FWD/BWD must remain independent for scoring
+## C9. FWD/BWD must remain independent for scoring
 
 Within a single interval, the forward pass and backward pass may each keep
 their own per-pass working state. That state must remain pass-local.
@@ -125,7 +143,7 @@ Allowed:
 - a separate output-only corrected track, if added later, provided it is
     not used for FWD/BWD agreement scoring
 
-## C9. Keep `SCHEMA_VERSION` unified
+## C10. Keep `SCHEMA_VERSION` unified
 
 - Do not use multiple schema version constants.
 - This is forbidden: `ITEM_SCHEMA_VERSION = 3` and `OBJECT_SCHEMA_VERSION = 4`.
@@ -143,20 +161,20 @@ Allowed:
   The version still changes to avoid mixed numbers across outputs and
   prevent silent mismatches in cached or derived artifacts.
 
-## C10. Torso box information should be solved and stored for all frames
+## C11. Torso box information should be solved and stored for all frames
 
 - when targeting frames for seeds in 'target' mode, predicted torso boxes should
   be display or the interval should be consider 'unsolved'. 'solved' intervals
   have torso boxes
 
-## C11. Limit per frame content to only content that is needed
+## C12. Limit per frame content to only content that is needed
 
 - per frame stats and metadata are discourged if unused. torso box is x,y,w,h;
   scaling, shifts, and confidence are all fine for camera motion. But we do not
   need things like source frame size or binning, motion model stored for EACH frame
   is it just a bunch of garbage for parameters that are not frame based
 
-## C12. Cleaner configuration files
+## C13. Cleaner configuration files
 (1) NO directories in tr_config
 (2) cache is temporary and never saved nor depended on, if it is needed it is not cache
 (3) remove all use of a config_hash field for bookkeeping/diagnostics, it is too fragile
