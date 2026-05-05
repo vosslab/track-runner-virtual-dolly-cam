@@ -14,7 +14,7 @@ for json in tr_config/*.seeds.json; do
   echo "$video"
   echo "================================="
   file "$video"
-  ./track_runner/track_runner.py --workers 1 -i $video solve --yes
+  ./track_runner/track_runner.py --workers 1 -i $video solve --yes --auto-bin
   sleep 5
 done
 
@@ -29,6 +29,6 @@ for json in tr_config/*.seeds.json; do
   echo "$video"
   echo "================================="
   file "$video"
-  ./track_runner/track_runner.py -i $video solve --upgrade
+  ./track_runner/track_runner.py -i $video solve --upgrade --auto-bin
   sleep 5
 done

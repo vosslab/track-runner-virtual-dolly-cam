@@ -21,7 +21,8 @@ def _add_bin_arg(parser: argparse.ArgumentParser) -> None:
 	automatically when bin_factor > 1; the safety floor caps per-axis
 	loss at 10% with a one-line warning.
 	"""
-	parser.add_argument(
+	bin_group = parser.add_mutually_exclusive_group()
+	bin_group.add_argument(
 		"--bin", dest="bin_factor", type=int, default=1,
 		help=(
 			"Optional spatial downsample applied to camera-motion and "
@@ -29,6 +30,20 @@ def _add_bin_arg(parser: argparse.ArgumentParser) -> None:
 			"bin_factor > 1 also crops each scaled axis to the largest "
 			"FFT-friendly goodbox not exceeding it (origin-preserving "
 			"right/bottom crop). Source-frame outputs unchanged."
+		),
+	)
+	bin_group.add_argument(
+		"--auto-bin", dest="auto_bin_target", type=int,
+		nargs="?", const=480, default=None, metavar="HEIGHT",
+		help=(
+			"Auto-pick bin_factor from source height. bin_factor is a "
+			"whole number, so actual binned height only approximates "
+			"the target: bin_factor = max(1, round(source_h / target)). "
+			"Bare flag targets 480; pass --auto-bin 720 for 720. "
+			"Examples at target=480: 720->bin1 (720), 1080->bin2 (540), "
+			"1440->bin3 (480), 2160->bin4 (540), 4320->bin9 (480). "
+			"At target=720: 1080->bin2 (540), 1440->bin2 (720), "
+			"2160->bin3 (720). Mutually exclusive with --bin."
 		),
 	)
 

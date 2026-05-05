@@ -844,6 +844,19 @@ def _run_solve(
 
 	# build solver kwargs
 	bin_factor = int(getattr(args, "bin_factor", 1))
+	auto_target = getattr(args, "auto_bin_target", None)
+	if auto_target is not None:
+		if auto_target < 1:
+			raise ValueError(
+				f"--auto-bin target must be >= 1, got {auto_target}"
+			)
+		source_height = int(video_info["height"])
+		bin_factor = max(1, int(round(source_height / float(auto_target))))
+		actual_height = source_height // bin_factor
+		print(
+			f"  --auto-bin {auto_target}: source height {source_height}"
+			f" -> bin_factor={bin_factor} (actual height {actual_height})"
+		)
 	if bin_factor < 1:
 		raise ValueError(f"--bin must be >= 1, got {bin_factor}")
 	if bin_factor > 1:
