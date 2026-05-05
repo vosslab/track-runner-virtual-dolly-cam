@@ -85,7 +85,7 @@ the same boundary-imprecision problem.
   noisy `w`/`h` must not create zoom bounce.
 - Seeds remain truth anchors under C1 and C3, but seed boxes still have finite
   boundary precision.
-  
+
 ## C6. Intervals after race start are independent
 
 Seeds are hard anchors. An interval runs seed -> seed.
@@ -184,8 +184,8 @@ Allowed:
 - Frame-based data is minimal, stored in .npz, and should prefer integers over
     floats.
 - Interval and seed data is usually JSON.
-- Reject intervals only if needed data is missing. 
-    Time stamps are not relevant for solve quality. 
+- Reject intervals only if needed data is missing.
+    Time stamps are not relevant for solve quality.
 - Do not use a config_hash field for bookkeeping or diagnostics. It is too
     fragile.
 

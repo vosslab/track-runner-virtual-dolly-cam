@@ -31,30 +31,30 @@ import statistics
 def parse_args() -> argparse.Namespace:
 	parser = argparse.ArgumentParser(
 		description="Measure pre-race seed-box reproducibility variance "
-		            "from a seeds.json (no video required)."
+					"from a seeds.json (no video required)."
 	)
 	src_group = parser.add_mutually_exclusive_group(required=True)
 	src_group.add_argument(
 		'-i', '--input', dest='input_file',
 		help='Path to a single tr_config/*.track_runner.seeds.json file. '
-		     'Emits a per-video summary.',
+			'Emits a per-video summary.',
 	)
 	src_group.add_argument(
 		'-d', '--directory', dest='directory',
 		help='Directory containing many *.track_runner.seeds.json files '
-		     '(typically tr_config/). Emits a single corpus table.',
+			'(typically tr_config/). Emits a single corpus table.',
 	)
 	parser.add_argument(
 		'-r', '--race-start-frame', dest='race_start_frame',
 		type=int, default=None,
 		help='Override race_start_frame. Default: read from the '
-		     'co-located *.track_runner.interval_scores.json '
-		     'pre_race_reference.race_start_frame. Only valid with -i.',
+			'co-located *.track_runner.interval_scores.json '
+			'pre_race_reference.race_start_frame. Only valid with -i.',
 	)
 	parser.add_argument(
 		'-o', '--output', dest='output_file', default=None,
 		help='Write the markdown summary to a file in addition to '
-		     'stdout. Default: stdout only.',
+			'stdout. Default: stdout only.',
 	)
 	args = parser.parse_args()
 	return args
@@ -128,7 +128,7 @@ def per_axis_stats(values: list) -> dict:
 	n = len(values)
 	if n == 0:
 		return {'n': 0, 'mean': None, 'stdev': None, 'min': None,
-		        'max': None, 'range': None}
+				'max': None, 'range': None}
 	mean = statistics.fmean(values)
 	vmin = min(values)
 	vmax = max(values)
