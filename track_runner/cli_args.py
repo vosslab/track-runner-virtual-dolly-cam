@@ -36,14 +36,17 @@ def _add_bin_arg(parser: argparse.ArgumentParser) -> None:
 		"--auto-bin", dest="auto_bin_target", type=int,
 		nargs="?", const=480, default=None, metavar="HEIGHT",
 		help=(
-			"Auto-pick bin_factor from source height. bin_factor is a "
+			"Auto-pick bin_factor from source height: "
+			"bin = max(1, round(source_h / target)). bin_factor is a "
 			"whole number, so actual binned height only approximates "
-			"the target: bin_factor = max(1, round(source_h / target)). "
+			"the target. Source dims that are not multiples of bin "
+			"silently drop at most (bin-1) right/bottom pixels, the "
+			"same kind of crop goodbox already does. "
 			"Bare flag targets 480; pass --auto-bin 720 for 720. "
-			"Examples at target=480: 720->bin1 (720), 1080->bin2 (540), "
-			"1440->bin3 (480), 2160->bin4 (540), 4320->bin9 (480). "
-			"At target=720: 1080->bin2 (540), 1440->bin2 (720), "
-			"2160->bin3 (720). Mutually exclusive with --bin."
+			"Examples at target=480: 720->bin2 (360), 1080->bin2 (540), "
+			"1440->bin3 (480), 2160->bin4 (540), 2816->bin6 (469). "
+			"At target=720: 1080->bin1 (1080), 2160->bin3 (720). "
+			"Mutually exclusive with --bin."
 		),
 	)
 

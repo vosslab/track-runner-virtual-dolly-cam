@@ -103,26 +103,12 @@ def _resolve_frame_geometry(
 	snap is skipped on that axis (warned once); the other axis can
 	still snap.
 	"""
-	# divisibility warnings only meaningful when binning is requested:
-	# a fractional source-pixel column or row is silently dropped by
-	# the floor division below.
-	if bin_factor > 1:
-		if source_width % bin_factor != 0:
-			warnings.warn(
-				f"FrameReader: source_width={source_width} is not"
-				f" divisible by bin_factor={bin_factor}; the rightmost"
-				f" {source_width % bin_factor} source-pixel column(s)"
-				f" will be dropped by INTER_AREA downsample.",
-				stacklevel=3,
-			)
-		if source_height % bin_factor != 0:
-			warnings.warn(
-				f"FrameReader: source_height={source_height} is not"
-				f" divisible by bin_factor={bin_factor}; the bottom"
-				f" {source_height % bin_factor} source-pixel row(s)"
-				f" will be dropped by INTER_AREA downsample.",
-				stacklevel=3,
-			)
+	# Non-divisible source dims silently drop at most (bin_factor - 1)
+	# right/bottom pixels, identical in spirit to the goodbox snap below
+	# (origin-preserving right/bottom crop). The loss is bounded by
+	# bin_factor-1 over thousands of pixels and is always far under the
+	# goodbox _MAX_CROP_FRACTION safety floor, so no warning is emitted;
+	# _snap_or_keep still warns if its own snap would exceed the floor.
 	scaled_width = source_width // bin_factor
 	scaled_height = source_height // bin_factor
 	processed_width = _snap_or_keep(scaled_width, "width")
