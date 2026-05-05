@@ -59,6 +59,7 @@ import state_io
 import tr_config
 import tr_crop
 import tr_paths
+import torso_size_stabilizer
 
 # local repo modules (common_tools)
 import common_tools.probe_video
@@ -97,9 +98,29 @@ def parse_args() -> argparse.Namespace:
 		),
 	)
 	parser.add_argument(
-		"-W", "--median-window", dest="median_window", type=int,
+		"--reference-window", dest="reference_window", type=int,
 		default=7,
-		help="Window length for the median-filtered torso_h reference series. Default 7.",
+		help=(
+			"Window length for the diagnostic median-filtered torso_h "
+			"reference series shown on hotspot plots. Default 7."
+		),
+	)
+	parser.add_argument(
+		"-S", "--stabilizer-method", dest="stabilizer_method",
+		choices=torso_size_stabilizer.METHOD_CHOICES, default="none",
+		help=(
+			"Apply a robust torso w/h stabilizer to the loaded trajectory "
+			"before computing crop signals. Default `none` (baseline). "
+			"Choices: none, median, hampel, mad_gated."
+		),
+	)
+	parser.add_argument(
+		"-W", "--stabilizer-window", dest="stabilizer_window", type=int,
+		default=7,
+		help=(
+			"Centered window length for the stabilizer (used when "
+			"--stabilizer-method is non-`none`). Default 7."
+		),
 	)
 	parser.add_argument(
 		"-H", "--hotspots-md", dest="hotspots_md", default="",
@@ -333,6 +354,90 @@ def velocity_abs(values: numpy.ndarray) -> numpy.ndarray:
 
 
 #============================================
+def log_velocity(values: numpy.ndarray) -> numpy.ndarray:
+	"""abs(diff(log(values))); index 0 padded to NaN.
+
+	Mirrors the definition used by `assess_pixel_zoom.py`'s
+	`zoom_velocity_log_p95` but applied to the simulated pre-encode
+	crop signal rather than the post-encode Fourier-Mellin output.
+	Non-positive or non-finite inputs produce NaN at that index.
+	"""
+	out = numpy.full_like(values, numpy.nan, dtype=numpy.float64)
+	if len(values) > 1:
+		valid = numpy.isfinite(values) & (values > 0)
+		log_v = numpy.full_like(values, numpy.nan, dtype=numpy.float64)
+		log_v[valid] = numpy.log(values[valid])
+		out[1:] = numpy.abs(numpy.diff(log_v))
+	return out
+
+
+#============================================
+def compute_simulated_hotspot_severity(
+	log_velocity_series: numpy.ndarray,
+	fps: float,
+	top_n: int = 5,
+) -> dict:
+	"""Window-local p95 of log-velocity; report top-N hotspot severity.
+
+	Mirrors `find_zoom_hotspots.score_velocity_p95` and
+	`find_top_n_hotspots` but operates on the simulated pre-encode
+	log-velocity series. Window is 5 seconds at the given fps (matches
+	the find_zoom_hotspots default behavior). Returns the sum of the
+	top-N peak intensities as the severity scalar plus the per-hotspot
+	list for diagnostics.
+	"""
+	n = len(log_velocity_series)
+	if n < 2 or fps <= 0.0:
+		return {"severity": float("nan"), "hotspots": []}
+	window_frames = max(int(round(5.0 * float(fps))), 5)
+	half = window_frames // 2
+	intensity = numpy.zeros(n, dtype=numpy.float64)
+	for i in range(n):
+		start = max(0, i - half)
+		end = min(n, i + half + 1)
+		window_slice = log_velocity_series[start:end]
+		valid_count = int(numpy.sum(numpy.isfinite(window_slice)))
+		if valid_count == 0:
+			intensity[i] = 0.0
+		else:
+			intensity[i] = float(numpy.nanpercentile(window_slice, 95))
+	# greedy non-max suppression with min_gap = window_frames
+	working = intensity.copy()
+	hotspots = []
+	for _ in range(int(top_n)):
+		idx = int(numpy.argmax(working))
+		val = float(working[idx])
+		if not numpy.isfinite(val) or val <= 0.0:
+			break
+		hotspots.append((idx, val))
+		mask_start = max(0, idx - window_frames)
+		mask_end = min(len(working), idx + window_frames + 1)
+		working[mask_start:mask_end] = -numpy.inf
+	severity = float(sum(v for _, v in hotspots))
+	return {"severity": severity, "hotspots": hotspots}
+
+
+#============================================
+def velocity_fractional(values: numpy.ndarray) -> numpy.ndarray:
+	"""abs(diff(values)) / values[1:]; cross-video comparable per C2.
+
+	Returns an array of the same length as `values`; index 0 is NaN to
+	keep length alignment. Divisors that are non-finite or below
+	1e-9 in absolute value produce NaN at that index, so zero or
+	near-zero values do not blow up the metric.
+	"""
+	out = numpy.full_like(values, numpy.nan, dtype=numpy.float64)
+	if len(values) > 1:
+		diffs = numpy.abs(numpy.diff(values))
+		divisors = values[1:]
+		valid = numpy.isfinite(divisors) & (numpy.abs(divisors) > 1e-9)
+		frac = numpy.full_like(diffs, numpy.nan, dtype=numpy.float64)
+		frac[valid] = diffs[valid] / numpy.abs(divisors[valid])
+		out[1:] = frac
+	return out
+
+
+#============================================
 def jerk_abs(values: numpy.ndarray) -> numpy.ndarray:
 	"""abs(diff(diff(values))); first two indices padded to NaN.
 	"""
@@ -356,6 +461,13 @@ def write_trace_csv(
 	final_w = signals["final_smoothed_w"]
 	delta_h = velocity_abs(final_h)
 	jerk_h = jerk_abs(final_h)
+	# fractional velocities (per C2: cross-video comparable)
+	torso_h_frac_v = velocity_fractional(signals["raw_h"])
+	torso_w_frac_v = velocity_fractional(signals["raw_w"])
+	crop_h_frac_v = velocity_fractional(final_h)
+	# log-velocity of geometric-mean area (the primary zoom-bounce gate)
+	final_area = numpy.sqrt(numpy.maximum(final_w * final_h, 0.0))
+	final_crop_log_velocity = log_velocity(final_area)
 
 	header = [
 		"frame",
@@ -370,6 +482,10 @@ def write_trace_csv(
 		"edge_clamped_bool",
 		"crop_height_delta",
 		"crop_height_jerk",
+		"torso_h_fractional_velocity",
+		"torso_w_fractional_velocity",
+		"crop_h_fractional_velocity",
+		"final_crop_log_velocity",
 		"forward_torso_h",
 		"backward_torso_h",
 		"blended_torso_h",
@@ -400,6 +516,10 @@ def write_trace_csv(
 				str(int(bool(signals["edge_clamped"][i]))),
 				fmt(delta_h[i]),
 				fmt(jerk_h[i]),
+				fmt(torso_h_frac_v[i]),
+				fmt(torso_w_frac_v[i]),
+				fmt(crop_h_frac_v[i]),
+				fmt(final_crop_log_velocity[i]),
 				fmt(per_pass["forward_h"][i]),
 				fmt(per_pass["backward_h"][i]),
 				fmt(per_pass["blended_h"][i]),
@@ -500,6 +620,7 @@ def write_summary_md(
 	post_encode_log_scale: numpy.ndarray,
 	per_pass: dict,
 	hotspots: list,
+	fps: float,
 ) -> None:
 	"""Compose the per-video summary markdown.
 	"""
@@ -539,6 +660,12 @@ def write_summary_md(
 	rho_torso_enc, p_torso_enc = safe_pearson(
 		torso_v[: len(enc_v)], enc_v[: len(torso_v)],
 	)
+	# fractional-units variant (cross-video comparable per C2)
+	torso_v_frac = velocity_fractional(signals["raw_h"])
+	crop_v_frac = velocity_fractional(signals["final_smoothed_h"])
+	rho_torso_crop_frac, p_torso_crop_frac = safe_pearson(
+		torso_v_frac, crop_v_frac,
+	)
 
 	lines.append("## Pearson correlations on velocity series")
 	lines.append("")
@@ -549,9 +676,68 @@ def write_summary_md(
 		f"{rho_torso_crop:+.4f} | {p_torso_crop:.4g} |"
 	)
 	lines.append(
+		f"| fractional(torso_h) vs fractional(final_crop_h) | "
+		f"{rho_torso_crop_frac:+.4f} | {p_torso_crop_frac:.4g} |"
+	)
+	lines.append(
 		f"| abs(diff(torso_h)) vs abs(diff(post_encode_log_scale)) | "
 		f"{rho_torso_enc:+.4f} | {p_torso_enc:.4g} |"
 	)
+	lines.append("")
+
+	# Primary zoom-bounce gate: log-velocity of geometric-mean
+	# crop area on the simulated final crop rectangle. Mirrors
+	# `assess_pixel_zoom.zoom_velocity_log_p95` but pre-encode.
+	final_h_arr = signals["final_smoothed_h"]
+	final_w_arr = signals["final_smoothed_w"]
+	final_area = numpy.sqrt(numpy.maximum(final_w_arr * final_h_arr, 0.0))
+	final_log_v = log_velocity(final_area)
+	valid_log_v = final_log_v[numpy.isfinite(final_log_v)]
+	if len(valid_log_v) > 0:
+		final_crop_log_velocity_p95 = float(
+			numpy.nanpercentile(valid_log_v, 95)
+		)
+	else:
+		final_crop_log_velocity_p95 = float("nan")
+	severity_info = compute_simulated_hotspot_severity(
+		final_log_v, fps=fps, top_n=5,
+	)
+	lines.append("## Zoom-bounce gate (simulated final crop rectangle)")
+	lines.append("")
+	lines.append("Primary metric mirrors `assess_pixel_zoom.zoom_velocity_log_p95`")
+	lines.append("but is computed pre-encode on the simulated final crop area.")
+	lines.append("")
+	lines.append("| Metric | Value |")
+	lines.append("| --- | --- |")
+	lines.append(
+		f"| final_crop_log_velocity_p95 | "
+		f"{final_crop_log_velocity_p95:.6f} |"
+	)
+	lines.append(
+		f"| simulated_hotspot_severity (sum top-5 p95-windows) | "
+		f"{severity_info['severity']:.6f} |"
+	)
+	lines.append(f"| n_simulated_hotspots | {len(severity_info['hotspots'])} |")
+	lines.append("")
+
+	# Fractional jitter p95 (cross-video comparable per C2)
+	lines.append("## Fractional jitter (p95)")
+	lines.append("")
+	lines.append("| Series | n_finite | fractional_velocity_p95 |")
+	lines.append("| --- | --- | --- |")
+	for label, series in (
+		("torso_h_fractional_velocity", torso_v_frac),
+		("torso_w_fractional_velocity",
+			velocity_fractional(signals["raw_w"])),
+		("crop_h_fractional_velocity", crop_v_frac),
+	):
+		valid = numpy.isfinite(series)
+		n_valid = int(numpy.sum(valid))
+		if n_valid > 0:
+			p95 = float(numpy.nanpercentile(series[valid], 95))
+			lines.append(f"| {label} | {n_valid} | {p95:.6f} |")
+		else:
+			lines.append(f"| {label} | 0 | -- |")
 	lines.append("")
 
 	# per-pass jitter statistics
@@ -705,6 +891,19 @@ def main() -> None:
 	)
 	print(f"  trajectory: {len(trajectory)} frames, {len(all_seeds)} seeds")
 
+	# apply torso w/h stabilizer (between trajectory load and crop ingest);
+	# `none` is a passthrough that preserves the M1 baseline byte-equally.
+	if args.stabilizer_method != "none":
+		print(
+			f"  stabilizer: method={args.stabilizer_method} "
+			f"window={args.stabilizer_window}"
+		)
+		trajectory = torso_size_stabilizer.stabilize_trajectory(
+			trajectory,
+			args.stabilizer_method,
+			args.stabilizer_window,
+		)
+
 	# pre-encode crop signals (re-derived from tr_crop's logic)
 	signals = compute_pre_encode_crop_signals(
 		trajectory, video_info, cfg,
@@ -733,8 +932,8 @@ def main() -> None:
 		n_pair = min(len(log_scale), len(trajectory))
 		post_encode_log_scale = log_scale[:n_pair]
 
-	# median-filtered torso_h reference
-	median_h = median_filter_1d(signals["raw_h"], args.median_window)
+	# median-filtered torso_h reference (diagnostic plot only)
+	median_h = median_filter_1d(signals["raw_h"], args.reference_window)
 
 	# write trace CSV
 	trace_path = os.path.join(output_dir, "crop_zoom_trace.csv")
@@ -758,13 +957,19 @@ def main() -> None:
 			)
 			print(f"  wrote: {plot_path}")
 
-	# summary markdown
-	summary_path = os.path.join(
-		output_dir, f"{basename}_torso_noise_summary.md",
-	)
+	# summary markdown; per-method/window file when stabilizer is on
+	if args.stabilizer_method == "none":
+		summary_name = f"{basename}_torso_noise_summary.md"
+	else:
+		summary_name = (
+			f"{args.stabilizer_method}_w{args.stabilizer_window}"
+			"_torso_noise_summary.md"
+		)
+	summary_path = os.path.join(output_dir, summary_name)
 	write_summary_md(
 		summary_path, basename, signals, median_h,
 		post_encode_log_scale, per_pass, hotspots,
+		float(video_info["fps"]),
 	)
 	print(f"  wrote: {summary_path}")
 

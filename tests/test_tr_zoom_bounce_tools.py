@@ -39,6 +39,9 @@ import rank_zoom_variants
 import measure_black_bars
 import analyze_torso_box_noise
 
+# library under test
+import track_runner.torso_size_stabilizer as torso_size_stabilizer
+
 
 #============================================
 # Tool 1: find_zoom_hotspots
@@ -425,3 +428,93 @@ def test_analyze_torso_median_filter_suppresses_single_outlier():
 	# velocity at non-outlier indices is zero (or NaN at index 0)
 	assert v[5] == 0.0
 	assert v[outlier_idx + 5] == 0.0
+
+
+#============================================
+# torso_size_stabilizer (M2.B per declarative-shimmying-brooks.md)
+#============================================
+
+def _make_torso_coords_with_outlier(
+	n_frames: int = 100, outlier_idx: int = 40,
+) -> dict:
+	"""Constant torso h/w with a single one-frame outlier; cx/cy linear ramp."""
+	h = numpy.full(n_frames, 50.0, dtype=numpy.float64)
+	w = numpy.full(n_frames, 30.0, dtype=numpy.float64)
+	cx = numpy.linspace(100.0, 200.0, n_frames)
+	cy = numpy.linspace(150.0, 250.0, n_frames)
+	# inject a single-frame outlier on size only
+	h[outlier_idx] = 80.0
+	w[outlier_idx] = 50.0
+	return {"cx": cx, "cy": cy, "w": w, "h": h}
+
+
+def test_stabilize_median_suppresses_outlier_and_preserves_quiet_frames():
+	"""Median stabilizer suppresses the outlier; non-outlier frames stay close to input.
+
+	Behavioral invariant: the outlier-frame size returns to the local median
+	(within 1 px), and frames far from the outlier are within 1 px of input
+	since the local median equals the constant signal.
+	"""
+	outlier_idx = 40
+	coords = _make_torso_coords_with_outlier(outlier_idx=outlier_idx)
+	out = torso_size_stabilizer.stabilize_torso_size(
+		coords, method="median", window=7,
+	)
+	# outlier suppressed back toward 50 px
+	assert abs(out["h"][outlier_idx] - 50.0) < 1.0
+	assert abs(out["w"][outlier_idx] - 30.0) < 1.0
+	# non-outlier frame is unchanged (median of constants is the constant)
+	assert abs(out["h"][5] - 50.0) < 1.0
+	assert abs(out["h"][outlier_idx + 10] - 50.0) < 1.0
+
+
+def test_stabilize_hampel_replaces_only_outliers_quiet_frames_byte_equal():
+	"""Hampel only replaces gate-violating frames; other frames are byte-equal.
+
+	Behavioral invariant: under Hampel, an outlier frame is pulled toward the
+	local median while non-outlier frames pass through unchanged. This
+	separates Hampel from a plain median (which would touch every frame).
+	"""
+	outlier_idx = 40
+	coords = _make_torso_coords_with_outlier(outlier_idx=outlier_idx)
+	out = torso_size_stabilizer.stabilize_torso_size(
+		coords, method="hampel", window=7,
+	)
+	# outlier was replaced
+	assert out["h"][outlier_idx] != coords["h"][outlier_idx]
+	# distant frames are byte-equal to the input
+	for idx in (0, 1, 5, 20, outlier_idx + 10, len(coords["h"]) - 1):
+		assert out["h"][idx] == coords["h"][idx]
+		assert out["w"][idx] == coords["w"][idx]
+
+
+def test_stabilize_mad_gated_replaces_outlier_like_hampel():
+	"""MAD-gated stabilizer also replaces the single-frame outlier.
+
+	Behavioral invariant: mad_gated must move the outlier-frame size away
+	from the input value (toward the local median) on the constant + outlier
+	fixture, just like Hampel.
+	"""
+	outlier_idx = 40
+	coords = _make_torso_coords_with_outlier(outlier_idx=outlier_idx)
+	out = torso_size_stabilizer.stabilize_torso_size(
+		coords, method="mad_gated", window=7,
+	)
+	assert out["h"][outlier_idx] != coords["h"][outlier_idx]
+	assert abs(out["h"][outlier_idx] - 50.0) < 1.0
+
+
+def test_stabilize_cx_cy_passthrough_byte_identical_for_every_method():
+	"""Per C5 size and position are independent; cx/cy are never modified.
+
+	Behavioral invariant: for every method (none, median, hampel, mad_gated)
+	and a representative window, the returned cx and cy arrays are
+	byte-identical to the input.
+	"""
+	coords = _make_torso_coords_with_outlier()
+	for method in ("none", "median", "hampel", "mad_gated"):
+		out = torso_size_stabilizer.stabilize_torso_size(
+			coords, method=method, window=7,
+		)
+		assert numpy.array_equal(out["cx"], coords["cx"]), method
+		assert numpy.array_equal(out["cy"], coords["cy"]), method
