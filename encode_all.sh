@@ -1,0 +1,19 @@
+#!/bin/sh
+
+. source_me.sh
+
+for json in tr_config/*.seeds.json; do
+  #continue
+  stem="$(basename "$json" | sed 's/\.track_runner\.seeds\.json$//')"
+  video="TRACK_VIDEOS/${stem}.mkv"
+
+  if [ ! -s "$video" ]; then
+    continue
+  fi
+  echo "================================="
+  echo "$video"
+  echo "================================="
+  file "$video"
+  ./track_runner/track_runner.py --workers 1 -i $video encode --no-filters --aspect '2:1' --draw-tracking-overlay --torso-multiple 4 -r '960x480' --allow-offcenter-crop
+  sleep 5
+done

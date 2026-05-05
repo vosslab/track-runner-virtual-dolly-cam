@@ -199,11 +199,12 @@ def analyze_video_zoom(
 		dict with keys: frame_data, summary, analysis_info, valid_frames,
 		anchor_scale, local_scale, zoom_velocity_log, zoom_jerk
 	"""
-	# Probe video to get metadata
-	try:
-		fps, total_frames, width, height = common_tools.probe_video.probe_video(video_path)
-	except RuntimeError as e:
-		raise ValueError(f"Cannot probe video: {video_path}: {e}")
+	# Probe video to get metadata; probe_video returns a dict
+	info = common_tools.probe_video.probe_video(video_path)
+	fps = float(info["fps"])
+	total_frames = int(info["frame_count"])
+	width = int(info["width"])
+	height = int(info["height"])
 
 	# Open reader
 	reader = common_tools.frame_reader.FrameReader(

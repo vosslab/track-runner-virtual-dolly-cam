@@ -30,6 +30,19 @@ import csv
 import argparse
 
 
+# Built-in directionality table for known assess_pixel_zoom metrics.
+# "lower" means smaller is better; "higher" means larger is better.
+# Unknown metrics must supply --metric-direction explicitly.
+KNOWN_METRIC_DIRECTIONS = {
+	"bounce_rate_per_s": "lower",
+	"zoom_velocity_log_p95": "lower",
+	"zoom_jerk_p95": "lower",
+	"zoom_cv": "lower",
+	"drift_per_minute": "lower",
+	"valid_frame_fraction": "higher",
+}
+
+
 #============================================
 def parse_args() -> argparse.Namespace:
 	"""
@@ -52,9 +65,18 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument(
 		"-m", "--metric", dest="metric", default="bounce_rate_per_s",
 		help=(
-			"Column name to rank on. Common choices: bounce_rate_per_s, "
-			"zoom_velocity_log_p95, zoom_jerk_p95, zoom_cv. Default: "
-			"bounce_rate_per_s."
+			"Column name to rank on. Direction is read from the built-in "
+			"table for known metrics; unknown metrics require "
+			"--metric-direction. Default: bounce_rate_per_s."
+		),
+	)
+	parser.add_argument(
+		"-D", "--metric-direction", dest="metric_direction", default="",
+		choices=["", "lower", "higher"],
+		help=(
+			"Override the directionality for unknown metrics. Cannot be "
+			"used to override a known metric. Empty (default) defers to "
+			"the built-in table."
 		),
 	)
 	parser.add_argument(
@@ -66,11 +88,12 @@ def parse_args() -> argparse.Namespace:
 		),
 	)
 	parser.add_argument(
-		"-H", "--higher-is-better", dest="higher_is_better",
+		"-H", "--higher-is-better", dest="higher_is_better_flag",
 		action="store_true",
 		help=(
-			"Treat higher metric values as better (for e.g. "
-			"valid_frame_fraction). Default: lower is better."
+			"Legacy override: force 'higher is better' regardless of the "
+			"built-in table. Errors if used on a metric whose direction "
+			"is already known. Prefer --metric-direction."
 		),
 	)
 	parser.add_argument(
@@ -79,6 +102,57 @@ def parse_args() -> argparse.Namespace:
 	)
 	args = parser.parse_args()
 	return args
+
+
+#============================================
+def resolve_metric_direction(
+	metric: str,
+	metric_direction_arg: str,
+	higher_is_better_flag: bool,
+) -> bool:
+	"""Decide whether the chosen metric is lower-is-better or higher-is-better.
+
+	Precedence:
+		1. Built-in table for known metrics. If --metric-direction is
+		   also passed for a known metric, error: directionality is
+		   not user-overridable for known metrics.
+		2. --metric-direction for unknown metrics.
+		3. --higher-is-better legacy flag for unknown metrics. Errors
+		   if used on a known metric.
+		4. Otherwise error: unknown metric requires explicit direction.
+
+	Args:
+		metric: Metric column name.
+		metric_direction_arg: "" (unset), "lower", or "higher".
+		higher_is_better_flag: Legacy boolean from -H.
+
+	Returns:
+		True if higher metric values are better; False if lower is better.
+	"""
+	known = KNOWN_METRIC_DIRECTIONS.get(metric)
+	if known is not None:
+		if metric_direction_arg:
+			raise RuntimeError(
+				f"Metric '{metric}' has a built-in directionality of "
+				f"'{known}'. Do not pass --metric-direction for known "
+				f"metrics; remove the override or pick a different metric."
+			)
+		if higher_is_better_flag and known == "lower":
+			raise RuntimeError(
+				f"Metric '{metric}' is lower-is-better in the built-in "
+				f"table; -H/--higher-is-better cannot override it."
+			)
+		return known == "higher"
+	# unknown metric: require an explicit direction
+	if metric_direction_arg:
+		return metric_direction_arg == "higher"
+	if higher_is_better_flag:
+		return True
+	raise RuntimeError(
+		f"Metric '{metric}' is not in the built-in directionality table "
+		f"and no direction was supplied. Pass --metric-direction lower or "
+		f"--metric-direction higher."
+	)
 
 
 #============================================
@@ -347,6 +421,11 @@ def main() -> None:
 	"""
 	args = parse_args()
 
+	# resolve directionality once, before doing any expensive I/O
+	higher_is_better = resolve_metric_direction(
+		args.metric, args.metric_direction, args.higher_is_better_flag,
+	)
+
 	directory = os.path.abspath(args.directory)
 	variants = discover_variants(directory, args.baseline_name)
 	print(f"Discovered variants ({len(variants)}): {variants}")
@@ -387,14 +466,17 @@ def main() -> None:
 	}}
 	for variant in variants[1:]:
 		rank_input[variant] = all_deltas[variant]
-	rank_map = per_video_ranking(rank_input, args.higher_is_better)
+	rank_map = per_video_ranking(rank_input, higher_is_better)
 
 	# render markdown
 	output_path = args.output_path or os.path.join(directory, "RANKING.md")
 	report_text = render_ranking_markdown(
-		directory, args.metric, args.higher_is_better, args.win_threshold,
+		directory, args.metric, higher_is_better, args.win_threshold,
 		variants, baseline_values, all_deltas, rank_map,
 	)
+	# log the resolved direction so the user sees what was applied
+	direction_label = "higher is better" if higher_is_better else "lower is better"
+	print(f"  metric direction: {direction_label}")
 	with open(output_path, "w") as f:
 		f.write(report_text)
 	print(f"  wrote: {output_path}")
@@ -403,7 +485,7 @@ def main() -> None:
 	print("\nSummary:")
 	for variant in variants[1:]:
 		median_pct, wins, total, verdict = variant_verdict(
-			all_deltas[variant], args.win_threshold, args.higher_is_better,
+			all_deltas[variant], args.win_threshold, higher_is_better,
 		)
 		print(
 			f"  {variant}: median {median_pct:+.2f}%  "

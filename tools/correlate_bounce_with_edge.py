@@ -98,6 +98,37 @@ def parse_args() -> argparse.Namespace:
 		choices=["full", "edge_weighted", "side_strips"],
 		help="Edge masking mode (default: edge_weighted)",
 	)
+	parser.add_argument(
+		"-L", "--lag-window", dest="lag_window", type=int, default=5,
+		help=(
+			"Compute Spearman correlation at lags -N..+N frames "
+			"(default 5). Reports both lag-0 (primary) and best-lag."
+		),
+	)
+	parser.add_argument(
+		"-T", "--frame-tolerance", dest="frame_tolerance", type=int,
+		default=2,
+		help=(
+			"Allowed mismatch (in frames) between encoded movie and "
+			"solved trajectory. Default 2."
+		),
+	)
+	parser.add_argument(
+		"-F", "--frame-offset", dest="frame_offset", type=int, default=0,
+		help=(
+			"Manual integer frame offset applied to the encoded movie's "
+			"log_scale before pairing with the trajectory. Default 0."
+		),
+	)
+	parser.add_argument(
+		"-M", "--truncate-mode", dest="truncate_mode", default="head",
+		choices=["head", "tail", "intersection"],
+		help=(
+			"How to truncate longer signals: head (drop trailing), "
+			"tail (drop leading), or intersection (the shorter length). "
+			"Default head."
+		),
+	)
 	args = parser.parse_args()
 	return args
 
@@ -106,10 +137,10 @@ def parse_args() -> argparse.Namespace:
 def get_source_dimensions(source_file: str) -> tuple:
 	"""Return (source_width, source_height, fps) from the source video metadata.
 	"""
-	try:
-		fps, total_frames, width, height = common_tools.probe_video.probe_video(source_file)
-	except RuntimeError as e:
-		raise RuntimeError(f"Cannot probe source video: {source_file}: {e}")
+	info = common_tools.probe_video.probe_video(source_file)
+	width = int(info["width"])
+	height = int(info["height"])
+	fps = float(info["fps"])
 	if width <= 0 or height <= 0:
 		raise RuntimeError(f"Invalid source dimensions: {width}x{height}")
 	return (width, height, fps)
@@ -239,27 +270,96 @@ def compute_edge_distances(
 
 
 #============================================
+def check_frame_alignment(
+	n_video: int,
+	n_traj: int,
+	tolerance: int,
+	frame_offset: int,
+) -> None:
+	"""Verify the encoded movie and solved trajectory line up.
+
+	Raises RuntimeError when the count mismatch exceeds tolerance and
+	the user has not declared a manual offset. The point is to fail
+	loudly when video / trajectory frame counts disagree more than a
+	few frames, since silent misalignment defeats correlation.
+
+	Args:
+		n_video: Frame count of the encoded movie's log_scale series.
+		n_traj: Frame count of the solved trajectory.
+		tolerance: Allowed absolute frame-count gap before erroring.
+		frame_offset: Non-zero indicates user-declared offset; bypasses
+			the tolerance check.
+
+	Returns:
+		None. Raises on mismatch.
+	"""
+	if frame_offset != 0:
+		return
+	gap = abs(int(n_video) - int(n_traj))
+	if gap <= int(tolerance):
+		return
+	raise RuntimeError(
+		f"Frame count mismatch: video has {n_video}, trajectory has "
+		f"{n_traj} (gap {gap} > tolerance {tolerance}). Pass "
+		f"--frame-offset INT to declare a manual offset, or "
+		f"--frame-tolerance to widen the allowed gap, or check that "
+		f"the encoded movie was produced from this source video."
+	)
+
+
+#============================================
 def align_signals(
 	log_scale: numpy.ndarray,
 	edge_gaps: numpy.ndarray,
+	frame_offset: int = 0,
+	truncate_mode: str = "head",
 ) -> tuple:
 	"""Align the bounce signal and edge-gap signal frame-by-frame.
 
-	Truncates to the shorter of the two arrays (encoded movie can have a
-	different frame count than the source's solved trajectory if the
-	encoder dropped or padded frames). Drops frames where edge_gap is
-	NaN (no solved state) or log_scale is exactly 0 (the index-0
-	reference frame).
+	Drops frames where edge_gap is NaN (no solved state) or log_scale
+	is exactly 0 (the index-0 reference frame). Applies an optional
+	integer frame_offset (positive = video lags trajectory by N frames)
+	and a truncate_mode for the side that is shorter or longer.
+
+	Args:
+		log_scale: Per-frame log-scale array.
+		edge_gaps: Per-frame edge-distance array.
+		frame_offset: Integer frame offset applied to log_scale.
+		truncate_mode: One of "head" (drop trailing), "tail" (drop
+			leading), "intersection" (use the shorter length).
 
 	Returns:
 		Tuple (intensity, gap_distance) of equal length.
 	"""
-	n = min(len(log_scale), len(edge_gaps))
-	intensity = numpy.abs(log_scale[:n])
-	gaps = edge_gaps[:n]
+	# apply user-supplied offset first
+	if frame_offset > 0:
+		# video lags trajectory: drop the first frame_offset of log_scale
+		log_scale_aligned = log_scale[frame_offset:]
+		gaps_aligned = edge_gaps[: len(log_scale_aligned)]
+	elif frame_offset < 0:
+		# video leads trajectory: drop the first |offset| of trajectory
+		shift = -frame_offset
+		gaps_aligned = edge_gaps[shift:]
+		log_scale_aligned = log_scale[: len(gaps_aligned)]
+	else:
+		log_scale_aligned = log_scale
+		gaps_aligned = edge_gaps
+	# now reconcile the remaining length difference per truncate_mode
+	if truncate_mode == "tail":
+		# drop leading from the longer array
+		n = min(len(log_scale_aligned), len(gaps_aligned))
+		log_scale_aligned = log_scale_aligned[-n:]
+		gaps_aligned = gaps_aligned[-n:]
+	else:
+		# head and intersection both drop trailing (intersection is identical
+		# in our usage because we already truncated above)
+		n = min(len(log_scale_aligned), len(gaps_aligned))
+		log_scale_aligned = log_scale_aligned[:n]
+		gaps_aligned = gaps_aligned[:n]
+	intensity = numpy.abs(log_scale_aligned)
 	# valid frames: gap not NaN, intensity not exactly 0 (frame 0 reference)
-	valid = numpy.isfinite(gaps) & (intensity > 0)
-	return (intensity[valid], gaps[valid])
+	valid = numpy.isfinite(gaps_aligned) & (intensity > 0)
+	return (intensity[valid], gaps_aligned[valid])
 
 
 #============================================
@@ -289,6 +389,69 @@ def compute_correlation(
 	rho = float(result[0])
 	p_value = float(result[1])
 	return (rho, p_value)
+
+
+#============================================
+def compute_lagged_correlation(
+	intensity: numpy.ndarray,
+	gaps: numpy.ndarray,
+	lag_window: int,
+) -> tuple:
+	"""Compute Spearman correlation across a range of integer frame lags.
+
+	A lag of +1 means: shift intensity FORWARD by 1 frame relative to
+	gaps (i.e. compare gaps[t] against intensity[t+1]). The clamp may
+	cause bounce one or two frames AFTER edge contact, so a non-zero
+	best-lag is informative even if lag-0 is weak.
+
+	Args:
+		intensity: Per-frame bounce intensity.
+		gaps: Per-frame edge gap (already aligned with intensity).
+		lag_window: Compute lags from -lag_window to +lag_window inclusive.
+
+	Returns:
+		Tuple (lags, rhos) where lags is a list of integer lag values
+		and rhos is a list of Spearman coefficients (one per lag).
+	"""
+	lags = list(range(-int(lag_window), int(lag_window) + 1))
+	rhos = []
+	for lag in lags:
+		if lag == 0:
+			i_slice = intensity
+			g_slice = gaps
+		elif lag > 0:
+			# intensity shifted forward: intensity[lag:] vs gaps[:-lag]
+			i_slice = intensity[lag:]
+			g_slice = gaps[:-lag]
+		else:
+			# intensity shifted backward
+			shift = -lag
+			i_slice = intensity[:-shift]
+			g_slice = gaps[shift:]
+		rho, _p = compute_correlation(i_slice, g_slice)
+		rhos.append(rho)
+	return (lags, rhos)
+
+
+#============================================
+def find_best_lag(lags: list, rhos: list) -> tuple:
+	"""Return the lag with the largest finite Spearman coefficient.
+
+	Args:
+		lags: List of integer lags.
+		rhos: List of Spearman coefficients aligned with lags.
+
+	Returns:
+		Tuple (best_lag, best_rho). Returns (0, NaN) if all rhos are
+		non-finite.
+	"""
+	finite_pairs = [
+		(lag, rho) for lag, rho in zip(lags, rhos) if numpy.isfinite(rho)
+	]
+	if not finite_pairs:
+		return (0, float("nan"))
+	best = max(finite_pairs, key=lambda kv: kv[1])
+	return (int(best[0]), float(best[1]))
 
 
 #============================================
@@ -338,36 +501,47 @@ def quartile_table(
 def render_scatter_plot(
 	intensity: numpy.ndarray,
 	gaps: numpy.ndarray,
-	rho: float,
+	rho_lag0: float,
+	best_lag: int,
+	best_rho: float,
+	lags: list,
+	rhos: list,
 	output_path: str,
 	input_name: str,
 ) -> None:
-	"""Render a scatter plot with marginal histograms.
+	"""Render a scatter plot with marginal histograms plus a lag bar chart.
 
 	Layout:
-		   +--------+
-		   |  hist  |   top: gap distribution
-		   +--------+--+
-		   | scatter|h |  right: intensity distribution
-		   +--------+--+
+		+--------+--+
+		|  hist  |  |   top: gap distribution
+		+--------+--+
+		| scatter|h |   right: intensity distribution
+		+--------+--+
+		|       lag |   bottom: per-lag Spearman bar chart
+		+--------+--+
 
 	Args:
 		intensity: Per-frame bounce intensity (x-axis on scatter).
 		gaps: Per-frame edge gap (y-axis on scatter).
-		rho: Spearman correlation, embedded in title.
+		rho_lag0: Lag-0 Spearman coefficient.
+		best_lag: Frame lag with the largest correlation.
+		best_rho: Spearman at best_lag.
+		lags: List of lag offsets used for the bar chart.
+		rhos: Spearman per lag (aligned with lags).
 		output_path: PNG output path.
 		input_name: Source video basename, embedded in title.
 	"""
-	fig = plt.figure(figsize=(8, 7))
+	fig = plt.figure(figsize=(9, 9))
 	gs = fig.add_gridspec(
-		2, 2,
-		width_ratios=(4, 1), height_ratios=(1, 4),
-		left=0.10, right=0.95, bottom=0.10, top=0.92,
-		wspace=0.05, hspace=0.05,
+		3, 2,
+		width_ratios=(4, 1), height_ratios=(1, 4, 1.5),
+		left=0.10, right=0.95, bottom=0.08, top=0.92,
+		wspace=0.05, hspace=0.30,
 	)
 	ax_main = fig.add_subplot(gs[1, 0])
 	ax_top = fig.add_subplot(gs[0, 0], sharex=ax_main)
 	ax_right = fig.add_subplot(gs[1, 1], sharey=ax_main)
+	ax_lag = fig.add_subplot(gs[2, :])
 
 	# main scatter
 	ax_main.scatter(intensity, gaps, s=4, alpha=0.4, color="#1f77b4")
@@ -388,11 +562,22 @@ def render_scatter_plot(
 	ax_right.tick_params(axis="y", labelleft=False)
 	ax_right.set_xlabel("Count")
 
-	# title with correlation
+	# bottom: lag bar chart with best-lag highlighted
+	bar_colors = [
+		"#d62728" if lag == best_lag else "#1f77b4" for lag in lags
+	]
+	ax_lag.bar(lags, rhos, color=bar_colors, width=0.85)
+	ax_lag.axhline(0.0, color="black", linewidth=0.5)
+	ax_lag.set_xlabel("Frame lag (positive = bounce trails edge approach)")
+	ax_lag.set_ylabel("Spearman rho")
+	ax_lag.grid(True, axis="y", alpha=0.3)
+	ax_lag.set_xticks(lags)
+
+	# title with both correlations
 	fig.suptitle(
 		f"Bounce vs edge gap: {input_name}\n"
-		f"Spearman correlation = {rho:+.3f} "
-		f"(positive = bounce concentrates near edges)"
+		f"Spearman lag-0 = {rho_lag0:+.3f}   "
+		f"best-lag = {best_rho:+.3f} at lag {best_lag:+d}"
 	)
 	fig.savefig(output_path, dpi=120)
 	plt.close(fig)
@@ -425,16 +610,37 @@ def main() -> None:
 	print(f"  valid edge-gap frames: {valid_gap_count}")
 
 	print(f"Encoded: {args.input_file}")
-	log_scale, _enc_fps, _enc_total = (
+	log_scale, video_fps, n_video_frames = (
 		find_zoom_hotspots.compute_log_scale_series(args.input_file, args.weighting)
 	)
-	print(f"  bounce-signal frames: {len(log_scale)}")
+	n_traj_frames = len(trajectory)
+	print(
+		"Frame alignment:"
+	)
+	print(f"  n_video_frames      = {n_video_frames}")
+	print(f"  n_trajectory_frames = {n_traj_frames}")
+	print(f"  fps_video           = {video_fps:.4f}")
+	print(f"  fps_source          = {source_fps:.4f}")
 
-	intensity, gaps = align_signals(log_scale, edge_gaps)
-	print(f"  aligned valid frames: {len(intensity)}")
+	# fail loudly on count mismatch unless user overrides
+	check_frame_alignment(
+		n_video_frames, n_traj_frames,
+		args.frame_tolerance, args.frame_offset,
+	)
 
-	rho, p_value = compute_correlation(intensity, gaps)
-	print(f"Spearman correlation: rho={rho:+.4f}  p={p_value:.4g}")
+	intensity, gaps = align_signals(
+		log_scale, edge_gaps, args.frame_offset, args.truncate_mode,
+	)
+	n_paired = len(intensity)
+	print(f"  n_paired_frames     = {n_paired}")
+	print(f"  frame_offset        = {args.frame_offset}")
+	print(f"  truncate_mode       = {args.truncate_mode}")
+
+	rho_lag0, p_lag0 = compute_correlation(intensity, gaps)
+	lags, rhos = compute_lagged_correlation(intensity, gaps, args.lag_window)
+	best_lag, best_rho = find_best_lag(lags, rhos)
+	print(f"Spearman lag-0:   rho={rho_lag0:+.4f}  p={p_lag0:.4g}")
+	print(f"Spearman best:    rho={best_rho:+.4f}  at lag {best_lag:+d} frames")
 
 	# write outputs
 	base = os.path.splitext(args.input_file)[0]
@@ -442,7 +648,12 @@ def main() -> None:
 	output_md = base + ".bounce_edge.md"
 
 	input_name = os.path.basename(args.input_file)
-	render_scatter_plot(intensity, gaps, rho, output_png, input_name)
+	render_scatter_plot(
+		intensity, gaps,
+		rho_lag0, best_lag, best_rho,
+		lags, rhos,
+		output_png, input_name,
+	)
 	print(f"  wrote: {output_png}")
 
 	# build the markdown report content in a variable, then write it
@@ -452,9 +663,28 @@ def main() -> None:
 	report_lines.append("")
 	report_lines.append(f"Source video: {args.source_file}")
 	report_lines.append(f"Source dimensions: {source_w} x {source_h}")
-	report_lines.append(f"Aligned valid frames: {len(intensity)}")
-	report_lines.append(f"Spearman rho: {rho:+.4f}")
-	report_lines.append(f"Spearman p-value: {p_value:.4g}")
+	report_lines.append("")
+	report_lines.append("## Frame alignment")
+	report_lines.append("")
+	report_lines.append("| Field | Value |")
+	report_lines.append("| --- | --- |")
+	report_lines.append(f"| n_video_frames | {n_video_frames} |")
+	report_lines.append(f"| n_trajectory_frames | {n_traj_frames} |")
+	report_lines.append(f"| fps_video | {video_fps:.4f} |")
+	report_lines.append(f"| fps_source | {source_fps:.4f} |")
+	report_lines.append(f"| n_paired_frames | {n_paired} |")
+	report_lines.append(f"| frame_offset | {args.frame_offset} |")
+	report_lines.append(f"| truncate_mode | {args.truncate_mode} |")
+	report_lines.append("")
+	report_lines.append("## Spearman correlation")
+	report_lines.append("")
+	report_lines.append(f"Lag-0 rho: {rho_lag0:+.4f}  (p={p_lag0:.4g})")
+	report_lines.append(f"Best-lag rho: {best_rho:+.4f}  at lag {best_lag:+d} frames")
+	report_lines.append("")
+	report_lines.append("| Lag (frames) | Spearman rho |")
+	report_lines.append("| --- | --- |")
+	for lag, rho in zip(lags, rhos):
+		report_lines.append(f"| {lag:+d} | {rho:+.4f} |")
 	report_lines.append("")
 	report_lines.append("## Bounce intensity by edge-gap quartile")
 	report_lines.append("")

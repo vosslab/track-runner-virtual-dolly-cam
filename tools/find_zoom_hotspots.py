@@ -3,14 +3,28 @@
 
 Runs the same Fourier-Mellin per-frame scale estimation that
 tools/assess_pixel_zoom.py uses, computes a per-frame bounce intensity
-(abs(log_scale)) smoothed across a configurable window, then reports the
-top-N hotspot windows in descending intensity order. Optionally extracts
-short MP4 clips around each hotspot so visual review can focus on the
-worst regions instead of full-length playback.
+score, then reports the top-N hotspot windows in descending intensity
+order. Optionally extracts short MP4 clips around each hotspot so
+visual review can focus on the worst regions instead of full-length
+playback.
+
+Three scoring modes are available (per --score):
+	velocity_p95 (default) -- window-local p95 of abs(diff(log_scale)).
+		High when frame-to-frame zoom changes are jittery; low for
+		smooth slow drift. This is what we usually mean by "bounce".
+	rms_detrended         -- window-local RMS of log_scale after
+		subtracting the rolling median across the same window. High
+		when zoom oscillates around a moving baseline; ignores slow
+		drift.
+	abs_smoothed          -- legacy: rolling mean of abs(log_scale).
+		Conflates slow drift with bounce; kept for diagnostic
+		comparison, not for ranking decisions.
 
 Output:
 	<input_basename>.hotspots.md  -- markdown report with rank, start
-	                                 time, end time, max intensity.
+	                                 time, end time, primary score, and
+	                                 a secondary abs_smoothed column at
+	                                 the same window for cross-check.
 	<input_basename>.hotspot_<rank>.mkv  -- only when --extract-clips set.
 
 The hotspot reflects measured zoom bounce in the encoded pixels and may
@@ -25,11 +39,13 @@ import sys
 import argparse
 import subprocess
 
-# add tools directory to path so we can reuse assess_pixel_zoom helpers
+# add tools and repo directories to path so we can reuse helpers
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _TOOLS_DIR = os.path.join(_REPO_ROOT, "tools")
 if _TOOLS_DIR not in sys.path:
 	sys.path.insert(0, _TOOLS_DIR)
+if _REPO_ROOT not in sys.path:
+	sys.path.insert(0, _REPO_ROOT)
 
 # PIP3 modules
 import cv2
@@ -37,8 +53,6 @@ import numpy
 
 # local repo modules
 import assess_pixel_zoom
-import sys
-sys.path.insert(0, _REPO_ROOT)
 import common_tools.probe_video
 import common_tools.frame_reader
 
@@ -72,6 +86,15 @@ def parse_args() -> argparse.Namespace:
 		choices=["full", "edge_weighted", "side_strips"],
 		help="Edge masking mode (default: edge_weighted)",
 	)
+	parser.add_argument(
+		"-s", "--score", dest="score_mode", default="velocity_p95",
+		choices=["velocity_p95", "rms_detrended", "abs_smoothed"],
+		help=(
+			"Hotspot score: velocity_p95 (default; jitter-sensitive), "
+			"rms_detrended (oscillation around rolling median), or "
+			"abs_smoothed (legacy; conflates slow drift with bounce)"
+		),
+	)
 	args = parser.parse_args()
 	return args
 
@@ -91,11 +114,12 @@ def compute_log_scale_series(
 		Tuple (log_scale, fps, total_frames) where log_scale is a numpy
 		array of length total_frames; element 0 is 0.0 by convention.
 	"""
-	# Probe video to get metadata
-	try:
-		fps, total_frames, width, height = common_tools.probe_video.probe_video(video_path)
-	except RuntimeError as e:
-		raise RuntimeError(f"Cannot probe video: {video_path}: {e}")
+	# Probe video to get metadata; probe_video returns a dict
+	info = common_tools.probe_video.probe_video(video_path)
+	fps = float(info["fps"])
+	total_frames = int(info["frame_count"])
+	width = int(info["width"])
+	height = int(info["height"])
 
 	if total_frames <= 1:
 		raise RuntimeError(f"Video has too few frames: {total_frames}")
@@ -148,7 +172,11 @@ def smooth_intensity(
 	log_scale: numpy.ndarray,
 	window_frames: int,
 ) -> numpy.ndarray:
-	"""Smooth the absolute log-scale series with a rolling-mean window.
+	"""Legacy abs_smoothed score: rolling mean of abs(log_scale).
+
+	Conflates slow drift with bounce; kept for diagnostic comparison
+	via --score abs_smoothed and as the "secondary" column in the
+	hotspot report. Prefer score_velocity_p95 for ranking decisions.
 
 	Args:
 		log_scale: Per-frame log-scale array.
@@ -173,6 +201,135 @@ def smooth_intensity(
 		end = min(n, i + half + 1)
 		smoothed[i] = (cumulative[end] - cumulative[start]) / (end - start)
 	return smoothed
+
+
+#============================================
+# The Fourier-Mellin scale estimate is clamped to roughly [0.80, 1.25]
+# in assess_pixel_zoom (numpy.log(max(scale, 1e-6))), so log_scale lives
+# in [-0.223, +0.223]. Frames at the clamp boundary are not real bounce
+# measurements; they are FFT estimates that hit the saturation limit
+# (typical at black-frame transitions, scene cuts, or motion-blurred
+# pre-race static frames). Filter them out before percentile reductions.
+LOG_SCALE_CLAMP_THRESHOLD = 0.20
+
+
+#============================================
+def score_velocity_p95(
+	log_scale: numpy.ndarray,
+	window_frames: int,
+) -> numpy.ndarray:
+	"""Window-local p95 of abs(diff(log_scale)).
+
+	High when frame-to-frame zoom changes are jittery; low for smooth
+	slow drift. This is the default hotspot score because it isolates
+	"bounce" from "drift".
+
+	Frames where either endpoint of the diff is at the Fourier-Mellin
+	scale clamp are masked out before the percentile, so saturated
+	estimates do not dominate the ranking.
+
+	Args:
+		log_scale: Per-frame log-scale array.
+		window_frames: Window length in frames (must be >= 1).
+
+	Returns:
+		Per-frame p95 over a centered window of frame-to-frame velocity
+		magnitudes. Length matches log_scale (the diff is zero-padded
+		at the start so output stays aligned with frame indices).
+	"""
+	window_frames = max(int(window_frames), 1)
+	n = len(log_scale)
+	# velocity[i] = |log_scale[i] - log_scale[i-1]|; index 0 padded to 0.
+	# Frames where either endpoint is at the clamp boundary are NaN.
+	velocity = numpy.full(n, numpy.nan, dtype=numpy.float64)
+	if n > 1:
+		clamp_at = numpy.abs(log_scale) >= LOG_SCALE_CLAMP_THRESHOLD
+		# velocity[i] valid only when both log_scale[i-1] and log_scale[i]
+		# are inside the clamp (not at the saturation boundary)
+		valid = (~clamp_at[:-1]) & (~clamp_at[1:])
+		raw_velocity = numpy.abs(numpy.diff(log_scale))
+		velocity[1:][valid] = raw_velocity[valid]
+	half = window_frames // 2
+	intensity = numpy.zeros(n, dtype=numpy.float64)
+	for i in range(n):
+		# centered window with edge clipping
+		start = max(0, i - half)
+		end = min(n, i + half + 1)
+		window_slice = velocity[start:end]
+		# Use nanpercentile so masked (clamp-saturated) samples are skipped.
+		# If the entire window is masked, intensity stays 0.
+		valid_count = int(numpy.sum(numpy.isfinite(window_slice)))
+		if valid_count == 0:
+			intensity[i] = 0.0
+		else:
+			intensity[i] = float(numpy.nanpercentile(window_slice, 95))
+	return intensity
+
+
+#============================================
+def score_rms_detrended(
+	log_scale: numpy.ndarray,
+	window_frames: int,
+) -> numpy.ndarray:
+	"""Window-local RMS of log_scale after subtracting rolling median.
+
+	Detrending removes slow zoom drift; RMS captures both polarities
+	of remaining oscillation. Useful when the bounce is sub-frame
+	oscillation (no clear single-frame jitter) or when the user wants
+	a complement to score_velocity_p95.
+
+	Args:
+		log_scale: Per-frame log-scale array.
+		window_frames: Window length in frames (must be >= 1).
+
+	Returns:
+		Per-frame centered-window RMS of detrended log_scale.
+	"""
+	window_frames = max(int(window_frames), 1)
+	half = window_frames // 2
+	n = len(log_scale)
+	# rolling median per frame; numpy.median over the windowed slice
+	rolling_median = numpy.zeros(n, dtype=numpy.float64)
+	for i in range(n):
+		start = max(0, i - half)
+		end = min(n, i + half + 1)
+		rolling_median[i] = float(numpy.median(log_scale[start:end]))
+	detrended = log_scale - rolling_median
+	# RMS via rolling mean of squares
+	squares = detrended * detrended
+	cumulative = numpy.concatenate(([0.0], numpy.cumsum(squares)))
+	intensity = numpy.zeros(n, dtype=numpy.float64)
+	for i in range(n):
+		start = max(0, i - half)
+		end = min(n, i + half + 1)
+		mean_sq = (cumulative[end] - cumulative[start]) / (end - start)
+		intensity[i] = float(numpy.sqrt(mean_sq))
+	return intensity
+
+
+#============================================
+def compute_hotspot_intensity(
+	log_scale: numpy.ndarray,
+	window_frames: int,
+	score_mode: str,
+) -> numpy.ndarray:
+	"""Dispatch to the requested per-frame hotspot scoring function.
+
+	Args:
+		log_scale: Per-frame log-scale array.
+		window_frames: Window length in frames (must be >= 1).
+		score_mode: One of "velocity_p95", "rms_detrended", "abs_smoothed".
+
+	Returns:
+		Per-frame intensity array suitable for find_top_n_hotspots.
+	"""
+	if score_mode == "velocity_p95":
+		return score_velocity_p95(log_scale, window_frames)
+	if score_mode == "rms_detrended":
+		return score_rms_detrended(log_scale, window_frames)
+	if score_mode == "abs_smoothed":
+		return smooth_intensity(log_scale, window_frames)
+	raise ValueError(f"Unknown score_mode: {score_mode}")
 
 
 #============================================
@@ -243,6 +400,8 @@ def write_hotspot_report(
 	window_frames: int,
 	fps: float,
 	total_frames: int,
+	score_mode: str,
+	secondary_intensity: numpy.ndarray,
 ) -> None:
 	"""Write a markdown hotspot report next to the input video.
 
@@ -253,6 +412,9 @@ def write_hotspot_report(
 		window_frames: Hotspot window length in frames.
 		fps: Source video fps.
 		total_frames: Source video frame count.
+		score_mode: Primary score mode (recorded in report header).
+		secondary_intensity: abs_smoothed series; emitted as secondary
+			column for cross-check against the primary score.
 	"""
 	# build the markdown content in a variable, then write at the end
 	lines = []
@@ -262,16 +424,27 @@ def write_hotspot_report(
 	lines.append(f"Source: {video_path}")
 	lines.append(f"Duration: {duration_s:.2f} s ({total_frames} frames at {fps:.2f} fps)")
 	lines.append(f"Window: {window_frames} frames ({window_frames / fps:.2f} s)")
+	lines.append(f"Primary score: `{score_mode}`")
+	lines.append("Secondary score: `abs_smoothed` (legacy; for cross-check)")
 	lines.append("")
-	lines.append("| Rank | Center frame | Start (s) | End (s) | Max intensity |")
-	lines.append("| --- | --- | --- | --- | --- |")
+	lines.append(
+		"| Rank | Center frame | Start (s) | End (s) | "
+		f"{score_mode} | abs_smoothed |"
+	)
+	lines.append("| --- | --- | --- | --- | --- | --- |")
 	for rank, (frame_index, intensity) in enumerate(hotspots, start=1):
 		start_s, end_s, _start_f, _end_f = hotspot_window_to_time_range(
 			frame_index, window_frames, fps, total_frames,
 		)
+		# secondary score at the same frame; safe even if arrays differ in length
+		secondary_val = (
+			float(secondary_intensity[frame_index])
+			if 0 <= frame_index < len(secondary_intensity)
+			else float("nan")
+		)
 		lines.append(
 			f"| {rank} | {frame_index} | {start_s:.2f} | {end_s:.2f} | "
-			f"{intensity:.6f} |"
+			f"{intensity:.6f} | {secondary_val:.6f} |"
 		)
 	# trailing newline
 	report_text = "\n".join(lines) + "\n"
@@ -322,7 +495,10 @@ def main() -> None:
 		f"window={window_frames} frames ({args.window_seconds:.2f} s)"
 	)
 
-	intensity = smooth_intensity(log_scale, window_frames)
+	# primary score (per --score) drives ranking; secondary abs_smoothed
+	# is computed once and emitted as a cross-check column in the report
+	intensity = compute_hotspot_intensity(log_scale, window_frames, args.score_mode)
+	secondary_intensity = smooth_intensity(log_scale, window_frames)
 	hotspots = find_top_n_hotspots(intensity, args.top_n, window_frames)
 
 	# write report next to the input video
@@ -331,18 +507,19 @@ def main() -> None:
 	write_hotspot_report(
 		report_path, args.input_file, hotspots,
 		window_frames, fps, total_frames,
+		args.score_mode, secondary_intensity,
 	)
 	print(f"  wrote: {report_path}")
 
 	# print top-3 to stdout for quick read
-	print("Top hotspots (rank, frame, start_s, end_s, intensity):")
+	print(f"Top hotspots (rank, frame, start_s, end_s, {args.score_mode}):")
 	for rank, (frame_index, intensity_val) in enumerate(hotspots[:3], start=1):
 		start_s, end_s, _, _ = hotspot_window_to_time_range(
 			frame_index, window_frames, fps, total_frames,
 		)
 		print(
 			f"  {rank}: frame={frame_index} "
-			f"start={start_s:.2f}s end={end_s:.2f}s intensity={intensity_val:.6f}"
+			f"start={start_s:.2f}s end={end_s:.2f}s {args.score_mode}={intensity_val:.6f}"
 		)
 
 	# extract clips if requested
