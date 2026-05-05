@@ -50,6 +50,7 @@ import regime_classifier
 import camera_motion
 import race_start
 import scene_coords
+import tr_schema
 
 # module-level video identity, set once in main() and treated as read-only
 VIDEO_IDENTITY = None
@@ -153,6 +154,16 @@ def _check_identity_mismatch(label: str, path: str) -> None:
 	# NPZ files (torso_box_coords.npz) carry video_identity as
 	# JSON-encoded bytes; JSON files carry it as a top-level key.
 	if path.endswith(".npz"):
+		# peek the schema first: an older SCHEMA_VERSION will be
+		# overwritten when solve runs, so identity-mismatch checking is
+		# moot (and load_torso_box_coords would raise). Policy of this
+		# function is warn only, never reject (see docstring).
+		schema = state_io.peek_torso_box_coords_schema(path)
+		if schema is None or not tr_schema.is_supported_artifact_schema(
+			"torso_box_coords", schema,
+		):
+			print(f"  warning: {label} file schema v{schema} stale; will be overwritten on solve")
+			return
 		coords_data = state_io.load_torso_box_coords(path)
 		stored = coords_data.get("video_identity")
 	else:
@@ -2485,6 +2496,19 @@ def main() -> None:
 	# validate input file exists
 	if not os.path.isfile(args.input_file):
 		raise RuntimeError(f"input file not found: {args.input_file}")
+
+	# require .mkv source: random-access seek on .mov/.mp4 is too slow
+	# for the Stage 4 pre-pass and FrameReader strategy-1 path. Remux is
+	# lossless and one-time; transcoding is never done by this pipeline.
+	ext_lower = os.path.splitext(args.input_file)[1].lower()
+	if ext_lower != ".mkv":
+		stem = os.path.splitext(args.input_file)[0]
+		raise RuntimeError(
+			f"input video must be .mkv, got {args.input_file!r}. "
+			f".mov/.mp4 are no longer supported because random-access "
+			f"seek is too slow on those containers. Remux losslessly: "
+			f"mkvmerge -o {stem}.mkv {args.input_file}"
+		)
 
 	# verify required external tools are available
 	for tool in ("mediainfo", "ffprobe", "ffmpeg"):

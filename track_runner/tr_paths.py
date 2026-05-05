@@ -43,17 +43,23 @@ def ensure_parent_dir(path: str) -> None:
 #============================================
 
 def _data_file_path(input_file: str, suffix: str) -> str:
-	"""Build a data file path inside DATA_DIR from the input basename.
+	"""Build a data file path inside DATA_DIR from the input stem.
+
+	The source-video extension is intentionally stripped from the data
+	filename. Renaming the source between containers (for example
+	mkvmerge-remuxing `foo.mov` to `foo.mkv`) must not orphan seeds,
+	config, intervals, or camera-motion artifacts.
 
 	Args:
 		input_file: Full path to the input video file.
 		suffix: File suffix to append (e.g. '.track_runner.seeds.json').
 
 	Returns:
-		str: Path like tr_config/{basename}{suffix}.
+		str: Path like tr_config/{stem}{suffix}.
 	"""
 	basename = os.path.basename(input_file)
-	filename = f"{basename}{suffix}"
+	stem, _ = os.path.splitext(basename)
+	filename = f"{stem}{suffix}"
 	data_path = os.path.join(DATA_DIR, filename)
 	return data_path
 

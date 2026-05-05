@@ -473,6 +473,29 @@ def _write_npz_atomic(path: str, arrays: dict) -> None:
 
 #============================================
 
+def peek_torso_box_coords_schema(path: str) -> int | None:
+	"""Read just the schema_version from a torso_box_coords.npz, no validation.
+
+	Returns None if the file does not exist or the schema_version key is
+	missing. Callers can use this to decide whether a full
+	`load_torso_box_coords` would raise on an unsupported schema, without
+	paying the schema-rejection cost or wrapping the load in try/except.
+
+	Args:
+		path: Path to the torso_box_coords.npz file.
+
+	Returns:
+		int schema version, or None if unavailable.
+	"""
+	if not os.path.isfile(path):
+		return None
+	with numpy.load(path, allow_pickle=False) as npz:
+		if "schema_version" not in npz.files:
+			return None
+		return int(npz["schema_version"])
+
+
+#============================================
 def load_torso_box_coords(path: str) -> dict:
 	"""Load a unified torso_box_coords.npz file with all three paths merged.
 

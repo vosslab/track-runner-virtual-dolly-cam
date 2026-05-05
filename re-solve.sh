@@ -4,7 +4,8 @@
 
 for json in tr_config/*.seeds.json; do
   #continue
-  video="TRACK_VIDEOS/$(basename "$json" | sed 's/\.track_runner\.seeds\.json$//')"
+  stem="$(basename "$json" | sed 's/\.track_runner\.seeds\.json$//')"
+  video="TRACK_VIDEOS/${stem}.mkv"
 
   if [ ! -s "$video" ]; then
     continue
@@ -18,7 +19,8 @@ for json in tr_config/*.seeds.json; do
 done
 
 for json in tr_config/*.seeds.json; do
-  video="TRACK_VIDEOS/$(basename "$json" | sed 's/\.track_runner\.seeds\.json$//')"
+  stem="$(basename "$json" | sed 's/\.track_runner\.seeds\.json$//')"
+  video="TRACK_VIDEOS/${stem}.mkv"
 
   if [ ! -s "$video" ]; then
     continue
