@@ -280,6 +280,72 @@ def _max_centered_fit_size(
 
 
 #============================================
+def _rolling_min_ceiling_per_frame(
+	cx_arr: numpy.ndarray,
+	cy_arr: numpy.ndarray,
+	frame_width: int,
+	frame_height: int,
+	aspect_ratio: float,
+	window: int = 7,
+) -> numpy.ndarray:
+	"""Centered rolling minimum of the per-frame geometric source-fit ceiling.
+
+	The geometric ceiling at frame i is the largest crop width that
+	fits centered on (cx[i], cy[i]) inside `[0, frame_width] x [0,
+	frame_height]` at the given aspect ratio:
+
+	    ceiling_w[i] = min(2 * min(cx, frame_w - cx),
+	                       aspect_ratio * 2 * min(cy, frame_h - cy))
+
+	Smoothing this ceiling with a centered rolling minimum (window 7
+	by default) stabilizes the per-frame fit during sustained
+	near-edge runs, where the raw ceiling oscillates as the runner
+	moves toward and away from a frame edge. The smoothed ceiling is
+	bounded above by the per-frame ceiling at every frame, so a crop
+	sized to the smoothed ceiling at frame i fits inside the source
+	frame at frame i (no boundary violation by construction).
+
+	Used by `direct_center_crop_trajectory` in the fit-to-source
+	block. See [V1_RESULTS.md](../output_smoke/zoom_bounce/EVIDENCE/v1_ceiling_aware_s4/V1_RESULTS.md)
+	for the gate evidence (-91.6% S5 hotspot severity on Glenbrook,
+	-78.7% on IMG_3823, no measurable effect on a low-edge clip).
+
+	Args:
+		cx_arr: Per-frame crop center x coordinates.
+		cy_arr: Per-frame crop center y coordinates.
+		frame_width: Source frame width in pixels.
+		frame_height: Source frame height in pixels.
+		aspect_ratio: Target crop aspect (width / height).
+		window: Centered window length for the rolling min. Default 7.
+
+	Returns:
+		1D float64 numpy array of length `len(cx_arr)`. Each element
+		is the local-minimum geometric ceiling width over a centered
+		window. Edge handling truncates the window at array
+		boundaries; no NaN is introduced.
+	"""
+	cx = numpy.asarray(cx_arr, dtype=numpy.float64)
+	cy = numpy.asarray(cy_arr, dtype=numpy.float64)
+	max_w_horiz = 2.0 * numpy.minimum(cx, float(frame_width) - cx)
+	max_w_vert = aspect_ratio * 2.0 * numpy.minimum(
+		cy, float(frame_height) - cy,
+	)
+	geometric_ceiling_w = numpy.minimum(max_w_horiz, max_w_vert)
+	# rolling minimum over a centered window
+	n = len(geometric_ceiling_w)
+	window = max(int(window), 1)
+	if window == 1:
+		return geometric_ceiling_w.astype(numpy.float64, copy=True)
+	half = window // 2
+	out = numpy.zeros(n, dtype=numpy.float64)
+	for i in range(n):
+		start = max(0, i - half)
+		end = min(n, i + half + 1)
+		out[i] = float(numpy.min(geometric_ceiling_w[start:end]))
+	return out
+
+
+#============================================
 def parse_aspect_ratio(aspect_str: str) -> float:
 	"""Parse an aspect ratio string into a float.
 
@@ -624,6 +690,8 @@ def direct_center_crop_trajectory(
 	frame_height: int,
 	config: dict,
 	fps: float = 60.0,
+	nif_frames: set = None,
+	_use_rolling_min_ceiling: bool = True,
 ) -> list:
 	"""Compute crop rectangles by centering directly on the solved trajectory.
 
@@ -639,6 +707,10 @@ def direct_center_crop_trajectory(
 		frame_height: Source video frame height in pixels.
 		config: Project configuration dict with 'processing' section.
 		fps: Video frame rate in frames per second.
+		nif_frames: Optional set of frame indices carrying NIF-edge-anchored
+			geometry (pre-filled by the encoder). These frames are treated as
+			authoritative and their raw cx/cy values are consumed as-is. Defaults
+			to empty set if None.
 
 	Returns:
 		List of (x, y, w, h) integer crop rectangles, one per frame.
@@ -646,6 +718,10 @@ def direct_center_crop_trajectory(
 	n = len(full_trajectory)
 	if n == 0:
 		return []
+
+	# Default empty set if not provided (legacy callers)
+	if nif_frames is None:
+		nif_frames = set()
 
 	processing = config.get("processing", {})
 	# parse aspect ratio
@@ -854,26 +930,38 @@ def direct_center_crop_trajectory(
 	# frame edge.
 	fit_to_source = bool(processing.get("crop_centered_fit_to_source", True))
 	if fit_to_source:
-		for i in range(n):
-			fit_w, fit_h = _max_centered_fit_size(
-				smoothed_cx[i], smoothed_cy[i],
-				smoothed_w[i],
-				frame_width, frame_height,
-				aspect_ratio,
+		if _use_rolling_min_ceiling:
+			# V1 ceiling-stabilized fit-to-source. Compute the per-frame
+			# geometric source-fit ceiling once, then smooth it with a
+			# centered rolling minimum (window 7). Use the smoothed
+			# ceiling at S3 (first fit) and S5 (second fit, after the
+			# S4 EMA) in place of a per-frame _max_centered_fit_size
+			# call. See
+			# output_smoke/zoom_bounce/EVIDENCE/v1_ceiling_aware_s4/V1_RESULTS.md
+			# for gate evidence (-91.6% S5 hotspot on Glenbrook).
+			v1_window = 7
+			smooth_ceiling_w = _rolling_min_ceiling_per_frame(
+				smoothed_cx, smoothed_cy,
+				frame_width, frame_height, aspect_ratio,
+				window=v1_window,
 			)
-			smoothed_w[i] = max(fit_w, 1.0)
-			smoothed_h[i] = max(fit_h, 1.0)
-		# second-pass smoothing of the fitted height signal (the fit
-		# step can introduce small frame-to-frame jumps when the
-		# runner moves through varying-distance zones); only run when
-		# size smoothing was already requested by the user. Forward-
-		# backward EMA is not strictly bounded by its inputs, so the
-		# re-fit cuts any lifted values back to their per-frame
-		# bound. Result is smooth in the common case and bounded
-		# always.
-		if alpha_size > 0:
-			smoothed_h = _forward_backward_ema(smoothed_h, alpha_size)
-			smoothed_w = smoothed_h * aspect_ratio
+			smoothed_w = numpy.minimum(smoothed_w, smooth_ceiling_w)
+			smoothed_w = numpy.maximum(smoothed_w, 1.0)
+			smoothed_h = smoothed_w / aspect_ratio
+			smoothed_h = numpy.maximum(smoothed_h, 1.0)
+			if alpha_size > 0:
+				smoothed_h = _forward_backward_ema(smoothed_h, alpha_size)
+				smoothed_w = smoothed_h * aspect_ratio
+				smoothed_w = numpy.minimum(smoothed_w, smooth_ceiling_w)
+				smoothed_w = numpy.maximum(smoothed_w, 1.0)
+				smoothed_h = smoothed_w / aspect_ratio
+				smoothed_h = numpy.maximum(smoothed_h, 1.0)
+		else:
+			# Legacy per-frame fit-to-source. Diagnostic-only path
+			# selected by `_use_rolling_min_ceiling=False` (private
+			# kwarg used by the V1 review harness to compare pre-V1
+			# vs V1 behavior on the SAME upstream pipeline). Not
+			# reachable from any user-facing CLI or config.
 			for i in range(n):
 				fit_w, fit_h = _max_centered_fit_size(
 					smoothed_cx[i], smoothed_cy[i],
@@ -883,6 +971,18 @@ def direct_center_crop_trajectory(
 				)
 				smoothed_w[i] = max(fit_w, 1.0)
 				smoothed_h[i] = max(fit_h, 1.0)
+			if alpha_size > 0:
+				smoothed_h = _forward_backward_ema(smoothed_h, alpha_size)
+				smoothed_w = smoothed_h * aspect_ratio
+				for i in range(n):
+					fit_w, fit_h = _max_centered_fit_size(
+						smoothed_cx[i], smoothed_cy[i],
+						smoothed_w[i],
+						frame_width, frame_height,
+						aspect_ratio,
+					)
+					smoothed_w[i] = max(fit_w, 1.0)
+					smoothed_h[i] = max(fit_h, 1.0)
 
 	# Step 4: reconstruct rectangles from center + size
 	x = smoothed_cx - smoothed_w / 2.0
@@ -969,6 +1069,7 @@ def trajectory_to_crop_rects(
 	trajectory: list,
 	video_info: dict,
 	config: dict,
+	nif_frames: set = None,
 ) -> list:
 	"""Compute crop rectangles from a solved trajectory with gap filling.
 
@@ -984,6 +1085,10 @@ def trajectory_to_crop_rects(
 			than total_frames but never longer.
 		video_info: Dict with frame_count, width, height, fps.
 		config: Project configuration dict.
+		nif_frames: Optional set of frame indices that carry NIF-edge-anchored
+			geometry (pre-filled by the encoder). Frames in this set are treated
+			as authoritative crop geometry and the hold_last branch is bypassed
+			for them. Defaults to empty set if None.
 
 	Returns:
 		List of (x, y, w, h) crop rectangles, one per frame.
@@ -999,6 +1104,10 @@ def trajectory_to_crop_rects(
 		f"{len(trajectory)} > {total_frames}"
 	)
 
+	# Default empty set if not provided (legacy callers)
+	if nif_frames is None:
+		nif_frames = set()
+
 	# fill any None gaps by holding last known position with decaying confidence
 	# instead of snapping to center-frame which pulls the crop away from the runner
 	last_known = None
@@ -1007,6 +1116,10 @@ def trajectory_to_crop_rects(
 		if i < len(trajectory) and trajectory[i] is not None:
 			full_trajectory.append(trajectory[i])
 			last_known = trajectory[i]
+		elif i in nif_frames:
+			# NIF frame already filled with edge-anchored geometry by encoder.
+			# Treat as authoritative crop geometry; do not apply hold_last.
+			full_trajectory.append(trajectory[i])
 		elif last_known is not None:
 			# hold last known position with reduced confidence
 			hold_state = {
@@ -1048,6 +1161,7 @@ def trajectory_to_crop_rects(
 		fps = float(video_info.get("fps", 60.0))
 		crop_rects = direct_center_crop_trajectory(
 			full_trajectory, frame_width, frame_height, config, fps=fps,
+			nif_frames=nif_frames,
 		)
 	elif crop_mode == "smooth":
 		# existing online CropController pass

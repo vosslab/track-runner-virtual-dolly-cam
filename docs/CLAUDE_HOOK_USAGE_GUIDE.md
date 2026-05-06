@@ -6,6 +6,9 @@ preferred alternatives for denied patterns.
 
 This doc is Claude-specific and does not apply to Codex.
 
+This guide documents current Claude hook behavior. Repo style conventions live in
+[docs/REPO_STYLE.md](REPO_STYLE.md) and [docs/PYTHON_STYLE.md](PYTHON_STYLE.md).
+
 ## Trust model
 
 The hook optimizes for high task completion with bounded blast radius: allow routine
@@ -559,8 +562,9 @@ Direct `git commit`, `git rebase`, `git reset --hard`, `git cherry-pick`,
 `git revert`, and pushes targeting protected refs are denied while on a
 protected branch; the same commands are allowed on a feature/agent branch.
 
-See [docs/WORKTREE_POLICY.md](docs/WORKTREE_POLICY.md) for the full policy,
-allowed/denied table, configuration, and the security model.
+For shipped copies of this guide, treat this section as the complete worktree
+summary: agents prepare changes, humans create final commits and pushes, and
+protected-branch history-changing commands stay denied.
 
 ## Passthrough (requires user approval)
 

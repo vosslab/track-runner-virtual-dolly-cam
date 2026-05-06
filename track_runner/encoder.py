@@ -129,6 +129,7 @@ def encode_cropped_video(
 	draw_tracking: bool = False,
 	draw_debug: bool = False,
 	draw_velocity: bool = False,
+	nif_frames: set | None = None,
 ) -> None:
 	"""Read all frames, apply crops, and write encoded output.
 
@@ -150,6 +151,7 @@ def encode_cropped_video(
 		draw_tracking: Draw the review overlay (torso box + crosshair).
 		draw_debug: Draw the developer overlay (implies tracking).
 		draw_velocity: Draw the per-frame motion arrow.
+		nif_frames: Set of frame indices marked as not-in-frame (NIF).
 	"""
 	fps = reader.fps
 	# build ffmpeg vf string from encode filters
@@ -191,12 +193,14 @@ def encode_cropped_video(
 				if any_overlay and frame_states is not None:
 					state = frame_states[frame_index] if frame_index < len(frame_states) else None
 					prev_center = state.get("prev_center") if state is not None else None
+					is_nif = nif_frames is not None and frame_index in nif_frames
 					draw_debug_overlay_cropped(
 						resized, state, crop_rect, crop_width, crop_height,
 						draw_tracking=draw_tracking,
 						draw_debug=draw_debug,
 						draw_velocity=draw_velocity,
 						prev_center=prev_center,
+						is_nif=is_nif,
 					)
 				writer.write_frame(resized)
 				progress.update(task, advance=1)
@@ -413,6 +417,7 @@ def draw_debug_overlay_cropped(
 	draw_debug: bool = False,
 	draw_velocity: bool = False,
 	prev_center: tuple | None = None,
+	is_nif: bool = False,
 ) -> None:
 	"""Draw the encode-overlay set on a cropped/resized frame in-place.
 
@@ -448,6 +453,8 @@ def draw_debug_overlay_cropped(
 		draw_velocity: Draw the per-frame motion arrow.
 		prev_center: (cx, cy) of the most recent valid prior frame in
 			full-frame coords, or None if no valid prior is available.
+		is_nif: True if this frame is in a not-in-frame (NIF) span; renders
+			the torso box with dashed style instead of solid.
 	"""
 	# nothing requested: short-circuit
 	if not (draw_tracking or draw_debug or draw_velocity):
@@ -560,10 +567,18 @@ def draw_debug_overlay_cropped(
 		cross_cx = int((ax1 + ax2) / 2)
 		cross_cy = int((ay1 + ay2) / 2)
 		if draw_tracking:
-			# black outline for contrast against any background
-			cv2.rectangle(overlay, (ax1, ay1), (ax2, ay2), (0, 0, 0), outline_line)
-			# solid source-colored accepted track box
-			cv2.rectangle(overlay, (ax1, ay1), (ax2, ay2), box_color, med_line)
+			if is_nif:
+				# NIF frames render with dashed inferred style per TRACK_RUNNER_DESIGN.md
+				draw_utils.draw_dashed_rect(overlay, ax1, ay1, ax2, ay2,
+					(0, 0, 0), thickness=outline_line, dash_len=dash_len)
+				draw_utils.draw_dashed_rect(overlay, ax1, ay1, ax2, ay2,
+					box_color, thickness=med_line, dash_len=dash_len)
+			else:
+				# non-NIF frames: solid confirmed/user-authored style
+				# black outline for contrast against any background
+				cv2.rectangle(overlay, (ax1, ay1), (ax2, ay2), (0, 0, 0), outline_line)
+				# solid source-colored accepted track box
+				cv2.rectangle(overlay, (ax1, ay1), (ax2, ay2), box_color, med_line)
 			# crosshair at box center
 			cv2.line(overlay, (cross_cx - cross_len, cross_cy),
 				(cross_cx + cross_len, cross_cy), (0, 0, 0), med_line)
@@ -722,6 +737,7 @@ def _encode_segment(
 	draw_tracking: bool = False,
 	draw_debug: bool = False,
 	draw_velocity: bool = False,
+	nif_frames: set | None = None,
 ) -> str:
 	"""Encode one segment of the video in a worker process.
 
@@ -744,6 +760,7 @@ def _encode_segment(
 		draw_tracking: Draw the review overlay.
 		draw_debug: Draw the developer overlay (implies tracking).
 		draw_velocity: Draw the per-frame motion arrow.
+		nif_frames: Set of frame indices marked as not-in-frame (NIF).
 
 	Returns:
 		Path to the encoded segment file.
@@ -793,12 +810,15 @@ def _encode_segment(
 			if any_overlay and frame_states_chunk is not None:
 				state = frame_states_chunk[local_idx] if local_idx < len(frame_states_chunk) else None
 				prev_center = state.get("prev_center") if state is not None else None
+				frame_idx = start_frame + local_idx
+				is_nif = nif_frames is not None and frame_idx in nif_frames
 				draw_debug_overlay_cropped(
 					resized, state, crop_rect, crop_width, crop_height,
 					draw_tracking=draw_tracking,
 					draw_debug=draw_debug,
 					draw_velocity=draw_velocity,
 					prev_center=prev_center,
+					is_nif=is_nif,
 				)
 			writer.write_frame(resized)
 			progress.update(task, advance=1)
@@ -826,6 +846,7 @@ def encode_cropped_video_parallel(
 	draw_tracking: bool = False,
 	draw_debug: bool = False,
 	draw_velocity: bool = False,
+	nif_frames: set | None = None,
 ) -> None:
 	"""Encode cropped video using parallel worker processes.
 
@@ -851,6 +872,7 @@ def encode_cropped_video_parallel(
 		draw_tracking: Draw the review overlay (torso box + crosshair).
 		draw_debug: Draw the developer overlay (implies tracking).
 		draw_velocity: Draw the per-frame motion arrow.
+		nif_frames: Set of frame indices marked as not-in-frame (NIF).
 	"""
 	# fall back to sequential if only 1 worker
 	if workers <= 1:
@@ -867,6 +889,7 @@ def encode_cropped_video_parallel(
 				draw_tracking=draw_tracking,
 				draw_debug=draw_debug,
 				draw_velocity=draw_velocity,
+				nif_frames=nif_frames,
 			)
 		return
 
@@ -920,6 +943,7 @@ def encode_cropped_video_parallel(
 				draw_tracking,
 				draw_debug,
 				draw_velocity,
+				nif_frames,
 			)
 			future_to_seg[future] = seg["path"]
 		# polling loop: use concurrent.futures.wait() with short timeout

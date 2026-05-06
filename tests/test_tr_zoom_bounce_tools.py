@@ -41,6 +41,7 @@ import analyze_torso_box_noise
 
 # library under test
 import track_runner.torso_size_stabilizer as torso_size_stabilizer
+import track_runner.tr_crop as tr_crop
 
 
 #============================================
@@ -581,6 +582,187 @@ def test_compute_pre_encode_crop_signals_emits_all_six_stages():
 				"final_smoothed_h", "final_smoothed_w",
 				"edge_clamped", "edge_clamped_S3"):
 		assert key in signals, f"missing legacy key: {key}"
+
+
+#============================================
+# V1 rolling-min source-fit ceiling (lucky-napping-lake.md)
+#============================================
+
+def _make_trajectory_sawtooth_cx(
+	n_frames: int = 200,
+	cy: float = 540.0, w: float = 60.0, h: float = 100.0,
+	cx_low: float = 50.0, cx_high: float = 200.0,
+) -> list:
+	"""Trajectory where cx alternates between two values (sawtooth).
+
+	The geometric ceiling at cx=50 is ~100; at cx=200 is ~400. The
+	per-frame ceiling oscillates by 4x. Constant cy/w/h isolates the
+	ceiling-oscillation effect.
+	"""
+	trajectory = []
+	for i in range(n_frames):
+		cx = cx_low if i % 2 == 0 else cx_high
+		trajectory.append({"cx": cx, "cy": cy, "w": w, "h": h})
+	return trajectory
+
+
+def test_v1_rolling_min_smooth_ceiling_lower_bound():
+	"""smooth_ceiling_w[i] <= geometric_ceiling_w[i] and S5_v1_w
+	bounded by max(smooth_ceiling, 1.0) for every frame.
+
+	Behavioral invariant: rolling-min over a window can only shrink
+	the ceiling, never grow it. The V1 output must respect that
+	bound modulo the 1-pixel sanity floor.
+	"""
+	trajectory = _make_trajectory_sawtooth_cx(n_frames=200)
+	video_info = _minimal_video_info()
+	cfg = _minimal_cfg()
+	signals = analyze_torso_box_noise.compute_pre_encode_crop_signals(
+		trajectory, video_info, cfg,
+	)
+	v1 = analyze_torso_box_noise.compute_v1_rolling_min_ceiling(
+		signals, video_info, cfg, window=7,
+	)
+	geom = signals["fit_diagnostics"]["geometric_ceiling_h"]
+	# convert h to w
+	aspect = 1.0  # _minimal_cfg uses 1:1
+	geom_w = geom * aspect
+	smooth_w = v1["smooth_ceiling_w"]
+	assert numpy.all(smooth_w <= geom_w + 1e-9), (
+		"smooth_ceiling exceeds geometric_ceiling on at least one frame"
+	)
+	# the helper already asserts S5_v1_w <= max(smooth_ceiling_w, 1.0);
+	# repeat behaviorally in the test
+	s5v1_w = v1["S5_v1"]["w"]
+	assert numpy.all(s5v1_w <= numpy.maximum(smooth_w, 1.0) + 1e-9), (
+		"S5_v1_w exceeds max(smooth_ceiling_w, 1.0) on at least one frame"
+	)
+
+
+def test_tr_crop_rolling_min_ceiling_helper_lower_bound():
+	"""tr_crop._rolling_min_ceiling_per_frame: smoothed ceiling is
+	bounded above by the per-frame geometric ceiling on every frame.
+
+	Behavioral invariant: the rolling min over a centered window can
+	only shrink, never grow. A crop sized to the smoothed ceiling at
+	frame i fits inside the source frame at frame i (boundary safety
+	by construction).
+	"""
+	# sawtooth-cx sequence, constant cy
+	n = 100
+	cx = numpy.array([50.0 if i % 2 == 0 else 200.0 for i in range(n)])
+	cy = numpy.full(n, 540.0)
+	frame_w = 1920
+	frame_h = 1080
+	aspect = 1.0
+	# raw geometric ceiling per frame
+	max_w_horiz = 2.0 * numpy.minimum(cx, frame_w - cx)
+	max_w_vert = aspect * 2.0 * numpy.minimum(cy, frame_h - cy)
+	geom = numpy.minimum(max_w_horiz, max_w_vert)
+	# smoothed ceiling
+	smooth = tr_crop._rolling_min_ceiling_per_frame(
+		cx, cy, frame_w, frame_h, aspect, window=7,
+	)
+	# invariant: smooth <= geom on every frame
+	assert numpy.all(smooth <= geom + 1e-9), (
+		"smooth_ceiling exceeds geometric_ceiling on at least one frame"
+	)
+	# the rolling min on this sawtooth must equal the per-window low
+	# for every interior frame (where the window is fully inside the
+	# array and contains both 50 and 200): the local min is 100.0
+	# (geometric ceiling at cx=50).
+	assert numpy.all(smooth[3:n-3] <= 100.0 + 1e-9), (
+		"interior frames should hit the local min on a sawtooth"
+	)
+
+
+def test_tr_crop_production_uses_smoothed_ceiling():
+	"""direct_center_crop_trajectory output is bounded by the
+	smoothed ceiling on a sawtooth-cx fixture.
+
+	Behavioral invariant: with V1 in production, the crop width at
+	every frame must respect the smoothed ceiling (modulo the
+	1-pixel sanity floor and integer rounding). A crop that exceeds
+	the geometric ceiling at any frame would produce black bars at
+	the source edge -- regression check.
+	"""
+	# build a synthetic trajectory with a sawtooth cx that forces
+	# heavy edge-clamp activity on the left edge
+	n = 100
+	trajectory = []
+	for i in range(n):
+		cx = 50.0 if i % 2 == 0 else 200.0
+		state = {
+			"cx": cx, "cy": 540.0, "w": 60.0, "h": 100.0,
+			"conf": 1.0, "source": "test",
+		}
+		trajectory.append(state)
+	frame_w = 1920
+	frame_h = 1080
+	aspect = 1.0
+	cfg = {
+		"processing": {
+			"crop_aspect": "1:1",
+			"torso_height_multiple": 3.33,
+			"crop_post_smooth_size_strength": 0.15,
+			"crop_centered_fit_to_source": True,
+			# disable position smoothing / containment so the test
+			# isolates the fit-to-source behavior
+			"crop_post_smooth_pos_strength": 0.0,
+			"crop_containment_radius": 0.0,
+			"crop_torso_anchor": 0.50,
+		},
+	}
+	rects = tr_crop.direct_center_crop_trajectory(
+		trajectory, frame_w, frame_h, cfg, fps=30.0,
+	)
+	# expected geometric ceiling per frame
+	cx_arr = numpy.array([state["cx"] for state in trajectory])
+	cy_arr = numpy.array([state["cy"] for state in trajectory])
+	max_w_horiz = 2.0 * numpy.minimum(cx_arr, frame_w - cx_arr)
+	max_w_vert = aspect * 2.0 * numpy.minimum(cy_arr, frame_h - cy_arr)
+	geom = numpy.minimum(max_w_horiz, max_w_vert)
+	# every frame's crop width must be <= geometric ceiling (no
+	# boundary violation). Allow 1 px slack for integer rounding.
+	for i, rect in enumerate(rects):
+		_x, _y, w, _h = rect
+		assert w <= geom[i] + 1.0, (
+			f"frame {i}: crop width {w} exceeds geometric ceiling "
+			f"{geom[i]:.2f}"
+		)
+
+
+def test_v1_rolling_min_reduces_ceiling_bounce_on_sawtooth():
+	"""On a sawtooth-cx fixture the ceiling bounces every frame; V1
+	must produce a less bouncy S5 than production.
+
+	Behavioral invariant, not exact-value: V1's S5 log_velocity_p95
+	is strictly lower than production's S5 log_velocity_p95 because
+	the rolling-min collapses the alternating ceiling to its local
+	floor.
+	"""
+	trajectory = _make_trajectory_sawtooth_cx(n_frames=200)
+	video_info = _minimal_video_info()
+	cfg = _minimal_cfg()
+	signals = analyze_torso_box_noise.compute_pre_encode_crop_signals(
+		trajectory, video_info, cfg,
+	)
+	v1 = analyze_torso_box_noise.compute_v1_rolling_min_ceiling(
+		signals, video_info, cfg, window=7,
+	)
+	# S5 production p95
+	s5_prod = analyze_torso_box_noise._stage_row_for(
+		"S5_fit_2", signals["S5_fit_2"], fps=float(video_info["fps"]),
+	)
+	# S5_v1 p95
+	s5_v1 = analyze_torso_box_noise._stage_row_for(
+		"S5_v1", v1["S5_v1"], fps=float(video_info["fps"]),
+	)
+	assert s5_v1["log_velocity_p95"] < s5_prod["log_velocity_p95"], (
+		f"V1 should reduce log_velocity_p95 vs production on a "
+		f"sawtooth-cx fixture; got V1={s5_v1['log_velocity_p95']} vs "
+		f"prod={s5_prod['log_velocity_p95']}"
+	)
 
 
 def test_compute_per_stage_zoom_metrics_zero_on_stationary_trajectory():

@@ -48,6 +48,7 @@ import encode_analysis
 import analyze_report
 import regime_classifier
 import camera_motion
+import off_frame_geometry
 import race_start
 import scene_coords
 import tr_schema
@@ -2195,6 +2196,7 @@ def _mode_encode(
 
 	# apply multi-seed anchored interpolation to reduce drift
 	seeds_path = tr_paths.default_seeds_path(args.input_file)
+	all_seeds = []
 	if os.path.isfile(seeds_path):
 		seeds_data = state_io.load_seeds(seeds_path)
 		all_seeds = seeds_data.get("seeds", [])
@@ -2213,11 +2215,48 @@ def _mode_encode(
 			"could not reconstruct trajectory from solved intervals"
 		)
 
+	# Encode-time NIF synthesis: fill NIF spans with edge-anchored geometry.
+	# Requires race_start_frame from diagnostics and the solved trajectory.
+	# Build an in-memory NifSpan list and fill NIF-span frames before crop.
+	nif_frames = set()
+	if all_seeds:
+		pre_race_ref = diag_data.get("pre_race_reference")
+		race_start_frame = 0
+		if pre_race_ref is not None:
+			race_start_frame = int(pre_race_ref["race_start_frame"])
+		# Convert trajectory to a dict keyed by frame index for build_nif_spans
+		frame_size = (video_info["width"], video_info["height"])
+		# Build in-memory solved trajectory dict for NIF span construction
+		solved_trajectory_dict = {}
+		for i, state in enumerate(trajectory):
+			if state is not None:
+				solved_trajectory_dict[i] = {
+					"cx": int(state["cx"]),
+					"cy": int(state["cy"]),
+					"w": int(state["w"]),
+					"h": int(state["h"]),
+				}
+		# Build NIF spans. Raises ValueError loudly on pre-race NIF or
+		# missing before-bracket per WP-A1; we do not catch it.
+		nif_spans = off_frame_geometry.build_nif_spans(
+			all_seeds, solved_trajectory_dict, frame_size, race_start_frame,
+		)
+		# Fill trajectory with edge-anchored NIF geometry
+		if nif_spans:
+			off_frame_states = off_frame_geometry.build_off_frame_states(
+				nif_spans, frame_size,
+			)
+			# Merge filled states into trajectory in-memory copy
+			for frame_idx, state in off_frame_states.items():
+				if 0 <= frame_idx < len(trajectory):
+					trajectory[frame_idx] = state
+					nif_frames.add(frame_idx)
+
 	num_workers = _resolve_workers(args)
 
 	# compute crop trajectory
 	print("computing crop trajectory...")
-	crop_rects = tr_crop.trajectory_to_crop_rects(trajectory, video_info, cfg)
+	crop_rects = tr_crop.trajectory_to_crop_rects(trajectory, video_info, cfg, nif_frames=nif_frames)
 
 	# resolve output path (encoded output stays next to input video).
 	# Default container is .mkv (mkvmerge concat output); --mp4 or -o
@@ -2437,6 +2476,7 @@ def _mode_encode(
 				draw_tracking=draw_tracking,
 				draw_debug=draw_debug,
 				draw_velocity=draw_velocity,
+				nif_frames=nif_frames,
 			)
 		else:
 			probe_info = common_tools.probe_video.probe_video(args.input_file)
@@ -2454,6 +2494,7 @@ def _mode_encode(
 					draw_tracking=draw_tracking,
 					draw_debug=draw_debug,
 					draw_velocity=draw_velocity,
+					nif_frames=nif_frames,
 				)
 	# restore default signal handler
 	key_input.restore_default_sigint()

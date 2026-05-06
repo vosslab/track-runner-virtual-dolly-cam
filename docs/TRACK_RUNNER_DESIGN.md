@@ -233,16 +233,18 @@ rearranges the workspace without restarting.
 ## Trajectory erasure philosophy
 
 When the runner is genuinely not visible (hidden or off-screen), the solver
-must not pretend to know where they are. Erasing trajectory near those frames
-prevents the propagator from confidently tracking a wrong person through a gap.
+must not pretend to know where they are. Approximate seeds provide a
+directional hint (the user drew a general area) but the position is still
+uncertain, so trajectory is erased in a short radius around those seeds.
 
-Approximate seeds provide a directional hint (the user drew a general area)
-but the position is still uncertain, so trajectory is erased in a short radius.
-Not-in-frame seeds have no position at all, so a longer erasure radius is used.
-
-The erasure decision is centralized in one function. Both solve and encode
-paths pass all seeds; the function decides what to erase. This prevents
-divergence between what the solver computed and what the encoder renders.
+For `not_in_frame` (NIF) spans the encoder no longer relies on a
+hold-last fallback. Instead, it fills the gap with edge-anchored crop
+geometry derived from the bracketing solved torso boxes: width and height
+are stable across the span, the pinned axis sits at the exit edge, and
+the non-pinned axis is interpolated. NIF context is provided in memory
+alongside the encode trajectory; the on-disk solved trajectory artifact
+is unchanged. See [docs/OFF_FRAME_GEOMETRY.md](OFF_FRAME_GEOMETRY.md) for
+the full storage, interpretation, and inference contract.
 
 ## What this tool is not
 

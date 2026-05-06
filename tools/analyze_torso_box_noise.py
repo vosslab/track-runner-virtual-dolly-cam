@@ -46,6 +46,7 @@ if _REPO_ROOT not in sys.path:
 # PIP3 modules
 import numpy
 import scipy.stats
+import cv2
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -57,9 +58,11 @@ import find_zoom_hotspots
 import interval_solver
 import state_io
 import tr_config
+import encoder
 import tr_crop
 import tr_paths
 import torso_size_stabilizer
+import video_io
 
 # local repo modules (common_tools)
 import common_tools.probe_video
@@ -141,6 +144,29 @@ def parse_args() -> argparse.Namespace:
 			"per-frame stage trace CSV covering S0..S5 of "
 			"tr_crop.direct_center_crop_trajectory. See plan "
 			"~/.claude/plans/lucky-napping-lake.md."
+		),
+	)
+	parser.add_argument(
+		"--variant", dest="variant", default="none",
+		choices=("none", "v1"),
+		help=(
+			"Run a tool-side fit-to-source variant alongside production. "
+			"`v1` simulates the rolling-min source-fit ceiling (window 7 "
+			"by default; V1b informational at window 3). Adds S3_v1 / "
+			"S5_v1 (and S3_v1b / S5_v1b) rows to the per-stage table "
+			"and additional columns to the trace CSV. Requires "
+			"--bisect-stages. Default `none` (production only)."
+		),
+	)
+	parser.add_argument(
+		"--encode-review", dest="encode_review", action="store_true",
+		help=(
+			"Encode a 30 s side-by-side review clip centered on the worst "
+			"S5 hotspot frame: production crop vs V1 crop. Writes "
+			"production_clip.mkv, v1_clip.mkv, and side_by_side.mkv "
+			"under <output_dir>/review_clips/. Requires --variant v1. "
+			"Diagnostic surface only; does not change tr_crop, the "
+			"encoder CLI, or any production behavior."
 		),
 	)
 	args = parser.parse_args()
@@ -263,6 +289,16 @@ def compute_pre_encode_crop_signals(
 	frame_w = int(video_info["width"])
 	frame_h = int(video_info["height"])
 
+	# Per-frame geometric ceiling (the bouncy signal V1 attacks).
+	# Same arithmetic as tr_crop._max_centered_fit_size:
+	#   max_w_horiz = 2 * min(cx, frame_w - cx)
+	#   max_w_vert  = aspect * 2 * min(cy, frame_h - cy)
+	#   ceiling_w   = min(max_w_horiz, max_w_vert)
+	max_w_horiz = 2.0 * numpy.minimum(raw_cx, frame_w - raw_cx)
+	max_w_vert = aspect_ratio * 2.0 * numpy.minimum(raw_cy, frame_h - raw_cy)
+	geometric_ceiling_w = numpy.minimum(max_w_horiz, max_w_vert)
+	geometric_ceiling_h = geometric_ceiling_w / aspect_ratio
+
 	# S0: scale-normalized raw torso. Not equal to S1 by construction;
 	# kept as a "before any crop construction" reference signal.
 	s0_h = raw_h * torso_multiple
@@ -329,6 +365,68 @@ def compute_pre_encode_crop_signals(
 	# edge_clamped: True where the final fit pass shrank its input
 	edge_clamped = s5_h < (s4_h - 0.5) if (fit_to_source and alpha_size > 0) else edge_clamped_s3
 
+	# fit_diagnostics: per-frame fit-to-source diagnostics (WP-A1).
+	# requested_h, fitted_h, shrink_h, s4_overshoot, limiting_edge,
+	# distance to each frame edge, and edge_clamp run id/length.
+	requested_h = s2_h.copy()
+	fitted_h = s3_h.copy()
+	shrink_h = numpy.maximum(requested_h - fitted_h, 0.0)
+	s4_overshoot = numpy.maximum(s4_h - s3_h, 0.0)
+	# limiting_edge classification per frame. 0=none (S2 fit; desired
+	# was the binding constraint), 1=top, 2=bottom, 3=left, 4=right.
+	# When max_w_horiz binds, the limiting side is left or right
+	# (whichever is closer); when max_w_vert binds, top or bottom.
+	desired_w_at_s3 = s2_w
+	limiting_edge_code = numpy.zeros(n, dtype=numpy.int32)
+	# horizontal-bind: max_w_horiz < min(desired_w, max_w_vert)
+	horiz_binds = (max_w_horiz <= max_w_vert + 1e-9) & (max_w_horiz < desired_w_at_s3 - 1e-9)
+	vert_binds = (max_w_vert < max_w_horiz - 1e-9) & (max_w_vert < desired_w_at_s3 - 1e-9)
+	# pick the closer side for each axis
+	left_closer = raw_cx <= (frame_w - raw_cx)
+	top_closer = raw_cy <= (frame_h - raw_cy)
+	limiting_edge_code[horiz_binds & left_closer] = 3   # left
+	limiting_edge_code[horiz_binds & ~left_closer] = 4  # right
+	limiting_edge_code[vert_binds & top_closer] = 1     # top
+	limiting_edge_code[vert_binds & ~top_closer] = 2    # bottom
+	dist_top = raw_cy.copy()
+	dist_bottom = float(frame_h) - raw_cy
+	dist_left = raw_cx.copy()
+	dist_right = float(frame_w) - raw_cx
+	# edge-clamp run id and length: walk edge_clamped_s3 to assign a
+	# unique run id to each maximal contiguous True block, and tag
+	# every frame in a run with that run's length.
+	edge_clamp_run_id = numpy.full(n, -1, dtype=numpy.int32)
+	edge_clamp_run_length = numpy.zeros(n, dtype=numpy.int32)
+	rid = 0
+	i = 0
+	while i < n:
+		if edge_clamped_s3[i]:
+			j = i
+			while j < n and edge_clamped_s3[j]:
+				j += 1
+			run_len = j - i
+			edge_clamp_run_id[i:j] = rid
+			edge_clamp_run_length[i:j] = run_len
+			rid += 1
+			i = j
+		else:
+			i += 1
+
+	fit_diagnostics = {
+		"requested_h": requested_h,
+		"fitted_h": fitted_h,
+		"shrink_h": shrink_h,
+		"geometric_ceiling_h": geometric_ceiling_h,
+		"s4_overshoot": s4_overshoot,
+		"limiting_edge_code": limiting_edge_code,
+		"dist_top": dist_top,
+		"dist_bottom": dist_bottom,
+		"dist_left": dist_left,
+		"dist_right": dist_right,
+		"edge_clamp_run_id": edge_clamp_run_id,
+		"edge_clamp_run_length": edge_clamp_run_length,
+	}
+
 	return {
 		"raw_cx": raw_cx,
 		"raw_cy": raw_cy,
@@ -346,6 +444,7 @@ def compute_pre_encode_crop_signals(
 		"S3_fit_1":   {"h": s3_h, "w": s3_w},
 		"S4_ema_2":   {"h": s4_h, "w": s4_w},
 		"S5_fit_2":   {"h": s5_h, "w": s5_w},
+		"fit_diagnostics": fit_diagnostics,
 	}
 
 
@@ -514,6 +613,460 @@ def compute_per_stage_zoom_metrics(
 			"n_frames_finite": n_finite,
 		})
 	return rows
+
+
+#============================================
+def _stage_row_for(stage_id: str, stage: dict, fps: float) -> dict:
+	"""Compute one row of per-stage zoom metrics for an arbitrary stage dict.
+
+	Mirrors the per-stage iteration in `compute_per_stage_zoom_metrics`
+	but operates on a single (stage_id, h, w) triple. Used to append
+	V1/V1b rows to the per-stage table.
+	"""
+	stage_h = numpy.asarray(stage["h"], dtype=numpy.float64)
+	stage_w = numpy.asarray(stage["w"], dtype=numpy.float64)
+	area = numpy.sqrt(numpy.maximum(stage_w * stage_h, 0.0))
+	stage_log_v = log_velocity(area)
+	finite = stage_log_v[numpy.isfinite(stage_log_v)]
+	n_finite = int(finite.size)
+	if n_finite >= 2:
+		log_v_p95 = float(numpy.percentile(finite, 95))
+	else:
+		log_v_p95 = float("nan")
+	hotspot = compute_simulated_hotspot_severity(stage_log_v, fps)
+	return {
+		"stage_id": stage_id,
+		"log_velocity_p95": log_v_p95,
+		"hotspot_severity": float(hotspot["severity"]),
+		"n_frames_finite": n_finite,
+	}
+
+
+#============================================
+def rolling_min_1d(values: numpy.ndarray, window: int) -> numpy.ndarray:
+	"""Centered rolling minimum over a 1D array.
+
+	Window length is clipped to a minimum of 1. Edge handling truncates
+	the window at array boundaries (no NaN introduced).
+
+	Args:
+		values: 1D float array.
+		window: Centered window length.
+
+	Returns:
+		A new array of the same length where each element is the
+		minimum of `values[max(0, i - half) : min(n, i + half + 1)]`.
+	"""
+	window = max(int(window), 1)
+	if window == 1:
+		return values.astype(numpy.float64, copy=True)
+	half = window // 2
+	n = len(values)
+	out = numpy.zeros(n, dtype=numpy.float64)
+	for i in range(n):
+		start = max(0, i - half)
+		end = min(n, i + half + 1)
+		slice_vals = values[start:end]
+		valid = slice_vals[numpy.isfinite(slice_vals)]
+		if valid.size == 0:
+			out[i] = float("nan")
+		else:
+			out[i] = float(numpy.min(valid))
+	return out
+
+
+#============================================
+def compute_v1_rolling_min_ceiling(
+	signals: dict, video_info: dict, cfg: dict, window: int = 7,
+) -> dict:
+	"""Variant V1: rolling-min source-fit ceiling.
+
+	Mechanism: smooth the per-frame geometric ceiling sequence with a
+	centered rolling minimum, then use the smoothed ceiling at the S3
+	and S5 per-frame clip points. The S4 EMA between them is unchanged.
+
+	Properties (all asserted at end of helper):
+	  - smooth_ceiling_w[i] <= geometric_ceiling_w[i] for every i
+	    (rolling min only shrinks)
+	  - S5_v1_w[i] <= smooth_ceiling_w[i] for every i (no boundary
+	    violation)
+	  - S5_v1_h[i] <= S5_fit_2.h[i] for every i (V1 never enlarges
+	    the crop)
+
+	Args:
+		signals: Output of `compute_pre_encode_crop_signals`.
+		video_info: Dict with width, height, fps.
+		cfg: Project config.
+		window: Centered window length for the rolling min. Default 7.
+
+	Returns:
+		Dict with stage outputs:
+		  S3_v1, S4_v1, S5_v1 (each a sub-dict with `h` and `w`),
+		  smooth_ceiling_w (numpy array of length n_frames).
+	"""
+	processing = cfg.get("processing", {})
+	aspect_str = processing.get("crop_aspect", "1:1")
+	aspect_ratio = tr_crop.parse_aspect_ratio(aspect_str)
+	alpha_size = float(processing.get("crop_post_smooth_size_strength", 0.15))
+
+	# inputs from production simulation
+	s2_w = numpy.asarray(signals["S2_ema_1"]["w"], dtype=numpy.float64)
+	diag = signals["fit_diagnostics"]
+	geometric_ceiling_h = numpy.asarray(
+		diag["geometric_ceiling_h"], dtype=numpy.float64
+	)
+	geometric_ceiling_w = geometric_ceiling_h * aspect_ratio
+
+	# Smoothed ceiling delegates to the production helper so the
+	# tool-side simulation cannot drift from production semantics.
+	# Identical arithmetic by construction.
+	smooth_ceiling_w = tr_crop._rolling_min_ceiling_per_frame(
+		signals["raw_cx"], signals["raw_cy"],
+		int(video_info["width"]), int(video_info["height"]),
+		aspect_ratio, window=window,
+	)
+	smooth_ceiling_h = smooth_ceiling_w / aspect_ratio
+
+	# S3_v1: clip S2 by smooth ceiling
+	s3v1_w = numpy.minimum(s2_w, smooth_ceiling_w)
+	s3v1_w = numpy.maximum(s3v1_w, 1.0)
+	s3v1_h = s3v1_w / aspect_ratio
+	s3v1_h = numpy.maximum(s3v1_h, 1.0)
+
+	# S4_v1: forward-backward EMA on S3_v1 (same alpha as production)
+	if alpha_size > 0:
+		s4v1_h = tr_crop._forward_backward_ema(s3v1_h, alpha_size)
+	else:
+		s4v1_h = s3v1_h.copy()
+	s4v1_h = numpy.maximum(s4v1_h, 1.0)
+	s4v1_w = s4v1_h * aspect_ratio
+
+	# S5_v1: clip S4_v1 by smooth ceiling
+	s5v1_w = numpy.minimum(s4v1_w, smooth_ceiling_w)
+	s5v1_w = numpy.maximum(s5v1_w, 1.0)
+	s5v1_h = s5v1_w / aspect_ratio
+	s5v1_h = numpy.maximum(s5v1_h, 1.0)
+
+	# invariants. The 1-pixel sanity floor is part of production
+	# behavior (max(fit_w, 1.0) in tr_crop's S3/S5 loops); invariants
+	# allow that floor to lift values to 1.0 even when the underlying
+	# bound is < 1.
+	# (1) smooth_ceiling <= geometric_ceiling per frame
+	assert numpy.all(smooth_ceiling_w <= geometric_ceiling_w + 1e-9), (
+		"V1 invariant violated: smooth_ceiling exceeds geometric_ceiling"
+	)
+	# (2) S5_v1 <= max(smooth_ceiling, 1.0) per frame
+	smooth_or_floor = numpy.maximum(smooth_ceiling_w, 1.0)
+	assert numpy.all(s5v1_w <= smooth_or_floor + 1e-9), (
+		"V1 invariant violated: S5_v1_w exceeds max(smooth_ceiling_w, 1.0)"
+	)
+	# (3) S5_v1 <= S5_fit_2 per frame (modulo the floor): V1 never
+	# enlarges the crop relative to production except possibly to the
+	# 1-pixel floor on degenerate frames. Production S5 is bounded by
+	# the per-frame geometric ceiling, while V1 S5 is bounded by
+	# smooth_ceiling <= geometric ceiling. With identical S2/S4
+	# inputs and tighter bound, V1 cannot exceed production except via
+	# the EMA path operating on the (lower) S3_v1 input. Since EMA is
+	# monotone in its input, S4_v1 <= S4 (production), so S5_v1 <= S5.
+	s5_prod_w = numpy.asarray(signals["S5_fit_2"]["w"], dtype=numpy.float64)
+	# allow 1-pixel slack for the sanity floor
+	assert numpy.all(s5v1_w <= numpy.maximum(s5_prod_w, 1.0) + 1e-6), (
+		"V1 invariant violated: S5_v1_w exceeds production S5_fit_2.w"
+	)
+
+	return {
+		"S3_v1": {"h": s3v1_h, "w": s3v1_w},
+		"S4_v1": {"h": s4v1_h, "w": s4v1_w},
+		"S5_v1": {"h": s5v1_h, "w": s5v1_w},
+		"smooth_ceiling_w": smooth_ceiling_w,
+		"smooth_ceiling_h": smooth_ceiling_h,
+	}
+
+
+#============================================
+def _resize_letterboxed(
+	frame: numpy.ndarray, target_w: int, target_h: int,
+) -> tuple:
+	"""Resize frame to (target_w, target_h) preserving aspect ratio.
+
+	Letterboxes (or pillarboxes) with black to fill the target box.
+	Used by the review harness to render the source-context panel
+	without distorting aspect.
+
+	Returns:
+		(out_image, scale, x_off, y_off) so callers can map
+		full-frame coordinates onto the letterboxed panel for overlays.
+	"""
+	src_h, src_w = frame.shape[:2]
+	scale = min(target_w / src_w, target_h / src_h)
+	new_w = max(1, int(round(src_w * scale)))
+	new_h = max(1, int(round(src_h * scale)))
+	resized = cv2.resize(
+		frame, (new_w, new_h),
+		interpolation=cv2.INTER_AREA if scale < 1.0 else cv2.INTER_LANCZOS4,
+	)
+	out = numpy.zeros((target_h, target_w, 3), dtype=frame.dtype)
+	x_off = (target_w - new_w) // 2
+	y_off = (target_h - new_h) // 2
+	out[y_off:y_off + new_h, x_off:x_off + new_w] = resized
+	return out, float(scale), int(x_off), int(y_off)
+
+
+#============================================
+def _draw_torso_box_on_panel(
+	image: numpy.ndarray,
+	state: dict,
+	transform: tuple,
+	color: tuple = (0, 255, 0),
+	thickness: int = 2,
+) -> None:
+	"""Draw a torso box on a review panel in place.
+
+	Args:
+		image: Panel image (modified in place).
+		state: Trajectory state dict with cx, cy, w, h in source coords.
+		transform: ("letterbox", scale, x_off, y_off) for the source panel,
+			or ("crop", crop_rect, out_w, out_h) for the cropped panels.
+			The crop variant delegates to encoder._box_to_crop_coords so
+			the diagnostic harness uses the same arithmetic the encoder
+			uses for the production debug overlay.
+		color: BGR triple. Default green (matches the seed/predicted
+			torso style used in the encoder debug overlay).
+		thickness: Line thickness in pixels.
+	"""
+	if state is None:
+		return
+	cx = state.get("cx")
+	cy = state.get("cy")
+	w = state.get("w")
+	h = state.get("h")
+	if cx is None or cy is None or w is None or h is None:
+		return
+	kind = transform[0]
+	if kind == "letterbox":
+		_, scale, x_off, y_off = transform
+		x1 = int(round((cx - w / 2.0) * scale + x_off))
+		y1 = int(round((cy - h / 2.0) * scale + y_off))
+		x2 = int(round((cx + w / 2.0) * scale + x_off))
+		y2 = int(round((cy + h / 2.0) * scale + y_off))
+	elif kind == "crop":
+		_, crop_rect, out_w, out_h = transform
+		x1, y1, x2, y2 = encoder._box_to_crop_coords(
+			[float(cx), float(cy), float(w), float(h)],
+			crop_rect, out_w, out_h,
+		)
+	else:
+		return
+	cv2.rectangle(image, (x1, y1), (x2, y2), color, thickness)
+
+
+#============================================
+def encode_review_clips(
+	source_path: str,
+	trajectory: list,
+	signals: dict,
+	video_info: dict,
+	cfg: dict,
+	output_dir: str,
+	half_seconds: float = 15.0,
+	target_size: int = 1080,
+	review_torso_multiple: float = 5.0,
+) -> dict:
+	"""Encode side-by-side review clips: production-pre-V1 vs production-V1
+	around the worst S5 hotspot, with a source-context panel on the left.
+
+	Calls `tr_crop.direct_center_crop_trajectory` directly with the
+	private `_use_rolling_min_ceiling` kwarg toggled to produce the
+	pre-V1 (per-frame `_max_centered_fit_size` clip) and V1 (rolling-min
+	ceiling) crop trajectories. Both rect sequences come from the SAME
+	upstream pipeline (position EMA, composition offset, containment
+	clamp), so the only difference is the fit-to-source step. This
+	avoids the haywire-between-seeds artifact the previous harness
+	produced by reading raw trajectory positions directly.
+
+	Crop tightness is overridden to `review_torso_multiple` (default 5)
+	so the clip shows enough context around the runner to assess the
+	V1 effect. The override is a tweak of `cfg["processing"][
+	"torso_height_multiple"]` for the harness call only -- it does not
+	affect any persisted config or production behavior.
+
+	Three panels in the side-by-side: source (full frame letterboxed)
+	on the left, pre-V1 production crop in the middle, V1 production
+	crop on the right.
+
+	Args:
+		source_path: Source video path (.mkv / .mov / etc.).
+		trajectory: Per-frame state list (post-stitch, post-anchor,
+			post-erasure -- the same trajectory the encoder uses).
+		signals: Output of `compute_pre_encode_crop_signals` (used
+			only to find the worst S5 hotspot frame).
+		video_info: Probe dict with width, height, fps.
+		cfg: Project config; this function copies and mutates a local
+			copy to override `torso_height_multiple` for the review.
+		output_dir: Directory to write the .mkv files.
+		half_seconds: Half-window in seconds. Default 15 (-> 30 s).
+		target_size: Output square size per panel in pixels. Default
+			1080. Side-by-side total width = 3 * target_size.
+		review_torso_multiple: Override for `torso_height_multiple` in
+			the review crop. Default 5.0 (looser than the 3.33
+			project default).
+
+	Returns:
+		Dict describing the encoded clips, or None if no hotspot
+		frame is found.
+	"""
+	fps = float(video_info["fps"])
+	frame_w = int(video_info["width"])
+	frame_h = int(video_info["height"])
+	half_window = int(round(half_seconds * fps))
+	n_frames = len(signals["raw_cx"])
+
+	# find worst S5 hotspot frame from the tool's production simulation
+	s5_h = numpy.asarray(signals["S5_fit_2"]["h"], dtype=numpy.float64)
+	s5_w_arr = numpy.asarray(signals["S5_fit_2"]["w"], dtype=numpy.float64)
+	area = numpy.sqrt(numpy.maximum(s5_w_arr * s5_h, 0.0))
+	s5_log_v = log_velocity(area)
+	hotspot = compute_simulated_hotspot_severity(s5_log_v, fps, top_n=1)
+	if not hotspot["hotspots"]:
+		return None
+	center_frame = int(hotspot["hotspots"][0][0])
+	start = max(0, center_frame - half_window)
+	end = min(n_frames, center_frame + half_window + 1)
+
+	# build a review config: looser crop for visual assessment
+	review_cfg = {
+		"processing": dict(cfg.get("processing", {})),
+	}
+	review_cfg["processing"]["torso_height_multiple"] = float(
+		review_torso_multiple
+	)
+
+	# gap-fill None entries by holding last-known state, mirroring the
+	# logic in tr_crop.trajectory_to_crop_rects. direct_center_crop_trajectory
+	# itself does not handle None states; production normally gap-fills
+	# upstream of it.
+	last_known = None
+	full_trajectory = []
+	for i in range(n_frames):
+		state = trajectory[i] if i < len(trajectory) else None
+		if state is not None:
+			full_trajectory.append(state)
+			last_known = state
+		elif last_known is not None:
+			hold_state = {
+				"cx": last_known["cx"],
+				"cy": last_known["cy"],
+				"w": last_known["w"],
+				"h": last_known["h"],
+				"conf": 0.15,
+				"source": "hold_last",
+			}
+			full_trajectory.append(hold_state)
+		else:
+			fallback = {
+				"cx": frame_w / 2.0,
+				"cy": frame_h / 2.0,
+				"w": float(frame_w) * 0.3,
+				"h": float(frame_h) * 0.5,
+				"conf": 0.1,
+				"source": "fallback",
+			}
+			full_trajectory.append(fallback)
+
+	# call production tr_crop with both ceiling modes; full pipeline
+	# (position smoothing, composition offset, containment clamp) is
+	# applied identically to both, so the only difference is the
+	# fit-to-source step.
+	pre_v1_rects = tr_crop.direct_center_crop_trajectory(
+		full_trajectory, frame_w, frame_h, review_cfg, fps=fps,
+		_use_rolling_min_ceiling=False,
+	)
+	v1_rects = tr_crop.direct_center_crop_trajectory(
+		full_trajectory, frame_w, frame_h, review_cfg, fps=fps,
+		_use_rolling_min_ceiling=True,
+	)
+
+	# open source with cv2 and seek
+	os.makedirs(output_dir, exist_ok=True)
+	cap = cv2.VideoCapture(source_path)
+	if not cap.isOpened():
+		raise RuntimeError(f"cv2 failed to open {source_path}")
+	cap.set(cv2.CAP_PROP_POS_FRAMES, start)
+	pre_path = os.path.join(output_dir, "pre_v1_clip.mkv")
+	v1_path = os.path.join(output_dir, "v1_clip.mkv")
+	sxs_path = os.path.join(output_dir, "side_by_side.mkv")
+	src_path = os.path.join(output_dir, "source_clip.mkv")
+	pre_writer = video_io.VideoWriter(
+		pre_path, target_size, target_size, fps, codec="libx264", crf=20,
+	)
+	v1_writer = video_io.VideoWriter(
+		v1_path, target_size, target_size, fps, codec="libx264", crf=20,
+	)
+	src_writer = video_io.VideoWriter(
+		src_path, target_size, target_size, fps, codec="libx264", crf=20,
+	)
+	sxs_writer = video_io.VideoWriter(
+		sxs_path, target_size * 3, target_size, fps,
+		codec="libx264", crf=20,
+	)
+	# main loop
+	try:
+		for i, idx in enumerate(range(start, end)):
+			ret, frame = cap.read()
+			if not ret:
+				break
+			# source panel: letterboxed full frame
+			src_panel, lb_scale, lb_xoff, lb_yoff = _resize_letterboxed(
+				frame, target_size, target_size,
+			)
+			# pre-V1 panel
+			pre_crop = tr_crop.apply_crop(frame, pre_v1_rects[idx])
+			pre_resized = cv2.resize(
+				pre_crop, (target_size, target_size),
+				interpolation=cv2.INTER_AREA,
+			)
+			# V1 panel
+			v1_crop = tr_crop.apply_crop(frame, v1_rects[idx])
+			v1_resized = cv2.resize(
+				v1_crop, (target_size, target_size),
+				interpolation=cv2.INTER_AREA,
+			)
+			# torso box overlays
+			state = full_trajectory[idx]
+			_draw_torso_box_on_panel(
+				src_panel, state,
+				("letterbox", lb_scale, lb_xoff, lb_yoff),
+			)
+			_draw_torso_box_on_panel(
+				pre_resized, state,
+				("crop", pre_v1_rects[idx], target_size, target_size),
+			)
+			_draw_torso_box_on_panel(
+				v1_resized, state,
+				("crop", v1_rects[idx], target_size, target_size),
+			)
+			src_writer.write_frame(src_panel)
+			pre_writer.write_frame(pre_resized)
+			v1_writer.write_frame(v1_resized)
+			sxs = numpy.hstack([src_panel, pre_resized, v1_resized])
+			sxs_writer.write_frame(sxs)
+	finally:
+		cap.release()
+		src_writer.close()
+		pre_writer.close()
+		v1_writer.close()
+		sxs_writer.close()
+	return {
+		"center_frame": center_frame,
+		"start_frame": start,
+		"end_frame": end,
+		"source_path": src_path,
+		"pre_v1_path": pre_path,
+		"v1_path": v1_path,
+		"side_by_side_path": sxs_path,
+		"hotspot_intensity": float(hotspot["hotspots"][0][1]),
+		"review_torso_multiple": float(review_torso_multiple),
+	}
 
 
 #============================================
@@ -1074,25 +1627,77 @@ def main() -> None:
 
 	# --bisect-stages: emit per-frame stage trace CSV + per-stage table
 	if args.bisect_stages:
+		# optionally compute V1 and V1b stages (rolling-min ceiling)
+		variant_stages = None
+		variant_b_stages = None
+		if args.variant == "v1":
+			variant_stages = compute_v1_rolling_min_ceiling(
+				signals, video_info, cfg, window=7,
+			)
+			variant_b_stages = compute_v1_rolling_min_ceiling(
+				signals, video_info, cfg, window=3,
+			)
 		stage_csv_path = os.path.join(output_dir, "crop_zoom_stage_trace.csv")
-		write_stage_trace_csv(stage_csv_path, signals)
+		write_stage_trace_csv(
+			stage_csv_path, signals,
+			variant_stages=variant_stages,
+			variant_b_stages=variant_b_stages,
+		)
 		print(f"  wrote: {stage_csv_path}")
 		stage_rows = compute_per_stage_zoom_metrics(
 			signals, float(video_info["fps"]),
 		)
+		# append V1 / V1b rows when variant is enabled
+		fps_val = float(video_info["fps"])
+		if variant_stages is not None:
+			for stage_id, label in (("S3_v1", "S3_v1"), ("S5_v1", "S5_v1")):
+				stage_rows.append(
+					_stage_row_for(label, variant_stages[stage_id], fps_val)
+				)
+		if variant_b_stages is not None:
+			for stage_id, label in (("S3_v1", "S3_v1b"), ("S5_v1", "S5_v1b")):
+				stage_rows.append(
+					_stage_row_for(label, variant_b_stages[stage_id], fps_val)
+				)
 		stage_md_name = (
 			"stage_bisect.md" if args.stabilizer_method == "none"
 			else f"stage_bisect_{args.stabilizer_method}_w{args.stabilizer_window}.md"
 		)
 		stage_md_path = os.path.join(output_dir, stage_md_name)
 		write_stage_bisect_md(
-			stage_md_path, basename, stage_rows, float(video_info["fps"]),
+			stage_md_path, basename, stage_rows, fps_val,
+			signals=signals,
 		)
 		print(f"  wrote: {stage_md_path}")
 
+		# WP-C3: optional encode-review side-by-side clips
+		if args.encode_review:
+			review_dir = os.path.join(output_dir, "review_clips")
+			print(f"  encoding review clips to {review_dir} ...")
+			review_info = encode_review_clips(
+				args.source_file, trajectory, signals,
+				video_info, cfg, review_dir,
+			)
+			if review_info is not None:
+				print(
+					f"  review clips: center_frame={review_info['center_frame']} "
+					f"frames=[{review_info['start_frame']}, {review_info['end_frame']})"
+				)
+				print(f"  review torso_multiple: {review_info['review_torso_multiple']}")
+				print(f"  wrote: {review_info['source_path']}")
+				print(f"  wrote: {review_info['pre_v1_path']}")
+				print(f"  wrote: {review_info['v1_path']}")
+				print(f"  wrote: {review_info['side_by_side_path']}")
+			else:
+				print("  no S5 hotspot found; skipping review clips")
+
 
 #============================================
-def write_stage_trace_csv(output_path: str, signals: dict) -> None:
+def write_stage_trace_csv(
+	output_path: str, signals: dict,
+	variant_stages: dict = None,
+	variant_b_stages: dict = None,
+) -> None:
 	"""Per-frame trace CSV covering all six pipeline stages S0..S5.
 
 	One row per frame. Columns:
@@ -1101,6 +1706,10 @@ def write_stage_trace_csv(output_path: str, signals: dict) -> None:
 	  S5_h, S5_w, S5_log_size,
 	  edge_clamped_S3, edge_clamped_S5,
 	  log_velocity_S0, log_velocity_S1, ..., log_velocity_S5
+
+	When `variant_stages` is supplied, additional columns are appended
+	for S3_v1 / S5_v1 (and `smooth_ceiling_w`). When `variant_b_stages`
+	is also supplied, S3_v1b / S5_v1b columns follow.
 
 	`log_velocity_*[0]` is NaN by definition (no prior frame).
 	"""
@@ -1125,9 +1734,53 @@ def write_stage_trace_csv(output_path: str, signals: dict) -> None:
 	header += ["edge_clamped_S3", "edge_clamped_S5"]
 	for stage_id in STAGE_IDS:
 		header += [f"log_velocity_{stage_id}"]
+	# fit-to-source diagnostics (WP-A1)
+	header += [
+		"requested_h", "fitted_h", "shrink_h",
+		"geometric_ceiling_h", "geometric_ceiling_log_velocity",
+		"s4_overshoot",
+		"limiting_edge",
+		"dist_top", "dist_bottom", "dist_left", "dist_right",
+		"edge_clamp_run_id", "edge_clamp_run_length",
+	]
+	# V1 variant columns (WP-B2): rolling-min ceiling stages
+	if variant_stages is not None:
+		header += [
+			"smooth_ceiling_w",
+			"S3v1_h", "S3v1_w", "S3v1_log_size", "log_velocity_S3v1",
+			"S5v1_h", "S5v1_w", "S5v1_log_size", "log_velocity_S5v1",
+		]
+	if variant_b_stages is not None:
+		header += [
+			"smooth_ceiling_b_w",
+			"S3v1b_h", "S3v1b_w", "S3v1b_log_size", "log_velocity_S3v1b",
+			"S5v1b_h", "S5v1b_w", "S5v1b_log_size", "log_velocity_S5v1b",
+		]
 
 	edge_s3 = signals["edge_clamped_S3"]
 	edge_s5 = signals["edge_clamped"]
+	diag = signals["fit_diagnostics"]
+	# log-velocity of the geometric ceiling (informational; matches
+	# the per-frame oscillation V1 attacks)
+	gc_log_v = log_velocity(diag["geometric_ceiling_h"])
+	edge_name_map = {0: "none", 1: "top", 2: "bottom", 3: "left", 4: "right"}
+
+	# precompute variant per-frame log_size and log_velocity
+	def _stage_log_arrays(stage):
+		stage_h = numpy.asarray(stage["h"], dtype=numpy.float64)
+		stage_w = numpy.asarray(stage["w"], dtype=numpy.float64)
+		area = numpy.sqrt(numpy.maximum(stage_w * stage_h, 0.0))
+		log_size = numpy.full(len(area), numpy.nan, dtype=numpy.float64)
+		positive = numpy.isfinite(area) & (area > 0)
+		log_size[positive] = numpy.log(area[positive])
+		return log_size, log_velocity(area)
+
+	if variant_stages is not None:
+		v1_s3_log_size, v1_s3_log_v = _stage_log_arrays(variant_stages["S3_v1"])
+		v1_s5_log_size, v1_s5_log_v = _stage_log_arrays(variant_stages["S5_v1"])
+	if variant_b_stages is not None:
+		v1b_s3_log_size, v1b_s3_log_v = _stage_log_arrays(variant_b_stages["S3_v1"])
+		v1b_s5_log_size, v1b_s5_log_v = _stage_log_arrays(variant_b_stages["S5_v1"])
 	with open(output_path, "w", newline="") as fh:
 		writer = csv.writer(fh)
 		writer.writerow(header)
@@ -1147,6 +1800,50 @@ def write_stage_trace_csv(output_path: str, signals: dict) -> None:
 			row.append(int(bool(edge_s5[i])))
 			for stage_id in STAGE_IDS:
 				lv = stage_log_v[stage_id][i]
+				row.append("" if not numpy.isfinite(lv) else f"{lv:.6f}")
+			# fit-to-source diagnostics
+			row.append(f"{diag['requested_h'][i]:.4f}")
+			row.append(f"{diag['fitted_h'][i]:.4f}")
+			row.append(f"{diag['shrink_h'][i]:.4f}")
+			row.append(f"{diag['geometric_ceiling_h'][i]:.4f}")
+			gclv = gc_log_v[i]
+			row.append("" if not numpy.isfinite(gclv) else f"{gclv:.6f}")
+			row.append(f"{diag['s4_overshoot'][i]:.4f}")
+			row.append(edge_name_map.get(int(diag["limiting_edge_code"][i]), "none"))
+			row.append(f"{diag['dist_top'][i]:.2f}")
+			row.append(f"{diag['dist_bottom'][i]:.2f}")
+			row.append(f"{diag['dist_left'][i]:.2f}")
+			row.append(f"{diag['dist_right'][i]:.2f}")
+			row.append(int(diag["edge_clamp_run_id"][i]))
+			row.append(int(diag["edge_clamp_run_length"][i]))
+			# V1 variant columns
+			if variant_stages is not None:
+				row.append(f"{variant_stages['smooth_ceiling_w'][i]:.4f}")
+				row.append(f"{variant_stages['S3_v1']['h'][i]:.4f}")
+				row.append(f"{variant_stages['S3_v1']['w'][i]:.4f}")
+				ls = v1_s3_log_size[i]
+				row.append("" if not numpy.isfinite(ls) else f"{ls:.6f}")
+				lv = v1_s3_log_v[i]
+				row.append("" if not numpy.isfinite(lv) else f"{lv:.6f}")
+				row.append(f"{variant_stages['S5_v1']['h'][i]:.4f}")
+				row.append(f"{variant_stages['S5_v1']['w'][i]:.4f}")
+				ls = v1_s5_log_size[i]
+				row.append("" if not numpy.isfinite(ls) else f"{ls:.6f}")
+				lv = v1_s5_log_v[i]
+				row.append("" if not numpy.isfinite(lv) else f"{lv:.6f}")
+			if variant_b_stages is not None:
+				row.append(f"{variant_b_stages['smooth_ceiling_w'][i]:.4f}")
+				row.append(f"{variant_b_stages['S3_v1']['h'][i]:.4f}")
+				row.append(f"{variant_b_stages['S3_v1']['w'][i]:.4f}")
+				ls = v1b_s3_log_size[i]
+				row.append("" if not numpy.isfinite(ls) else f"{ls:.6f}")
+				lv = v1b_s3_log_v[i]
+				row.append("" if not numpy.isfinite(lv) else f"{lv:.6f}")
+				row.append(f"{variant_b_stages['S5_v1']['h'][i]:.4f}")
+				row.append(f"{variant_b_stages['S5_v1']['w'][i]:.4f}")
+				ls = v1b_s5_log_size[i]
+				row.append("" if not numpy.isfinite(ls) else f"{ls:.6f}")
+				lv = v1b_s5_log_v[i]
 				row.append("" if not numpy.isfinite(lv) else f"{lv:.6f}")
 			writer.writerow(row)
 
@@ -1185,15 +1882,150 @@ def format_per_stage_table(stage_rows: list) -> str:
 
 
 #============================================
+def _format_fit_diagnostics_section(signals: dict, fps: float) -> str:
+	"""Render the WP-A2 fit-to-source diagnostics section.
+
+	Reports geometric-ceiling oscillation (the V1 mechanism evidence),
+	edge-clamp run-length histogram, per-edge fractions, Pearson rho
+	between geometric_ceiling_log_velocity and the S5-only contribution,
+	and the s4_overshoot distribution (informational only).
+	"""
+	diag = signals["fit_diagnostics"]
+	out = "## Fit-to-source diagnostics\n\n"
+	# geometric ceiling oscillation: log_velocity_p95 + hotspot severity
+	gc_h = diag["geometric_ceiling_h"]
+	gc_log_v = log_velocity(gc_h)
+	finite = gc_log_v[numpy.isfinite(gc_log_v)]
+	gc_p95 = float(numpy.percentile(finite, 95)) if finite.size >= 2 else float("nan")
+	gc_hot = compute_simulated_hotspot_severity(gc_log_v, fps)
+	gc_severity = float(gc_hot["severity"])
+	out += "### Geometric-ceiling oscillation (primary mechanism evidence)\n\n"
+	out += "| metric | value |\n| --- | --- |\n"
+	out += f"| `log_velocity_p95(geometric_ceiling_h)` | {gc_p95:.6f} |\n"
+	out += f"| `hotspot_severity(geometric_ceiling_h)` | {gc_severity:.6f} |\n\n"
+	# edge-clamp run-length histogram: only count one entry per run
+	# (use frames where edge_clamp_run_length > 0 and i is the first
+	# frame of its run, i.e., run_id transitions)
+	run_id = diag["edge_clamp_run_id"]
+	run_len = diag["edge_clamp_run_length"]
+	# count one per run by sampling at the first frame of each run
+	seen_ids = set()
+	per_run_lengths = []
+	for i in range(len(run_id)):
+		rid = int(run_id[i])
+		if rid >= 0 and rid not in seen_ids:
+			seen_ids.add(rid)
+			per_run_lengths.append(int(run_len[i]))
+	def _bucket(L: int) -> str:
+		if L == 1:
+			return "1"
+		if L <= 5:
+			return "2-5"
+		if L <= 30:
+			return "6-30"
+		return "31+"
+	buckets = {"1": 0, "2-5": 0, "6-30": 0, "31+": 0}
+	for L in per_run_lengths:
+		buckets[_bucket(L)] += 1
+	total_runs = sum(buckets.values())
+	out += "### Edge-clamp run-length histogram\n\n"
+	out += "| bucket | count | percent |\n| --- | --- | --- |\n"
+	for b in ("1", "2-5", "6-30", "31+"):
+		c = buckets[b]
+		pct = (100.0 * c / total_runs) if total_runs > 0 else 0.0
+		out += f"| {b} | {c} | {pct:.1f}% |\n"
+	out += f"\nTotal edge-clamp runs: {total_runs}\n\n"
+	# per-edge fractions: only count limiting_edge != 0 (clamped)
+	limiting = diag["limiting_edge_code"]
+	clamped_mask = limiting != 0
+	clamped_count = int(numpy.sum(clamped_mask))
+	out += "### Per-edge fractions (of edge-clamped frames)\n\n"
+	out += "| edge | count | percent |\n| --- | --- | --- |\n"
+	edge_names = [(1, "top"), (2, "bottom"), (3, "left"), (4, "right")]
+	for code, name in edge_names:
+		c = int(numpy.sum(limiting == code))
+		pct = (100.0 * c / clamped_count) if clamped_count > 0 else 0.0
+		out += f"| {name} | {c} | {pct:.1f}% |\n"
+	out += f"\nTotal edge-clamped frames: {clamped_count}\n\n"
+	# Pearson rho: ceiling log-velocity vs S5-only contribution
+	# S5-only contribution: log_velocity_S5 - log_velocity_S4
+	s4_h = signals["S4_ema_2"]["h"]
+	s5_h = signals["S5_fit_2"]["h"]
+	s4_w = signals["S4_ema_2"]["w"]
+	s5_w = signals["S5_fit_2"]["w"]
+	s4_area = numpy.sqrt(numpy.maximum(s4_w * s4_h, 0.0))
+	s5_area = numpy.sqrt(numpy.maximum(s5_w * s5_h, 0.0))
+	s4_lv = log_velocity(s4_area)
+	s5_lv = log_velocity(s5_area)
+	s5_only = s5_lv - s4_lv
+	# pair valid rows
+	valid = numpy.isfinite(gc_log_v) & numpy.isfinite(s5_only)
+	if int(numpy.sum(valid)) >= 3:
+		rho, p_value = scipy.stats.pearsonr(gc_log_v[valid], s5_only[valid])
+		rho_val = float(rho)
+		p_val = float(p_value)
+	else:
+		rho_val = float("nan")
+		p_val = float("nan")
+	out += "### Pearson correlation: ceiling oscillation vs S5-only log-velocity\n\n"
+	out += "| pair | rho | p-value |\n| --- | --- | --- |\n"
+	out += (
+		f"| `geometric_ceiling_log_velocity` vs `log_velocity_S5 - log_velocity_S4` | "
+		f"{rho_val:+.4f} | {p_val:.3g} |\n\n"
+	)
+	# s4_overshoot distribution (informational)
+	s4o = diag["s4_overshoot"]
+	finite_s4o = s4o[numpy.isfinite(s4o)]
+	nonzero = finite_s4o[finite_s4o > 0]
+	out += "### s4_overshoot distribution (informational)\n\n"
+	out += "| metric | value |\n| --- | --- |\n"
+	out += f"| count_nonzero | {nonzero.size} |\n"
+	if nonzero.size > 0:
+		out += f"| p50 | {float(numpy.percentile(nonzero, 50)):.4f} px |\n"
+		out += f"| p95 | {float(numpy.percentile(nonzero, 95)):.4f} px |\n"
+		out += f"| max | {float(numpy.max(nonzero)):.4f} px |\n"
+	else:
+		out += "| p50 | n/a |\n| p95 | n/a |\n| max | n/a |\n"
+	out += "\n"
+	# diagnostic done-check verdict
+	gc_pass = numpy.isfinite(gc_severity) and gc_severity >= 0.30
+	rho_pass = numpy.isfinite(rho_val) and rho_val >= 0.5
+	out += "### Diagnostic done-check\n\n"
+	out += (
+		f"- `hotspot_severity(geometric_ceiling_h) >= 0.30`: "
+		f"{'PASS' if gc_pass else 'fail'} ({gc_severity:.4f})\n"
+	)
+	out += (
+		f"- Pearson rho >= 0.5: {'PASS' if rho_pass else 'fail'} "
+		f"({rho_val:+.4f})\n"
+	)
+	if gc_pass or rho_pass:
+		out += (
+			"\nAt least one threshold reached on this video; the V1 "
+			"mechanism (rolling-min ceiling) is plausible here.\n\n"
+		)
+	else:
+		out += (
+			"\nNeither threshold reached on this video. If this is the "
+			"pattern across all three representative videos, V1's "
+			"mechanism is wrong and the plan should stop at the "
+			"diagnostic.\n\n"
+		)
+	return out
+
+
+#============================================
 def write_stage_bisect_md(
 	output_path: str, basename: str,
 	stage_rows: list, fps: float,
+	signals: dict = None,
 ) -> None:
 	"""Per-video summary Markdown for the --bisect-stages mode.
 
 	Names the first responsible stage using the >=50%-of-S5 rule, with
 	hotspot-severity / >20%-transition fallback when the primary rule
-	is inconclusive.
+	is inconclusive. When `signals` is supplied, also emits the WP-A2
+	fit-to-source diagnostics section.
 	"""
 	out = ""
 	out += f"# Per-stage zoom metrics: {basename}\n\n"
@@ -1251,6 +2083,9 @@ def write_stage_bisect_md(
 			)
 		else:
 			out += "No stage amplifies the metric by >20%.\n\n"
+	# WP-A2: fit-to-source diagnostics, when full signals are provided
+	if signals is not None and "fit_diagnostics" in signals:
+		out += _format_fit_diagnostics_section(signals, fps)
 	with open(output_path, "w") as fh:
 		fh.write(out)
 
