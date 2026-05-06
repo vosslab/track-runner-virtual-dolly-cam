@@ -711,6 +711,13 @@ def direct_center_crop_trajectory(
 			geometry (pre-filled by the encoder). These frames are treated as
 			authoritative and their raw cx/cy values are consumed as-is. Defaults
 			to empty set if None.
+		_use_rolling_min_ceiling: Diagnostic harness hook only. Default True
+			(production V1 behavior: rolling-min-stabilized fit-to-source
+			ceiling at S3 and S5). False reverts to the legacy per-frame
+			geometric clip via `_max_centered_fit_size`. Used by
+			tools/analyze_torso_box_noise.py to render side-by-side review
+			clips. Not reachable from any user-facing CLI or config; do not
+			pass False from production code.
 
 	Returns:
 		List of (x, y, w, h) integer crop rectangles, one per frame.

@@ -765,6 +765,66 @@ def test_v1_rolling_min_reduces_ceiling_bounce_on_sawtooth():
 	)
 
 
+def test_tr_crop_production_v1_reduces_bounce_vs_legacy():
+	"""Production direct_center_crop_trajectory with V1 enabled must
+	produce a less bouncy crop-width series than the legacy per-frame
+	fit on a sawtooth-cx fixture.
+
+	This pairs the bounce-suppression behavioral check with the actual
+	production code path, not just the tool-side simulation. A revert
+	of the rolling-min logic in tr_crop.py would fail this assertion
+	because the legacy branch is reached via _use_rolling_min_ceiling=False.
+	"""
+	# sawtooth cx forces the geometric ceiling to oscillate every frame;
+	# V1's rolling-min collapses it; legacy follows the bounce.
+	n = 200
+	trajectory = []
+	for i in range(n):
+		cx = 50.0 if i % 2 == 0 else 200.0
+		state = {
+			"cx": cx, "cy": 540.0, "w": 60.0, "h": 100.0,
+			"conf": 1.0, "source": "test",
+		}
+		trajectory.append(state)
+	frame_w = 1920
+	frame_h = 1080
+	cfg = {
+		"processing": {
+			"crop_aspect": "1:1",
+			"torso_height_multiple": 3.33,
+			"crop_post_smooth_size_strength": 0.15,
+			"crop_centered_fit_to_source": True,
+			"crop_post_smooth_pos_strength": 0.0,
+			"crop_containment_radius": 0.0,
+			"crop_torso_anchor": 0.50,
+		},
+	}
+	rects_legacy = tr_crop.direct_center_crop_trajectory(
+		trajectory, frame_w, frame_h, cfg, fps=30.0,
+		_use_rolling_min_ceiling=False,
+	)
+	rects_v1 = tr_crop.direct_center_crop_trajectory(
+		trajectory, frame_w, frame_h, cfg, fps=30.0,
+		_use_rolling_min_ceiling=True,
+	)
+	# log_velocity_p95 of the crop-width series
+	w_legacy = numpy.array(
+		[max(r[2], 1) for r in rects_legacy], dtype=numpy.float64,
+	)
+	w_v1 = numpy.array(
+		[max(r[2], 1) for r in rects_v1], dtype=numpy.float64,
+	)
+	log_v_legacy = numpy.abs(numpy.diff(numpy.log(w_legacy)))
+	log_v_v1 = numpy.abs(numpy.diff(numpy.log(w_v1)))
+	p95_legacy = float(numpy.percentile(log_v_legacy, 95))
+	p95_v1 = float(numpy.percentile(log_v_v1, 95))
+	assert p95_v1 < p95_legacy, (
+		f"V1 production path should reduce crop-width log_velocity_p95 "
+		f"vs legacy on a sawtooth-cx fixture; got V1={p95_v1} vs "
+		f"legacy={p95_legacy}"
+	)
+
+
 def test_compute_per_stage_zoom_metrics_zero_on_stationary_trajectory():
 	"""Stationary trajectory -> zero log_velocity and zero hotspot at every stage.
 

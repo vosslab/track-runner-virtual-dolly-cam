@@ -161,12 +161,12 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument(
 		"--encode-review", dest="encode_review", action="store_true",
 		help=(
-			"Encode a 30 s side-by-side review clip centered on the worst "
-			"S5 hotspot frame: production crop vs V1 crop. Writes "
-			"production_clip.mkv, v1_clip.mkv, and side_by_side.mkv "
-			"under <output_dir>/review_clips/. Requires --variant v1. "
-			"Diagnostic surface only; does not change tr_crop, the "
-			"encoder CLI, or any production behavior."
+			"Encode a 30 s three-panel review clip centered on the worst "
+			"S5 hotspot frame: source / pre-V1 crop / V1 crop. Writes "
+			"source_clip.mkv, pre_v1_clip.mkv, v1_clip.mkv, and "
+			"side_by_side.mkv under <output_dir>/review_clips/. "
+			"Requires --variant v1. Diagnostic surface only; does not "
+			"change tr_crop, the encoder CLI, or any production behavior."
 		),
 	)
 	args = parser.parse_args()
@@ -522,6 +522,41 @@ def log_velocity(values: numpy.ndarray) -> numpy.ndarray:
 
 
 #============================================
+def _stage_log_arrays(stage: dict) -> tuple:
+	"""Per-frame log_size and log_velocity for one pipeline stage.
+
+	Used by write_stage_trace_csv when writing variant V1/V1b columns.
+
+	Args:
+		stage: Stage dict with `h` and `w` numpy arrays.
+
+	Returns:
+		(log_size_array, log_velocity_array). log_size is the geometric
+		mean log; non-positive or non-finite cells are NaN. log_velocity
+		matches the module-level `log_velocity` function.
+	"""
+	stage_h = numpy.asarray(stage["h"], dtype=numpy.float64)
+	stage_w = numpy.asarray(stage["w"], dtype=numpy.float64)
+	area = numpy.sqrt(numpy.maximum(stage_w * stage_h, 0.0))
+	log_size = numpy.full(len(area), numpy.nan, dtype=numpy.float64)
+	positive = numpy.isfinite(area) & (area > 0)
+	log_size[positive] = numpy.log(area[positive])
+	return log_size, log_velocity(area)
+
+
+#============================================
+def _run_length_bucket(length: int) -> str:
+	"""Bucket label for an edge-clamp run length: 1, 2-5, 6-30, 31+."""
+	if length == 1:
+		return "1"
+	if length <= 5:
+		return "2-5"
+	if length <= 30:
+		return "6-30"
+	return "31+"
+
+
+#============================================
 def compute_simulated_hotspot_severity(
 	log_velocity_series: numpy.ndarray,
 	fps: float,
@@ -834,14 +869,10 @@ def _draw_torso_box_on_panel(
 			torso style used in the encoder debug overlay).
 		thickness: Line thickness in pixels.
 	"""
-	if state is None:
-		return
-	cx = state.get("cx")
-	cy = state.get("cy")
-	w = state.get("w")
-	h = state.get("h")
-	if cx is None or cy is None or w is None or h is None:
-		return
+	cx = state["cx"]
+	cy = state["cy"]
+	w = state["w"]
+	h = state["h"]
 	kind = transform[0]
 	if kind == "letterbox":
 		_, scale, x_off, y_off = transform
@@ -1009,53 +1040,54 @@ def encode_review_clips(
 		sxs_path, target_size * 3, target_size, fps,
 		codec="libx264", crf=20,
 	)
-	# main loop
-	try:
-		for i, idx in enumerate(range(start, end)):
-			ret, frame = cap.read()
-			if not ret:
-				break
-			# source panel: letterboxed full frame
-			src_panel, lb_scale, lb_xoff, lb_yoff = _resize_letterboxed(
-				frame, target_size, target_size,
-			)
-			# pre-V1 panel
-			pre_crop = tr_crop.apply_crop(frame, pre_v1_rects[idx])
-			pre_resized = cv2.resize(
-				pre_crop, (target_size, target_size),
-				interpolation=cv2.INTER_AREA,
-			)
-			# V1 panel
-			v1_crop = tr_crop.apply_crop(frame, v1_rects[idx])
-			v1_resized = cv2.resize(
-				v1_crop, (target_size, target_size),
-				interpolation=cv2.INTER_AREA,
-			)
-			# torso box overlays
-			state = full_trajectory[idx]
-			_draw_torso_box_on_panel(
-				src_panel, state,
-				("letterbox", lb_scale, lb_xoff, lb_yoff),
-			)
-			_draw_torso_box_on_panel(
-				pre_resized, state,
-				("crop", pre_v1_rects[idx], target_size, target_size),
-			)
-			_draw_torso_box_on_panel(
-				v1_resized, state,
-				("crop", v1_rects[idx], target_size, target_size),
-			)
-			src_writer.write_frame(src_panel)
-			pre_writer.write_frame(pre_resized)
-			v1_writer.write_frame(v1_resized)
-			sxs = numpy.hstack([src_panel, pre_resized, v1_resized])
-			sxs_writer.write_frame(sxs)
-	finally:
-		cap.release()
-		src_writer.close()
-		pre_writer.close()
-		v1_writer.close()
-		sxs_writer.close()
+	# main loop. cv2.VideoCapture and video_io.VideoWriter both release
+	# native resources on garbage collection, but we close explicitly
+	# below for determinism. The loop is local and bounded; if
+	# write_frame raises the process exits and the OS reclaims fds.
+	for i, idx in enumerate(range(start, end)):
+		ret, frame = cap.read()
+		if not ret:
+			break
+		# source panel: letterboxed full frame
+		src_panel, lb_scale, lb_xoff, lb_yoff = _resize_letterboxed(
+			frame, target_size, target_size,
+		)
+		# pre-V1 panel
+		pre_crop = tr_crop.apply_crop(frame, pre_v1_rects[idx])
+		pre_resized = cv2.resize(
+			pre_crop, (target_size, target_size),
+			interpolation=cv2.INTER_AREA,
+		)
+		# V1 panel
+		v1_crop = tr_crop.apply_crop(frame, v1_rects[idx])
+		v1_resized = cv2.resize(
+			v1_crop, (target_size, target_size),
+			interpolation=cv2.INTER_AREA,
+		)
+		# torso box overlays
+		state = full_trajectory[idx]
+		_draw_torso_box_on_panel(
+			src_panel, state,
+			("letterbox", lb_scale, lb_xoff, lb_yoff),
+		)
+		_draw_torso_box_on_panel(
+			pre_resized, state,
+			("crop", pre_v1_rects[idx], target_size, target_size),
+		)
+		_draw_torso_box_on_panel(
+			v1_resized, state,
+			("crop", v1_rects[idx], target_size, target_size),
+		)
+		src_writer.write_frame(src_panel)
+		pre_writer.write_frame(pre_resized)
+		v1_writer.write_frame(v1_resized)
+		sxs = numpy.hstack([src_panel, pre_resized, v1_resized])
+		sxs_writer.write_frame(sxs)
+	cap.release()
+	src_writer.close()
+	pre_writer.close()
+	v1_writer.close()
+	sxs_writer.close()
 	return {
 		"center_frame": center_frame,
 		"start_frame": start,
@@ -1766,15 +1798,6 @@ def write_stage_trace_csv(
 	edge_name_map = {0: "none", 1: "top", 2: "bottom", 3: "left", 4: "right"}
 
 	# precompute variant per-frame log_size and log_velocity
-	def _stage_log_arrays(stage):
-		stage_h = numpy.asarray(stage["h"], dtype=numpy.float64)
-		stage_w = numpy.asarray(stage["w"], dtype=numpy.float64)
-		area = numpy.sqrt(numpy.maximum(stage_w * stage_h, 0.0))
-		log_size = numpy.full(len(area), numpy.nan, dtype=numpy.float64)
-		positive = numpy.isfinite(area) & (area > 0)
-		log_size[positive] = numpy.log(area[positive])
-		return log_size, log_velocity(area)
-
 	if variant_stages is not None:
 		v1_s3_log_size, v1_s3_log_v = _stage_log_arrays(variant_stages["S3_v1"])
 		v1_s5_log_size, v1_s5_log_v = _stage_log_arrays(variant_stages["S5_v1"])
@@ -1916,17 +1939,9 @@ def _format_fit_diagnostics_section(signals: dict, fps: float) -> str:
 		if rid >= 0 and rid not in seen_ids:
 			seen_ids.add(rid)
 			per_run_lengths.append(int(run_len[i]))
-	def _bucket(L: int) -> str:
-		if L == 1:
-			return "1"
-		if L <= 5:
-			return "2-5"
-		if L <= 30:
-			return "6-30"
-		return "31+"
 	buckets = {"1": 0, "2-5": 0, "6-30": 0, "31+": 0}
 	for L in per_run_lengths:
-		buckets[_bucket(L)] += 1
+		buckets[_run_length_bucket(L)] += 1
 	total_runs = sum(buckets.values())
 	out += "### Edge-clamp run-length histogram\n\n"
 	out += "| bucket | count | percent |\n| --- | --- | --- |\n"
