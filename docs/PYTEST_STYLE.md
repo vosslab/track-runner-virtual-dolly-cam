@@ -5,8 +5,8 @@ Language Model guide to Neil pytest usage.
 ## Test structure
 
 * Prefer pytest for automated tests when a repo has more than a few simple asserts.
-* `tests/` and `tests_e2e/` are the only places `assert` statements should appear in this repo. Plain scripts and library modules must not contain `assert`. See [PYTHON_STYLE.md](PYTHON_STYLE.md#assert) for the rationale (module-level asserts slow script startup).
-* Pytest is the fast lane: keep tests deterministic and quick. Slow end-to-end tests live outside pytest in their own folder; see [E2E_TESTS.md](E2E_TESTS.md).
+* `tests/` (including `tests/playwright/` and `tests/e2e/`) is the only place `assert` statements should appear in this repo. Plain scripts and library modules must not contain `assert`. See [PYTHON_STYLE.md](PYTHON_STYLE.md#assert) for the rationale (module-level asserts slow script startup).
+* Pytest is the fast lane: keep tests deterministic and quick. Slow end-to-end tests live in `tests/playwright/` (browser-driven) and `tests/e2e/` (shell/Python) and run outside pytest (excluded via `collect_ignore = ["e2e", "playwright"]` in `tests/conftest.py`); see [E2E_TESTS.md](E2E_TESTS.md).
 * Store tests in `tests/` with files named `test_*.py`.
 * Use `tests/conftest.py` for pytest configuration, fixtures, collection hooks, and shared pytest setup.
 * Test functions should be named `test_*` and should use plain `assert`.
@@ -24,6 +24,15 @@ Language Model guide to Neil pytest usage.
 * Do not create permanent pytest files for temporary or scratch code.
 * Do not write tests for `_temp.*` files, ad-hoc debugging scripts, or any code intended to be deleted shortly after use.
 * Tests in `tests/` are reserved for code that will remain in the repo.
+
+## Runtime budget
+
+* Every pytest under `tests/` should finish in well under one second. `pytest tests/` is the
+  fast lane; slow tests poison it and discourage running the suite during development.
+* If a check needs sleeps, real subprocess calls, real network, large file trees beyond
+  `tmp_path`, model loads, or a multi-step CLI run, it is not a pytest. Move it to
+  `tests/playwright/` (browser-driven) or `tests/e2e/` (shell/Python) per [E2E_TESTS.md](E2E_TESTS.md).
+* Prefer deleting a slow or fragile pytest over rewriting it. Less is more.
 
 ## Good tests
 
@@ -57,7 +66,8 @@ assert score_exact_match > score_different_title
 
 Avoid tests that assert on dates, collection sizes, lists of required keys, hardcoded defaults,
 tunable constants, or dataclass storage. These break when unrelated code changes and provide no
-real value.
+real value. When in doubt, delete. A missing pytest is cheaper than a fragile one. This is the
+design-first philosophy applied to tests: see [REPO_STYLE.md](REPO_STYLE.md#core-philosophies).
 
 ## Basic commands
 

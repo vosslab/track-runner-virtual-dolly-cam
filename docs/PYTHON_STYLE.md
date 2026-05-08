@@ -6,6 +6,7 @@ Language Model guide to Neil python3 programming
 
 AI agents frequently get these wrong. Read the full sections below for details.
 
+- **Fix the design, not the symptom.** When something behaves wrong, fix the design before adding a fallback. See [Design philosophy](REPO_STYLE.md#core-philosophies).
 - **Tabs not spaces.** Always indent with tabs. See [USE TABS](#use-tabs).
 - **Avoid try/except.** Do not wrap code in try/except blocks. See [CODE STRUCTURE](#code-structure).
 - **Do not hide bugs with defaults.** Use `dict[key]` when the key must exist, not `dict.get(key, fallback)`. See [DO NOT HIDE BUGS WITH DEFAULTS](#do-not-hide-bugs-with-defaults).
@@ -15,7 +16,7 @@ AI agents frequently get these wrong. Read the full sections below for details.
 - **No relative imports.** Never use `from . import` or `from ..module import`. See [IMPORTING](#importing).
 - **Declare all third-party imports.** Every non-stdlib, non-local import must be in `pip_requirements.txt`. See [IMPORT REQUIREMENTS](#import-requirements).
 - **No brittle pytest assertions.** Do not assert on dates, collection sizes, required key lists, hardcoded defaults, or function names. See [PYTEST_STYLE.md](PYTEST_STYLE.md).
-- **No `assert` in plain scripts.** All `assert` statements live in `tests/test_*.py` or in `tests_e2e/` end-to-end scripts. Module-level asserts run on every import and slow script startup. See [ASSERT](#assert).
+- **No `assert` in plain scripts.** All `assert` statements live in `tests/test_*.py`, `tests/playwright/` (browser tests), or `tests/e2e/` (shell/Python E2E). Module-level asserts run on every import and slow script startup. See [ASSERT](#assert).
 
 ## Python version
 
@@ -60,7 +61,7 @@ AI agents frequently get these wrong. Read the full sections below for details.
 
 ## DO NOT HIDE BUGS WITH DEFAULTS
 
-Defensive coding patterns that silently supply fallback values hide bugs instead of exposing them. If a key, attribute, or value is required, access it directly so missing data fails loudly.
+This section is the Python expression of "fix the design, not the symptom" (see [Design philosophy](REPO_STYLE.md#core-philosophies)). Defensive coding patterns that silently supply fallback values hide bugs instead of exposing them. If a key, attribute, or value is required, access it directly so missing data fails loudly.
 
 - Use `dict[key]` when the key must exist. Do not use `dict.get(key, default)` to paper over missing data.
 - Use `dict.get(key, default)` only when the key is genuinely optional and the default is intentional.
@@ -230,7 +231,7 @@ export PYTHONDONTWRITEBYTECODE=1
 
 ## ASSERT
 
-* Do not put `assert` statements in plain `.py` scripts or library modules. All asserts live in `tests/test_*.py` or in `tests_e2e/` end-to-end scripts.
+* Do not put `assert` statements in plain `.py` scripts or library modules. All asserts live in `tests/test_*.py`, `tests/playwright/` (browser tests), or `tests/e2e/` (shell/Python E2E).
 * Reason: module-level asserts run at import time, which slows CLI startup. Tests pay the cost once, in the test suite.
 * Do not assert in functions that require user input or read/write to files; cover those with end-to-end checks instead. See [E2E_TESTS.md](E2E_TESTS.md).
 * Keep individual asserts short: under 4 lines and under 100 characters.
