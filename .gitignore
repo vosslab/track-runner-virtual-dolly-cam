@@ -6,3 +6,7 @@ report_*.txt
 *.avi
 *.mov
 output_smoke/
+
+# === UNIVERSAL ===
+_temp*.?*
+
