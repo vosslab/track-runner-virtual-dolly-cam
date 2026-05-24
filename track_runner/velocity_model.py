@@ -17,11 +17,13 @@ the design forbids (see plan happy-forging-valiant.md).
 
 # Standard Library
 import math
+import types
 
 # PIP3 modules
 import numpy
 
 # local repo modules
+import blob_trace
 import residual_motion
 
 
@@ -608,6 +610,7 @@ def _apply_blob_snap(
 	residual_cache: dict,
 	blob_snap_enabled: bool,
 	precomputed_store: "dict | None" = None,
+	trace_sink: object | None = None,
 ) -> list:
 	"""Stage 2: produce snap_pred from a frozen raw_pred, reading raw only.
 
@@ -661,6 +664,14 @@ def _apply_blob_snap(
 			observe_blob_at reads from this store before falling through to
 			the legacy reader path. Keyed by (frame_index, roi_tuple).
 			When None, legacy reader path is used (same as prior behavior).
+		trace_sink: Optional list to collect per-frame BlobGateTrace
+			objects for diagnostics. When None (default) behavior is
+			byte-identical to prior code and no per-frame allocations
+			occur for tracing. When a list is supplied, one
+			BlobGateTrace is appended for every non-endpoint frame
+			(endpoint/skipped frames are not appended). The caller is
+			responsible for annotating each trace's `pass_name` after
+			the call.
 
 	Returns:
 		snap_pred as a list of state dicts, one per entry in `raw`, in
@@ -710,6 +721,41 @@ def _apply_blob_snap(
 				"source": "propagated",
 				"blob_gate": gate,
 			})
+			# emit a placeholder trace entry so trace_sink length matches
+			# snap_pred length exactly. Endpoint frames lack neighbors, so
+			# raw_prev/raw_next fall back to raw_curr (self-referential
+			# filler permitted by the dataclass tuple type).
+			if trace_sink is not None:
+				if i == 0:
+					raw_prev_fill = (raw_cx, raw_cy)
+				else:
+					_, p_cx, p_cy, _, _, _ = raw[i - 1]
+					raw_prev_fill = (p_cx, p_cy)
+				if i == num - 1:
+					raw_next_fill = (raw_cx, raw_cy)
+				else:
+					_, n_cx, n_cy, _, _, _ = raw[i + 1]
+					raw_next_fill = (n_cx, n_cy)
+				placeholder_trace = blob_trace.BlobGateTrace(
+					frame_index=int(frame_index),
+					pass_name="",
+					raw_prev=raw_prev_fill,
+					raw_curr=(raw_cx, raw_cy),
+					raw_next=raw_next_fill,
+					raw_box=(raw_cx, raw_cy, w, h),
+					v_pred=(0.0, 0.0),
+					v_pred_mag=0.0,
+					observer_trace=None,
+					winner_dist_px=None,
+					winner_dist_h=None,
+					proximity_threshold=BLOB_SNAP_ALPHA * h,
+					proximity_ok=None,
+					direction_dot=None,
+					direction_ok=None,
+					path_ok_prev=None,
+					blob_gate=gate,
+				)
+				trace_sink.append(placeholder_trace)
 			continue
 
 		# Destructure neighbors from raw ONLY. No reference to snap_pred.
@@ -729,16 +775,44 @@ def _apply_blob_snap(
 		else:
 			local_tangent = (1.0, 0.0, 0.0, 1.0)
 
-		observation = residual_motion.observe_blob_at(
-			frame_index,
-			(raw_cx, raw_cy),
-			(w, h),
-			local_tangent,
-			scene_transform,
-			effective_reader,
-			residual_cache,
-			precomputed_store=precomputed_store,
-		)
+		# When tracing is requested, pass a per-call sink to the observer
+		# so we can read back its trace; otherwise avoid the allocation.
+		if trace_sink is not None:
+			observer_sink = types.SimpleNamespace(observer_trace=None)
+		else:
+			observer_sink = None
+
+		if observer_sink is not None:
+			observation = residual_motion.observe_blob_at(
+				frame_index,
+				(raw_cx, raw_cy),
+				(w, h),
+				local_tangent,
+				scene_transform,
+				effective_reader,
+				residual_cache,
+				precomputed_store=precomputed_store,
+				trace_sink=observer_sink,
+			)
+		else:
+			observation = residual_motion.observe_blob_at(
+				frame_index,
+				(raw_cx, raw_cy),
+				(w, h),
+				local_tangent,
+				scene_transform,
+				effective_reader,
+				residual_cache,
+				precomputed_store=precomputed_store,
+			)
+
+		# trace fields default to None until set inside the observation branch
+		trace_winner_dist_px = None
+		trace_winner_dist_h = None
+		trace_proximity_ok = None
+		trace_direction_dot = None
+		trace_direction_ok = None
+		trace_path_ok_prev = None
 
 		if observation is None:
 			gate = "absent"
@@ -787,6 +861,14 @@ def _apply_blob_snap(
 			# that a future reader could misread as accidental.
 			path_ok = path_ok_prev is not False
 
+			# capture per-frame trace fields before any branch decides gate
+			trace_winner_dist_px = dist
+			trace_winner_dist_h = (dist / h) if h > 0 else None
+			trace_proximity_ok = proximity_ok
+			trace_direction_dot = dx * v_pred[0] + dy * v_pred[1]
+			trace_direction_ok = direction_ok
+			trace_path_ok_prev = path_ok_prev
+
 			if proximity_ok and direction_ok and path_ok:
 				# accept: blend with displacement clamp
 				max_shift = BLOB_SNAP_MAX_SHIFT_FRACTION * h
@@ -804,6 +886,30 @@ def _apply_blob_snap(
 				gate = "accepted"
 			else:
 				gate = "rejected"
+
+		# emit a per-frame gate trace for non-endpoint frames only
+		if trace_sink is not None:
+			observer_trace_obj = observer_sink.observer_trace
+			gate_trace = blob_trace.BlobGateTrace(
+				frame_index=int(raw[i][0]),
+				pass_name="",
+				raw_prev=(raw_prev_cx, raw_prev_cy),
+				raw_curr=(raw_cx, raw_cy),
+				raw_next=(raw_next_cx, raw_next_cy),
+				raw_box=(raw_cx, raw_cy, w, h),
+				v_pred=v_pred,
+				v_pred_mag=v_pred_mag,
+				observer_trace=observer_trace_obj,
+				winner_dist_px=trace_winner_dist_px,
+				winner_dist_h=trace_winner_dist_h,
+				proximity_threshold=BLOB_SNAP_ALPHA * h,
+				proximity_ok=trace_proximity_ok,
+				direction_dot=trace_direction_dot,
+				direction_ok=trace_direction_ok,
+				path_ok_prev=trace_path_ok_prev,
+				blob_gate=gate,
+			)
+			trace_sink.append(gate_trace)
 
 		snap_pred.append({
 			"cx": float(snap_cx),

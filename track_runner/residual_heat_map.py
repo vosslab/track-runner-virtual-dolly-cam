@@ -132,6 +132,7 @@ def compute_heat_map_roi(
 	threshold: float = 10.0,
 	fixed_max: float = 30.0,
 	blend_alpha: float = 0.40,
+	out_arrays: dict | None = None,
 ) -> tuple | None:
 	"""Compose the motion heat-map overlay for one frame's ROI.
 
@@ -164,6 +165,14 @@ def compute_heat_map_roi(
 			above-threshold pixels. This is NOT an overlay-level
 			opacity: the final pixmap is opaque. 0.40 default keeps
 			the frame visible under the heat tint.
+		out_arrays: Optional dict to receive intermediate arrays for
+			testing. When non-None, populates with keys:
+			  "residual_dog": DoG-filtered residual (post-validity).
+			  "validity_mask": Validity mask (uint8).
+			  "roi_bounds": ROI tuple (x1, y1, x2, y2).
+			  "dog_k": DoG k-factor used.
+			  "threshold": Threshold value used.
+			When None, behavior is unchanged (byte-identical).
 
 	Returns:
 		Tuple (bgr: numpy.ndarray shape (roi_h, roi_w, 3) uint8,
@@ -208,12 +217,22 @@ def compute_heat_map_roi(
 	# stage 1c: DoG band-pass tuned to the torso width so the overlay
 	# shows the same magnitude landscape the production observer sees.
 	# Sub-torso speckle is suppressed; torso-scale blobs are enhanced.
+	dog_k = residual_motion.DOG_K_FACTOR_DEFAULT
 	residual_mag = residual_motion.dog_filter_blob_scale(
 		residual_mag, pred_w,
-		k=residual_motion.DOG_K_FACTOR_DEFAULT,
+		k=dog_k,
 	)
 	if validity_mask is not None:
 		residual_mag[validity_mask == 0] = 0.0
+
+	# Capture intermediate arrays for testing if requested (side-channel,
+	# trace-sink pattern; byte-identical when out_arrays is None).
+	if out_arrays is not None:
+		out_arrays["residual_dog"] = residual_mag.copy()
+		out_arrays["validity_mask"] = validity_mask.copy() if validity_mask is not None else None
+		out_arrays["roi_bounds"] = (x1, y1, x2, y2)
+		out_arrays["dog_k"] = dog_k
+		out_arrays["threshold"] = threshold
 
 	# stage 2: threshold mask.
 	above_mask = _build_threshold_mask(residual_mag, threshold)

@@ -37,6 +37,9 @@ import dataclasses
 import cv2
 import numpy
 
+# local repo modules
+import blob_trace
+
 # === Tunable constants ===
 
 # minimum blob area in pixels to suppress noise specks.
@@ -877,6 +880,17 @@ def compute_cue_confidence(
 
 	confidence = strength * 0.3 + size_score * 0.3 + proximity * 0.4
 	result = max(0.0, min(1.0, confidence))
+
+	# Store per-blob score components in the blob dict for trace capture.
+	# These are used by counterfactual simulator (M3) to replay policy G.
+	# The blob dict already has integrated_mag (raw value); we add the distance
+	# in torso-height units, three computed scores, and the final confidence.
+	dist_h = dist / pred_h if pred_h > 0 else 0.0
+	blob["dist_h"] = dist_h
+	blob["size_score"] = size_score
+	blob["proximity_score"] = proximity
+	blob["total_score"] = result
+
 	return result
 
 
@@ -917,6 +931,7 @@ def observe_blob_at(
 	fps: float = None,
 	stride: int = None,
 	precomputed_store: "dict | None" = None,
+	trace_sink: object | None = None,
 ) -> BlobObservation:
 	"""Return the best blob observation at one frame, or None.
 
@@ -984,6 +999,10 @@ def observe_blob_at(
 			find the result without rechecking. The store is read-only
 			from this function's perspective. When None, legacy reader
 			path is used (same as prior behavior).
+		trace_sink: Optional object with a settable observer_trace attribute.
+			When non-None, a BlobObserverTrace is captured and set on
+			trace_sink.observer_trace. Default None preserves byte-identical
+			behavior. Trace is never cached; it is computed per call.
 
 	Returns:
 		BlobObservation for the best in-corridor candidate, or None
@@ -1051,6 +1070,8 @@ def observe_blob_at(
 			# negative-result entry avoids re-attempts; holds no decisions
 			residual_cache[cache_key] = {"raw_blobs_processed": []}
 			return None
+		# Capture pre-DoG residual (always, for cache storage).
+		residual_pre_dog = residual.copy()
 		# DoG band-pass tuned to the predicted torso width in
 		# processed-frame pixels. The residual lives in the processed
 		# frame's pixel space; pred_w_p is in the same space, so the
@@ -1067,8 +1088,18 @@ def observe_blob_at(
 		for blob in raw_blobs:
 			blob["centroid_x"] += roi_x1
 			blob["centroid_y"] += roi_y1
-		residual_cache[cache_key] = {"raw_blobs_processed": raw_blobs}
+		residual_cache[cache_key] = {
+			"raw_blobs_processed": raw_blobs,
+			"residual_pre_dog": residual_pre_dog,
+			"dog_residual": dog_residual,
+			"validity_mask": validity_mask,
+		}
 		cached = residual_cache[cache_key]
+	else:
+		# Cache hit: retrieve raw image data from the cache entry.
+		residual_pre_dog = cached.get("residual_pre_dog")
+		dog_residual = cached.get("dog_residual")
+		validity_mask = cached.get("validity_mask")
 
 	raw_blobs = cached["raw_blobs_processed"]
 	if not raw_blobs:
@@ -1119,4 +1150,22 @@ def observe_blob_at(
 		along_track=along_src,
 		confidence=float(best_score),
 	)
+	# Capture trace if requested.
+	if trace_sink is not None:
+		roi_bounds = (roi[0], roi[1], roi[2], roi[3])
+		trace = blob_trace.BlobObserverTrace(
+			frame_index=frame_index,
+			roi_bounds=roi_bounds,
+			has_residual=True,
+			residual_dog=dog_residual,
+			residual_pre_dog=residual_pre_dog,
+			validity_mask=validity_mask,
+			raw_blobs=raw_blobs,
+			corridor_blobs=corridor_blobs,
+			winner_blob=best_blob,
+			winner_score=best_score,
+			corridor_radius=corridor_radius,
+			local_tangent=local_tangent,
+		)
+		trace_sink.observer_trace = trace
 	return observation
