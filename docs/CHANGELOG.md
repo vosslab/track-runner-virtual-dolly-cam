@@ -1,3 +1,21 @@
+## 2026-05-24
+
+### Additions and New Features
+
+- **New audit doc [docs/active_plans/audits/cli_argument_audit.md](active_plans/audits/cli_argument_audit.md).** Full inventory of every CLI flag across the eight track_runner subcommands (`seed`, `edit`, `target`, `solve`, `refine`, `encode`, `analyze`, `setup`) plus the global parser. Each row labeled OBSERVED / PROPOSED / APPROVED. Findings F1-F12 enumerate single-letter collisions (`-s` severity vs `--seed`), missing short flags on routinely-toggled encode options, asymmetric prompt-mutex coverage, and the undocumented uppercase-short-flag rule. Closeout patch of `~/.claude/plans/distributed-stirring-church.md` Milestone 1.
+- **New decision record [docs/active_plans/decisions/cli_unification_decisions.md](active_plans/decisions/cli_unification_decisions.md).** D1-D9 status table. D1-D5 and D7-D9 APPROVED on 2026-05-23; D6 (rename deprecation policy) DEFERRED to the follow-up rename plan with default = hard-cut. Closeout patch of `~/.claude/plans/distributed-stirring-church.md` Milestone 2.
+- **New validation artifact [docs/active_plans/audits/cli_argparse_dump.txt](active_plans/audits/cli_argparse_dump.txt).** Concatenated `--help` output for the global parser and all eight subparsers, dumped from the live argparse tree. Cross-checked against the audit doc's OBSERVED inventory rows. Regenerate with `source source_me.sh && python3 tools/dump_cli_help.py > docs/active_plans/audits/cli_argparse_dump.txt`.
+- **New tool [tools/dump_cli_help.py](../tools/dump_cli_help.py).** Imports `track_runner.cli_args._build_parser()` and writes the global + per-subparser `--help` text to stdout. Used to produce the audit's validation artifact without triggering required-input validation.
+
+### Behavior or Interface Changes
+
+- **`track_runner/cli_args.parse_args` refactored: parser construction split into `_build_parser()`.** New public-ish `_build_parser()` returns the fully-configured `ArgumentParser` tree; `parse_args()` is now a thin wrapper that calls `_build_parser().parse_args()`. Behavior unchanged for normal CLI invocation. Enables the new `tools/dump_cli_help.py` to walk subparsers without triggering required-input validation.
+
+### Decisions and Failures
+
+- **Published CLI argument audit; reconciliation APPROVED for D1-D5, D7-D9.** Unified single-letter scheme adopted: drop `-s` short on analyze (resolves the severity-vs-seed collision); broad short-flag additions on encode (`-a/--aspect`, `-m/--mp4`, `-q/--crf`, `-v/--video-codec`, `-l/--draw-tracking`, `-D/--draw-debug`, `-V/--draw-velocity-arrow`, `-Z/--torso-multiple`); drop `-c` short on `--config`; drop `--no-filters` (use `-F none`); remove `--keep-temp`; rename `--debug` long form to `--debug-logs`; add `-k/--keep`, `-u/--upgrade`, `-b/--bin`, `-B/--auto-bin`, `-T/--time-range`. Behavior change: `--auto-bin` default-on at target 480; `--bin 1` becomes the explicit opt-out (D9). Move `seed_interval=10.0` default to config (D4). D6 (deprecation policy) deferred to the follow-up rename plan; default = hard-cut.
+- **No production code renamed by this audit; no test changes.** Code edits land in a follow-up rename plan. Argparse-inventory pytests intentionally not added: assertions on collections of flag names are fragile per [docs/PYTEST_STYLE.md](PYTEST_STYLE.md). Inventory parity stays a doc-review checklist.
+
 ## 2026-05-23
 
 ### Additions and New Features

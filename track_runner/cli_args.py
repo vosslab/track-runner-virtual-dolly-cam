@@ -227,11 +227,14 @@ def _add_encode_args(parser: argparse.ArgumentParser) -> None:
 
 
 #============================================
-def parse_args() -> argparse.Namespace:
-	"""Parse command-line arguments with subcommands for track_runner v2.
+def _build_parser() -> argparse.ArgumentParser:
+	"""Construct the full track_runner argparse parser tree.
+
+	Split out of parse_args() so help-dump tooling (tools/dump_cli_help.py)
+	can walk subparsers without triggering -i/--input required validation.
 
 	Returns:
-		Parsed argparse.Namespace with a 'mode' attribute.
+		Root argparse.ArgumentParser with all subparsers registered.
 	"""
 	# Global options go on the main parser so they can precede the
 	# subcommand: track_runner.py -i VIDEO seed --start 45
@@ -428,6 +431,17 @@ def parse_args() -> argparse.Namespace:
 		"setup", help="Configure camera settings for this video.",
 	)
 
+	return parser
+
+
+#============================================
+def parse_args() -> argparse.Namespace:
+	"""Parse command-line arguments with subcommands for track_runner v2.
+
+	Returns:
+		Parsed argparse.Namespace with a 'mode' attribute.
+	"""
+	parser = _build_parser()
 	args = parser.parse_args()
 	# no subcommand given: print help and exit
 	if args.mode is None:
