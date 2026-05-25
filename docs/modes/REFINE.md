@@ -12,25 +12,32 @@ Incremental re-solve that only re-solves changed or new intervals and reuses pri
 
 <!-- BEGIN AUTO HELP: refine -->
 ```text
-usage: track_runner.py refine [-h] [-f | -H] [--bin BIN_FACTOR] [--debug-blob]
+usage: track_runner.py refine [-h] [-f | -H]
+                              [--bin BIN_FACTOR | --auto-bin [HEIGHT]]
 
 options:
-  -h, --help          show this help message and exit
-  -f, --full          Run Stage 5: blob pass on every interval refine touches
-                      (slow).
-  -H, --hermite-only  Stop after Stage 3: Hermite-only refine (fast
-                      diagnostics).
-  --bin BIN_FACTOR    Optional spatial downsample applied to camera-motion and
-                      residual stages only. Integer >= 1; default 1 (no bin).
-                      bin_factor > 1 also crops each scaled axis to the
-                      largest FFT-friendly goodbox not exceeding it (origin-
-                      preserving right/bottom crop). Source-frame outputs
-                      unchanged.
-  --debug-blob        Enable per-worker per-frame instrumentation for the
-                      Stage 4 blob pass. Prints read_frame strategy timings,
-                      residual compute timings, per-pid summaries on worker
-                      exit, and a 5-second heartbeat from the master driver.
-                      Independent of -d/--debug. Default off.
+  -h, --help           show this help message and exit
+  -f, --full           Run Stage 5: blob pass on every interval refine touches
+                       (slow).
+  -H, --hermite-only   Stop after Stage 3: Hermite-only refine (fast
+                       diagnostics).
+  --bin BIN_FACTOR     Optional spatial downsample applied to camera-motion
+                       and residual stages only. Integer >= 1; default 1 (no
+                       bin). bin_factor > 1 also crops each scaled axis to the
+                       largest FFT-friendly goodbox not exceeding it (origin-
+                       preserving right/bottom crop). Source-frame outputs
+                       unchanged.
+  --auto-bin [HEIGHT]  Auto-pick bin_factor from source height: bin = max(1,
+                       round(source_h / target)). bin_factor is a whole
+                       number, so actual binned height only approximates the
+                       target. Source dims that are not multiples of bin
+                       silently drop at most (bin-1) right/bottom pixels, the
+                       same kind of crop goodbox already does. Bare flag
+                       targets 480; pass --auto-bin 720 for 720. Examples at
+                       target=480: 720->bin2 (360), 1080->bin2 (540),
+                       1440->bin3 (480), 2160->bin4 (540), 2816->bin6 (469).
+                       At target=720: 1080->bin1 (1080), 2160->bin3 (720).
+                       Mutually exclusive with --bin.
 ```
 <!-- END AUTO HELP: refine -->
 

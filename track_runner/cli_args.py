@@ -64,18 +64,35 @@ def _add_seed_interval_arg(parser: argparse.ArgumentParser) -> None:
 
 
 #============================================
-def _add_severity_arg(parser: argparse.ArgumentParser, help_text: str) -> None:
+def _add_severity_arg(
+	parser: argparse.ArgumentParser,
+	help_text: str,
+	include_level_aliases: bool = False,
+) -> None:
 	"""Register -s/--severity on a subparser.
 
 	Args:
 		parser: Subparser to add the argument to.
 		help_text: Help string describing the severity filter for this mode.
+		include_level_aliases: Add direct high/low shortcut aliases.
 	"""
-	parser.add_argument(
+	severity_group = parser
+	if include_level_aliases:
+		severity_group = parser.add_mutually_exclusive_group(required=False)
+	severity_group.add_argument(
 		"-s", "--severity", dest="severity", type=str, default=None,
 		choices=("high", "medium", "low"),
 		help=help_text,
 	)
+	if include_level_aliases:
+		severity_group.add_argument(
+			"-H", "--high", dest="severity", action="store_const", const="high",
+			help="Alias for -s high.",
+		)
+		severity_group.add_argument(
+			"-L", "--low", dest="severity", action="store_const", const="low",
+			help="Alias for -s low.",
+		)
 
 
 #============================================
@@ -308,14 +325,18 @@ def _build_parser() -> argparse.ArgumentParser:
 		help="Target frames around the detected race-start transition for confirmation."
 	)
 	target_submode_group.add_argument(
-		"--from-analyze", dest="target_from_analyze", action="store_true",
+		"-A", "--from-analyze", dest="target_from_analyze", action="store_true",
 		help=(
 			"Target frames from the latest 'analyze' report: union of "
 			"seed_suggestions and instability-region midpoints. Run "
 			"'analyze' first to refresh the report."
 		),
 	)
-	_add_severity_arg(target_parser, "Minimum severity of weak intervals to target.")
+	_add_severity_arg(
+		target_parser,
+		"Minimum severity of weak intervals to target.",
+		include_level_aliases=True,
+	)
 	_add_top_arg(target_parser)
 	_add_gaps_arg(target_parser)
 	_add_seed_interval_arg(target_parser)

@@ -13,35 +13,41 @@ Full solve runs through multiple stages: camera motion precompute, race-start id
 <!-- BEGIN AUTO HELP: solve -->
 ```text
 usage: track_runner.py solve [-h] [-y | --keep | --upgrade] [-f | -H]
-                             [--bin BIN_FACTOR] [--debug-blob]
+                             [--bin BIN_FACTOR | --auto-bin [HEIGHT]]
 
 options:
-  -h, --help          show this help message and exit
-  -y, --yes           Auto-confirm the 'clear and re-solve from scratch?'
-                      prompt. Use this for scripted re-solve runs.
-  --keep              Auto-decline the 'clear and re-solve from scratch?'
-                      prompt. Skip videos that already have a complete solve.
-                      Use this for scripted runs that should only solve
-                      missing videos.
-  --upgrade           Run Stage 4 blob promotion on the existing
-                      torso_box_coords store without re-doing Stage 3. Use
-                      after a 'solve --hermite-only' batch to upgrade weak
-                      intervals to blob results.
-  -f, --full          Run Stage 5: blob pass on every post-race interval
-                      (slow).
-  -H, --hermite-only  Stop after Stage 3: Hermite-only solve (fast
-                      diagnostics).
-  --bin BIN_FACTOR    Optional spatial downsample applied to camera-motion and
-                      residual stages only. Integer >= 1; default 1 (no bin).
-                      bin_factor > 1 also crops each scaled axis to the
-                      largest FFT-friendly goodbox not exceeding it (origin-
-                      preserving right/bottom crop). Source-frame outputs
-                      unchanged.
-  --debug-blob        Enable per-worker per-frame instrumentation for the
-                      Stage 4 blob pass. Prints read_frame strategy timings,
-                      residual compute timings, per-pid summaries on worker
-                      exit, and a 5-second heartbeat from the master driver.
-                      Independent of -d/--debug. Default off.
+  -h, --help           show this help message and exit
+  -y, --yes            Auto-confirm the 'clear and re-solve from scratch?'
+                       prompt. Use this for scripted re-solve runs.
+  --keep               Auto-decline the 'clear and re-solve from scratch?'
+                       prompt. Skip videos that already have a complete solve.
+                       Use this for scripted runs that should only solve
+                       missing videos.
+  --upgrade            Run Stage 4 blob promotion on the existing
+                       torso_box_coords store without re-doing Stage 3. Use
+                       after a 'solve --hermite-only' batch to upgrade weak
+                       intervals to blob results.
+  -f, --full           Run Stage 5: blob pass on every post-race interval
+                       (slow).
+  -H, --hermite-only   Stop after Stage 3: Hermite-only solve (fast
+                       diagnostics).
+  --bin BIN_FACTOR     Optional spatial downsample applied to camera-motion
+                       and residual stages only. Integer >= 1; default 1 (no
+                       bin). bin_factor > 1 also crops each scaled axis to the
+                       largest FFT-friendly goodbox not exceeding it (origin-
+                       preserving right/bottom crop). Source-frame outputs
+                       unchanged.
+  --auto-bin [HEIGHT]  Auto-pick bin_factor from source height: bin = max(1,
+                       round(source_h / target)). bin_factor is a whole
+                       number, so actual binned height only approximates the
+                       target. Source dims that are not multiples of bin
+                       silently drop at most (bin-1) right/bottom pixels, the
+                       same kind of crop goodbox already does. Bare flag
+                       targets 480; pass --auto-bin 720 for 720. Examples at
+                       target=480: 720->bin2 (360), 1080->bin2 (540),
+                       1440->bin3 (480), 2160->bin4 (540), 2816->bin6 (469).
+                       At target=720: 1080->bin1 (1080), 2160->bin3 (720).
+                       Mutually exclusive with --bin.
 ```
 <!-- END AUTO HELP: solve -->
 

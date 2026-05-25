@@ -14,7 +14,37 @@ import pytest
 
 # local repo modules
 import cli
+import cli_args
 import state_io
+
+
+#============================================
+def _parse_target_args(argv: list) -> object:
+	"""Parse target-mode args through the centralized argparse tree."""
+	parser = cli_args._build_parser()
+	args = parser.parse_args(["-i", "x.MOV", "target"] + argv)
+	return args
+
+
+#============================================
+def test_target_parser_high_shortcut_sets_high_severity():
+	args = _parse_target_args(["-H"])
+	assert args.severity == "high"
+
+
+def test_target_parser_low_shortcut_sets_low_severity():
+	args = _parse_target_args(["--low"])
+	assert args.severity == "low"
+
+
+def test_target_parser_from_analyze_shortcut():
+	args = _parse_target_args(["-A"])
+	assert args.target_from_analyze is True
+
+
+def test_target_parser_rejects_conflicting_severity_shortcuts():
+	with pytest.raises(SystemExit):
+		_parse_target_args(["--high", "--low"])
 
 
 #============================================

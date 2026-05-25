@@ -1,3 +1,17 @@
+## 2026-05-25
+
+### Behavior or Interface Changes
+
+- **Target-mode CLI shortcuts added in [track_runner/cli_args.py](../track_runner/cli_args.py).** `target -H` / `target --high` now alias `target -s high`, `target -L` / `target --low` now alias `target -s low`, and `target -A` aliases `target --from-analyze`. The high/low severity shortcuts are mutually exclusive with `-s/--severity` and each other.
+
+### Fixes and Maintenance
+
+- **Mode docs refreshed from the live parser.** [docs/modes/TARGET.md](modes/TARGET.md) now documents the new target shortcuts; [docs/modes/SOLVE.md](modes/SOLVE.md) and [docs/modes/REFINE.md](modes/REFINE.md) were refreshed by `tools/refresh_mode_docs.py` to match existing `--auto-bin` parser help.
+
+### Developer Tests and Notes
+
+- **Target parser shortcut tests added in [tests/test_tr_target_mode.py](../tests/test_tr_target_mode.py).** Focused coverage verifies `target -H`, `target --low`, `target -A`, and conflicting high/low severity aliases.
+
 ## 2026-05-24
 
 ### Additions and New Features
