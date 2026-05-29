@@ -20,7 +20,7 @@ def get_repo_root():
 def get_help_text(repo_root, mode):
 	"""Run track_runner.py <mode> -h and capture output."""
 	result = subprocess.run(
-		["python3", "track_runner/track_runner.py", "-i", "/tmp/_dummy.mp4", mode, "-h"],
+		["python3", "track_runner/track_runner.py", "-i", "_dummy.mp4", mode, "-h"],
 		cwd=repo_root,
 		check=False,
 		capture_output=True,
