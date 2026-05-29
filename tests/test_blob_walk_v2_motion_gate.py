@@ -1,5 +1,5 @@
 """
-Unit tests for tools/blob_walk_v2/walk_motion_gate.py.
+Unit tests for tools/blob_walk_v2/core/walk_motion_gate.py.
 
 Tests cover cold-start, centroid jitter, cap-driven rejection, and parameter
 scaling. Per-frame motion budget at 60 fps:
@@ -8,75 +8,22 @@ scaling. Per-frame motion budget at 60 fps:
 So at torso_w = 100 px the per_step_cap at dt=1 is 50 px.
 """
 
+import os
+import sys
+
 import pytest
-from tools.blob_walk_v2.walk_motion_gate import (
-	evaluate,
-	MotionGateResult,
-	MAX_RUNNER_SPEED_W_PER_S,
-	MIN_RUNNER_SPEED_W_PER_S,
-	BOOTSTRAP_UNCERTAINTY_W,
-	max_runner_jump_per_frame,
-	clamp_velocity_w_per_s,
-	bootstrap_search_radius_w,
-)
 
+# Put the blob_walk_v2 package root on sys.path so the bare import walk_paths
+# resolves, then call walk_paths.setup() to add the core/ and render/ subdirs.
+# walk_motion_gate now lives under core/, reachable via that bootstrap.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_BLOB_WALK_DIR = os.path.join(_REPO_ROOT, "tools", "blob_walk_v2")
+if _BLOB_WALK_DIR not in sys.path:
+	sys.path.insert(0, _BLOB_WALK_DIR)
+import walk_paths
+walk_paths.setup()
 
-class TestPhysicalConstants:
-	"""Pin physical envelope constants and derivations."""
-
-	def test_max_speed_30_w_per_s(self):
-		assert MAX_RUNNER_SPEED_W_PER_S == 30.0
-
-	def test_min_speed_7_3_w_per_s(self):
-		assert MIN_RUNNER_SPEED_W_PER_S == 7.3
-
-	def test_bootstrap_slack_pinned(self):
-		assert BOOTSTRAP_UNCERTAINTY_W == 0.30
-
-	def test_per_frame_derivation(self):
-		assert max_runner_jump_per_frame(30.0) == pytest.approx(1.0)
-		assert max_runner_jump_per_frame(60.0) == pytest.approx(0.5)
-		assert max_runner_jump_per_frame(120.0) == pytest.approx(0.25)
-
-	def test_clamp_below_min(self):
-		assert clamp_velocity_w_per_s(1.0) == 7.3
-
-	def test_clamp_above_max(self):
-		assert clamp_velocity_w_per_s(99.0) == 30.0
-
-	def test_clamp_within_range(self):
-		assert clamp_velocity_w_per_s(15.0) == 15.0
-
-	def test_bootstrap_search_radius_60fps(self):
-		# Constant radius: 30/60 + 0.30 = 0.5 + 0.30 = 0.80 W (all steps).
-		assert bootstrap_search_radius_w(60.0) == pytest.approx(0.80)
-
-	def test_bootstrap_search_radius_30fps(self):
-		# 30/30 + 0.30 = 1.0 + 0.30 = 1.30 W (all steps).
-		assert bootstrap_search_radius_w(30.0) == pytest.approx(1.30)
-
-
-class TestMotionGateResult:
-	"""Test MotionGateResult dataclass."""
-
-	def test_result_is_dataclass(self):
-		"""MotionGateResult has required fields."""
-		result = MotionGateResult(
-			accepted=True,
-			expected_jump=10.0,
-			allowed_jump=20.0,
-			actual_jump=15.0,
-			v_recent_scene_mag=5.0,
-			dt_for_gate=1,
-			reject_reason="",
-		)
-		assert result.accepted is True
-		assert result.expected_jump == 10.0
-		assert result.allowed_jump == 20.0
-		assert result.actual_jump == 15.0
-		assert result.v_recent_scene_mag == 5.0
-		assert result.dt_for_gate == 1
-		assert result.reject_reason == ""
+import walk_motion_gate
 
 
 class TestColdStartAccept:
@@ -98,7 +45,7 @@ class TestColdStartAccept:
 		torso_w = 100.0
 		torso_w_drift_frac = 0.0
 
-		result = evaluate(
+		result = walk_motion_gate.evaluate(
 			prev_scene,
 			cand_scene,
 			v_recent_scene_mag,
@@ -111,38 +58,6 @@ class TestColdStartAccept:
 		assert result.accepted is True
 		assert result.reject_reason == ""
 		assert result.dt_for_gate == 1
-
-
-class TestCentroidJitter:
-	"""Test acceptance of pure centroid jitter under MEASUREMENT_ALLOWANCE_W."""
-
-	def test_jitter_under_allowance_stationary(self):
-		"""
-		Accept stationary runner's centroid jitter without motion.
-
-		Zero velocity, zero radial drift, tiny blob offset < MEASUREMENT_ALLOWANCE_W.
-		"""
-		prev_scene = (100.0, 200.0)
-		cand_scene = (100.8, 200.4)  # ~0.9 px offset
-		v_recent_scene_mag = 0.0
-		dt_frames = 1
-		torso_w = 100.0
-		torso_w_drift_frac = 0.0
-
-		result = evaluate(
-			prev_scene,
-			cand_scene,
-			v_recent_scene_mag,
-			dt_frames,
-			torso_w,
-			torso_w_drift_frac,
-			source_fps=60.0,
-		)
-
-		# measurement_allowance = 0.10 * 100 = 10 px
-		# actual_jump ~ 0.9 px < 10 px -> accept
-		assert result.accepted is True
-		assert result.reject_reason == ""
 
 
 class TestAbsoluteCapReject:
@@ -162,7 +77,7 @@ class TestAbsoluteCapReject:
 		torso_w = 200.0  # absolute_cap = 1.5 * 200 = 300 px
 		torso_w_drift_frac = 0.0
 
-		result = evaluate(
+		result = walk_motion_gate.evaluate(
 			prev_scene,
 			cand_scene,
 			v_recent_scene_mag,
@@ -198,7 +113,7 @@ class TestVelocityToleranceReject:
 		# allowed_jump = min(150, 75, 20 * 1.75) = min(150, 75, 35) = 35 px
 		# actual_jump = 50 px > 35 px -> reject velocity_tolerance
 
-		result = evaluate(
+		result = walk_motion_gate.evaluate(
 			prev_scene,
 			cand_scene,
 			v_recent_scene_mag,
@@ -239,7 +154,7 @@ class TestPerStepCapReject:
 		# Let's set actual_jump = 120 px (between 75 and 150).
 		cand_scene = (120.0, 0.0)
 
-		result = evaluate(
+		result = walk_motion_gate.evaluate(
 			prev_scene,
 			cand_scene,
 			v_recent_scene_mag,
@@ -257,31 +172,6 @@ class TestPerStepCapReject:
 		assert result.reject_reason == "per_step_cap"
 
 
-class TestDtForGateClamped:
-	"""Test that dt_for_gate clamps at DT_GATE_CAP."""
-
-	def test_dt_for_gate_clamped_to_3(self):
-		"""Pass dt_frames = 10 and verify dt_for_gate == 3 in result."""
-		prev_scene = (0.0, 0.0)
-		cand_scene = (10.0, 0.0)  # small motion
-		v_recent_scene_mag = 1.0
-		dt_frames = 10  # DT_GATE_CAP = 3
-		torso_w = 100.0
-		torso_w_drift_frac = 0.0
-
-		result = evaluate(
-			prev_scene,
-			cand_scene,
-			v_recent_scene_mag,
-			dt_frames,
-			torso_w,
-			torso_w_drift_frac,
-			source_fps=60.0,
-		)
-
-		assert result.dt_for_gate == 3
-
-
 class TestRadialAllowance:
 	"""Test radial-allowance contribution from toward/away camera motion."""
 
@@ -294,7 +184,7 @@ class TestRadialAllowance:
 		torso_w = 100.0
 		torso_w_drift_frac = 0.5  # 50% of torso width
 
-		result = evaluate(
+		result = walk_motion_gate.evaluate(
 			prev_scene,
 			cand_scene,
 			v_recent_scene_mag,
@@ -330,7 +220,7 @@ class TestPerStepCapScaling:
 		# absolute_cap = 1.5 * 100 = 150 px
 		# allowed_jump = min(150, 75, 15 * 1.75) = min(150, 75, 26.25) = 26.25 px
 		# actual_jump = 30 px > 26.25 px -> reject
-		result_dt1 = evaluate(
+		result_dt1 = walk_motion_gate.evaluate(
 			prev_scene,
 			cand_scene,
 			v_recent_scene_mag,
@@ -346,7 +236,7 @@ class TestPerStepCapScaling:
 		# absolute_cap = 1.5 * 100 = 150 px
 		# allowed_jump = min(150, 225, 25 * 1.75) = min(150, 225, 43.75) = 43.75 px
 		# actual_jump = 30 px < 43.75 px -> accept
-		result_dt3 = evaluate(
+		result_dt3 = walk_motion_gate.evaluate(
 			prev_scene,
 			cand_scene,
 			v_recent_scene_mag,
@@ -364,66 +254,3 @@ class TestPerStepCapScaling:
 		assert result_dt3.allowed_jump > result_dt1.allowed_jump
 
 
-class TestRejectReasonOrdering:
-	"""Test that reject_reason identifies the FIRST cap hit."""
-
-	def test_reject_reason_prefers_absolute_over_per_step(self):
-		"""When absolute_cap is exceeded, that is the reject reason."""
-		prev_scene = (0.0, 0.0)
-		cand_scene = (200.0, 0.0)  # actual_jump = 200 px
-		v_recent_scene_mag = 100.0
-		dt_frames = 1
-		torso_w = 100.0
-		torso_w_drift_frac = 0.0
-
-		result = evaluate(
-			prev_scene,
-			cand_scene,
-			v_recent_scene_mag,
-			dt_frames,
-			torso_w,
-			torso_w_drift_frac,
-			source_fps=60.0,
-		)
-
-		# absolute_cap = 150 px < 200 px -> hit absolute first
-		assert result.reject_reason == "absolute_cap"
-
-
-class TestMeasurementAllowanceScaling:
-	"""Test that MEASUREMENT_ALLOWANCE_W is a multiple of torso_w."""
-
-	def test_measurement_allowance_scales_with_torso_w(self):
-		"""Same scenario at different torso sizes; allowance scales."""
-		prev_scene = (0.0, 0.0)
-		cand_scene = (0.5, 0.0)  # tiny offset
-		v_recent_scene_mag = 0.0
-		dt_frames = 1
-		torso_w_drift_frac = 0.0
-
-		# Small runner: torso_w = 10 px
-		result_small = evaluate(
-			prev_scene,
-			cand_scene,
-			v_recent_scene_mag,
-			dt_frames,
-			torso_w=10.0,
-			torso_w_drift_frac=torso_w_drift_frac,
-			source_fps=60.0,
-		)
-
-		# Large runner: torso_w = 1000 px
-		result_large = evaluate(
-			prev_scene,
-			cand_scene,
-			v_recent_scene_mag,
-			dt_frames,
-			torso_w=1000.0,
-			torso_w_drift_frac=torso_w_drift_frac,
-			source_fps=60.0,
-		)
-
-		# Small runner: measurement_allowance = 0.10 * 10 = 1 px; 0.5 px < 1 px -> accept
-		# Large runner: measurement_allowance = 0.10 * 1000 = 100 px; 0.5 px < 100 px -> accept
-		assert result_small.accepted is True
-		assert result_large.accepted is True

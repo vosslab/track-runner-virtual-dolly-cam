@@ -21,25 +21,32 @@ Output layout:
 """
 
 # Standard Library
-import argparse
-import csv
-import dataclasses
-import logging
 import os
-import pathlib
 import sys
+import csv
+import logging
+import argparse
+import pathlib
+import dataclasses
 
-# Determine repo root from file location and add directories to path
-# walk_driver.py is at tools/blob_walk_v2/, so go up 3 levels to repo root
-_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-_TRACK_RUNNER_DIR = os.path.join(_REPO_ROOT, 'track_runner')
-if _TRACK_RUNNER_DIR not in sys.path:
-	sys.path.insert(0, _TRACK_RUNNER_DIR)
-if _REPO_ROOT not in sys.path:
-	sys.path.insert(0, _REPO_ROOT)
+# Standalone-run bootstrap: this module lives at tools/blob_walk_v2/core/, but
+# walk_paths.py lives one level up at the package root. When walk_driver is run
+# directly (python3 .../core/walk_driver.py), sys.path[0] is core/, so the bare
+# import walk_paths below would fail. Put the package root on sys.path first so
+# walk_paths resolves; walk_paths.setup() then wires up the rest (track_runner,
+# tests, repo root, core/, render/). Library callers that import walk_driver
+# have already run setup(), so this insert is a harmless no-op for them.
+_PACKAGE_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _PACKAGE_ROOT not in sys.path:
+	sys.path.insert(0, _PACKAGE_ROOT)
+
+# shared sys.path bootstrap (track_runner, tests, repo root, blob_walk_v2 dirs)
+import walk_paths
+walk_paths.setup()
 
 # local repo modules
 import walk_io
+import walk_util
 import walk_walker
 import walk_debug_log
 import walk_render
@@ -99,9 +106,12 @@ def parse_args() -> argparse.Namespace:
 		),
 	)
 	parser.add_argument(
-		'-i', '--max-intervals', dest='max_intervals', type=int, default=None,
+		'-i', '--max-intervals', dest='max_intervals', type=int, default=4,
 		help=(
-			"Cap intervals per video. Default: process all post_start intervals."
+			"Cap intervals per video (evenly spread). Default: 4. "
+			"A full walk of every interval is intentionally never the default "
+			"because it is catastrophically slow on large corpora. "
+			"Pass 0 (or any value <= 0) to opt in to ALL post_start intervals."
 		),
 	)
 	parser.add_argument(
@@ -188,61 +198,6 @@ def check_resume_needed(
 
 
 #============================================
-def _to_float(val, default=None):
-	"""Safely convert CSV string to float."""
-	try:
-		return float(val) if val and val.strip() else default
-	except (ValueError, TypeError):
-		return default
-
-
-#============================================
-def _to_int(val, default=None):
-	"""Safely convert CSV string to int."""
-	try:
-		return int(val) if val and val.strip() else default
-	except (ValueError, TypeError):
-		return default
-
-
-#============================================
-#============================================
-def _evenly_spread(items: list, n: int | None) -> list:
-	"""Pick n items evenly spread across items. Returns items unchanged if len <= n."""
-	if n is None or len(items) <= n:
-		return items
-	if n == 1:
-		return [items[len(items) // 2]]
-	# evenly-spaced indices including first and last
-	step = (len(items) - 1) / (n - 1)
-	indices = [round(i * step) for i in range(n)]
-	return [items[i] for i in indices]
-
-
-#============================================
-def enumerate_sampled_offsets(accepts: list, interval_length: int) -> list:
-	"""Enumerate frame indices to render using power-of-2 offsets.
-
-	Walk returns a list of accepted frame indices. For rendering, sample
-	at power-of-2 offsets from the left seed (offset 0, 1, 2, 4, 8, ...).
-	Include all frames visited by the walker.
-
-	Args:
-		accepts: List of accepted frame indices (relative to seed, or absolute).
-		interval_length: Right seed frame - left seed frame.
-
-	Returns:
-		Sorted list of frame indices (from accepts) to render.
-	"""
-	if not accepts:
-		return []
-
-	# For now, render all accepts (driver samples; walker provides raw data).
-	# This can be optimized later to include power-of-2 + dense fill logic.
-	return sorted(accepts)
-
-
-#============================================
 def _sampled_offsets(interval_length: int) -> list:
 	"""Power-of-2 offsets from 0 up to interval_length, plus final boundary."""
 	offsets = [0]
@@ -270,6 +225,119 @@ def _fill_seed_pred(row_dict: dict, seed: dict) -> None:
 		row_dict['torso_w_px'] = str(seed['w'])
 	if not row_dict.get('torso_h_px'):
 		row_dict['torso_h_px'] = str(seed['h'])
+
+
+#============================================
+def _render_direction_tiles(
+	direction_label: str,
+	csv_path: pathlib.Path,
+	tile_dir: pathlib.Path,
+	anchor_seed: dict,
+	default_direction_sign: str,
+	reader,
+	scene_transform,
+	fps: float,
+) -> bool:
+	"""Render PNG tiles for one walk direction (FWD or BWD) from a CSV file.
+
+	Reads the CSV written by DebugLogWriter, reconstructs minimal trace and
+	DebugLogRow objects for each renderable frame, and calls render_walk_tile.
+
+	Args:
+		direction_label: Human-readable label used in log messages, e.g. 'FWD' or 'BWD'.
+		csv_path: Path to the verdicts CSV file for this direction.
+		tile_dir: Output directory for PNG tiles.
+		anchor_seed: Seed dict at the anchor end (left for FWD, right for BWD).
+		default_direction_sign: Fallback value for direction field, '+' for FWD, '-' for BWD.
+		reader: FrameReader instance.
+		scene_transform: SceneTransform instance.
+		fps: Frames per second.
+
+	Returns:
+		True if any render error occurred, False otherwise.
+	"""
+	render_error = False
+
+	# Read CSV rows keyed by frame_index
+	rows = {}
+	with open(csv_path) as f:
+		for row in csv.DictReader(f):
+			try:
+				frame_idx = int(row['frame_index'])
+				rows[frame_idx] = row
+			except (ValueError, KeyError):
+				pass
+
+	renderable_statuses = {
+		'accepted',
+		'interpolated',
+		'extrapolated',
+		'soft_miss_no_blob',
+		'soft_miss_no_path',
+		'after_walk_terminated',
+	}
+	for frame_index in sorted(rows.keys()):
+		row_dict = rows[frame_index]
+		status = row_dict.get('status', '')
+		if status not in renderable_statuses:
+			continue
+		_fill_seed_pred(row_dict, anchor_seed)
+
+		# Skip frames without prediction data (e.g., bootstrap frame)
+		if not row_dict.get('pred_cx') or not row_dict.get('pred_cy') or \
+				not row_dict.get('torso_w_px') or not row_dict.get('torso_h_px'):
+			logger.debug(f"Skipping {direction_label} frame {frame_index}: missing prediction fields")
+			continue
+
+		try:
+			# Reconstruct trace (minimal version for rendering)
+			trace = blob_trace.BlobObserverTrace(
+				frame_index=frame_index,
+				roi_bounds=None,
+				has_residual=False,
+				residual_dog=None,
+				residual_pre_dog=None,
+				validity_mask=None,
+				raw_blobs=[],
+				corridor_blobs=[],
+				winner_blob=None,
+				winner_score=None,
+				local_tangent=(1.0, 0.0, 0.0, 1.0),
+			)
+
+			# Reconstruct DebugLogRow from CSV dict
+			debug_row = walk_debug_log.DebugLogRow(
+				frame_index=walk_util._to_int(row_dict.get('frame_index'), frame_index),
+				step=walk_util._to_int(row_dict.get('step')),
+				direction=row_dict.get('direction', default_direction_sign),
+				status=row_dict.get('status', 'unknown'),
+				dt=walk_util._to_float(row_dict.get('dt')),
+				torso_w_px=walk_util._to_float(row_dict.get('torso_w_px')),
+				torso_h_px=walk_util._to_float(row_dict.get('torso_h_px')),
+				pred_cx=walk_util._to_float(row_dict.get('pred_cx')),
+				pred_cy=walk_util._to_float(row_dict.get('pred_cy')),
+				cand_cx=walk_util._to_float(row_dict.get('cand_cx')),
+				cand_cy=walk_util._to_float(row_dict.get('cand_cy')),
+				cand_scene_x=walk_util._to_float(row_dict.get('cand_scene_x')),
+				cand_scene_y=walk_util._to_float(row_dict.get('cand_scene_y')),
+				reject_reason=row_dict.get('reject_reason', ''),
+			)
+			out_png_path = tile_dir / f"frame_{frame_index:06d}.png"
+			walk_render.render_walk_tile(
+				frame_index=frame_index,
+				debug_row=debug_row,
+				trace=trace,
+				reader=reader,
+				scene_transform=scene_transform,
+				fps=fps,
+				out_png_path=out_png_path,
+			)
+		except RuntimeError as e:
+			logger.error(f"Render error ({direction_label} frame {frame_index}): {e}")
+			render_error = True
+			continue
+
+	return render_error
 
 
 #============================================
@@ -368,161 +436,36 @@ def run_interval_walk(
 	# Determine if rendering encountered errors
 	render_error = False
 
-	# Render tiles if requested
+	# Render tiles if requested.
+	# v13 walker emits: accepted, interpolated, extrapolated,
+	# soft_miss_no_blob, soft_miss_no_path, after_walk_terminated.
+	# Legacy values (rejected_motion_gate, miss_no_blob, miss_low_conf)
+	# are never emitted by the v13 walker; omit from render set.
+	# Fill seed pred for bootstrap (step=0) and after_walk_terminated rows
+	# so the user always sees at least the seed frame and the first stepped
+	# frame, even on early stop.
 	if render_tiles:
-		# Re-read FWD CSV to get debug rows for rendering
-		fwd_rows = {}
-		with open(fwd_csv_path) as f:
-			for row in csv.DictReader(f):
-				try:
-					frame_idx = int(row['frame_index'])
-					fwd_rows[frame_idx] = row
-				except (ValueError, KeyError):
-					pass
-
-		# Render FWD tiles: iterate every CSV row. Fill seed pred for bootstrap
-		# (step=0) and after_walk_terminated rows so the user always sees at
-		# least the seed frame and the first stepped frame, even on early stop.
-		# v13 walker emits: accepted, interpolated, extrapolated,
-		# soft_miss_no_blob, soft_miss_no_path, after_walk_terminated.
-		# Legacy values (rejected_motion_gate, miss_no_blob, miss_low_conf)
-		# are never emitted by the v13 walker; omit from render set.
-		renderable_statuses = {
-			'accepted',
-			'interpolated',
-			'extrapolated',
-			'soft_miss_no_blob',
-			'soft_miss_no_path',
-			'after_walk_terminated',
-		}
-		for frame_index in sorted(fwd_rows.keys()):
-			row_dict = fwd_rows[frame_index]
-			status = row_dict.get('status', '')
-			if status not in renderable_statuses:
-				continue
-			_fill_seed_pred(row_dict, left_seed)
-
-			# Skip frames without prediction data (e.g., bootstrap frame)
-			if not row_dict.get('pred_cx') or not row_dict.get('pred_cy') or \
-					not row_dict.get('torso_w_px') or not row_dict.get('torso_h_px'):
-				logger.debug(f"Skipping FWD frame {frame_index}: missing prediction fields")
-				continue
-
-			try:
-				# Reconstruct trace (minimal version for rendering)
-				trace = blob_trace.BlobObserverTrace(
-					frame_index=frame_index,
-					roi_bounds=None,
-					has_residual=False,
-					residual_dog=None,
-					residual_pre_dog=None,
-					validity_mask=None,
-					raw_blobs=[],
-					corridor_blobs=[],
-					winner_blob=None,
-					winner_score=None,
-					local_tangent=(1.0, 0.0, 0.0, 1.0),
-				)
-
-				# Reconstruct DebugLogRow from CSV dict
-				debug_row = walk_debug_log.DebugLogRow(
-					frame_index=_to_int(row_dict.get('frame_index'), frame_index),
-					step=_to_int(row_dict.get('step')),
-					direction=row_dict.get('direction', '+'),
-					status=row_dict.get('status', 'unknown'),
-					dt=_to_float(row_dict.get('dt')),
-					torso_w_px=_to_float(row_dict.get('torso_w_px')),
-					torso_h_px=_to_float(row_dict.get('torso_h_px')),
-					pred_cx=_to_float(row_dict.get('pred_cx')),
-					pred_cy=_to_float(row_dict.get('pred_cy')),
-					cand_cx=_to_float(row_dict.get('cand_cx')),
-					cand_cy=_to_float(row_dict.get('cand_cy')),
-					cand_scene_x=_to_float(row_dict.get('cand_scene_x')),
-					cand_scene_y=_to_float(row_dict.get('cand_scene_y')),
-					reject_reason=row_dict.get('reject_reason', ''),
-				)
-				out_png_path = fwd_dir / f"frame_{frame_index:06d}.png"
-				walk_render.render_walk_tile(
-					frame_index=frame_index,
-					debug_row=debug_row,
-					trace=trace,
-					reader=reader,
-					scene_transform=scene_transform,
-					fps=fps,
-					out_png_path=out_png_path,
-				)
-			except RuntimeError as e:
-				logger.error(f"Render error (FWD frame {frame_index}): {e}")
-				render_error = True
-				continue
-
-		# Render BWD tiles
-		bwd_rows = {}
-		with open(bwd_csv_path) as f:
-			for row in csv.DictReader(f):
-				try:
-					frame_idx = int(row['frame_index'])
-					bwd_rows[frame_idx] = row
-				except (ValueError, KeyError):
-					pass
-
-		for frame_index in sorted(bwd_rows.keys()):
-			row_dict = bwd_rows[frame_index]
-			status = row_dict.get('status', '')
-			if status not in renderable_statuses:
-				continue
-			_fill_seed_pred(row_dict, right_seed)
-
-			# Skip frames without prediction data (e.g., bootstrap frame)
-			if not row_dict.get('pred_cx') or not row_dict.get('pred_cy') or \
-					not row_dict.get('torso_w_px') or not row_dict.get('torso_h_px'):
-				logger.debug(f"Skipping BWD frame {frame_index}: missing prediction fields")
-				continue
-
-			try:
-				trace = blob_trace.BlobObserverTrace(
-					frame_index=frame_index,
-					roi_bounds=None,
-					has_residual=False,
-					residual_dog=None,
-					residual_pre_dog=None,
-					validity_mask=None,
-					raw_blobs=[],
-					corridor_blobs=[],
-					winner_blob=None,
-					winner_score=None,
-					local_tangent=(1.0, 0.0, 0.0, 1.0),
-				)
-				debug_row = walk_debug_log.DebugLogRow(
-					frame_index=_to_int(row_dict.get('frame_index'), frame_index),
-					step=_to_int(row_dict.get('step')),
-					direction=row_dict.get('direction', '-'),
-					status=row_dict.get('status', 'unknown'),
-					dt=_to_float(row_dict.get('dt')),
-					torso_w_px=_to_float(row_dict.get('torso_w_px')),
-					torso_h_px=_to_float(row_dict.get('torso_h_px')),
-					pred_cx=_to_float(row_dict.get('pred_cx')),
-					pred_cy=_to_float(row_dict.get('pred_cy')),
-					cand_cx=_to_float(row_dict.get('cand_cx')),
-					cand_cy=_to_float(row_dict.get('cand_cy')),
-					cand_scene_x=_to_float(row_dict.get('cand_scene_x')),
-					cand_scene_y=_to_float(row_dict.get('cand_scene_y')),
-					reject_reason=row_dict.get('reject_reason', ''),
-				)
-				out_png_path = bwd_dir / f"frame_{frame_index:06d}.png"
-				walk_render.render_walk_tile(
-					frame_index=frame_index,
-					debug_row=debug_row,
-					trace=trace,
-					reader=reader,
-					scene_transform=scene_transform,
-					fps=fps,
-					out_png_path=out_png_path,
-				)
-			except RuntimeError as e:
-				logger.error(f"Render error (BWD frame {frame_index}): {e}")
-				render_error = True
-				continue
+		fwd_had_error = _render_direction_tiles(
+			direction_label='FWD',
+			csv_path=fwd_csv_path,
+			tile_dir=fwd_dir,
+			anchor_seed=left_seed,
+			default_direction_sign='+',
+			reader=reader,
+			scene_transform=scene_transform,
+			fps=fps,
+		)
+		bwd_had_error = _render_direction_tiles(
+			direction_label='BWD',
+			csv_path=bwd_csv_path,
+			tile_dir=bwd_dir,
+			anchor_seed=right_seed,
+			default_direction_sign='-',
+			reader=reader,
+			scene_transform=scene_transform,
+			fps=fps,
+		)
+		render_error = fwd_had_error or bwd_had_error
 
 	# Compute gap: frames between FWD stop and BWD stop
 	fwd_stop_frame = fwd_summary.stop_frame
@@ -613,9 +556,10 @@ def main() -> None:
 			i for i in intervals if i.label == "post_start"
 		]
 
-		# Spread by max_intervals if set: evenly distributed, not first-N
-		if args.max_intervals is not None:
-			post_start_intervals = _evenly_spread(post_start_intervals, args.max_intervals)
+		# Spread by max_intervals: evenly distributed, not first-N.
+		# Default is 4; a value <= 0 is the explicit opt-in to ALL intervals.
+		if args.max_intervals > 0:
+			post_start_intervals = walk_util._evenly_spread(post_start_intervals, args.max_intervals)
 
 		logger.info(f"  Found {len(post_start_intervals)} post_start intervals")
 

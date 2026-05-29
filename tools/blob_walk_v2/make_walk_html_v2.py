@@ -22,24 +22,19 @@ Usage:
 """
 
 # Standard Library
-import os
 import sys
 import argparse
 import pathlib
 import logging
 import multiprocessing
 
-# Determine repo root from file location and wire sys.path so v2 helpers
-# and track_runner internals are importable.
-_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-_TRACK_RUNNER_DIR = os.path.join(_REPO_ROOT, 'track_runner')
-_BLOB_WALK_V2_DIR = os.path.dirname(os.path.abspath(__file__))
-if _TRACK_RUNNER_DIR not in sys.path:
-	sys.path.insert(0, _TRACK_RUNNER_DIR)
-if _REPO_ROOT not in sys.path:
-	sys.path.insert(0, _REPO_ROOT)
-if _BLOB_WALK_V2_DIR not in sys.path:
-	sys.path.insert(0, _BLOB_WALK_V2_DIR)
+# shared sys.path bootstrap. This entry script lives at the package root, so
+# its own directory (sys.path[0] when run directly) is the package dir and the
+# bare import walk_paths resolves. setup() wires up track_runner, tests, repo
+# root, and the core/ and render/ subdirs so the bare-name imports below
+# resolve to the moved modules.
+import walk_paths
+_REPO_ROOT = walk_paths.setup()
 
 # PIP3 modules
 import yaml
@@ -47,6 +42,7 @@ import yaml
 # local repo modules
 import common_tools.probe_video
 import walk_io
+import walk_util
 import walk_driver
 import walk_html
 
@@ -97,8 +93,14 @@ def parse_args() -> argparse.Namespace:
 	)
 	parser.add_argument(
 		'-n', '--sample-intervals-per-video',
-		dest='sample_intervals_per_video', type=int, default=None,
-		help='Cap intervals processed per video (evenly spread; default: no cap).',
+		dest='sample_intervals_per_video', type=int, default=4,
+		help=(
+			'Cap intervals processed per video (evenly spread). Default: 4. '
+			'A full walk of every interval is intentionally never the default '
+			'because it is catastrophically slow on large corpora. '
+			'Pass 0 (or any value <= 0) to opt in to ALL post_start intervals. '
+			'Ignored when --intervals-from-corpus is set.'
+		),
 	)
 	parser.add_argument(
 		'--skip-render', dest='skip_render', action='store_true',
@@ -243,19 +245,6 @@ def print_dry_run(videos: list, args: argparse.Namespace) -> None:
 
 #============================================
 
-def _evenly_spread(items: list, n: int | None) -> list:
-	"""Pick n items evenly spread across items. Returns items unchanged if len <= n."""
-	if n is None or len(items) <= n:
-		return items
-	if n == 1:
-		return [items[len(items) // 2]]
-	step = (len(items) - 1) / (n - 1)
-	indices = [round(i * step) for i in range(n)]
-	return [items[i] for i in indices]
-
-
-#============================================
-
 def load_corpus_intervals(corpus_dir: pathlib.Path) -> dict:
 	"""Load per-video interval left_frame sets from a dump_step1 corpus directory.
 
@@ -325,7 +314,9 @@ def process_video(
 			f'(left_frames: {sorted(i.left_seed["frame_index"] for i in post_start)})'
 		)
 	else:
-		post_start = _evenly_spread(post_start, max_intervals)
+		# Default cap is 4; a value <= 0 is the explicit opt-in to ALL intervals.
+		cap = None if (max_intervals is not None and max_intervals <= 0) else max_intervals
+		post_start = walk_util._evenly_spread(post_start, cap)
 
 	counters = {'walked': 0, 'skipped_resume': 0, 'errors': 0}
 	video_output_dir = output_root / video_basename

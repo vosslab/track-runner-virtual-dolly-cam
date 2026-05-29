@@ -29,7 +29,7 @@ inside the blob walker. Requires architect approval before code lands.
 Parent plan: `~/.claude/plans/sequential-soaring-hopper.md`.
 Sibling specs: [blob_walker_velocity_gate_spec_request.md](blob_walker_velocity_gate_spec_request.md) (superseded),
 [extraction_rescope_followups.md](extraction_rescope_followups.md).
-Closure evidence: [m0_closure_summary.md](m0_closure_summary.md).
+Closure evidence: `m0_closure_summary.md`.
 Audit input: `dump_step1/24corpus/LOW_ACCEPT_ROOT_CAUSE.md`.
 Touchpoint scout audit: [window_level_touchpoint_map.md](window_level_touchpoint_map.md).
 

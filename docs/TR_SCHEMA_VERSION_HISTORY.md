@@ -16,7 +16,7 @@ When an old cache carries a schema-tagged fingerprint (e.g. `/schema/5`), a pre-
 
 **Walker CSV debug-log schema: window-level path-selection redesign.** Geometry-affecting: no.
 
-This version governs `tools/blob_walk_v2/walk_debug_log.py` SCHEMA_VERSION (the blob-walker CSV format),
+This version governs `tools/blob_walk_v2/core/walk_debug_log.py` SCHEMA_VERSION (the blob-walker CSV format),
 not the track_runner on-disk solver artifact schema. It is listed here per contract C10 (one unified
 schema history). The `track_runner/tr_schema.py` SCHEMA_VERSION remains at 11.
 
@@ -60,7 +60,7 @@ is described in
 
 **Walker CSV debug-log schema: provisional-observation anti-freeze columns added.** Geometry-affecting: no.
 
-This version governs `tools/blob_walk_v2/walk_debug_log.py` SCHEMA_VERSION (the blob-walker CSV format),
+This version governs `tools/blob_walk_v2/core/walk_debug_log.py` SCHEMA_VERSION (the blob-walker CSV format),
 not the track_runner on-disk solver artifact schema. It is listed here per contract C10 (one unified
 schema history). The `track_runner/tr_schema.py` SCHEMA_VERSION remains at 11; the walker CSV schema
 advances independently because the walker lives in `tools/blob_walk_v2/` and does not write

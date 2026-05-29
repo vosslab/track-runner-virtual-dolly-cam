@@ -158,7 +158,7 @@ argmax. Full spec:
 Per-frame single-winner selection failed the M0 frame-1 acceptance bar
 on 4 of 6 audit videos; the 24-corpus baseline settled at 19.7%
 `accepted_fraction` FWD and 9.6% BWD. See
-[m0_closure_summary.md](archive/m0_closure_summary.md).
+`m0_closure_summary.md`.
 The H4 root-cause audit traced the failure to a velocity-freeze cascade:
 on individual frames, leg blobs and foot blobs outscore torso blobs on
 `integrated_mag`, so per-frame argmax oscillates between body parts even

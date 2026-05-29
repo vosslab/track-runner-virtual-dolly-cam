@@ -29,9 +29,8 @@ Schema history:
 """
 
 import csv
+import dataclasses
 import pathlib
-from dataclasses import dataclass, asdict
-from typing import Optional
 
 
 # Schema version for this debug-log CSV format.
@@ -141,7 +140,7 @@ _LEGACY_STATUS = {
 ALL_KNOWN_STATUS = _ALLOWED_STATUS | _LEGACY_STATUS
 
 
-@dataclass
+@dataclasses.dataclass
 class DebugLogRow:
 	"""
 	One row of walker debug log CSV.
@@ -154,55 +153,55 @@ class DebugLogRow:
 	step: int
 	direction: str
 	status: str
-	dt: Optional[float] = None
-	torso_w_px: Optional[float] = None
-	torso_h_px: Optional[float] = None
-	prev_cx: Optional[float] = None
-	prev_cy: Optional[float] = None
-	prev_scene_x: Optional[float] = None
-	prev_scene_y: Optional[float] = None
-	pred_cx: Optional[float] = None
-	pred_cy: Optional[float] = None
-	cand_cx: Optional[float] = None
-	cand_cy: Optional[float] = None
-	cand_scene_x: Optional[float] = None
-	cand_scene_y: Optional[float] = None
-	v_recent_scene_mag: Optional[float] = None
+	dt: float | None = None
+	torso_w_px: float | None = None
+	torso_h_px: float | None = None
+	prev_cx: float | None = None
+	prev_cy: float | None = None
+	prev_scene_x: float | None = None
+	prev_scene_y: float | None = None
+	pred_cx: float | None = None
+	pred_cy: float | None = None
+	cand_cx: float | None = None
+	cand_cy: float | None = None
+	cand_scene_x: float | None = None
+	cand_scene_y: float | None = None
+	v_recent_scene_mag: float | None = None
 	# torso_w_drift_frac DELETED in v13 (was unused placeholder per scout audit)
-	expected_jump: Optional[float] = None
-	allowed_jump: Optional[float] = None
-	actual_jump: Optional[float] = None
-	dt_for_gate: Optional[int] = None
-	winner_mode: Optional[str] = None
-	production_winner_cx: Optional[float] = None
-	production_winner_cy: Optional[float] = None
-	audit_winner_cx: Optional[float] = None
-	audit_winner_cy: Optional[float] = None
-	audit_winner_rule: Optional[str] = None
-	obs_confidence: Optional[float] = None
-	obs_corridor_n: Optional[int] = None
-	obs_raw_n: Optional[int] = None
-	winner_strength_score: Optional[float] = None
-	winner_size_score: Optional[float] = None
-	winner_proximity_score: Optional[float] = None
-	winner_total_score: Optional[float] = None
-	candidates_json: Optional[str] = None
-	reject_reason: Optional[str] = None
-	stop_reason: Optional[str] = None
+	expected_jump: float | None = None
+	allowed_jump: float | None = None
+	actual_jump: float | None = None
+	dt_for_gate: int | None = None
+	winner_mode: str | None = None
+	production_winner_cx: float | None = None
+	production_winner_cy: float | None = None
+	audit_winner_cx: float | None = None
+	audit_winner_cy: float | None = None
+	audit_winner_rule: str | None = None
+	obs_confidence: float | None = None
+	obs_corridor_n: int | None = None
+	obs_raw_n: int | None = None
+	winner_strength_score: float | None = None
+	winner_size_score: float | None = None
+	winner_proximity_score: float | None = None
+	winner_total_score: float | None = None
+	candidates_json: str | None = None
+	reject_reason: str | None = None
+	stop_reason: str | None = None
 	# Provisional-anchor anti-freeze fields (added schema v12, 2026-05-28).
 	# v13 SEMANTIC CHANGE: roi_anchor_source now reflects last-accepted anchor;
 	# provisional/extrapolated values no longer emitted by new walker but parseable.
-	roi_anchor_source: Optional[str] = None
+	roi_anchor_source: str | None = None
 	# provisional_cx_px / provisional_cy_px: always blank in v13 walker;
 	# retained for backward CSV-read compat.
-	provisional_cx_px: Optional[float] = None
-	provisional_cy_px: Optional[float] = None
+	provisional_cx_px: float | None = None
+	provisional_cy_px: float | None = None
 	# New v13 fields: Viterbi DP diagnostics.
 	# path_cost: Viterbi cost contribution at this frame (float); blank for bootstrap rows.
-	path_cost: Optional[float] = None
+	path_cost: float | None = None
 	# candidates_in_window: count of non-empty corridor_blob lists in the 9-frame window
 	# when this frame's decision was finalized; blank for bootstrap/terminal rows.
-	candidates_in_window: Optional[int] = None
+	candidates_in_window: int | None = None
 
 
 #============================================
@@ -250,7 +249,7 @@ class DebugLogWriter:
 				f"Allowed: {sorted(_ALLOWED_STATUS)}"
 			)
 
-		row_dict = asdict(row)
+		row_dict = dataclasses.asdict(row)
 		self._writer.writerow(row_dict)
 
 	def close(self) -> None:

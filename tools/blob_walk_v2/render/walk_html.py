@@ -28,33 +28,22 @@ Legend in HTML only: gate constants verbatim, real-world sanity comment from wal
 """
 
 import csv
-import os
+import dataclasses
+import math
 import pathlib
-from dataclasses import dataclass
-from typing import Optional
 
 # PIP3 modules
-import yaml
 import matplotlib
 matplotlib.use('Agg')  # non-interactive backend, no display needed
 import matplotlib.pyplot
 
 # local repo modules
+import walk_util
+import walk_palette
 import walk_motion_gate
 
-_REPO_ROOT_PATH = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-_OVERLAY_STYLES_PATH = os.path.join(_REPO_ROOT_PATH, 'track_runner', 'overlay_styles.yaml')
-
-
-#============================================
-def _load_walk_palette() -> dict:
-	"""Load walk_overlays palette from track_runner/overlay_styles.yaml."""
-	with open(_OVERLAY_STYLES_PATH) as f:
-		palette = yaml.safe_load(f)
-	return palette['walk_overlays']
-
-
-_WALK_PALETTE = _load_walk_palette()
+# Shared walk_overlays palette (trajectory/seed-marker colors + legend swatches).
+_WALK_PALETTE = walk_palette.load_walk_overlays()
 
 # Status border colors for tile cells: encode walker state visually.
 # v13 status enum: accepted, interpolated, extrapolated,
@@ -108,6 +97,122 @@ even at dt_for_gate == 3 (300 milliseconds / 18 frames)."""
 
 
 #============================================
+# Corpus quality classification thresholds (per-interval accepted_fraction).
+# An interval is "no_signal" when BOTH passes accept < NO_SIGNAL_ACCEPTED_FRACTION
+# of their walk steps (genuinely empty residual heat-map, not a walker failure).
+# Above that, an interval is "completed_low_quality" if EITHER pass accepts
+# < LOW_QUALITY_ACCEPTED_FRACTION; otherwise "completed_normal".
+NO_SIGNAL_ACCEPTED_FRACTION = 0.1
+LOW_QUALITY_ACCEPTED_FRACTION = 0.3
+
+
+#============================================
+
+def _classify_interval(
+	fwd_accepted_fraction: float | None,
+	bwd_accepted_fraction: float | None,
+) -> str:
+	"""Classify one interval from its FWD/BWD accepted fractions.
+
+	A missing (None) accepted_fraction means the pass had no walkable rows;
+	it is treated as 0.0 for classification so an empty pass cannot mask a
+	no_signal interval.
+
+	Args:
+		fwd_accepted_fraction: FWD accepted_fraction (0.0-1.0) or None.
+		bwd_accepted_fraction: BWD accepted_fraction (0.0-1.0) or None.
+
+	Returns:
+		'no_signal', 'completed_low_quality', or 'completed_normal'.
+	"""
+	fwd_af = fwd_accepted_fraction if fwd_accepted_fraction is not None else 0.0
+	bwd_af = bwd_accepted_fraction if bwd_accepted_fraction is not None else 0.0
+	if fwd_af < NO_SIGNAL_ACCEPTED_FRACTION and bwd_af < NO_SIGNAL_ACCEPTED_FRACTION:
+		return 'no_signal'
+	if fwd_af < LOW_QUALITY_ACCEPTED_FRACTION or bwd_af < LOW_QUALITY_ACCEPTED_FRACTION:
+		return 'completed_low_quality'
+	return 'completed_normal'
+
+
+#============================================
+
+def _compute_fwd_bwd_agreement_px(fwd_rows: dict, bwd_rows: dict) -> float | None:
+	"""Median per-frame FWD/BWD distance over frames accepted in BOTH passes.
+
+	Per contract C9, FWD and BWD remain independent: this reads each pass's
+	own accepted positions and only measures their disagreement; neither pass
+	is modified. The distance is a raw pixel quantity reported for diagnostics,
+	not a runner-relative tracking decision, so raw pixels are allowed (C2).
+
+	Args:
+		fwd_rows: {frame_index: row_dict} from fwd_verdicts.csv.
+		bwd_rows: {frame_index: row_dict} from bwd_verdicts.csv.
+
+	Returns:
+		Median Euclidean distance in pixels, or None if no common frame is
+		accepted in both passes.
+	"""
+	# Build frame -> (cx, cy) for accepted rows in each pass independently.
+	fwd_accepted = {}
+	for fi, r in fwd_rows.items():
+		if (r.get('status') or '').strip() != 'accepted':
+			continue
+		cx = walk_util._to_float_or_none(r.get('cand_cx'))
+		cy = walk_util._to_float_or_none(r.get('cand_cy'))
+		if cx is not None and cy is not None:
+			fwd_accepted[fi] = (cx, cy)
+
+	bwd_accepted = {}
+	for fi, r in bwd_rows.items():
+		if (r.get('status') or '').strip() != 'accepted':
+			continue
+		cx = walk_util._to_float_or_none(r.get('cand_cx'))
+		cy = walk_util._to_float_or_none(r.get('cand_cy'))
+		if cx is not None and cy is not None:
+			bwd_accepted[fi] = (cx, cy)
+
+	common_frames = sorted(set(fwd_accepted) & set(bwd_accepted))
+	if not common_frames:
+		return None
+
+	dists = []
+	for fi in common_frames:
+		fx, fy = fwd_accepted[fi]
+		bx, by = bwd_accepted[fi]
+		dists.append(math.hypot(fx - bx, fy - by))
+
+	dists.sort()
+	n = len(dists)
+	mid = n // 2
+	if n % 2 == 1:
+		median_px = dists[mid]
+	else:
+		median_px = (dists[mid - 1] + dists[mid]) / 2.0
+	return median_px
+
+
+#============================================
+
+def _median_of_values(vals: list) -> float | None:
+	"""Median of a list of floats, ignoring None entries.
+
+	Args:
+		vals: list of floats and/or None.
+
+	Returns:
+		Median float, or None if no usable value is present.
+	"""
+	clean = sorted(v for v in vals if v is not None)
+	if not clean:
+		return None
+	n = len(clean)
+	mid = n // 2
+	if n % 2 == 1:
+		return clean[mid]
+	return (clean[mid - 1] + clean[mid]) / 2.0
+
+
+#============================================
 
 def _powers_of_two_up_to(max_offset: int) -> list:
 	"""Return [0, 1, 2, 4, 8, ...] up to max_offset."""
@@ -140,28 +245,6 @@ def _read_debug_log_csv(path: pathlib.Path) -> dict:
 
 #============================================
 
-def _read_interval_summary(variant_dir: pathlib.Path) -> dict:
-	"""Return the single row from interval_summary.csv as a dict."""
-	path = variant_dir / 'interval_summary.csv'
-	if not path.exists():
-		return {}
-	with open(path) as f:
-		rows = list(csv.DictReader(f))
-	return rows[0] if rows else {}
-
-
-#============================================
-
-def _format_w_fraction(actual_px: Optional[float], torso_w_px: Optional[float]) -> str:
-	"""Format actual_jump / allowed_jump as W-fractions (two decimals)."""
-	if actual_px is None or torso_w_px is None or torso_w_px <= 0:
-		return "?"
-	fraction = actual_px / torso_w_px
-	return f"{fraction:.2f}"
-
-
-#============================================
-
 def _compute_dense_fill_offsets(
 	walker_stop_row: int,
 	next_power_of_two: int,
@@ -178,7 +261,7 @@ def _compute_dense_fill_offsets(
 
 #============================================
 
-def _determine_walker_stop_row(rows_by_frame: dict, anchor_frame: int, direction: str) -> Optional[int]:
+def _determine_walker_stop_row(rows_by_frame: dict, anchor_frame: int, direction: str) -> int | None:
 	"""Determine the last row the walker visited (max or min frame_index).
 
 	Returns the walker's final step offset, or None if no rows exist.
@@ -198,7 +281,7 @@ def _determine_walker_stop_row(rows_by_frame: dict, anchor_frame: int, direction
 #============================================
 
 def _build_sampled_offsets(
-	walker_stop_row: Optional[int],
+	walker_stop_row: int | None,
 	interval_length: int,
 	direction: str,
 ) -> list:
@@ -301,7 +384,7 @@ def _render_cell_caption(row: dict) -> str:
 
 #============================================
 
-def _read_png_size(png_path: pathlib.Path) -> Optional[tuple]:
+def _read_png_size(png_path: pathlib.Path) -> tuple | None:
 	"""Return (width, height) of PNG, or None if unreadable.
 
 	Reads the IHDR chunk directly to avoid pulling pillow into this path.
@@ -318,20 +401,6 @@ def _read_png_size(png_path: pathlib.Path) -> Optional[tuple]:
 	width = int.from_bytes(head[16:20], 'big')
 	height = int.from_bytes(head[20:24], 'big')
 	return (width, height)
-
-
-#============================================
-def _to_float_or_none(val) -> Optional[float]:
-	"""Convert CSV string to float, or None if empty/invalid."""
-	if val is None:
-		return None
-	s = str(val).strip()
-	if not s:
-		return None
-	try:
-		return float(s)
-	except (ValueError, TypeError):
-		return None
 
 
 #============================================
@@ -364,11 +433,11 @@ def _render_trajectory_png(
 			r = rows[fi]
 			if (r.get('status') or '').strip() != 'accepted':
 				continue
-			cx = _to_float_or_none(r.get('cand_cx'))
-			cy = _to_float_or_none(r.get('cand_cy'))
+			cx = walk_util._to_float_or_none(r.get('cand_cx'))
+			cy = walk_util._to_float_or_none(r.get('cand_cy'))
 			if cx is None or cy is None:
-				cx = _to_float_or_none(r.get('pred_cx'))
-				cy = _to_float_or_none(r.get('pred_cy'))
+				cx = walk_util._to_float_or_none(r.get('pred_cx'))
+				cy = walk_util._to_float_or_none(r.get('pred_cy'))
 			if cx is None or cy is None:
 				continue
 			points.append((cx, cy))
@@ -519,16 +588,16 @@ def _render_column_cells(
 
 #============================================
 
-@dataclass
+@dataclasses.dataclass
 class WalkQualityMetrics:
 	"""Per-walk quality metrics for one FWD or BWD walk."""
 	# Fraction of non-bootstrap walk steps that were accepted (0.0-1.0 or None).
-	accepted_fraction: Optional[float]
+	accepted_fraction: float | None
 	# Longest run of consecutive non-accepted frames (0 if walk always accepted).
 	longest_no_accept_streak: int
 	# Euclidean distance in px from last accepted position to neighbor seed.
 	# None if the walk never accepted or positions unavailable.
-	final_displacement_to_neighbor_px: Optional[float]
+	final_displacement_to_neighbor_px: float | None
 
 
 #============================================
@@ -537,8 +606,8 @@ def _compute_walk_quality(
 	rows_by_frame: dict,
 	anchor_frame: int,
 	direction: str,
-	neighbor_cx: Optional[float],
-	neighbor_cy: Optional[float],
+	neighbor_cx: float | None,
+	neighbor_cy: float | None,
 ) -> WalkQualityMetrics:
 	"""Compute per-walk quality metrics from a verdict CSV row dict.
 
@@ -602,15 +671,15 @@ def _compute_walk_quality(
 	# Longest consecutive non-accepted streak.
 	longest_streak = 0
 	current_streak = 0
-	last_accepted_cx: Optional[float] = None
-	last_accepted_cy: Optional[float] = None
+	last_accepted_cx: float | None = None
+	last_accepted_cy: float | None = None
 	for _, row in walk_rows:
 		status = (row.get('status') or '').strip()
 		if status == 'accepted':
 			current_streak = 0
 			# Track last accepted candidate position.
-			cx = _to_float_or_none(row.get('cand_cx'))
-			cy = _to_float_or_none(row.get('cand_cy'))
+			cx = walk_util._to_float_or_none(row.get('cand_cx'))
+			cy = walk_util._to_float_or_none(row.get('cand_cy'))
 			if cx is not None and cy is not None:
 				last_accepted_cx = cx
 				last_accepted_cy = cy
@@ -620,7 +689,7 @@ def _compute_walk_quality(
 				longest_streak = current_streak
 
 	# Final displacement: distance from last accepted position to neighbor seed.
-	final_displacement: Optional[float] = None
+	final_displacement: float | None = None
 	if (last_accepted_cx is not None and last_accepted_cy is not None
 			and neighbor_cx is not None and neighbor_cy is not None):
 		dx = last_accepted_cx - neighbor_cx
@@ -636,7 +705,7 @@ def _compute_walk_quality(
 
 #============================================
 
-@dataclass
+@dataclasses.dataclass
 class IntervalSummaryStats:
 	"""Summary statistics for one interval."""
 	fwd_length: int
@@ -649,6 +718,10 @@ class IntervalSummaryStats:
 	mode_disagreement_count: int
 	fwd_quality: WalkQualityMetrics
 	bwd_quality: WalkQualityMetrics
+	# Corpus-quality fields folded in from the former score_corpus_quality tool.
+	classification: str
+	# Median FWD/BWD distance (px) over frames accepted in both passes; None if none.
+	fwd_bwd_agreement_median_px: float | None
 
 
 def _compute_interval_stats(
@@ -656,10 +729,10 @@ def _compute_interval_stats(
 	bwd_rows: dict,
 	f_l: int,
 	f_r: int,
-	right_seed_cx: Optional[float] = None,
-	right_seed_cy: Optional[float] = None,
-	left_seed_cx: Optional[float] = None,
-	left_seed_cy: Optional[float] = None,
+	right_seed_cx: float | None = None,
+	right_seed_cy: float | None = None,
+	left_seed_cx: float | None = None,
+	left_seed_cy: float | None = None,
 ) -> IntervalSummaryStats:
 	"""Compute per-interval summary statistics."""
 	fwd_frames = sorted(int(r['frame_index']) for r in fwd_rows.values())
@@ -740,6 +813,14 @@ def _compute_interval_stats(
 		neighbor_cy=left_seed_cy,
 	)
 
+	# Corpus-quality readout folded in from the former score_corpus_quality tool:
+	# classification from the two accepted fractions, plus FWD/BWD agreement.
+	classification = _classify_interval(
+		fwd_quality.accepted_fraction,
+		bwd_quality.accepted_fraction,
+	)
+	fwd_bwd_agreement_median_px = _compute_fwd_bwd_agreement_px(fwd_rows, bwd_rows)
+
 	return IntervalSummaryStats(
 		fwd_length=fwd_length,
 		bwd_length=bwd_length,
@@ -751,7 +832,125 @@ def _compute_interval_stats(
 		mode_disagreement_count=mode_disagreement_count,
 		fwd_quality=fwd_quality,
 		bwd_quality=bwd_quality,
+		classification=classification,
+		fwd_bwd_agreement_median_px=fwd_bwd_agreement_median_px,
 	)
+
+
+#============================================
+
+def _build_quality_summary_html(intervals: list) -> list:
+	"""Build the corpus-level Quality summary section (folded-in scorer output).
+
+	Aggregates the per-interval classification and accepted_fraction metrics
+	across the whole run, plus a per-video rollup table. This replaces the
+	former standalone QUALITY_SCORES.md aggregate.
+
+	Args:
+		intervals: list of interval dicts built in build_walk_html; each has
+			'video' and a 'stats' IntervalSummaryStats.
+
+	Returns:
+		List of HTML line strings.
+	"""
+	out = []
+	out.append('<div class="quality-summary">')
+	out.append('  <strong>Quality summary (corpus-level)</strong>')
+
+	total = len(intervals)
+	if total == 0:
+		out.append('  <br>No intervals.')
+		out.append('</div>')
+		return out
+
+	# Classification counts across all intervals.
+	no_signal = sum(1 for iv in intervals if iv['stats'].classification == 'no_signal')
+	low_quality = sum(
+		1 for iv in intervals if iv['stats'].classification == 'completed_low_quality'
+	)
+	normal = sum(
+		1 for iv in intervals if iv['stats'].classification == 'completed_normal'
+	)
+
+	# Aggregate accepted_fraction and agreement over non-no_signal intervals only
+	# (no_signal intervals have genuinely empty residual, so their fractions
+	# would drag the medians toward zero and obscure real tracking quality).
+	non_ns = [iv for iv in intervals if iv['stats'].classification != 'no_signal']
+	fwd_afs = [iv['stats'].fwd_quality.accepted_fraction for iv in non_ns]
+	bwd_afs = [iv['stats'].bwd_quality.accepted_fraction for iv in non_ns]
+	agreements = [iv['stats'].fwd_bwd_agreement_median_px for iv in non_ns]
+	median_fwd_af = _median_of_values(fwd_afs)
+	median_bwd_af = _median_of_values(bwd_afs)
+	median_combined_af = _median_of_values(fwd_afs + bwd_afs)
+	median_agreement = _median_of_values(agreements)
+
+	def _frac(f: float | None) -> str:
+		return f"{f:.2%}" if f is not None else "?"
+
+	def _px(d: float | None) -> str:
+		return f"{d:.1f}px" if d is not None else "?"
+
+	out.append('  <ul>')
+	out.append(f'    <li>Total intervals: {total}</li>')
+	out.append(f'    <li>no_signal: {no_signal}</li>')
+	out.append(f'    <li>completed_low_quality: {low_quality}</li>')
+	out.append(f'    <li>completed_normal: {normal}</li>')
+	out.append(
+		f'    <li>Median accepted_fraction, non-no_signal: '
+		f'FWD {_frac(median_fwd_af)} &middot; BWD {_frac(median_bwd_af)} &middot; '
+		f'combined {_frac(median_combined_af)}</li>'
+	)
+	out.append(
+		f'    <li>Median FWD/BWD agreement, non-no_signal: '
+		f'{_px(median_agreement)}</li>'
+	)
+	out.append('  </ul>')
+
+	# Per-video rollup: interval count, classification breakdown, median fractions.
+	videos_seen = []
+	by_video = {}
+	for iv in intervals:
+		v = iv['video']
+		if v not in by_video:
+			by_video[v] = []
+			videos_seen.append(v)
+		by_video[v].append(iv)
+
+	out.append('  <table>')
+	out.append(
+		'    <tr><th>video</th><th>intervals</th><th>no_signal</th>'
+		'<th>low_quality</th><th>normal</th>'
+		'<th>median FWD acc</th><th>median BWD acc</th>'
+		'<th>median agree</th></tr>'
+	)
+	for v in videos_seen:
+		ivs = by_video[v]
+		v_ns = sum(1 for iv in ivs if iv['stats'].classification == 'no_signal')
+		v_lq = sum(
+			1 for iv in ivs if iv['stats'].classification == 'completed_low_quality'
+		)
+		v_nm = sum(
+			1 for iv in ivs if iv['stats'].classification == 'completed_normal'
+		)
+		v_non_ns = [iv for iv in ivs if iv['stats'].classification != 'no_signal']
+		v_fwd = _median_of_values(
+			[iv['stats'].fwd_quality.accepted_fraction for iv in v_non_ns]
+		)
+		v_bwd = _median_of_values(
+			[iv['stats'].bwd_quality.accepted_fraction for iv in v_non_ns]
+		)
+		v_agree = _median_of_values(
+			[iv['stats'].fwd_bwd_agreement_median_px for iv in v_non_ns]
+		)
+		out.append(
+			f'    <tr><td class="video">{v}</td><td>{len(ivs)}</td>'
+			f'<td>{v_ns}</td><td>{v_lq}</td><td>{v_nm}</td>'
+			f'<td>{_frac(v_fwd)}</td><td>{_frac(v_bwd)}</td>'
+			f'<td>{_px(v_agree)}</td></tr>'
+		)
+	out.append('  </table>')
+	out.append('</div>')
+	return out
 
 
 #============================================
@@ -821,20 +1020,20 @@ def build_walk_html(run_root: pathlib.Path) -> pathlib.Path:
 			# BWD bootstrap row at f_r carries right seed.
 			left_seed_xy = (0.0, 0.0)
 			right_seed_xy = (0.0, 0.0)
-			left_seed_cx: Optional[float] = None
-			left_seed_cy: Optional[float] = None
-			right_seed_cx: Optional[float] = None
-			right_seed_cy: Optional[float] = None
+			left_seed_cx: float | None = None
+			left_seed_cy: float | None = None
+			right_seed_cx: float | None = None
+			right_seed_cy: float | None = None
 			if f_l in fwd_rows:
-				lx = _to_float_or_none(fwd_rows[f_l].get('pred_cx'))
-				ly = _to_float_or_none(fwd_rows[f_l].get('pred_cy'))
+				lx = walk_util._to_float_or_none(fwd_rows[f_l].get('pred_cx'))
+				ly = walk_util._to_float_or_none(fwd_rows[f_l].get('pred_cy'))
 				if lx is not None and ly is not None:
 					left_seed_xy = (lx, ly)
 					left_seed_cx = lx
 					left_seed_cy = ly
 			if f_r in bwd_rows:
-				rx = _to_float_or_none(bwd_rows[f_r].get('pred_cx'))
-				ry = _to_float_or_none(bwd_rows[f_r].get('pred_cy'))
+				rx = walk_util._to_float_or_none(bwd_rows[f_r].get('pred_cx'))
+				ry = walk_util._to_float_or_none(bwd_rows[f_r].get('pred_cy'))
 				if rx is not None and ry is not None:
 					right_seed_xy = (rx, ry)
 					right_seed_cx = rx
@@ -882,6 +1081,11 @@ def build_walk_html(run_root: pathlib.Path) -> pathlib.Path:
 	out.append('h1 { color: #fff; border-bottom: 2px solid #555; padding-bottom: 8px; }')
 	out.append('h2 { color: #ffd; margin-top: 24px; font-size: 1.05em; }')
 	out.append('.summary { background: #2a2a2a; padding: 12px; border-left: 4px solid #888; margin: 12px 0; }')
+	out.append('.quality-summary { background: #2a2a2a; padding: 12px; border-left: 4px solid #6c6; margin: 12px 0; }')
+	out.append('.quality-summary table { border-collapse: collapse; margin: 8px 0; }')
+	out.append('.quality-summary th, .quality-summary td { border: 1px solid #555; padding: 3px 8px; text-align: right; }')
+	out.append('.quality-summary th { color: #fff; }')
+	out.append('.quality-summary td.video { text-align: left; color: #cce; }')
 	out.append('.legend { background: #2a2a2a; padding: 12px; border-left: 4px solid #ff0; margin: 12px 0; }')
 	out.append('.legend ul { margin: 4px 0; padding-left: 20px; }')
 	out.append('.legend li { margin: 3px 0; }')
@@ -976,6 +1180,10 @@ def build_walk_html(run_root: pathlib.Path) -> pathlib.Path:
 	out.append('  <br>Click any thumbnail to open the full PNG in a new tab.')
 	out.append('</div>')
 
+	# Corpus-level quality summary (folded in from the former score_corpus_quality
+	# tool: classification counts, median accepted_fraction, FWD/BWD agreement).
+	out.extend(_build_quality_summary_html(intervals))
+
 	# Per-interval sections
 	for iv in intervals:
 		video = iv['video']
@@ -987,10 +1195,13 @@ def build_walk_html(run_root: pathlib.Path) -> pathlib.Path:
 		out.append('<div class="interval">')
 		out.append(f'  <h2>{video} &middot; seed {f_l} - {f_r} (len {length} frames)</h2>')
 
-		def _fmt_frac(f: Optional[float]) -> str:
+		def _fmt_frac(f: float | None) -> str:
 			return f"{f:.2%}" if f is not None else "?"
 
-		def _fmt_disp(d: Optional[float]) -> str:
+		def _fmt_disp(d: float | None) -> str:
+			return f"{d:.1f}px" if d is not None else "?"
+
+		def _fmt_px(d: float | None) -> str:
 			return f"{d:.1f}px" if d is not None else "?"
 
 		fq = stats.fwd_quality
@@ -1016,6 +1227,16 @@ def build_walk_html(run_root: pathlib.Path) -> pathlib.Path:
 			f"BWD final_disp_to_neighbor={_fmt_disp(bq.final_displacement_to_neighbor_px)}",
 		]
 		out.append(f'  <div class="interval-summary" style="color: #cce;">{" &middot; ".join(quality_parts)}</div>')
+		# Corpus-quality row: classification + FWD/BWD agreement (folded in from
+		# the former score_corpus_quality tool).
+		corpus_quality_parts = [
+			f"classification={stats.classification}",
+			f"FWD/BWD agreement (median)={_fmt_px(stats.fwd_bwd_agreement_median_px)}",
+		]
+		out.append(
+			f'  <div class="interval-summary" style="color: #ada;">'
+			f'{" &middot; ".join(corpus_quality_parts)}</div>'
+		)
 
 		# Trajectory PNG (one per interval, FWD + BWD accepted positions).
 		if iv.get('trajectory_png_rel'):

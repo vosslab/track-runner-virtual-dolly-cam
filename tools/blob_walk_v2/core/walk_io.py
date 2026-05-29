@@ -6,22 +6,11 @@ which seed-to-seed intervals are walkable. Pure orchestration; no compute.
 
 # Standard Library
 import dataclasses
-import os
 import pathlib
-import sys
 
-# Determine repo root from file location and add directories to path
-# walk_io.py is at tools/blob_walk_v2/, so go up 3 levels to repo root
-_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-_TRACK_RUNNER_DIR = os.path.join(_REPO_ROOT, 'track_runner')
-_TESTS_DIR = os.path.join(_REPO_ROOT, 'tests')
-if _TRACK_RUNNER_DIR not in sys.path:
-	sys.path.insert(0, _TRACK_RUNNER_DIR)
-if _TESTS_DIR not in sys.path:
-	sys.path.insert(0, _TESTS_DIR)
-# Ensure repo root is on sys.path for common_tools
-if _REPO_ROOT not in sys.path:
-	sys.path.insert(0, _REPO_ROOT)
+# shared sys.path bootstrap (track_runner, tests, repo root, blob_walk_v2 dirs)
+import walk_paths
+_REPO_ROOT = walk_paths.setup()
 
 # local repo modules
 import state_io

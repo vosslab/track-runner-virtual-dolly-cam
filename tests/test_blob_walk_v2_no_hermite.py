@@ -17,7 +17,7 @@ def test_blob_walk_v2_no_hermite_import():
 	forbidden_modules = {"velocity_model", "interval_solver", "scoring"}
 	violations = []
 
-	for py_file in sorted(blob_walk_v2_dir.glob("*.py")):
+	for py_file in sorted(blob_walk_v2_dir.rglob("*.py")):
 		try:
 			source = py_file.read_text()
 			tree = ast.parse(source)

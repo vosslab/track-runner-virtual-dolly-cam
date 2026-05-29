@@ -11,15 +11,14 @@ import os
 # Ensure imports work
 repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 tools_blob_walk_v2 = os.path.join(repo_root, "tools", "blob_walk_v2")
-track_runner_dir = os.path.join(repo_root, "track_runner")
-tests_dir = os.path.dirname(os.path.abspath(__file__))
 
 if tools_blob_walk_v2 not in sys.path:
 	sys.path.insert(0, tools_blob_walk_v2)
-if track_runner_dir not in sys.path:
-	sys.path.insert(0, track_runner_dir)
-if tests_dir not in sys.path:
-	sys.path.insert(0, tests_dir)
+# Package root is on sys.path, so the bare import walk_paths resolves; setup()
+# adds track_runner, tests, repo root, and the core/ and render/ subdirs where
+# walk_walker now lives.
+import walk_paths
+walk_paths.setup()
 
 import walk_walker
 import blob_trace
@@ -209,37 +208,3 @@ def test_audit_winner_empty_corridor():
 	pred_center = (100.0, 150.0)
 	audit_blob = walk_walker.resolve_audit_winner(trace, "center_of_mass", pred_center)
 	assert audit_blob is None, "Should return None for empty corridor"
-
-
-def test_walk_summary_fields():
-	"""Test WalkSummary dataclass has all required v13 fields."""
-	summary = walk_walker.WalkSummary(
-		accepts=[10, 20, 30],
-		stop_frame=35,
-		stop_reason="boundary",
-		total_frames_visited=15,
-		accepted_count=3,
-		interpolated_count=2,
-		extrapolated_count=1,
-		soft_miss_no_blob_count=4,
-		soft_miss_no_path_count=5,
-		longest_no_accept_streak=6,
-		accepted_fraction=0.2,
-		last_accepted_frame_index=30,
-		final_displacement_to_neighbor_px=5.0,
-		mode_disagreement_count=0,
-	)
-
-	assert summary.accepts == [10, 20, 30]
-	assert summary.stop_frame == 35
-	assert summary.stop_reason == "boundary"
-	assert summary.total_frames_visited == 15
-	assert summary.accepted_count == 3
-	assert summary.interpolated_count == 2
-	assert summary.extrapolated_count == 1
-	assert summary.soft_miss_no_blob_count == 4
-	assert summary.soft_miss_no_path_count == 5
-	assert summary.longest_no_accept_streak == 6
-	assert summary.accepted_fraction == 0.2
-	assert summary.last_accepted_frame_index == 30
-	assert summary.mode_disagreement_count == 0

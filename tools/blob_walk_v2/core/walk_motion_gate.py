@@ -6,9 +6,8 @@ plausible given the recent velocity estimate. This module is pure math: no
 I/O, no observer calls, no image reading.
 
 All numeric constants for runner motion physics live here. Every other
-module (replay_models.py, replay_step1.py, sweep_radius.py, walk_walker.py,
-walk_html.py) imports the constants from this module. There must be no
-duplicate definitions outside this file.
+module (walk_viterbi.py, walk_html.py) imports the constants from this
+module. There must be no duplicate definitions outside this file.
 
 Physical envelope (W = torso width):
 ================================================================
@@ -56,7 +55,7 @@ Constants and formulas use torso WIDTH as the scale unit, not height.
 Reference: Track Runner Contract clause C2 (torso box is the unit of scale).
 """
 
-from dataclasses import dataclass
+import dataclasses
 
 # ============================================================
 # Physical runner-speed envelope (W per second of source time).
@@ -172,7 +171,7 @@ def bootstrap_search_radius_w(source_fps: float) -> float:
 # Tracking-mode three-cap-min gate (post-bootstrap).
 # ============================================================
 
-@dataclass
+@dataclasses.dataclass
 class MotionGateResult:
 	"""
 	Result of a motion gate evaluation.
