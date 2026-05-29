@@ -3,15 +3,15 @@
 Consumer-facing summary of the observation API that the FWD/BWD
 propagator calls once per non-endpoint frame. This is a bridge doc,
 not a source of truth: measurement details live in
-[TR_MOTION_CUE_HEAT_MAP.md](TR_MOTION_CUE_HEAT_MAP.md) and pass-local
+[TR_MOTION_CUE_HEAT_MAP.md](../TR_MOTION_CUE_HEAT_MAP.md) and pass-local
 consumption invariants live in
-[FWD_BWD_MODEL_METHODOLOGY.md](FWD_BWD_MODEL_METHODOLOGY.md).
+`FWD_BWD_MODEL_METHODOLOGY.md`.
 
 Owns: the one-page summary of what a propagator call receives back.
 Does not own: heat-map construction, blob extraction, ROI geometry,
 cue-confidence scoring, cache schema, dual-pass invariants.
 
-Subordinate to [TRACK_RUNNER_CONTRACT.md](TRACK_RUNNER_CONTRACT.md);
+Subordinate to [TRACK_RUNNER_CONTRACT.md](../TRACK_RUNNER_CONTRACT.md);
 on conflict, the contract wins.
 
 ## API parameters
@@ -49,8 +49,8 @@ The `stride` model replaces the older `window_seconds`/`resolve_half_window`
 model (removed at SCHEMA_VERSION 11). Time span between center frame and
 edge sample is fixed at ~133 ms regardless of camera fps; the stride
 controls how many source frames separate consecutive samples. See
-[TR_MOTION_CUE_HEAT_MAP.md](TR_MOTION_CUE_HEAT_MAP.md) for the rationale
-and [TR_SCHEMA_VERSION_HISTORY.md](TR_SCHEMA_VERSION_HISTORY.md) v11.
+[TR_MOTION_CUE_HEAT_MAP.md](../TR_MOTION_CUE_HEAT_MAP.md) for the rationale
+and [TR_SCHEMA_VERSION_HISTORY.md](../TR_SCHEMA_VERSION_HISTORY.md) v11.
 
 ## Pipeline in five steps
 
@@ -86,14 +86,14 @@ or reject decision; the caller's three local gates decide that.
 Anything downstream of the gate (accepted blobs, `snap_pred` values,
 gate outcomes, chained counters) is pass-local state that is
 forbidden from being written back into the shared residual cache.
-See [FWD_BWD_MODEL_METHODOLOGY.md](FWD_BWD_MODEL_METHODOLOGY.md) for
+See `FWD_BWD_MODEL_METHODOLOGY.md` for
 the full invariants and
-[MOTION_CUE_HEAT_MAP.md](MOTION_CUE_HEAT_MAP.md) for the concrete
+`MOTION_CUE_HEAT_MAP.md` for the concrete
 cache schema.
 
 ## Out of scope
 
 YOLO / person detection plays no role in this pipeline; see
-[TRACK_RUNNER_DESIGN.md](TRACK_RUNNER_DESIGN.md). Jersey color, HSV,
+[TRACK_RUNNER_DESIGN.md](../TRACK_RUNNER_DESIGN.md). Jersey color, HSV,
 and runner-appearance template matching are banned as identity
 evidence per contract clause C6.

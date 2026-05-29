@@ -2,7 +2,7 @@
 
 Date: 2026-05-05
 Plan reference:
-[/Users/vosslab/.claude/plans/declarative-shimmying-brooks.md](/Users/vosslab/.claude/plans/declarative-shimmying-brooks.md)
+`declarative-shimmying-brooks.md`
 Milestone 3a.
 
 This document synthesizes the assessment-tool output across the
@@ -250,10 +250,10 @@ fit-to-source clamp] band, which the spectrum data shows it is not.
 
 | Artifact                                                                                                          | Description                       |
 | ---                                                                                                               | ---                               |
-| [hotspots/HOTSPOTS_INDEX.md](hotspots/HOTSPOTS_INDEX.md)                                                          | Cross-corpus hotspot ranking      |
-| [hotspots/{basename}/{basename}_tracked.hotspots.md](hotspots/)                                                   | Per-video top-5 hotspot windows   |
-| [hotspots/{basename}/{basename}_tracked.hotspot_<rank>.mkv](hotspots/)                                            | Hotspot clips (15s each, x5)      |
-| [correlate/{basename}_tracked.bounce_edge.png](correlate/)                                                        | Scatter + lag bar chart per video |
-| [correlate/{basename}_tracked.bounce_edge.md](correlate/)                                                         | Frame-alignment + lag table       |
-| [spectrum/{basename}_tracked.spectrum.png](spectrum/)                                                             | FFT power spectrum + EMA cutoff   |
-| [spectrum/{basename}_tracked.spectrum.stdout.txt](spectrum/)                                                      | Top-3 dominant frequencies (text) |
+| `HOTSPOTS_INDEX.md`                                                          | Cross-corpus hotspot ranking      |
+| `hotspots`                                                   | Per-video top-5 hotspot windows   |
+| `hotspots`                                            | Hotspot clips (15s each, x5)      |
+| `correlate`                                                        | Scatter + lag bar chart per video |
+| `correlate`                                                         | Frame-alignment + lag table       |
+| `spectrum`                                                             | FFT power spectrum + EMA cutoff   |
+| `spectrum`                                                      | Top-3 dominant frequencies (text) |

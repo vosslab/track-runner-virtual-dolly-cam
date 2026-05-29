@@ -1,5 +1,6 @@
 numpy  # array operations and numerical computing
 opencv-python  # computer vision, video I/O, and DNN inference
+pillow  # image I/O and basic image processing (PIL fork)
 PySide6  # Qt6 GUI framework for annotation interface
 pyyaml  # YAML configuration file parsing
 rich  # progress bars and formatted console output

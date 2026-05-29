@@ -62,7 +62,7 @@ motion, or both. Public API growth happens only after one experiment wins.
 ## Scope
 
 - Fix the hidden size-smoothing default in
-  [emwy_tools/track_runner/tr_crop.py](emwy_tools/track_runner/tr_crop.py).
+  [tr_crop.py](../../track_runner/tr_crop.py).
 - Add internal experiment-only center and size override passes.
 - Run one bounded experiment cycle on `IMG_3702` and `IMG_3830`.
 - Add unit tests for invariants and update docs/changelog for the bug fix

@@ -392,7 +392,7 @@ Not executed now. Queued for after phase 3 data is in.
 ### The question
 
 Current
-[docs/FWD_BWD_MODEL_METHODOLOGY.md](../nsh/track-runner-virtual-dolly-cam/docs/FWD_BWD_MODEL_METHODOLOGY.md)
+`FWD_BWD_MODEL_METHODOLOGY.md`
 defines an asymmetric merge: each pass builds its own Hermite
 raw_pred from seed geometry, then `_apply_blob_snap` queries a
 residual-motion blob and applies three gates (proximity, direction,
@@ -419,7 +419,7 @@ is:
 
 ### Constraints any redesign has to respect
 
-From [docs/TRACK_RUNNER_CONTRACT.md](../nsh/track-runner-virtual-dolly-cam/docs/TRACK_RUNNER_CONTRACT.md):
+From [TRACK_RUNNER_CONTRACT.md](../TRACK_RUNNER_CONTRACT.md):
 
 - **C3** -- intervals are independent. No redesign may introduce
   cross-interval state.

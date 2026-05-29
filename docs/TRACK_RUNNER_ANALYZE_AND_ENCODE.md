@@ -35,7 +35,7 @@ The analyzer computes frame-level motion metrics to identify instability causes.
 | mean_confidence | Mean tracker confidence across all frames | Low = poor tracking overall | More seeds, better detection |
 | low_conf_fraction | Fraction of frames with confidence < 0.5 | Coverage gaps causing drift | Add seeds in weak regions |
 
-**Interpretation (informed by [docs/TRACK_RUNNER_CROP_PATH_FINDINGS.md](TRACK_RUNNER_CROP_PATH_FINDINGS.md)):**
+**Interpretation (informed by [TRACK_RUNNER_CROP_PATH_FINDINGS.md](archive/TRACK_RUNNER_CROP_PATH_FINDINGS.md)):**
 
 - **height_jerk_p95 is the strongest single predictor of perceived output quality.** A value > 15 px/frame warrants investigation for visible zoom pumping. The V4 findings show a clear gap between watchable output (1-7) and unwatchable (9-192).
 - **center_jerk_p95 alone does not predict the "seasick" quality.** IMG_3702 (unwatchable) has lower center jerk (2.7) than IMG_3830 (good, 4.7). Center jerk is useful in combination with other metrics but not as a standalone discriminator.
@@ -214,8 +214,8 @@ Warnings are surfaced at the top of the HTML report. Two degradation tiers:
   camera-motion panel still renders (it does not need the scene transform).
   Three panels render in this case.
 
-See [docs/modes/ANALYZE.md](modes/ANALYZE.md) for the CLI reference and quick
-usage guide. See [docs/ENCODE_DESIGN.md](ENCODE_DESIGN.md) for the full encode
+See [ANALYZE.md](modes/ANALYZE.md) for the CLI reference and quick
+usage guide. See [ENCODE_DESIGN.md](ENCODE_DESIGN.md) for the full encode
 pipeline that produces the crop trajectory these panels diagnose.
 
 ## Encode pipeline overview
@@ -272,7 +272,7 @@ filters:
 
 **Use case:** Noisy sensor or low-light footage.
 
-See [docs/TRACK_RUNNER_YAML_CONFIG.md](docs/TRACK_RUNNER_YAML_CONFIG.md) for full filter configuration reference.
+See [TRACK_RUNNER_YAML_CONFIG.md](TRACK_RUNNER_YAML_CONFIG.md) for full filter configuration reference.
 
 ## Recommended presets
 
@@ -303,5 +303,5 @@ See [docs/TRACK_RUNNER_YAML_CONFIG.md](docs/TRACK_RUNNER_YAML_CONFIG.md) for ful
 - **Then check convergence/width ratio.** Divide fwd_bwd_convergence_median by crop width. > 3% suggests solver is producing noisy trajectories.
 - **Low confidence alone is not a death sentence.** IMG_3830 (good) has 23.5% low-conf frames. Low confidence correlates with drift, not with jitter.
 - **Chatter is universal.** All 7 test videos show 14-35% chatter. Do not treat it as the primary failure indicator.
-- See [docs/TRACK_RUNNER_CROP_PATH_FINDINGS.md](TRACK_RUNNER_CROP_PATH_FINDINGS.md) for the empirical basis of these guidelines.
+- See [TRACK_RUNNER_CROP_PATH_FINDINGS.md](archive/TRACK_RUNNER_CROP_PATH_FINDINGS.md) for the empirical basis of these guidelines.
 

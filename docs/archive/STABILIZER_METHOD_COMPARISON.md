@@ -1,6 +1,6 @@
 # Stabilizer method/window comparison
 
-Per Patch 5 / M4 of [`~/.claude/plans/declarative-shimmying-brooks.md`](../../../../../../.claude/plans/declarative-shimmying-brooks.md),
+Per Patch 5 / M4 of `declarative-shimmying-brooks.md`,
 gate revised per Patch 5b feedback.
 
 39 runs of `tools/analyze_torso_box_noise.py` against the 3
@@ -164,7 +164,7 @@ pipeline already smooths heavily; adding an upstream median filter
 on torso w/h does not change what the encoder sees.
 
 This matches the parent finding's structural prediction
-([docs/archive/TORSO_NOISE_FINDING.md](../../../../docs/archive/TORSO_NOISE_FINDING.md)):
+([TORSO_NOISE_FINDING.md](TORSO_NOISE_FINDING.md)):
 H1 (torso noise correlates with crop noise) was supported in the
 correlation sense, but the magnitude of crop-h velocity is not
 dominated by torso-h velocity. The dominant residual is downstream
@@ -190,7 +190,7 @@ The next mechanism to investigate (separate plan) is the crop
 pipeline itself: Step 3.6 fit-to-source clamp interactions, the
 W+H averaging, or the EMA staircase. These were explicitly deferred
 to follow-up by the parent investigation
-([docs/archive/TORSO_NOISE_FINDING.md](../../../../docs/archive/TORSO_NOISE_FINDING.md)
+([TORSO_NOISE_FINDING.md](TORSO_NOISE_FINDING.md)
 "H2" and "H3"). The empirical result here is a strong signal that
 those follow-ups are required: torso stabilization does not visibly
 help, so the residual must come from downstream of where it

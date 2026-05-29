@@ -27,8 +27,8 @@ interval-length-aware confidence scoring, post-blend refinement with soft
 spatial priors, multi-seed anchored interpolation, a PySide6-based annotation
 UI, and a configurable encode filter pipeline.
 
-See [docs/TRACK_RUNNER_DESIGN.md](docs/TRACK_RUNNER_DESIGN.md) for design
-philosophy. See [docs/TRACK_RUNNER_HISTORY.md](docs/TRACK_RUNNER_HISTORY.md)
+See [TRACK_RUNNER_DESIGN.md](TRACK_RUNNER_DESIGN.md) for design
+philosophy. See [TRACK_RUNNER_HISTORY.md](TRACK_RUNNER_HISTORY.md)
 for evolution from v1 and v2.
 
 ## Module map
@@ -230,7 +230,7 @@ seed), then blends the two interval paths into a scored result.
 `propagator.py` advances a bounding box one frame at a time. Machine
 evidence uses interval geometry propagation plus per-frame residual-
 motion observations (see
-[MOTION_CUE_HEAT_MAP.md](MOTION_CUE_HEAT_MAP.md) for the heat-map and
+`MOTION_CUE_HEAT_MAP.md` for the heat-map and
 blob-pipeline mechanism). Appearance-based blending is banned per
 contract C6. If local patch matching is present, it is a geometry-only
 propagation aid and not identity evidence.
@@ -273,15 +273,15 @@ directly.
 > **Status note:** This section describes a "soft-prior" refinement pass
 > that re-propagated each interval using the blended interval path as a
 > spatial prior. The current `refine` CLI mode in
-> [track_runner/cli.py](../track_runner/cli.py) `_mode_refine` does
+> [cli.py](../track_runner/cli.py) `_mode_refine` does
 > something different -- it re-solves only intervals whose fingerprint
 > changed (cache-invalidation refinement, not post-blend soft-prior
 > refinement). Treat the rest of this section as the historical design
 > sketch; the methodology doc and the code in
-> [track_runner/interval_solver.py](../track_runner/interval_solver.py)
+> [interval_solver.py](../track_runner/interval_solver.py)
 > are the truth for what currently runs. (For the canonical definitions
 > of forward / backward / blended interval path, see
-> [FWD_BWD_MODEL_METHODOLOGY.md](FWD_BWD_MODEL_METHODOLOGY.md).)
+> `FWD_BWD_MODEL_METHODOLOGY.md`.)
 
 Pipeline order (as designed):
 
@@ -629,7 +629,7 @@ Presets: `none`, `bilateral`, `clahe`, `bilateral+clahe`, `sharpen`,
 ### Debug overlay
 
 When `-d` is set, the encoder draws tracking data on output frames. Colors and
-styles are loaded from [emwy_tools/track_runner/overlay_styles.yaml](emwy_tools/track_runner/overlay_styles.yaml)
+styles are loaded from [overlay_styles.yaml](../track_runner/overlay_styles.yaml)
 via `overlay_config`. Semantic roles:
 
 - **Accepted box**: solid, colored by tracking source (seed status on seed frames)

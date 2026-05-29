@@ -10,7 +10,7 @@ solved artifact lives.
 **Durable Artifacts:** On-disk files in this directory are persistent
 solved data with explicit reuse rules. They are not cache. The word
 "cache" in this codebase is reserved for in-memory ephemeral state.
-See contract C12.2 in [docs/TRACK_RUNNER_CONTRACT.md](TRACK_RUNNER_CONTRACT.md).
+See contract C12.2 in [TRACK_RUNNER_CONTRACT.md](TRACK_RUNNER_CONTRACT.md).
 
 ## Purpose of tr_config
 
@@ -23,12 +23,12 @@ belongs to which clip. The naming pattern is:
 ```
 
 A single root-level default lives at
-[tr_config/track_runner.config.yaml](../tr_config/track_runner.config.yaml)
+[track_runner.config.yaml](../track_runner/track_runner.config.yaml)
 and is merged under every per-video config at load time. Note: the
 loader used at runtime reads the built-in default from
-[track_runner/track_runner.config.yaml](../track_runner/track_runner.config.yaml)
+[track_runner.config.yaml](../track_runner/track_runner.config.yaml)
 via `read_default_config()` in
-[track_runner/tr_config.py](../track_runner/tr_config.py); the
+[tr_config.py](../track_runner/tr_config.py); the
 `tr_config/` root-level copy is a user-editable starting point, not
 the built-in default.
 
@@ -324,10 +324,10 @@ Once the migration has run successfully, the script may be deleted
 
 ## Related docs
 
-- [docs/TRACK_RUNNER_CONTRACT.md](TRACK_RUNNER_CONTRACT.md) -- hard
+- [TRACK_RUNNER_CONTRACT.md](TRACK_RUNNER_CONTRACT.md) -- hard
   invariants; C6 (appearance banned) and C7 (human-only seeds) drive
   most of the schema cleanup.
-- [docs/TRACK_RUNNER_DESIGN.md](TRACK_RUNNER_DESIGN.md) -- overall
+- [TRACK_RUNNER_DESIGN.md](TRACK_RUNNER_DESIGN.md) -- overall
   philosophy, including how seeds, intervals, and motion fit together.
-- [docs/CHANGELOG.md](CHANGELOG.md) -- the 2026-04-21 entries record
+- [CHANGELOG.md](CHANGELOG.md) -- the 2026-04-21 entries record
   the tr_config storage cleanup patches and size deltas.

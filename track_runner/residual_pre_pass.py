@@ -208,8 +208,6 @@ def precompute_interval_residuals(
 		bgr = reader.read_frame(fi)
 		if read_log is not None:
 			read_log.append(fi)
-		if bgr is None:
-			continue
 		bgr_buf[fi] = bgr
 		if start_frame <= fi <= end_frame:
 			gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
@@ -410,8 +408,6 @@ def _compute_center(
 			fps=fps,
 			stride=stride,
 		)
-		if residual is None:
-			continue
 		# quantize to uint8 (atol=1 in the parity test). The store consumer
 		# (observe_blob_at) converts back to float32 before passing to
 		# DoG/blob extraction.

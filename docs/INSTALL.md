@@ -46,7 +46,7 @@ pip3 install -r pip_requirements-dev.txt
 
 ## YOLO weights (optional)
 
-The optional person detector in [track_runner/tr_detection.py](../track_runner/tr_detection.py) uses a YOLOv8n ONNX model loaded through OpenCV DNN. Detection is not an active tracking signal in the analytical solver (see [docs/TRACK_RUNNER_CONTRACT.md](TRACK_RUNNER_CONTRACT.md) C6); it is only used for optional seeding assistance.
+The optional person detector in [tr_detection.py](../track_runner/tr_detection.py) uses a YOLOv8n ONNX model loaded through OpenCV DNN. Detection is not an active tracking signal in the analytical solver (see [TRACK_RUNNER_CONTRACT.md](TRACK_RUNNER_CONTRACT.md) C6); it is only used for optional seeding assistance.
 
 When needed, the detector expects the model at `~/.cache/track_runner/yolov8n.onnx`. Export it once from the upstream ultralytics package:
 
@@ -87,5 +87,5 @@ are written to the per-video config YAML. `setup` is required before
 well so the annotation UI has the correct camera/track context from the
 first seed. For the full file layout (config YAML, seeds, geometry
 cache, diagnostics, contact sheet, debug paths, encoded output), see
-[docs/TR_CONFIG_FILES.md](TR_CONFIG_FILES.md). For the full subcommand
-reference and workflow, see [docs/USAGE.md](USAGE.md).
+[TR_CONFIG_FILES.md](TR_CONFIG_FILES.md). For the full subcommand
+reference and workflow, see [USAGE.md](USAGE.md).

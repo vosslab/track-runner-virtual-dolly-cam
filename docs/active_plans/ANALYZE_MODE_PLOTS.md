@@ -7,7 +7,7 @@ to diagnose from a final encoded video. The crop trajectory's input
 signals (torso geometry, camera motion, runner ground speed) are computed
 during `analyze` but never visualized. The recent
 `torso_height_multiple` debugging session
-([docs/CHANGELOG.md](../../nsh/track-runner-virtual-dolly-cam/docs/CHANGELOG.md)
+([CHANGELOG.md](../CHANGELOG.md)
 2026-05-02) would have been a five-second look at a zoom plot.
 
 This plan ships a single self-contained HTML diagnostic report per
@@ -15,7 +15,7 @@ video. Panels are HTML5 canvas charts driven by embedded JSON and a
 small inlined vanilla-JavaScript renderer. No external network
 dependency, no runtime plotting library, no separate PNG/SVG/JSON
 files. The source draft
-[docs/active_plans/ANALYZE_MODE_PLOTS.md](ANALYZE_MODE_PLOTS.md)
+[ANALYZE_MODE_PLOTS.md](ANALYZE_MODE_PLOTS.md)
 proposed PNGs and is superseded; it is replaced in place during M3.
 
 ## Design philosophy
@@ -125,7 +125,7 @@ flag and report.
   `dx`, `dy`, `scale`, `quality` arrays. Loader
   `load_active_camera_motion_or_fail` is at line 1146 and follows the
   active-marker pattern documented in
-  [docs/CHANGELOG.md](../../nsh/track-runner-virtual-dolly-cam/docs/CHANGELOG.md)
+  [CHANGELOG.md](../CHANGELOG.md)
   2026-05-02.
 - `SceneTransform.pixel_to_scene` is at `track_runner/scene_coords.py:43`.
 - `matplotlib` is in `pip_requirements-dev.txt` only. No production

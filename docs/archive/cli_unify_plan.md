@@ -2,7 +2,7 @@
 
 ## Context
 
-The track_runner CLI in [track_runner/cli_args.py](../../nsh/track-runner-virtual-dolly-cam/track_runner/cli_args.py) spans **eight** subcommands (`seed`, `edit`, `target`, `solve`, `refine`, `encode`, `analyze`, `setup`) plus global flags. The file has accreted over many feature passes. Some single-letter flags collide in meaning across modes, some long flags lack short forms while peer flags have them, and some defaults live in code that should defer to config per `docs/PYTHON_STYLE.md` argparse minimalism. The user asked for a complete audit of CLI arguments, default settings, and single-letter flags across all modes, with inconsistencies identified and a unified scheme proposed.
+The track_runner CLI in [cli_args.py](../../track_runner/cli_args.py) spans **eight** subcommands (`seed`, `edit`, `target`, `solve`, `refine`, `encode`, `analyze`, `setup`) plus global flags. The file has accreted over many feature passes. Some single-letter flags collide in meaning across modes, some long flags lack short forms while peer flags have them, and some defaults live in code that should defer to config per `docs/PYTHON_STYLE.md` argparse minimalism. The user asked for a complete audit of CLI arguments, default settings, and single-letter flags across all modes, with inconsistencies identified and a unified scheme proposed.
 
 Goal: produce a documentation-only audit + reconciliation plan. No code changes in this plan; the follow-up plan executes renames once the user approves the unified scheme.
 
@@ -32,7 +32,7 @@ Out of scope:
 - Argparse setup for any standalone tool under `tools/` (audited separately if requested).
 - Config-file schema (`tr_config/*.yaml`), even where a CLI flag overrides a config key.
 - Subcommand semantics, mode names, or any behavior beyond flag spelling and defaults.
-- Tests. No committed test changes in this plan or its follow-up rename plan; argparse-inventory pytests would be fragile per [docs/PYTEST_STYLE.md](../../nsh/track-runner-virtual-dolly-cam/docs/PYTEST_STYLE.md). Ad-hoc local tests during rename work are allowed but must not be committed.
+- Tests. No committed test changes in this plan or its follow-up rename plan; argparse-inventory pytests would be fragile per [PYTEST_STYLE.md](../PYTEST_STYLE.md). Ad-hoc local tests during rename work are allowed but must not be committed.
 
 ## Non-goals
 
@@ -44,7 +44,7 @@ Out of scope:
 
 Three tiers used throughout this doc to keep observed facts separate from proposals and approvals:
 
-- **OBSERVED**: present in [track_runner/cli_args.py](../../nsh/track-runner-virtual-dolly-cam/track_runner/cli_args.py) or [track_runner/ui/base_controller.py](../../nsh/track-runner-virtual-dolly-cam/track_runner/ui/base_controller.py) at HEAD on 2026-05-23. Every OBSERVED row cites a line range.
+- **OBSERVED**: present in [cli_args.py](../../track_runner/cli_args.py) or [base_controller.py](../../track_runner/ui/base_controller.py) at HEAD on 2026-05-23. Every OBSERVED row cites a line range.
 - **PROPOSED**: a recommendation in this plan, not yet approved.
 - **APPROVED**: user confirmed in the 2026-05-23 planning session (D1-D5, D7-D9). Implementation is deferred to the follow-up plan; the audit doc records them as "approved, not yet shipped."
 
@@ -396,7 +396,7 @@ This plan ships documentation only. Verification artifacts and commands:
    git ls-files docs/active_plans/audits/cli_argparse_dump.txt | xargs cat | grep -E "^\s+-[a-zA-Z],?\s|^\s+--[a-z]" | sort -u
    ```
 
-   Compare manually to the OBSERVED rows. Ad-hoc dev-time pytest is fine during the rename plan (run, observe, discard), but **do not commit a permanent inventory pytest**: per [docs/PYTEST_STYLE.md](../../nsh/track-runner-virtual-dolly-cam/docs/PYTEST_STYLE.md), assertions on collections of argparse flags and required-key lists are fragile and rot fast. Inventory parity stays a doc-review checklist, not a CI gate.
+   Compare manually to the OBSERVED rows. Ad-hoc dev-time pytest is fine during the rename plan (run, observe, discard), but **do not commit a permanent inventory pytest**: per [PYTEST_STYLE.md](../PYTEST_STYLE.md), assertions on collections of argparse flags and required-key lists are fragile and rot fast. Inventory parity stays a doc-review checklist, not a CI gate.
 
 4. `docs/CHANGELOG.md` carries the new entry under `## 2026-05-23` in **Additions and New Features** (audit doc) and **Decisions and Failures** (D1-D5, D7-D9 approvals; D6 deferred).
 

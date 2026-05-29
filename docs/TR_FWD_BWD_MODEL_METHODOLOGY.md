@@ -14,14 +14,14 @@ coupling patterns.
 Does not own: how the motion-cue field is computed, ROI geometry,
 blob extraction, cue-confidence scoring, or the concrete cache
 schema. Those live in
-[MOTION_CUE_HEAT_MAP.md](MOTION_CUE_HEAT_MAP.md).
+`MOTION_CUE_HEAT_MAP.md`.
 
 Rules for preserving the dual-pass independence invariant in the
 track-runner interval solver. For the motion-cue field, blob
 extraction pipeline, ROI geometry, and `observe_blob_at` measurement
-model, see [MOTION_CUE_HEAT_MAP.md](MOTION_CUE_HEAT_MAP.md). For the
+model, see `MOTION_CUE_HEAT_MAP.md`. For the
 shorter consumer-facing summary of the observation API, see
-[RESIDUAL_MOTION_OBSERVATIONS.md](RESIDUAL_MOTION_OBSERVATIONS.md).
+[RESIDUAL_MOTION_OBSERVATIONS.md](archive/RESIDUAL_MOTION_OBSERVATIONS.md).
 
 ## Terminology
 
@@ -67,9 +67,9 @@ asymmetric Hermite curve, produces its own `raw_pred` trajectory, and then
 optionally snaps to a per-frame residual-motion blob observation. The
 resulting forward interval path and backward interval path are ONLY
 combined at two clearly separated points: by
-[track_runner/interval_solver.py](../track_runner/interval_solver.py) to
+[interval_solver.py](../track_runner/interval_solver.py) to
 produce the blended interval path for output (`blend_paths`), and by
-[track_runner/scoring.py](../track_runner/scoring.py) for a diagnostic
+[scoring.py](../track_runner/scoring.py) for a diagnostic
 agreement metric computed on the two raw pass paths. Raw disagreement
 between the passes is the system's primary uncertainty signal; anything
 that narrows it without evidence is a regression.
@@ -81,7 +81,7 @@ that narrows it without evidence is a regression.
   right-endpoint slope is the interval chord. BWD does the mirror: right
   slope from a FORWARD regression, left slope from the chord. See
   `estimate_directional_slope` and `fit_interval_curves` in
-  [track_runner/velocity_model.py](../track_runner/velocity_model.py).
+  [velocity_model.py](../track_runner/velocity_model.py).
 - The two curves are DIFFERENT interpolants of the same two endpoints. On
   straight motion they agree almost exactly; on curvature, occlusion, or
   identity ambiguity they disagree, and the disagreement is the signal.
@@ -94,19 +94,19 @@ that narrows it without evidence is a regression.
 - **Gates in each pass read only that pass's `raw_pred`.** Locked by
   `test_observer_inputs_depend_only_on_raw_pred` and
   `test_raw_pred_is_never_mutated_by_snap` in
-  [tests/test_blob_snap.py](../tests/test_blob_snap.py). Rationale: any
+  `test_blob_snap.py`. Rationale: any
   gate that reads `snap_pred[i-1]` re-introduces cross-frame state.
 - **No cross-pass blob decisions are stored anywhere.** The residual
   cache stores raw blobs only. For the concrete cache schema and the
   ROI-key mechanics see
-  [MOTION_CUE_HEAT_MAP.md](MOTION_CUE_HEAT_MAP.md); this doc owns only
+  `MOTION_CUE_HEAT_MAP.md`; this doc owns only
   the normative "no decisions in the cache" rule. Locked by
   `test_blob_accepted_at_frame_t_does_not_influence_frame_t_plus_one`.
 - **Residual cache holds image-derived data only.** Sharing IMAGES is
   not sharing DECISIONS. ROI quantization collapses sub-quantum FWD
   vs BWD jitter to one cache entry and leaves meaningful divergence
   with distinct entries; the concrete `ROI_QUANT` mechanics live in
-  [MOTION_CUE_HEAT_MAP.md](MOTION_CUE_HEAT_MAP.md). Locked by
+  `MOTION_CUE_HEAT_MAP.md`. Locked by
   `test_roi_quantization_collapses_subpixel_jitter`.
 - **Worker-local pre-pass store is image-derived data, not state.**
   Inside `solve_interval_analytical`, before either pass runs, the
@@ -120,7 +120,7 @@ that narrows it without evidence is a regression.
   pre-computed); no FWD/BWD decisions, no per-pass state, no
   cross-interval information. Per contract clause C5 the store lives
   only for the duration of one `solve_interval_analytical` call. See
-  [track_runner/residual_pre_pass.py](../track_runner/residual_pre_pass.py).
+  [residual_pre_pass.py](../track_runner/residual_pre_pass.py).
 - **Seeds are hard anchors in both passes.** Endpoints are never moved
   by blob snap: `_apply_blob_snap` short-circuits on `i == 0` and
   `i == num - 1` (blob_gate = "skipped"). Locked by
@@ -128,7 +128,7 @@ that narrows it without evidence is a regression.
 - **The blended interval path is output-only.** It feeds rendering and
   anchor correction. It MUST NOT feed the agreement metric. See
   `compute_agreement(forward_path, backward_path)` at
-  [scoring.py line 192 / 473](../track_runner/scoring.py) which takes the
+  [scoring.py](../track_runner/scoring.py) which takes the
   raw pass paths, not `blended_path`.
 - **Agreement metrics come from the raw forward and backward interval
   paths, never from the blended one.** `blended_path` is accepted as an
@@ -200,7 +200,7 @@ non-endpoint, non-stationary frame the propagator queries
 against its own `raw_pred`. This doc covers only pass-local
 consumption and gating; the measurement pipeline,
 cue-confidence scoring, and blob extraction live in
-[MOTION_CUE_HEAT_MAP.md](MOTION_CUE_HEAT_MAP.md). The three gates
+`MOTION_CUE_HEAT_MAP.md`. The three gates
 are:
 
 - proximity: `dist(blob, raw[t]) <= ALPHA * h`
@@ -217,7 +217,7 @@ observation). Design details live in
 **ROI coupling.** FWD and BWD share the same `residual_cache` and
 may share raw blobs when their ROIs coincide; they compute
 independently when the ROIs diverge. The detailed ROI-key mechanics
-live in [MOTION_CUE_HEAT_MAP.md](MOTION_CUE_HEAT_MAP.md). The rule
+live in `MOTION_CUE_HEAT_MAP.md`. The rule
 this doc owns is simpler: sharing IMAGES is allowed, sharing
 DECISIONS is not.
 
@@ -247,7 +247,7 @@ Reject these at code review:
 
 ## Testing strategy
 
-Tests live in [tests/test_blob_snap.py](../tests/test_blob_snap.py):
+Tests live in `test_blob_snap.py`:
 
 - `test_delete_test_no_observer_equals_pure_hermite` -- with blob
   observation disabled (`reader=None`), the output equals the pre-patch
@@ -272,26 +272,26 @@ Through early 2026 the solver ran motion-cue fusion as a separate stage
 after propagation; the propagator itself used pure Hermite. That stage
 carried chained, cross-frame state and proved impossible to reason
 about. On 2026-04-17 motion-cue fusion was removed (see
-[docs/CHANGELOG.md](CHANGELOG.md)) and replaced with the stateless
+[CHANGELOG.md](CHANGELOG.md)) and replaced with the stateless
 per-frame blob snap inside each propagator pass. The refactor preserved
 the dual-pass diagnostic property by construction: each pass's snap
 decisions depend only on its own `raw_pred`.
 
 ## Related docs
 
-- [docs/TRACK_RUNNER_CONTRACT.md](TRACK_RUNNER_CONTRACT.md) -- primary
+- [TRACK_RUNNER_CONTRACT.md](TRACK_RUNNER_CONTRACT.md) -- primary
   truth document; non-negotiable rules.
-- [docs/MOTION_CUE_HEAT_MAP.md](MOTION_CUE_HEAT_MAP.md) --
+- `MOTION_CUE_HEAT_MAP.md` --
   mechanism-level technical doc: heat-map construction, ROI
   geometry, blob extraction, corridor filter, cue-confidence scoring,
   concrete cache schema.
-- [docs/TRACK_RUNNER_DESIGN.md](TRACK_RUNNER_DESIGN.md) -- signal
+- [TRACK_RUNNER_DESIGN.md](TRACK_RUNNER_DESIGN.md) -- signal
   hierarchy, dual scoring philosophy, separation of concerns.
-- [docs/TRACK_RUNNER_V3_SPEC.md](TRACK_RUNNER_V3_SPEC.md) -- interval
+- [TRACK_RUNNER_V3_SPEC.md](TRACK_RUNNER_V3_SPEC.md) -- interval
   scoring schema, severity rules, blob coverage fields.
-- [docs/RESIDUAL_MOTION_OBSERVATIONS.md](RESIDUAL_MOTION_OBSERVATIONS.md)
+- [RESIDUAL_MOTION_OBSERVATIONS.md](archive/RESIDUAL_MOTION_OBSERVATIONS.md)
   -- thin consumer-facing summary of the observation API.
-- [docs/CHANGELOG.md](CHANGELOG.md) -- 2026-04-17 motion-cue removal
+- [CHANGELOG.md](CHANGELOG.md) -- 2026-04-17 motion-cue removal
   and blob-snap landing entries.
 - `~/.claude/plans/happy-forging-valiant.md` -- design plan for the
   per-frame blob snap inside the propagator.

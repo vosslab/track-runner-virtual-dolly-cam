@@ -91,52 +91,19 @@ is a convenience cache, not the API of record.
 
 ## Pre-race incompatibility
 
-`not_in_frame` seeds in `[0, race_start_frame)` are unsupported. Per
-contract C4, the pre-race reference is a stationary scene-anchored
-average; NIF in that range is undefined. `build_nif_spans` raises
-`ValueError` with this exact message:
-
-```
-not_in_frame before race_start_frame is not supported. Truncate the video or move race_start_frame so the pre-race reference contains only visible runner frames.
-```
-
-No silent synthesis is attempted.
-
-## Exit-side inference rule
-
-Exit side is inferred from box-edge distances of the last visible solved
-torso box, not from box-center distance:
-
-```
-left   = box_left
-right  = frame_width  - box_right
-top    = box_top
-bottom = frame_height - box_bottom
-```
-
-The smallest distance wins. Negative values indicate the solved box
-already crosses that edge. When the horizontal candidate
-(`min(left, right)`) and the vertical candidate (`min(top, bottom)`)
-are within 5% of each other, prefer left or right. Track-runner footage
-is overwhelmingly horizontal-exit; the tie-breaker matches that
-convention.
-
-## Cross-references
-
-- [docs/TRACK_RUNNER_CONTRACT.md](TRACK_RUNNER_CONTRACT.md) C1: seeds are
+`not_in_frame` seeds in `[TRACK_RUNNER_CONTRACT.md](TRACK_RUNNER_CONTRACT.md) C1: seeds are
   human-authored truth. NIF seeds are the durable record; edge-anchored
   geometry is downstream and not a seed.
-- [docs/TRACK_RUNNER_CONTRACT.md](TRACK_RUNNER_CONTRACT.md) C2: torso box
+- [TRACK_RUNNER_CONTRACT.md](TRACK_RUNNER_CONTRACT.md) C2: torso box
   is the unit of scale for runner-relative decisions; size across an NIF
   span is bracketing-torso-mean, not a raw pixel constant.
-- [docs/TRACK_RUNNER_CONTRACT.md](TRACK_RUNNER_CONTRACT.md) C4: pre-race
-  reference is fixed; NIF in `[0, race_start_frame)` is undefined.
-- [docs/TRACK_RUNNER_CONTRACT.md](TRACK_RUNNER_CONTRACT.md) C5: torso
+- [TRACK_RUNNER_CONTRACT.md](TRACK_RUNNER_CONTRACT.md) C4: pre-race
+  reference is fixed; NIF in `[TRACK_RUNNER_CONTRACT.md](TRACK_RUNNER_CONTRACT.md) C5: torso
   box position and size are independent. Width and height are stable
   across an NIF span; only the non-pinned coordinate moves.
-- [docs/TRACK_RUNNER_CONTRACT.md](TRACK_RUNNER_CONTRACT.md) C12:
+- [TRACK_RUNNER_CONTRACT.md](TRACK_RUNNER_CONTRACT.md) C12:
   per-frame data is limited to what is needed; NIF context is not stored
   per frame.
-- [docs/TRACK_RUNNER_CONTRACT.md](TRACK_RUNNER_CONTRACT.md) C13: cache is
+- [TRACK_RUNNER_CONTRACT.md](TRACK_RUNNER_CONTRACT.md) C13: cache is
   temporary and never depended on; the NIF frame-index set is a
   per-encode-run lookup, not a persisted cache.

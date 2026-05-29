@@ -52,7 +52,7 @@ def test_rejects_non_mkv_path():
 	# how to remux.
 	with pytest.raises(ValueError, match="mkvmerge"):
 		common_tools.frame_reader.FrameReader(
-			video_path="/tmp/not_real.mov",
+			video_path="not_real.mov",
 			fps=30.0,
 			total_frames=10,
 		)

@@ -5,8 +5,8 @@ Kalman-based design through the current interval solver architecture. Key
 design decisions and their rationale are preserved here for future reference.
 
 For the current technical specification, see
-[docs/TRACK_RUNNER_V3_SPEC.md](docs/TRACK_RUNNER_V3_SPEC.md). For design
-principles, see [docs/TRACK_RUNNER_DESIGN.md](docs/TRACK_RUNNER_DESIGN.md).
+[TRACK_RUNNER_V3_SPEC.md](TRACK_RUNNER_V3_SPEC.md). For design
+principles, see [TRACK_RUNNER_DESIGN.md](TRACK_RUNNER_DESIGN.md).
 
 ## v1: Kalman-based tracker (2026-03-09 to 2026-03-11)
 
@@ -54,7 +54,7 @@ quantified the challenges:
 
 These findings drove the scale-gated color model and stationary lock in v2/v3.
 The full study is archived at
-[docs/archive/SEED_VARIABILITY_FINDINGS.md](docs/archive/SEED_VARIABILITY_FINDINGS.md).
+[SEED_VARIABILITY_FINDINGS.md](archive/SEED_VARIABILITY_FINDINGS.md).
 
 ## v2: Interval solver (2026-03-11)
 
@@ -121,7 +121,7 @@ which provided no position hint at all. Approximate seeds give the solver a
 directional guide through occlusion gaps.
 
 The four modes: visible, partial, approximate, not_in_frame. See
-[docs/TRACK_RUNNER_V3_SPEC.md](docs/TRACK_RUNNER_V3_SPEC.md) for the full
+[TRACK_RUNNER_V3_SPEC.md](TRACK_RUNNER_V3_SPEC.md) for the full
 property table.
 
 ### Interval-length-aware confidence
@@ -214,7 +214,7 @@ These decisions shaped the tool across versions and remain load-bearing:
 
 ## Archived documents
 
-- [docs/archive/TRACK_RUNNER_TOOL_PLAN.md](docs/archive/TRACK_RUNNER_TOOL_PLAN.md) -- v1 original design plan
-- [docs/archive/TRACK_RUNNER_SPEC.md](docs/archive/TRACK_RUNNER_SPEC.md) -- v1 as-built specification
-- [docs/archive/TRACK_RUNNER_V2_SPEC.md](docs/archive/TRACK_RUNNER_V2_SPEC.md) -- v2 interval solver spec
-- [docs/archive/SEED_VARIABILITY_FINDINGS.md](docs/archive/SEED_VARIABILITY_FINDINGS.md) -- v1-era seed measurement study
+- [TRACK_RUNNER_TOOL_PLAN.md](archive/TRACK_RUNNER_TOOL_PLAN.md) -- v1 original design plan
+- [TRACK_RUNNER_SPEC.md](archive/TRACK_RUNNER_SPEC.md) -- v1 as-built specification
+- [TRACK_RUNNER_V2_SPEC.md](archive/TRACK_RUNNER_V2_SPEC.md) -- v2 interval solver spec
+- [SEED_VARIABILITY_FINDINGS.md](archive/SEED_VARIABILITY_FINDINGS.md) -- v1-era seed measurement study

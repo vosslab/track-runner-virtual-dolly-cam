@@ -6,10 +6,10 @@ intervals. This document establishes which crop-path metrics predict visible
 output instability and characterizes the primary failure case (IMG_3702).
 
 For earlier solver-level measurements (seeds, identity, convergence), see
-[docs/archive/TRACK_RUNNER_V3_FINDINGS.md](archive/TRACK_RUNNER_V3_FINDINGS.md).
+[TRACK_RUNNER_V3_FINDINGS.md](TRACK_RUNNER_V3_FINDINGS.md).
 
 For metric definitions, see
-[docs/TRACK_RUNNER_ANALYZE_AND_ENCODE.md](TRACK_RUNNER_ANALYZE_AND_ENCODE.md).
+[TRACK_RUNNER_ANALYZE_AND_ENCODE.md](../TRACK_RUNNER_ANALYZE_AND_ENCODE.md).
 
 ## Problem description
 

@@ -46,7 +46,7 @@ can see the scope of every claim.
 
 ## 4. Confirmed and refuted prior findings
 
-- [docs/BLOB_REDESIGN_REPORT.md](../../BLOB_REDESIGN_REPORT.md), Conant oracle
+- [BLOB_REDESIGN_REPORT.md](../../BLOB_REDESIGN_REPORT.md), Conant oracle
   test, Finding 4: of 72 intervals with real accept < 20%, the oracle
   rescue distribution put 46 intervals in the "gates fine, real blob is
   wrong" bucket. The 2444-2491 funnel-stage finding is CONSISTENT with the
@@ -55,7 +55,7 @@ can see the scope of every claim.
   Jason clip is pending the M2/M3 sweep over the remaining TRUST 0%
   intervals. Supported by 46 visual frames in one interval and one video,
   cross-referenced against 72 Conant intervals.
-- [docs/BLOB_SEED_DISTANCE_FINDINGS.md](../../BLOB_SEED_DISTANCE_FINDINGS.md),
+- [BLOB_SEED_DISTANCE_FINDINGS.md](../../BLOB_SEED_DISTANCE_FINDINGS.md),
   Orion seed-distance gradient (good-rate climbs 30% to 59% from bin 1 to
   bin 11-20): the gradient claim cannot yet be confirmed on the Jason clip
   because the M3 per-bucket histogram is restricted to one interval.
@@ -79,8 +79,8 @@ can see the scope of every claim.
 The dominant funnel-stage tag on interval 2444-2491 is `lost_at_gate_prox`,
 supported by 43/46 non-endpoint frames in that interval. Per the decision
 tree in `kind-exploring-cray.md`, the right follow-up is a focused proximity
-gate mechanism plan targeting [track_runner/velocity_model.py](../../../track_runner/velocity_model.py)
-proximity gate and [track_runner/residual_motion.py](../../../track_runner/residual_motion.py)
+gate mechanism plan targeting [velocity_model.py](../../../track_runner/velocity_model.py)
+proximity gate and [residual_motion.py](../../../track_runner/residual_motion.py)
 `observe_blob_at` centroid logic. That plan should cross-check H1
 (observer centroid bias), H2 (raw_pred quality), and H6 (wrong-winner
 selection) from the M0.7 oracle, after WP-0.7A fix-2 lands and
@@ -96,5 +96,5 @@ target; it does not write the fix plan.
 - M0.7 oracle hypothesis verdicts: supported by 200 seed frames across 2
   videos, PRELIMINARY pending WP-0.7A fix-2.
 
-On any conflict with [docs/TRACK_RUNNER_CONTRACT.md](../../TRACK_RUNNER_CONTRACT.md),
+On any conflict with [TRACK_RUNNER_CONTRACT.md](../../TRACK_RUNNER_CONTRACT.md),
 the contract wins and this audit is corrected.

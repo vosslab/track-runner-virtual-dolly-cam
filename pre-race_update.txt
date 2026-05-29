@@ -1,7 +1,0 @@
-I am not sure which is my seed and which is not. The gold is the correct seed. why is refined so wrong? [Image #1] [Image #2] pre-race detection
-  wrong? this one video breaks the pre-race plan, because they do 'get set' and the runner move from a back line to the start line, then go, so
-  there are like to start boxes. Nonetheless, I expected it to just do pre-race until the 'get set' point. Anyway, that only thing with edit mode is
-   that the boxes are not labeled well
-
-the user needs some way to set the race start appropriately, ideally handle the two position race start types. the 'two position race start'
-  should be another question in the 'setup' mode, but would require a HUGE pipeline rewrite.

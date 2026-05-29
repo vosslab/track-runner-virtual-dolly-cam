@@ -14,6 +14,23 @@ Two seek strategies fire in read_frame:
 
 No further fallbacks are kept. Source videos must be .mkv; MP4/MOV users
 should remux losslessly via `mkvmerge -o out.mkv in.mov` before use.
+
+Coordinate-system model (model B):
+  All public coordinates (pred_center, pred_box, seed cx/cy/w/h,
+  BlobObservation.center_pixel, scene_transform inputs) are in
+  SOURCE-FRAME pixel units, regardless of bin_factor.  reader.width and
+  reader.height return POST-BIN (processed) dimensions and are used only
+  as frame-boundary clamps inside residual_motion.observe_blob_at, which
+  owns the source<->processed conversion via FrameGeometry.  Callers must
+  never pass post-bin pixel coords to scene_transform.
+
+Auto-bin selection:
+  Use select_bin_factor_for_analysis(source_width) before constructing a
+  FrameReader to automatically pick a bin_factor that keeps the post-bin
+  width within TARGET_ANALYSIS_WIDTH_PX (960 px).  The selection function
+  is the policy; FrameReader is the mechanism.  Call sites that do NOT need
+  downsampling (UI, crop encoder, solve-mode workers) should not call the
+  selector and should pass bin_factor=1 (the default) to FrameReader.
 """
 
 # Standard Library
@@ -33,6 +50,90 @@ import common_tools.goodbox
 # this fraction of the scaled axis, FrameReader keeps the full
 # scaled axis and warns once.
 _MAX_CROP_FRACTION = 0.10
+
+# Auto-bin target width for residual-motion / walker analysis paths.
+# Post-bin width is kept <= this value (720p-band, <=960 px) so that
+# HEVC decode cost scales with output pixels, not source pixels.
+# Rationale: 3840-wide 4K source bins at 4x -> 960 px (same band as
+# 1080p-height video); 1920-wide 1080p source bins at 2x -> 960 px.
+# 640-wide or smaller sources stay at bin_factor=1 (never upscaled).
+# Bin factors are always powers of two so post-bin width is bounded at
+# or below TARGET_ANALYSIS_WIDTH_PX, never above it.
+TARGET_ANALYSIS_WIDTH_PX = 960
+
+
+#============================================
+def _next_pow2_ceil(n: int) -> int:
+	"""Return the smallest power of two >= n (minimum 1).
+
+	Rounds a raw bin ratio UP to the nearest power of two so the
+	resulting post-bin width is always <= TARGET_ANALYSIS_WIDTH_PX.
+	Supported bin factors in practice are 1, 2, 4, 8.
+
+	Args:
+		n: Integer >= 1 (raw ratio already clamped by caller).
+
+	Returns:
+		Smallest power of two >= n (always >= 1).
+	"""
+	p = 1
+	while p < n:
+		p *= 2
+	return p
+
+
+#============================================
+def select_bin_factor_for_analysis(
+	source_width: int,
+	target_width: int = TARGET_ANALYSIS_WIDTH_PX,
+) -> int:
+	"""Select a bin_factor for residual-motion / walker analysis.
+
+	Chooses the smallest power-of-two bin_factor such that the post-bin
+	width is <= target_width.  Returns 1 when source_width is already
+	within the target.
+
+	This is the POLICY function.  FrameReader is the mechanism; callers
+	call this function once per video and pass the result as bin_factor
+	to FrameReader().  Only walker batch and analysis entry points should
+	call this; UI controllers, crop encoder, and solve-mode workers use
+	bin_factor=1 (full resolution).
+
+	Algorithm:
+	  raw_ratio = source_width / target_width
+	  bin_factor = next_pow2_ceil(max(1, int(raw_ratio)))
+
+	Examples (target_width=960):
+	  3840 -> ratio=4.0 -> bin_factor=4 -> post-bin width 960  OK
+	  1920 -> ratio=2.0 -> bin_factor=2 -> post-bin width 960  OK
+	  1280 -> ratio=1.33 -> ceil-pow2=2 -> post-bin width 640  OK (<= 960)
+	   640 -> ratio=0.67 -> max(1,...)->1 -> post-bin width 640  OK
+
+	The ceil-power-of-two rounding guarantees post-bin width <= target;
+	nearest rounding would allow slightly-over-target widths (e.g. 1440/2=720
+	vs 1440/1=1440 -- ceil-pow2 picks 2, post-bin is 720, stays within target).
+
+	Args:
+		source_width: Raw source frame width in pixels.
+		target_width: Maximum desired post-bin width in pixels.
+			Defaults to TARGET_ANALYSIS_WIDTH_PX (960).
+
+	Returns:
+		Integer bin_factor (power of two, >= 1).
+
+	Raises:
+		ValueError: source_width or target_width is <= 0.
+	"""
+	if source_width <= 0:
+		raise ValueError(f"source_width must be > 0, got {source_width}")
+	if target_width <= 0:
+		raise ValueError(f"target_width must be > 0, got {target_width}")
+	# raw ratio: how many times larger is source than target
+	raw_ratio = source_width / target_width
+	# clamp to >= 1 (never upscale), then round up to next power of two
+	# to guarantee post-bin width <= target_width
+	bin_factor = _next_pow2_ceil(max(1, int(raw_ratio)))
+	return bin_factor
 
 
 #============================================
@@ -175,6 +276,8 @@ class FrameReader:
 			is downsampled via cv2.INTER_AREA to floor(W/bin) x floor(H/bin).
 			At any bin_factor the goodbox snap applies (largest FFT-friendly box
 			not exceeding scaled dims, cropping only from right/bottom edges).
+			Use select_bin_factor_for_analysis(source_width) to pick a
+			bin_factor automatically for analysis/walker entry points.
 	"""
 
 	#============================================
@@ -357,28 +460,45 @@ class FrameReader:
 		self._cap_next_index = start_frame
 
 	#============================================
-	def read_frame(self, frame_index: int) -> numpy.ndarray | None:
+	def read_frame(self, frame_index: int) -> numpy.ndarray:
 		"""Read a single frame by index.
 
 		Strategy 0 fires when frame_index == self._cap_next_index: no
 		cap.set is called; cap.read() advances the cursor. Strategy 1
 		fires otherwise: cap.set(CAP_PROP_POS_FRAMES, idx) then cap.read().
+		On Strategy-1 decode failure (HEVC seek imprecision), retries once
+		with a fresh cap.set. Raises RuntimeError on EOF or unrecoverable
+		decode failure; never returns None.
 
 		Args:
 			frame_index: Target frame index (0-based).
 
 		Returns:
-			BGR frame as numpy array, or None if decode fails.
+			BGR frame as numpy array.
+
+		Raises:
+			RuntimeError: frame_index >= total_frames (true EOF), or cv2
+				decode failed after retry.
 		"""
+		if frame_index >= self._total_frames:
+			raise RuntimeError(
+				f"frame_index {frame_index} >= total_frames {self._total_frames}"
+			)
 		if frame_index != self._cap_next_index:
 			# strategy 1: random-access seek
 			self._cap.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
 		# strategy 0 falls through: cap.read() reads the next frame
 		ret, frame = self._cap.read()
 		if not ret or frame is None:
-			# invalidate cursor so a subsequent read forces a cap.set
-			self._cap_next_index = -1
-			return None
+			# HEVC seek imprecision: retry once with a fresh seek
+			self._cap.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
+			ret, frame = self._cap.read()
+			if not ret or frame is None:
+				self._cap_next_index = -1
+				raise RuntimeError(
+					f"cv2 decode failure at frame {frame_index} in"
+					f" {self._video_path!r} after retry"
+				)
 		self._cap_next_index = frame_index + 1
 		return self._apply_bin(frame)
 
@@ -400,8 +520,15 @@ class FrameReader:
 		while frame_index < self._total_frames:
 			ret, frame = self._cap.read()
 			if not ret or frame is None:
-				self._cap_next_index = -1
-				break
+				# retry once for HEVC seek imprecision before treating as EOS
+				self._cap.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
+				ret, frame = self._cap.read()
+				if not ret or frame is None:
+					self._cap_next_index = -1
+					raise RuntimeError(
+						f"cv2 decode failure at frame {frame_index} in"
+						f" {self._video_path!r} after retry"
+					)
 			self._cap_next_index = frame_index + 1
 			yield (frame_index, self._apply_bin(frame))
 			frame_index += 1

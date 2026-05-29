@@ -2,7 +2,7 @@
 
 Each subcommand of `track_runner.py` is documented in its own page. Open the page for the mode you want to learn about; CLI flag tables on those pages are auto-regenerated from `--help` and stay in sync with the code.
 
-For the typical workflow (which mode to run when), see [docs/USAGE.md](USAGE.md).
+For the typical workflow (which mode to run when), see [USAGE.md](USAGE.md).
 
 ## Canonical workflow
 

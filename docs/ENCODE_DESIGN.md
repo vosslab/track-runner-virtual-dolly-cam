@@ -4,15 +4,15 @@ This document explains the design choices behind the track runner's
 `encode` subcommand and the implementation that backs them. It is a
 companion to:
 
-- [docs/modes/ENCODE.md](modes/ENCODE.md): user-facing CLI reference
+- [ENCODE.md](modes/ENCODE.md): user-facing CLI reference
   (auto-generated from `--help`).
-- [docs/TRACK_RUNNER_ANALYZE_AND_ENCODE.md](TRACK_RUNNER_ANALYZE_AND_ENCODE.md):
+- [TRACK_RUNNER_ANALYZE_AND_ENCODE.md](TRACK_RUNNER_ANALYZE_AND_ENCODE.md):
   analyze-mode diagnostics for crop-path quality.
-- [docs/TRACK_RUNNER_DESIGN.md](TRACK_RUNNER_DESIGN.md): system-wide
+- [TRACK_RUNNER_DESIGN.md](TRACK_RUNNER_DESIGN.md): system-wide
   design philosophy.
 
 If anything here contradicts
-[docs/TRACK_RUNNER_CONTRACT.md](TRACK_RUNNER_CONTRACT.md), the
+[TRACK_RUNNER_CONTRACT.md](TRACK_RUNNER_CONTRACT.md), the
 contract wins and this document is wrong.
 
 ## Scope
@@ -462,29 +462,29 @@ the case, that is a UX bug to file rather than a documentation gap.
 
 | Concern | File |
 | --- | --- |
-| Crop trajectory | [track_runner/tr_crop.py](../track_runner/tr_crop.py) |
-| Frame draw and overlays | [track_runner/encoder.py](../track_runner/encoder.py) |
-| ffmpeg writer and audio mux | [track_runner/encoder.py](../track_runner/encoder.py) `VideoWriter`, `copy_audio` |
-| Driver-side encode mode | [track_runner/cli.py](../track_runner/cli.py) `_mode_encode` |
-| CLI argument parsing | [track_runner/cli_args.py](../track_runner/cli_args.py) |
-| Aspect ratio parsing | [track_runner/tr_crop.py](../track_runner/tr_crop.py) `parse_aspect_ratio` |
-| Camera motion load | [track_runner/camera_motion.py](../track_runner/camera_motion.py) `load_active_camera_motion_or_fail` |
-| Pre-flight validator | [track_runner/tr_crop.py](../track_runner/tr_crop.py) `validate_torso_within_central_window`, `OffCenterCropError` |
-| Filter resolution | [track_runner/cli.py](../track_runner/cli.py) `_resolve_encode_filters` |
+| Crop trajectory | [tr_crop.py](../track_runner/tr_crop.py) |
+| Frame draw and overlays | [encoder.py](../track_runner/encoder.py) |
+| ffmpeg writer and audio mux | [encoder.py](../track_runner/encoder.py) `VideoWriter`, `copy_audio` |
+| Driver-side encode mode | [cli.py](../track_runner/cli.py) `_mode_encode` |
+| CLI argument parsing | [cli_args.py](../track_runner/cli_args.py) |
+| Aspect ratio parsing | [tr_crop.py](../track_runner/tr_crop.py) `parse_aspect_ratio` |
+| Camera motion load | [camera_motion.py](../track_runner/camera_motion.py) `load_active_camera_motion_or_fail` |
+| Pre-flight validator | [tr_crop.py](../track_runner/tr_crop.py) `validate_torso_within_central_window`, `OffCenterCropError` |
+| Filter resolution | [cli.py](../track_runner/cli.py) `_resolve_encode_filters` |
 
 ## Related contracts and design docs
 
-- [docs/TRACK_RUNNER_CONTRACT.md](TRACK_RUNNER_CONTRACT.md): hard
+- [TRACK_RUNNER_CONTRACT.md](TRACK_RUNNER_CONTRACT.md): hard
   invariants. Source-frame canonicality (C2 derivative), camera-motion
   identity (C9), and pre-race anchoring (C4) all touch encode.
-- [docs/TRACK_RUNNER_DESIGN.md](TRACK_RUNNER_DESIGN.md): general
+- [TRACK_RUNNER_DESIGN.md](TRACK_RUNNER_DESIGN.md): general
   philosophy. The "tracker follows accurately, crop moves smoothly"
   separation is articulated here.
-- [docs/TR_CAMERA_MOTION_METHOD.md](TR_CAMERA_MOTION_METHOD.md):
+- [TR_CAMERA_MOTION_METHOD.md](TR_CAMERA_MOTION_METHOD.md):
   Stage 1 details that encode consumes for the velocity-arrow
   projection.
-- [docs/TRACK_RUNNER_ANALYZE_AND_ENCODE.md](TRACK_RUNNER_ANALYZE_AND_ENCODE.md):
+- [TRACK_RUNNER_ANALYZE_AND_ENCODE.md](TRACK_RUNNER_ANALYZE_AND_ENCODE.md):
   pre-encode crop-stability diagnostics. For pre-encode diagnostics including a
   per-frame view of zoom stability, camera motion, and runner ground speed, see
-  [docs/modes/ANALYZE.md](modes/ANALYZE.md) and run `analyze --plot` on a solved
+  [ANALYZE.md](modes/ANALYZE.md) and run `analyze --plot` on a solved
   video to produce a self-contained HTML report.

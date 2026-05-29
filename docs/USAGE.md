@@ -27,11 +27,11 @@ Global options must appear before the subcommand.
 ./track_runner/track_runner.py -i video.mkv solve --bin 4 --debug-blob 2>&1 | tee /tmp/blob_debug.log
 ```
 
-See [common_tools/README.md](../common_tools/README.md) for read-pattern cost numbers (sequential vs scattered) and how to interpret the per-strategy histogram.
+See [README.md](../common_tools/README.md) for read-pattern cost numbers (sequential vs scattered) and how to interpret the per-strategy histogram.
 
 ## Subcommands
 
-The eight subcommands -- `setup`, `seed`, `solve`, `target`, `refine`, `edit`, `encode`, `analyze` -- each have a dedicated reference page. See [docs/MODES.md](MODES.md) for the index, or jump directly:
+The eight subcommands -- `setup`, `seed`, `solve`, `target`, `refine`, `edit`, `encode`, `analyze` -- each have a dedicated reference page. See [MODES.md](MODES.md) for the index, or jump directly:
 
 - [modes/SETUP.md](modes/SETUP.md) -- per-video camera configuration.
 - [modes/SEED.md](modes/SEED.md) -- place anchor seeds.
@@ -87,7 +87,7 @@ on the current frame.
   opaque.
 - The JET colormap carries known accessibility caveats (non-monotonic
   luminance, red/green confusion). The `blend_alpha` value in
-  [track_runner/overlay_styles.yaml](../track_runner/overlay_styles.yaml)
+  [overlay_styles.yaml](../track_runner/overlay_styles.yaml)
   under the `heat_map:` block (default `0.40`) controls the JET-over-
   color mix in above-threshold pixels, not overlay transparency. Lower
   values make the color frame show through more under the heat tint;
@@ -107,13 +107,13 @@ on the current frame.
 
 ## Configuration
 
-The default config file is [track_runner/track_runner.config.yaml](track_runner/track_runner.config.yaml). Override with `-c`/`--config`. Settings include detection confidence threshold, crop aspect ratio, fill ratio, video codec, CRF, and encode filter pipeline.
+The default config file is [track_runner.config.yaml](../track_runner/track_runner.config.yaml). Override with `-c`/`--config`. Settings include detection confidence threshold, crop aspect ratio, fill ratio, video codec, CRF, and encode filter pipeline.
 
 ## Input and output
 
 - **Input:** any video file readable by ffmpeg/mediainfo.
-- **Output:** cropped and stabilized video file. Per-video state (seeds, geometry cache, interval scores, debug tracks, camera motion) is stored in the per-video `tr_config` store; see [docs/TR_CONFIG_FILES.md](TR_CONFIG_FILES.md) for the file layout.
+- **Output:** cropped and stabilized video file. Per-video state (seeds, geometry cache, interval scores, debug tracks, camera motion) is stored in the per-video `tr_config` store; see [TR_CONFIG_FILES.md](TR_CONFIG_FILES.md) for the file layout.
 
 ## Keyboard shortcuts
 
-See [docs/TRACK_RUNNER_KEYBINDINGS.md](TRACK_RUNNER_KEYBINDINGS.md) for the full annotation UI keybindings reference.
+See [TRACK_RUNNER_KEYBINDINGS.md](TRACK_RUNNER_KEYBINDINGS.md) for the full annotation UI keybindings reference.

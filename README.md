@@ -1,6 +1,6 @@
 # Track runner virtual dolly cam
 
-Track runner is a Python tool that tracks a runner in track meet video and produces a cropped, stabilized "virtual dolly camera" output. Users place seed annotations on key frames, and the solver propagates tracking between seeds to produce a smooth cropped video that follows the athlete.
+Track runner is a Python tool for track meet video. Users seed annotations on key frames; the solver propagates tracking between seeds and produces a cropped, stabilized "virtual dolly camera" output that follows one athlete.
 
 **Status:** v26.05, active development.
 

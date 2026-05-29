@@ -111,7 +111,7 @@ These could be addressed by either:
 
 ## Production code fix applied
 
-Fixed estimator dispatch in [track_runner/camera_motion.py](track_runner/camera_motion.py):
+Fixed estimator dispatch in [camera_motion.py](../../track_runner/camera_motion.py):
 `precompute_camera_motion()` now recognizes `estimator_type == "iphone_discrete"` and
 `zoom_type == "discrete"` as aliases for `DiscreteZoomEstimator`. Without this fix,
 videos configured by the setup wizard with discrete zoom would crash with
@@ -131,7 +131,7 @@ videos configured by the setup wizard with discrete zoom would crash with
 ## Benchmark script
 
 Benchmark gate evaluation script:
-[tools/benchmark_solver_gates.py](tools/benchmark_solver_gates.py)
+`benchmark_solver_gates.py`
 
 Audit artifact (regenerated on each run):
 `output_smoke/benchmark_gates.txt`

@@ -3,7 +3,7 @@
 Archive of the May 2026 investigation into residual zoom-bounce after
 the 2026-05-02 crop changes. The active live evidence
 (`HOTSPOTS_INDEX.md`, `BASELINE_DIAGNOSTIC.md`) lives at
-[output_smoke/zoom_bounce/EVIDENCE/](../../output_smoke/zoom_bounce/EVIDENCE/)
+`EVIDENCE`
 and is NOT moved here; this archive records the plan, decision, and
 hand-off only.
 
@@ -25,7 +25,7 @@ reported residual jitter in the 1-2% range was still
 human-noticeable. An independent code-tracing pass identified Step
 3.6 fit-to-source as a one-sided clamp ratchet hypothesis: the
 asymmetric clamp at
-[track_runner/tr_crop.py:855-885](../../track_runner/tr_crop.py)
+[tr_crop.py](../../track_runner/tr_crop.py)
 should fire when the centered crop extends past a source edge and
 should be the dominant source of residual bounce. The plan was
 written to test that hypothesis.
@@ -78,7 +78,7 @@ neither is fixable by tuning that knob.
 Investigation continues in **one** focused follow-up plan at
 `/Users/vosslab/.claude/plans/`:
 
-**[noisy-jittering-tendril.md](../../../.claude/plans/noisy-jittering-tendril.md)** -- trajectory torso-box noise as the cause of zoom bounce.
+**`noisy-jittering-tendril.md`** -- trajectory torso-box noise as the cause of zoom bounce.
 The working hypothesis: zoom bounce is caused by frame-to-frame
 noise in the solved torso box, especially h/w. The crop algorithm
 faithfully tracks the noisy h, so crop_h inherits the variance.
@@ -106,13 +106,13 @@ Both kept on disk with SUPERSEDED banners pointing at
 
 | Tool | Purpose |
 | --- | --- |
-| [tools/find_zoom_hotspots.py](../../tools/find_zoom_hotspots.py) | Top-N worst-bounce windows; velocity_p95 / rms_detrended / abs_smoothed scoring; clip extraction |
-| [tools/correlate_bounce_with_edge.py](../../tools/correlate_bounce_with_edge.py) | Edge-distance Spearman with lagged scan; frame-alignment diagnostics |
-| [tools/spectrum_zoom_bounce.py](../../tools/spectrum_zoom_bounce.py) | FFT power spectrum with EMA cutoff annotation |
-| [tools/rank_zoom_variants.py](../../tools/rank_zoom_variants.py) | Multi-variant ranking with directionality enforcement |
-| [tools/measure_black_bars.py](../../tools/measure_black_bars.py) | Letterbox exposure measurement (Path A artifact-cost meter; not used after rejection) |
-| [tests/test_tr_zoom_bounce_tools.py](../../tests/test_tr_zoom_bounce_tools.py) | 12 behavioral tests for all five tools |
-| [docs/ZOOM_BOUNCE_REVIEW_RECIPE.md](../ZOOM_BOUNCE_REVIEW_RECIPE.md) | User-facing workflow guide |
+| `find_zoom_hotspots.py` | Top-N worst-bounce windows; velocity_p95 / rms_detrended / abs_smoothed scoring; clip extraction |
+| `correlate_bounce_with_edge.py` | Edge-distance Spearman with lagged scan; frame-alignment diagnostics |
+| `spectrum_zoom_bounce.py` | FFT power spectrum with EMA cutoff annotation |
+| `rank_zoom_variants.py` | Multi-variant ranking with directionality enforcement |
+| `measure_black_bars.py` | Letterbox exposure measurement (Path A artifact-cost meter; not used after rejection) |
+| `test_tr_zoom_bounce_tools.py` | 12 behavioral tests for all five tools |
+| [ZOOM_BOUNCE_REVIEW_RECIPE.md](ZOOM_BOUNCE_REVIEW_RECIPE.md) | User-facing workflow guide |
 
 ## Key implementation notes (forensic, for future reference)
 
@@ -122,7 +122,7 @@ Both kept on disk with SUPERSEDED banners pointing at
   filters samples with `|log_scale| >= 0.20` before percentile to
   avoid saturating ties on noisy windows. See
   `LOG_SCALE_CLAMP_THRESHOLD` in
-  [tools/find_zoom_hotspots.py](../../tools/find_zoom_hotspots.py).
+  `find_zoom_hotspots.py`.
 - `common_tools.probe_video.probe_video` returns a dict, not a tuple.
   Tools 1, 2, 5, plus the existing assess_pixel_zoom, were updated to
   match.

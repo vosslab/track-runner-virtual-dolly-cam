@@ -5,7 +5,7 @@ runner has not moved. Variance across pre-race seeds is human seed
 reproducibility noise (the "ask a human to circle the same object 15
 times" effect; see contract C5), not real motion or scale change.
 
-Tool: [tools/measure_seed_reproducibility.py](../../../../tools/measure_seed_reproducibility.py).
+Tool: `measure_seed_reproducibility.py`.
 Reads only `tr_config/{basename}.track_runner.seeds.json` plus the
 co-located `interval_scores.json` for `race_start_frame`. No video file
 needed.

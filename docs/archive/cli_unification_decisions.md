@@ -4,7 +4,7 @@ Owner: user (sole maintainer). Date opened: 2026-05-23. Date recorded:
 2026-05-24.
 
 Companion to
-[../audits/cli_argument_audit.md](../audits/cli_argument_audit.md).
+[cli_argument_audit.md](cli_argument_audit.md).
 All "APPROVED" decisions were confirmed by user in the 2026-05-23
 planning session and remain unimplemented as of 2026-05-24; the
 follow-up rename plan owns the code edits.

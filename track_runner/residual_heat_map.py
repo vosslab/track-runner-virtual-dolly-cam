@@ -64,6 +64,32 @@ def _build_threshold_mask(
 
 
 #============================================
+def _build_jet_layer(
+	residual_mag: numpy.ndarray,
+	above_mask: numpy.ndarray,
+	fixed_max: float,
+) -> numpy.ndarray:
+	"""Build the JET-colorized residual layer.
+
+	Zero out sub-threshold magnitudes before colorization so any mask
+	leak lands at JET(0) dark blue, not at a warm color.
+
+	Args:
+		residual_mag: Residual magnitude array (float32, HxW).
+		above_mask: uint8 HxW mask from _build_threshold_mask.
+		fixed_max: Passed through to residual_motion.colorize_jet.
+
+	Returns:
+		BGR uint8 image of shape (H, W, 3) with JET colorization.
+	"""
+	mag_above = numpy.where(
+		above_mask > 0, residual_mag, 0.0,
+	).astype(numpy.float32)
+	jet_bgr = residual_motion.colorize_jet(mag_above, float(fixed_max))
+	return jet_bgr
+
+
+#============================================
 def _compose_overlay(
 	frame_roi_bgr: numpy.ndarray,
 	residual_mag: numpy.ndarray,
@@ -100,10 +126,7 @@ def _compose_overlay(
 
 	# JET layer: zero out sub-threshold magnitudes before colorization
 	# so any mask leak lands at JET(0) dark blue, not at a warm color.
-	mag_above = numpy.where(
-		above_mask > 0, residual_mag, 0.0,
-	).astype(numpy.float32)
-	jet_bgr = residual_motion.colorize_jet(mag_above, float(fixed_max))
+	jet_bgr = _build_jet_layer(residual_mag, above_mask, fixed_max)
 
 	# above-threshold composite: mix JET with the original color frame.
 	alpha = float(blend_alpha)
@@ -128,7 +151,7 @@ def compute_heat_map_roi(
 	scene_transform: object,
 	pred_center: tuple,
 	pred_box: tuple,
-	fps: float = float(residual_motion.REFERENCE_FPS),
+	fps: float,
 	threshold: float = 10.0,
 	fixed_max: float = 30.0,
 	blend_alpha: float = 0.40,
@@ -152,10 +175,11 @@ def compute_heat_map_roi(
 		pred_center: (cx, cy) predicted torso center in full-frame pixels.
 		pred_box: (w, h) predicted torso box size in pixels. Only h is
 			used (matches solver's ROI rule).
-		fps: Frame rate in frames per second. Used to resolve the neighbor
-			stride via residual_motion.resolve_stride. Default is
-			REFERENCE_FPS (60). Pass reader.fps for correct stride at
-			non-60-fps sources.
+		fps: Frame rate in frames per second. Required. Used to resolve
+			the neighbor stride via residual_motion.resolve_stride. Pass
+			reader.fps so stride matches the source. No default: a wrong
+			fps silently produces residuals against wrong neighbor frames
+			and a degraded heat map.
 		threshold: Magnitude boundary. Pixels strictly below render as
 			grayscale of the source frame; pixels at or above render
 			as JET over the color frame.
@@ -248,4 +272,134 @@ def compute_heat_map_roi(
 
 	origin = (x1, y1)
 	result = (composite, origin)
+	return result
+
+
+#============================================
+def compute_heat_map_overlay_roi(
+	reader: object,
+	frame_index: int,
+	scene_transform: object,
+	pred_center: tuple,
+	pred_box: tuple,
+	fps: float,
+	threshold: float = 10.0,
+	fixed_max: float = 30.0,
+	blend_alpha: float = 0.40,
+) -> tuple | None:
+	"""Compose a transparent heat-map overlay for one frame's ROI.
+
+	Sibling to compute_heat_map_roi, but returns a BGRA overlay with
+	proper alpha channel for downstream alpha-composite blending. This
+	avoids reinventing residual computation and JET colorization; the
+	caller can overlay this at the requested blend_alpha opacity on top
+	of the source frame.
+
+	ROI geometry, residual calculation, DoG band-pass, and JET
+	colorization are identical to compute_heat_map_roi. The only
+	difference is the return type: BGRA uint8 (shape HxW4) instead of
+	BGR uint8.
+
+	Alpha channel:
+	  - Pixels below threshold: alpha = 0 (fully transparent).
+	  - Pixels at or above threshold: alpha = int(blend_alpha * 255).
+	  This allows downstream alpha-composite to render the JET-colored
+	  layer at the requested opacity while keeping the source frame
+	  visible underneath.
+
+	RGB channels (below threshold where alpha=0, color is undefined;
+	suggest setting to zero):
+	  - Below threshold: (0, 0, 0) [undefined; will not be visible].
+	  - At or above threshold: JET-colorized residual magnitude.
+
+	Args:
+		reader: VideoReader-compatible reader with .width, .height,
+			.frame_count, and .read_frame(index) -> BGR numpy array.
+		frame_index: Index of the frame to compute overlay for.
+		scene_transform: SceneTransform used by the residual primitive
+			to warp neighboring frames into the center frame's camera
+			space. Pass the solver's real transform; an identity one
+			will let camera pan ghost into the residual.
+		pred_center: (cx, cy) predicted torso center in full-frame pixels.
+		pred_box: (w, h) predicted torso box size in pixels. Only h is
+			used (matches solver's ROI rule).
+		fps: Frame rate in frames per second. Required. Used to resolve
+			the neighbor stride via residual_motion.resolve_stride. Pass
+			reader.fps so stride matches the source. No default: a wrong
+			fps silently produces residuals against wrong neighbor frames
+			and a degraded heat map.
+		threshold: Magnitude boundary. Pixels strictly below render as
+			transparent (alpha=0); pixels at or above render with
+			alpha=int(blend_alpha * 255).
+		fixed_max: Magnitude mapped to JET hot-red. Default 30.0
+			matches the diagnostic tool.
+		blend_alpha: Target opacity for above-threshold pixels in the
+			range [0, 1]. Converted to uint8: alpha_channel = int(blend_alpha * 255).
+			Typical values: 0.40 for subtle overlay, 0.60 for prominent.
+
+	Returns:
+		Tuple (bgra: numpy.ndarray shape (roi_h, roi_w, 4) uint8,
+		origin: (x1, y1)) when the residual is available, else None.
+		Origin is the top-left corner of the ROI in full-frame pixels.
+	"""
+	# require a reader capable of reporting frame geometry
+	if reader is None:
+		return None
+	# require a valid prediction
+	if pred_center is None or pred_box is None:
+		return None
+
+	pred_cx, pred_cy = float(pred_center[0]), float(pred_center[1])
+	pred_w = float(pred_box[0])
+	pred_h = float(pred_box[1])
+
+	# stage 0: build the ROI using the solver's exact crop rule
+	roi = residual_motion._compute_roi(
+		pred_cx, pred_cy, pred_h, int(reader.width), int(reader.height),
+	)
+	x1, y1 = int(roi[0]), int(roi[1])
+
+	# stage 1b: residual calculation. stride derived from fps via M2 model.
+	stride = residual_motion.resolve_stride(fps)
+	residual_result = residual_motion.compute_residual_for_frame(
+		reader, frame_index, scene_transform,
+		fps=fps, stride=stride, cache=None, roi=roi,
+	)
+	residual_mag, validity_mask = residual_result
+	if residual_mag is None:
+		return None
+
+	# stage 1c: DoG band-pass tuned to the torso width so the overlay
+	# shows the same magnitude landscape the production observer sees.
+	# Sub-torso speckle is suppressed; torso-scale blobs are enhanced.
+	dog_k = residual_motion.DOG_K_FACTOR_DEFAULT
+	residual_mag = residual_motion.dog_filter_blob_scale(
+		residual_mag, pred_w,
+		k=dog_k,
+	)
+	if validity_mask is not None:
+		residual_mag[validity_mask == 0] = 0.0
+
+	# stage 2: threshold mask.
+	above_mask = _build_threshold_mask(residual_mag, threshold)
+
+	# stage 3a: build the JET-colorized layer (no frame blending here).
+	jet_bgr = _build_jet_layer(residual_mag, above_mask, fixed_max)
+
+	# stage 3b: build the BGRA overlay with proper alpha channel.
+	# Alpha = 0 below threshold (fully transparent).
+	# Alpha = int(blend_alpha * 255) above threshold.
+	alpha_value = int(float(blend_alpha) * 255)
+	alpha_channel = numpy.where(
+		above_mask > 0, alpha_value, 0,
+	).astype(numpy.uint8)
+
+	# Stack BGR + alpha to form BGRA.
+	bgra_overlay = numpy.stack(
+		(jet_bgr[:, :, 0], jet_bgr[:, :, 1], jet_bgr[:, :, 2], alpha_channel),
+		axis=-1,
+	).astype(numpy.uint8)
+
+	origin = (x1, y1)
+	result = (bgra_overlay, origin)
 	return result

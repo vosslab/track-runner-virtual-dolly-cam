@@ -16,22 +16,22 @@ cue-confidence scoring, the concrete cache schema, the
 Does not own: dual-pass invariants, pass-local gating rules, allowed
 signal flow, or the normative statement of which cache contents are
 forbidden. Those live in
-[FWD_BWD_MODEL_METHODOLOGY.md](FWD_BWD_MODEL_METHODOLOGY.md).
+`FWD_BWD_MODEL_METHODOLOGY.md`.
 
 Related docs:
 
 - [TRACK_RUNNER_CONTRACT.md](TRACK_RUNNER_CONTRACT.md) -- rules.
-- [FWD_BWD_MODEL_METHODOLOGY.md](FWD_BWD_MODEL_METHODOLOGY.md) --
+- `FWD_BWD_MODEL_METHODOLOGY.md` --
   dual-pass invariants, raw-cache boundary, allowed signal flow.
-- [RESIDUAL_MOTION_OBSERVATIONS.md](RESIDUAL_MOTION_OBSERVATIONS.md)
+- [RESIDUAL_MOTION_OBSERVATIONS.md](archive/RESIDUAL_MOTION_OBSERVATIONS.md)
   -- consumer-facing one-page summary of the observation API.
 - [TRACK_RUNNER_DESIGN.md](TRACK_RUNNER_DESIGN.md) -- why motion cues
   matter.
 
 Primary code:
-[track_runner/residual_motion.py](../track_runner/residual_motion.py).
+[residual_motion.py](../track_runner/residual_motion.py).
 Display facade for the annotation UI:
-[track_runner/residual_heat_map.py](../track_runner/residual_heat_map.py).
+[residual_heat_map.py](../track_runner/residual_heat_map.py).
 This doc refers to named constants (for example `ROI_MULTIPLIER`,
 `ROI_QUANT`, `MIN_BLOB_AREA`, `DEFAULT_THRESHOLD`,
 `DEFAULT_HALF_WINDOW`, `TANGENT_MIN_SPAN`) without repeating their
@@ -164,7 +164,7 @@ bounded cache-miss cost.
 
 Before connected-component extraction, the residual magnitude image is
 band-pass filtered by `dog_filter_blob_scale(mag, diameter, k=5.0)`
-(in [track_runner/residual_motion.py](../track_runner/residual_motion.py)).
+(in [residual_motion.py](../track_runner/residual_motion.py)).
 This step is applied unconditionally inside both `observe_blob_at`
 (production observer) and `compute_heat_map_roi` (GUI overlay) so the
 solver and the user-visible overlay see the same magnitude landscape.
@@ -279,7 +279,7 @@ Optional parameters resolved at call time:
 
 - `fps` defaults to `reader.fps` when None.
 - `stride` defaults to `resolve_stride(fps)` when None: 60 fps -> 1, 119.94 fps -> 2, 240 fps -> 4. The neighbor offsets used inside the residual computation are `[k * stride for k in [-half_window..-1, 1..half_window]]`. Time span is fixed at ~133 ms across fps.
-- `precomputed_store` is a worker-local dict produced by [track_runner/residual_pre_pass.py](../track_runner/residual_pre_pass.py) `precompute_interval_residuals`. When non-None, the function looks up `(frame_index, roi)`; on a hit it bypasses `compute_residual_for_frame` and reads stored uint8 residual + validity directly. On miss it falls through to the legacy reader path.
+- `precomputed_store` is a worker-local dict produced by [residual_pre_pass.py](../track_runner/residual_pre_pass.py) `precompute_interval_residuals`. When non-None, the function looks up `(frame_index, roi)`; on a hit it bypasses `compute_residual_for_frame` and reads stored uint8 residual + validity directly. On miss it falls through to the legacy reader path.
 
 `BlobObservation` fields:
 
@@ -327,7 +327,7 @@ one interval. Two subkey patterns are legal:
 The normative rules for what the cache MUST NOT hold (accepted
 blobs, gate outcomes, `snap_pred` values, chained counters, etc.)
 live in
-[FWD_BWD_MODEL_METHODOLOGY.md](FWD_BWD_MODEL_METHODOLOGY.md) under
+`FWD_BWD_MODEL_METHODOLOGY.md` under
 the raw-cache boundary. This doc owns the concrete schema above.
 
 ## Consumption
@@ -338,7 +338,7 @@ and `local_tangent`. Everything downstream of the return value --
 the three local gates, accept/reject/absent resolution,
 `snap_pred[t]` blending, seed-endpoint skipping -- is pass-local
 state owned by
-[FWD_BWD_MODEL_METHODOLOGY.md](FWD_BWD_MODEL_METHODOLOGY.md).
+`FWD_BWD_MODEL_METHODOLOGY.md`.
 
 ## What the heat map is not
 
@@ -430,7 +430,7 @@ caches.
 
 Per contract C9 there is exactly one schema-version authority:
 `tr_schema.SCHEMA_VERSION` in
-[track_runner/tr_schema.py](../track_runner/tr_schema.py). Cache
+[tr_schema.py](../track_runner/tr_schema.py). Cache
 invalidation for observer-behavior changes (new gate, changed corridor
 geometry, changed scoring terms, the DoG band-pass step) flows through
 two coordinated structures inside `tr_schema`:
@@ -454,4 +454,4 @@ new version to `GEOMETRY_AFFECTING_SCHEMAS`. The legacy `blob_snap/v1`
 fingerprint format produced before this unification is migrated to
 `geometry_schema_v3` at load time by
 `interval_fingerprint.migrate_legacy_fingerprints` (see
-[docs/TR_SCHEMA_VERSION_HISTORY.md](TR_SCHEMA_VERSION_HISTORY.md)).
+[TR_SCHEMA_VERSION_HISTORY.md](TR_SCHEMA_VERSION_HISTORY.md)).

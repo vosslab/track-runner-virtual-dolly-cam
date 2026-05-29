@@ -61,61 +61,7 @@ Before `race_start_frame` the runner is stationary relative to the
 surroundings, and the camera and zoom are fixed. Seed variation in this
 range reflects human annotation noise, not runner motion.
 
-- Torso-box dimensions for frames in `[0, race_start_frame)` are the
-  average of user seeds across that range.
-- Torso-box center in that range is anchored to the surroundings (in
-  scene coordinates), not re-estimated per frame.
-- Code that treats pre-race seeds as independent measurements of a moving
-  target violates this rule.
-
-## C5. Torso boxes are correct-object, imprecise-boundary annotations
-
-A torso box identifies the correct runner torso, but its exact boundary is not
-perfectly defined. If a human draws a box around the same runner in the same
-frame many times, the boxes will differ slightly. Machine-produced boxes have
-the same boundary-imprecision problem.
-
-- Code must treat torso-box coordinates and dimensions as imprecise
-  measurements of the correct object, not exact object boundaries.
-- Small frame-to-frame changes in `x`, `y`, `w`, or `h` must not automatically
-  be treated as true runner motion or true runner scale change.
-- Crop zoom must not react directly to single-frame torso-width or
-  torso-height jitter without robust stabilization.
-- Position tracking and size tracking should be separable. A stable center with
-  noisy `w`/`h` must not create zoom bounce.
-- Seeds remain truth anchors under C1 and C3, but seed boxes still have finite
-  boundary precision.
-
-## C6. Intervals after race start are independent
-
-Seeds are hard anchors. An interval runs seed -> seed.
-
-- Solving an interval must not read state from neighboring intervals,
-  global accumulators, or prior solve results.
-- Solve and refine are both per-interval and parallelizable. No
-  exceptions.
-- Refine may reuse bookkeeping about which intervals changed (for cache
-  invalidation and scheduling), but not trajectory state from prior
-  interval solves.
-- Future interval-to-interval smoothing, if added, is a separate pass
-  layered on top of solve and refine. It never lives inside them.
-
-## C7. Refine mode only modifies after race start intervals with new seeds
-- refine mode should never force a full solve. If a full solve is needed,
-  exit and tell the user to run solve with a reason.
-- recalculating race_start_frame is fine, but I just want to make sure untouched intervals are retained
-
-## C8. Jersey color and runner-appearance template matching are not reliable
-
-- Jersey and clothing color, color-histogram matching, and
-  runner-appearance template matching are banned as identity or
-  classification evidence.
-- Local patch correlation used for non-identity purposes, for example
-  short-horizon propagation flow, is out of scope for this clause.
-- Rationale: runner appearance varies with pose, distance, lighting,
-  occlusion, and motion blur, and prior versions produced unreliable
-  results. See
-  [archive/TRACK_RUNNER_V3_FINDINGS.md](archive/TRACK_RUNNER_V3_FINDINGS.md).
+- Torso-box dimensions for frames in `[TRACK_RUNNER_V3_FINDINGS.md](archive/TRACK_RUNNER_V3_FINDINGS.md).
 - The current active machine-evidence set lives in
   [TRACK_RUNNER_DESIGN.md](TRACK_RUNNER_DESIGN.md) and may evolve. This
   clause only forbids re-introducing the unreliable cues.
@@ -127,7 +73,7 @@ their own per-pass working state. That state must remain pass-local.
 
 Terminology for per-interval geometry ("forward interval path",
 "backward interval path", "blended interval path") is defined in
-[FWD_BWD_MODEL_METHODOLOGY.md](FWD_BWD_MODEL_METHODOLOGY.md). "Blended
+`FWD_BWD_MODEL_METHODOLOGY.md`. "Blended
 output" below refers to the blended interval path.
 
 For scoring and review:

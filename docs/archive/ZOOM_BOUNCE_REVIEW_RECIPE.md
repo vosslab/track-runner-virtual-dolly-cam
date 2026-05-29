@@ -8,8 +8,8 @@ the 2026-05-02 crop changes.
 The investigation plan that scopes this work is at
 `/Users/vosslab/.claude/plans/declarative-shimmying-brooks.md`. The
 hypothesis under test is described in
-[docs/CHANGELOG.md](CHANGELOG.md) (entry 2026-05-02) and in
-[docs/TRACK_RUNNER_DESIGN.md](TRACK_RUNNER_DESIGN.md).
+[CHANGELOG.md](../CHANGELOG.md) (entry 2026-05-02) and in
+[TRACK_RUNNER_DESIGN.md](../TRACK_RUNNER_DESIGN.md).
 
 ## Required corpus layout
 
@@ -36,7 +36,7 @@ sub-directories are optional; the ranking tool ignores variants whose
 videos do not appear in `baseline/`.
 
 Each `pixel_zoom_comparison.csv` is the output of
-[tools/assess_pixel_zoom.py](../tools/assess_pixel_zoom.py) in batch
+`assess_pixel_zoom.py` in batch
 mode against that variant's directory.
 
 ## Workflow
@@ -325,7 +325,7 @@ specific metric values that justified the choice.
   source pan are not necessarily crop-pipeline bounce. Cross-check
   the source-video timeline.
 - The pre-encode tool
-  [tools/analyze_crop_path_stability.py](../tools/analyze_crop_path_stability.py)
+  `analyze_crop_path_stability.py`
   measures `height_jerk_p95` directly on the crop rectangles
   (no rendered-pixel involvement). It can be used as a sanity cross-
   check, but the encoder applies integer rounding and ffmpeg may

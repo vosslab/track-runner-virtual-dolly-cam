@@ -10,7 +10,7 @@ and stand-alone scripts under `tools/`.
 - [`probe_video.py`](probe_video.py) - video metadata probe via mediainfo CLI.
 - [`goodbox.py`](goodbox.py) - "goodbox" sizing helpers (FFT-friendly dimensions; prime factors `<= 11`).
 - [`frame_filters.py`](frame_filters.py) - simple per-frame image filters used by the encoder pipeline.
-- [`tr_video_identity.py`](tr_video_identity.py) - basename + size-bytes fingerprinting used to warn on input-file identity mismatches.
+- [`tr_video_identity.py`](../track_runner/tr_video_identity.py) - basename + size-bytes fingerprinting used to warn on input-file identity mismatches.
 
 ## Source video format requirement
 

@@ -813,7 +813,7 @@ get wrong values.
 
 ## 15. Differences from original plan
 
-The original plan is documented in [docs/TRACK_RUNNER_TOOL_PLAN.md](docs/TRACK_RUNNER_TOOL_PLAN.md).
+The original plan is documented in [TRACK_RUNNER_TOOL_PLAN.md](TRACK_RUNNER_TOOL_PLAN.md).
 
 ### Planned but not implemented
 

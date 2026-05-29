@@ -11,7 +11,7 @@ reused from the cache. The behavioral change does not take effect until an
 unrelated schema bump or seed edit invalidates the entry.
 
 There is a stale comment in
-[track_runner/velocity_model.py](../../track_runner/velocity_model.py)
+[velocity_model.py](../../../track_runner/velocity_model.py)
 that asserts blob-snap constants ARE "baked into the solver fingerprint".
 That claim is false today and is the most visible symptom of the gap.
 
@@ -20,20 +20,20 @@ That claim is false today and is the most visible symptom of the gap.
 The cache-reuse contract is implemented in three places.
 
 - The hash itself is built by `interval_fingerprint` in
-  [track_runner/state_io.py](../../track_runner/state_io.py) at line 770. The
+  [state_io.py](../../../track_runner/state_io.py) at line 770. The
   function reads only `frame_index` plus the rounded `(cx, cy, w, h)` of each
   seed endpoint, then appends an optional `solver_tag` suffix.
 - The tag passed for that suffix is built by `build_geometry_tag` in
-  [track_runner/interval_fingerprint.py](../../track_runner/interval_fingerprint.py)
+  [interval_fingerprint.py](../../../track_runner/interval_fingerprint.py)
   at line 47. The tag is `schema_v<N>` where N is the latest
   geometry-affecting schema version from `tr_schema.GEOMETRY_AFFECTING_SCHEMAS`.
 - The schema-version authority is `SCHEMA_VERSION` in
-  [track_runner/tr_schema.py](../../track_runner/tr_schema.py) at line 23,
+  [tr_schema.py](../../../track_runner/tr_schema.py) at line 23,
   with the affecting-set declared at line 49.
 
 Cache reuse happens when both `solve` and `refine` compute the same
 fingerprint for an interval. The solver driver in
-[track_runner/interval_solver.py](../../track_runner/interval_solver.py)
+[interval_solver.py](../../../track_runner/interval_solver.py)
 uses `compute_interval_fingerprint` (line 33) as the lookup key into
 `prior_solved_intervals`. The same helper is reached from the refine path
 through `solve_queue.plan_interval_work`. By design, two intervals with
@@ -43,7 +43,7 @@ interchangeable.
 ## What is in the fingerprint
 
 The fingerprint inputs as of today, per
-[track_runner/state_io.py](../../track_runner/state_io.py) lines 802 to 812:
+[state_io.py](../../../track_runner/state_io.py) lines 802 to 812:
 
 - `frame_index` of the start seed (integer)
 - `frame_index` of the end seed (integer)
@@ -52,7 +52,7 @@ The fingerprint inputs as of today, per
 - the geometry tag `schema_v<N>` appended after a `||` separator
 
 Notably absent from the fingerprint inputs (intentionally, per
-[track_runner/interval_fingerprint.py](../../track_runner/interval_fingerprint.py)
+[interval_fingerprint.py](../../../track_runner/interval_fingerprint.py)
 lines 56 to 61):
 
 - `bin_factor`; bin-aware computation crosses the source/processed boundary
@@ -61,7 +61,7 @@ lines 56 to 61):
 
 The video identity, scene-transform digest, and motion-track digest are
 checked at a higher level (run-fingerprint walk in
-[track_runner/solve_queue.py](../../track_runner/solve_queue.py)), not in
+[solve_queue.py](../../../track_runner/solve_queue.py)), not in
 the per-interval key.
 
 ## What is missing
@@ -71,7 +71,7 @@ per-frame solver output when they change, and are NOT inputs to the
 fingerprint.
 
 Blob-snap gate constants in
-[track_runner/velocity_model.py](../../track_runner/velocity_model.py):
+[velocity_model.py](../../../track_runner/velocity_model.py):
 
 - `BLOB_SNAP_ALPHA = 0.6` at line 528; proximity gate cap as a fraction of
   torso height.
@@ -86,14 +86,14 @@ Blob-snap gate constants in
   clamp.
 
 Direction-gate dot-product threshold in
-[track_runner/velocity_model.py](../../track_runner/velocity_model.py) at
+[velocity_model.py](../../../track_runner/velocity_model.py) at
 line 833. The threshold is the bare integer literal `0.0`; the gate is
 `(dx * v_pred[0] + dy * v_pred[1]) >= 0.0`. The literal is not a named
 constant, which makes it harder to surface in a fingerprint helper than
 the `BLOB_SNAP_*` names above.
 
 Cue-confidence weights inside `compute_cue_confidence` in
-[track_runner/residual_motion.py](../../track_runner/residual_motion.py)
+[residual_motion.py](../../../track_runner/residual_motion.py)
 at line 881. The expression `strength * 0.3 + size_score * 0.3 +
 proximity * 0.4` carries three weights and the strength normalization
 denominator `10000.0` at line 865; none are named constants. The
@@ -102,7 +102,7 @@ combination at lines 865 to 879 are also implicitly part of the
 contract.
 
 Residual-extraction tunables in
-[track_runner/residual_motion.py](../../track_runner/residual_motion.py):
+[residual_motion.py](../../../track_runner/residual_motion.py):
 
 - `MIN_BLOB_AREA = 25` at line 51; minimum blob area in pixels before a
   candidate is discarded by `extract_frame_blobs`.
@@ -112,7 +112,7 @@ Residual-extraction tunables in
 - `DEFAULT_HALF_WINDOW = 4` at line 83; residual-motion temporal window
   size. Window-resolution changes already required a schema bump (v9 was
   added to `GEOMETRY_AFFECTING_SCHEMAS` for exactly this reason; see
-  [track_runner/tr_schema.py](../../track_runner/tr_schema.py) line 39),
+  [tr_schema.py](../../../track_runner/tr_schema.py) line 39),
   which confirms the underlying tuning belongs in the fingerprint
   contract somehow.
 - The DoG k-factor and minimum target diameter near lines 56 to 68 of the
@@ -121,12 +121,12 @@ Residual-extraction tunables in
   confirming that DoG-pipeline tuning is fingerprint-relevant.
 
 The comment block at
-[track_runner/velocity_model.py](../../track_runner/velocity_model.py)
+[velocity_model.py](../../../track_runner/velocity_model.py)
 lines 525 to 527 claims these constants "are baked into the solver
 fingerprint in interval_solver.SOLVER_FINGERPRINT_TAG; any numeric change
 invalidates the refine cache automatically." This is not what the
 fingerprint code does. The `SOLVER_FINGERPRINT_TAG` builder at
-[track_runner/interval_fingerprint.py](../../track_runner/interval_fingerprint.py)
+[interval_fingerprint.py](../../../track_runner/interval_fingerprint.py)
 line 74 returns `<geometry_tag>/schema/<SCHEMA_VERSION>`, and the
 key-bearing tag passed into `interval_fingerprint` is the geometry tag
 alone, which depends only on `GEOMETRY_AFFECTING_SCHEMAS` membership.
@@ -167,7 +167,7 @@ Three approaches; not mutually exclusive.
 
 (a) Add the gate constants to the fingerprint inputs. Introduce a
 `gate_params_hash()` helper in
-[track_runner/interval_fingerprint.py](../../track_runner/interval_fingerprint.py)
+[interval_fingerprint.py](../../../track_runner/interval_fingerprint.py)
 that hashes the named gate constants and the implicit literals
 (direction-gate threshold, cue-confidence weights, normalization
 denominator) into a short tag. Append it to the existing geometry tag
@@ -179,7 +179,7 @@ that the stale comment in `velocity_model.py` becomes accurate.
 (b) Continue to invalidate by bumping `SCHEMA_VERSION` and adding the
 new version to `GEOMETRY_AFFECTING_SCHEMAS` on every gate-affecting
 tune. This is the documented contract today (contract clause C10 in
-[docs/TRACK_RUNNER_CONTRACT.md](../../docs/TRACK_RUNNER_CONTRACT.md)
+[TRACK_RUNNER_CONTRACT.md](../../TRACK_RUNNER_CONTRACT.md)
 governs the unified schema version). The cost is that every numeric
 tune carries a schema bump even when no on-disk layout changes; the
 schema-version history grows quickly and the version no longer signals
@@ -207,14 +207,14 @@ Recommended next steps for the future plan that consumes this audit:
 
 - Register the named blob-snap constants and the residual-extraction
   defaults in a single module-level tuple inside
-  [track_runner/interval_fingerprint.py](../../track_runner/interval_fingerprint.py).
+  [interval_fingerprint.py](../../../track_runner/interval_fingerprint.py).
 - Promote the bare literals (direction-gate threshold, cue-confidence
   weights, strength normalization denominator) to named constants in
   their owning modules and add them to the same registry.
 - Update `build_geometry_tag` to append a short, stable hash of the
   registered values to the existing `schema_v<N>` suffix.
 - Update the stale comment in
-  [track_runner/velocity_model.py](../../track_runner/velocity_model.py)
+  [velocity_model.py](../../../track_runner/velocity_model.py)
   lines 525 to 527 so the documented behavior matches the code.
 
 ## Out of scope

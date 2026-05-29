@@ -90,7 +90,11 @@ def _patch_inner_pipeline(monkeypatch, blob_proc_xy, blob_score=0.7):
 		return [{
 			"centroid_x": float(bx) - 0.0,  # roi offset added by caller
 			"centroid_y": float(by) - 0.0,
-			"area": 50.0,
+			"area": 50,
+			"integrated_mag": 5000.0,
+			"label_id": 1,
+			"bbox": (0, 0, 8, 8),
+			"small_blob": False,
 			"max_intensity": 10.0,
 			"mean_intensity": 5.0,
 		}]
@@ -104,7 +108,12 @@ def _patch_inner_pipeline(monkeypatch, blob_proc_xy, blob_score=0.7):
 			b["along_track"] = 0.0
 		return blobs
 
-	def _stub_confidence(blob, cx, cy, w, h, tangent):
+	def _stub_confidence(blob, cx, cy, w, h, tangent=None):
+		blob["total_score"] = blob_score
+		blob["strength_score"] = blob_score
+		blob["proximity_score"] = blob_score
+		blob["size_score"] = 0.0
+		blob["dist_h"] = 0.0
 		return blob_score
 
 	monkeypatch.setattr(residual_motion, "compute_residual_for_frame", _stub_residual)
@@ -136,7 +145,11 @@ def _observe_at_geometry(monkeypatch, geometry, src_pred_xy, src_box_wh, blob_pr
 		return [{
 			"centroid_x": float(_bx),
 			"centroid_y": float(_by),
-			"area": 50.0,
+			"area": 50,
+			"integrated_mag": 5000.0,
+			"label_id": 1,
+			"bbox": (0, 0, 8, 8),
+			"small_blob": False,
 			"max_intensity": 10.0,
 			"mean_intensity": 5.0,
 		}]

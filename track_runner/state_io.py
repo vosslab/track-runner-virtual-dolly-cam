@@ -8,6 +8,14 @@ a seed is a torso box drawn by a human. The canonical on-disk shape
 Convenience geometry (cx/cy/w/h) is derived in memory from torso_box
 at load time and discarded at write time; it never appears on disk.
 
+SeedsView (Option A coord-system robustness, 2026-05-29):
+The source-of-truth seeds dict always uses SOURCE-pixel coords.
+SeedsView wraps it and exposes PROCESSED-pixel coords via the
+held FrameGeometry reference. Use load_seeds_view(path, geometry)
+to obtain a view for the walker pipeline; load_seeds(path) is
+the legacy API preserved for callers that need source coords (UI,
+encoder, diagnostic tools).
+
 Torso-box-coords files (NPZ) store the solved per-frame blended interval path
 under the format rule "dense per-frame numeric series -> NPZ". Per
 interval, four uint16 arrays (cx/cy/w/h) plus a small JSON manifest
@@ -251,6 +259,140 @@ def load_seeds(path: str) -> dict:
 			key=lambda s: int(s["frame_index"]),
 		)
 	return data
+
+
+#============================================
+
+class SeedsView:
+	"""View over source-pixel seeds projected to a target FrameGeometry.
+
+	Source-of-truth seeds remain in source-pixel coords in the wrapped dict.
+	This view exposes processed-pixel coords lazily via the held geometry
+	reference.  Mismatched geometry use is caught by assert_geometry_match.
+
+	Use load_seeds_view(path, geometry) to construct.  Do not construct
+	directly if load_seeds_view covers your use case.
+
+	The view is read-only. Never mutate view.source in place.
+
+	Attributes:
+		geometry: The FrameGeometry used to project coords.
+		bin_factor: geometry.bin_factor (convenience accessor).
+		source: Original source-pixel seeds dict (unchanged, uncopied).
+		header: The seeds header dict (race_start, version, etc.).
+		seeds: List of seed dicts with cx/cy/w/h in PROCESSED pixels.
+			   Computed once on first access and cached.
+	"""
+
+	def __init__(self, source_seeds_dict: dict, geometry: object) -> None:
+		# geometry is a FrameGeometry; typed as object to avoid a circular
+		# import at the module level (frame_reader is not imported here).
+		self._source = source_seeds_dict
+		self._geometry = geometry
+		# lazy cache: None means not yet computed
+		self._processed_cache = None
+
+	#============================================
+	@property
+	def geometry(self) -> object:
+		"""The FrameGeometry this view was built against."""
+		return self._geometry
+
+	#============================================
+	@property
+	def bin_factor(self) -> int:
+		"""Bin factor from the geometry; int >= 1."""
+		return self._geometry.bin_factor
+
+	#============================================
+	@property
+	def source(self) -> dict:
+		"""Original source-pixel seeds dict; do not mutate."""
+		return self._source
+
+	#============================================
+	@property
+	def header(self) -> dict:
+		"""Seeds header passthrough (track_runner_seeds version and any extras)."""
+		# Return everything except the 'seeds' list
+		return {k: v for k, v in self._source.items() if k != "seeds"}
+
+	#============================================
+	@property
+	def seeds(self) -> list:
+		"""Seed list with cx/cy/w/h in PROCESSED-pixel coords.
+
+		Computed once on first access; cached on subsequent calls.
+		Seeds without torso_box (not_in_frame) are passed through
+		with no geometry keys (same as load_seeds behavior).
+		"""
+		if self._processed_cache is None:
+			self._processed_cache = self._build_processed()
+		return self._processed_cache
+
+	#============================================
+	def _build_processed(self) -> list:
+		"""Project source seeds to processed-pixel coords via geometry."""
+		out = []
+		for src in self._source["seeds"]:
+			# Seeds without torso_box (not_in_frame) carry no cx/cy/w/h
+			if "cx" not in src or src.get("cx") is None:
+				out.append(dict(src))
+				continue
+			cx_p, cy_p = self._geometry.source_to_processed(src["cx"], src["cy"])
+			w_p, _ = self._geometry.source_to_processed_delta(src["w"], 0.0)
+			h_p, _ = self._geometry.source_to_processed_delta(src["h"], 0.0)
+			projected = dict(src)
+			projected["cx"] = cx_p
+			projected["cy"] = cy_p
+			projected["w"] = w_p
+			projected["h"] = h_p
+			out.append(projected)
+		return out
+
+	#============================================
+	def assert_geometry_match(self, geometry: object) -> None:
+		"""Raise RuntimeError when geometry.bin_factor differs from view.bin_factor.
+
+		Call this once at the top of any function that consumes view.seeds
+		alongside a reader or geometry that may have been opened separately.
+		Failing loudly here prevents silent double-conversion or mis-scale.
+
+		Args:
+			geometry: A FrameGeometry (or any object with .bin_factor) to
+				compare against the view's own bin_factor.
+
+		Raises:
+			RuntimeError: If bin_factor values differ.
+		"""
+		if geometry.bin_factor != self.bin_factor:
+			raise RuntimeError(
+				f"SeedsView bin_factor mismatch: view was built at bin={self.bin_factor},"
+				f" used with geometry at bin={geometry.bin_factor}."
+				f" Rebuild the view with the correct geometry."
+			)
+
+
+#============================================
+
+def load_seeds_view(path: str, geometry: object) -> SeedsView:
+	"""Load seeds and return a SeedsView projected to the target geometry.
+
+	Source-of-truth seeds are loaded as source-pixel coords (via load_seeds).
+	The returned SeedsView exposes processed-pixel coords lazily through
+	the geometry reference.  The view's assert_geometry_match method guards
+	against accidental use with a mismatched geometry.
+
+	Args:
+		path: Path to the seeds JSON file.
+		geometry: FrameGeometry for the target reader.  Must have
+			source_to_processed, source_to_processed_delta, and bin_factor.
+
+	Returns:
+		SeedsView wrapping the source seeds and the geometry.
+	"""
+	source = load_seeds(path)
+	return SeedsView(source, geometry)
 
 
 #============================================

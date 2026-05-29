@@ -28,11 +28,11 @@ the runner is) is what the human establishes via seeds. raw_pred is the
 machine's interpolation between human truth anchors.
 
 Source files:
-- [track_runner/velocity_model.py](../../../track_runner/velocity_model.py)
+- [velocity_model.py](../../../track_runner/velocity_model.py)
   -- raw_pred construction and the propagator that consumes it.
-- [docs/TRACK_RUNNER_DESIGN.md](../../TRACK_RUNNER_DESIGN.md) -- five-stage
+- [TRACK_RUNNER_DESIGN.md](../../TRACK_RUNNER_DESIGN.md) -- five-stage
   pipeline and signal hierarchy.
-- [docs/TRACK_RUNNER_CONTRACT.md](../../TRACK_RUNNER_CONTRACT.md) -- C5
+- [TRACK_RUNNER_CONTRACT.md](../../TRACK_RUNNER_CONTRACT.md) -- C5
   (boundary imprecision), C6 (interval independence), C9 (FWD/BWD
   independence).
 
@@ -293,7 +293,7 @@ right.
 ## Why blob-side policies cannot fix this
 
 The blob refinement plan at
-[/Users/vosslab/.claude/plans/kind-exploring-cray.md](/Users/vosslab/.claude/plans/kind-exploring-cray.md)
+`kind-exploring-cray.md`
 enumerated policy set `{A, B, C, F, G}` plus triple-conditional E. All
 five operate inside the blob pipeline.
 
@@ -372,7 +372,7 @@ All four are Stage 1-3 changes. None are Stage 4 blob policies.
 - Source verdicts:
   `output_smoke/blob_refine_fix/2026-05-23/m2_sweep/Lyra-Wheeling-IMG_3912/interval_5089_5278/interval_5089_5278/verdicts.csv`
 - raw_pred construction code:
-  [track_runner/velocity_model.py](../../../track_runner/velocity_model.py)
+  [velocity_model.py](../../../track_runner/velocity_model.py)
   `_compute_raw_pred_forward` (line 349),
   `_compute_raw_pred_backward` (line 434),
   `hermite_interpolate` (line 217),
@@ -380,14 +380,14 @@ All four are Stage 1-3 changes. None are Stage 4 blob policies.
 
 ## Cross references
 
-- [docs/TRACK_RUNNER_CONTRACT.md](../../TRACK_RUNNER_CONTRACT.md) C5
+- [TRACK_RUNNER_CONTRACT.md](../../TRACK_RUNNER_CONTRACT.md) C5
   (boundary imprecision), C6 (interval independence), C9 (FWD/BWD
   independence).
-- [docs/TRACK_RUNNER_DESIGN.md](../../TRACK_RUNNER_DESIGN.md) five-stage
+- [TRACK_RUNNER_DESIGN.md](../../TRACK_RUNNER_DESIGN.md) five-stage
   pipeline; anti-pattern chained blob state; signal hierarchy.
-- [docs/active_plans/active/blob_refine_microscope_phase.md](../active/blob_refine_microscope_phase.md)
+- [blob_refine_microscope_phase.md](blob_refine_microscope_phase.md)
   microscope phase Findings (E1 dir-overshoot, E2 path bootstrap, E3
   mixed-bucket).
-- [/Users/vosslab/.claude/plans/kind-exploring-cray.md](/Users/vosslab/.claude/plans/kind-exploring-cray.md)
+- `kind-exploring-cray.md`
   blob refinement plan; H_RAW_PRED_CORPUS suspension hypothesis; M3
   decision tree.

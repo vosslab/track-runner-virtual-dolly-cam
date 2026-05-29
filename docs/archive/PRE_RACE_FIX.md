@@ -9,7 +9,7 @@ prevent the same class of drift from re-emerging when score fields change.
 ## Context
 
 After `solve -> target(add seeds) -> refine -> target`, the second `target`
-crashes in [track_runner/cli.py:200](../../nsh/track-runner-virtual-dolly-cam/track_runner/cli.py)
+crashes in [cli.py](../../track_runner/cli.py)
 at `score = iv["interval_score"]`.
 
 The failures happen to cluster in the pre-race region on both test videos
@@ -19,7 +19,7 @@ specific scoring path**:
 - `scoring.score_interval_analytical` always emits `confidence_tier`. There
   is no short-circuit or stationary branch.
 - `scoring.score_interval` (the flat-shape producer at
-  [scoring.py:296-354](../../nsh/track-runner-virtual-dolly-cam/track_runner/scoring.py))
+  `scoring.py`)
   is orphaned -- defined but never called by any live path.
 - The pre-race region has no dedicated construction in
   `interval_solver.py`, `race_phases.py`, `solver_workers.py`, or
@@ -36,13 +36,13 @@ silently in any unedited region of any project:
    `confidence_tier` shape).
 3. `SOLVER_FINGERPRINT_TAG` does NOT include a scoring-schema version,
    so fingerprints unchanged from era 1 still match -- the cache-hit
-   branch in [solve_queue.py:168](../../nsh/track-runner-virtual-dolly-cam/track_runner/solve_queue.py)
+   branch in [solve_queue.py:168](../../track_runner/solve_queue.py)
    returns the legacy-shape dict verbatim to the pipeline.
-4. [state_io.py:860-892](../../nsh/track-runner-virtual-dolly-cam/track_runner/state_io.py)
+4. [state_io.py:860-892](../../track_runner/state_io.py)
    writer has a per-entry `if "confidence_tier" in score: ... else:
    <flat>` branch that faithfully round-trips legacy into a v3-header
    file.
-5. [state_io.py:365](../../nsh/track-runner-virtual-dolly-cam/track_runner/state_io.py)
+5. [state_io.py:365](../../track_runner/state_io.py)
    reader only migrates flat->nested when `header_val == 2`. Flat
    entries under a v3 header never get migrated.
 6. Six reader sites silently hide the mismatch with `.get("interval_score",
@@ -56,15 +56,15 @@ default or a self-fallback):
 
 | Site | Shape |
 | --- | --- |
-| [cli.py:338](../../nsh/track-runner-virtual-dolly-cam/track_runner/cli.py) | `iv.get("interval_score", {})` |
-| [cli.py:425](../../nsh/track-runner-virtual-dolly-cam/track_runner/cli.py) | `scored_iv.get("interval_score", {})` |
-| [cli.py:429](../../nsh/track-runner-virtual-dolly-cam/track_runner/cli.py) | `scored_by_key.get(key, {})` |
-| [cli.py:528](../../nsh/track-runner-virtual-dolly-cam/track_runner/cli.py) | `iv.get("interval_score", {})` |
-| [cli.py:531](../../nsh/track-runner-virtual-dolly-cam/track_runner/cli.py) | `prior_scores.get(key, {})` |
-| [scoring.py:685](../../nsh/track-runner-virtual-dolly-cam/track_runner/scoring.py) | `adjacent[0].get("interval_score", adjacent[0])` |
-| [scoring.py:690](../../nsh/track-runner-virtual-dolly-cam/track_runner/scoring.py) | `iv.get("interval_score", iv)` |
-| [review.py:530](../../nsh/track-runner-virtual-dolly-cam/track_runner/review.py) | `iv.get("interval_score", {})` |
-| [encode_analysis.py:818, 823](../../nsh/track-runner-virtual-dolly-cam/track_runner/encode_analysis.py) | `result_item.get("interval_score", {})` |
+| [cli.py:338](../../track_runner/cli.py) | `iv.get("interval_score", {})` |
+| [cli.py:425](../../track_runner/cli.py) | `scored_iv.get("interval_score", {})` |
+| [cli.py:429](../../track_runner/cli.py) | `scored_by_key.get(key, {})` |
+| [cli.py:528](../../track_runner/cli.py) | `iv.get("interval_score", {})` |
+| [cli.py:531](../../track_runner/cli.py) | `prior_scores.get(key, {})` |
+| `scoring.py` | `adjacent[0].get("interval_score", adjacent[0])` |
+| `scoring.py` | `iv.get("interval_score", iv)` |
+| [review.py:530](../../track_runner/review.py) | `iv.get("interval_score", {})` |
+| [encode_analysis.py:818, 823](../../track_runner/encode_analysis.py) | `result_item.get("interval_score", {})` |
 
 Every one of these violates the PYTHON_STYLE "do not hide bugs with
 defaults" rule for a field the downstream consumer always needs. Most will
@@ -89,7 +89,7 @@ cache entries on the next solve.
    solver fingerprint so a schema bump invalidates every stale cache entry on
    the next solve. This is the durable fix that keeps future changes safe.
 4. **No silent fallbacks on required keys.** Per
-   [docs/PYTHON_STYLE.md](../../nsh/track-runner-virtual-dolly-cam/docs/PYTHON_STYLE.md)
+   [PYTHON_STYLE.md](../PYTHON_STYLE.md)
    "do not hide bugs with defaults": remove the
    `scored_by_key.get(key, {})` shim in `_predictions_from_geometry_cache`
    once the source is fixed.
@@ -124,13 +124,13 @@ cache entries on the next solve.
 
 ## Current state summary
 
-- Failing validator: [cli.py:190-206](../../nsh/track-runner-virtual-dolly-cam/track_runner/cli.py).
-- Writer (per-entry shape branch): [state_io.py:834-930](../../nsh/track-runner-virtual-dolly-cam/track_runner/state_io.py).
-- Reader (header-gated migration): [state_io.py:317-380](../../nsh/track-runner-virtual-dolly-cam/track_runner/state_io.py).
-- Silent default: [cli.py:418-429](../../nsh/track-runner-virtual-dolly-cam/track_runner/cli.py).
-- Fingerprint: [interval_fingerprint.py:30-60](../../nsh/track-runner-virtual-dolly-cam/track_runner/interval_fingerprint.py),
-  [state_io.py:763-801](../../nsh/track-runner-virtual-dolly-cam/track_runner/state_io.py).
-- Dead legacy producer: `score_interval` at [scoring.py:296-354](../../nsh/track-runner-virtual-dolly-cam/track_runner/scoring.py).
+- Failing validator: [cli.py:190-206](../../track_runner/cli.py).
+- Writer (per-entry shape branch): [state_io.py:834-930](../../track_runner/state_io.py).
+- Reader (header-gated migration): [state_io.py:317-380](../../track_runner/state_io.py).
+- Silent default: [cli.py:418-429](../../track_runner/cli.py).
+- Fingerprint: [interval_fingerprint.py:30-60](../../track_runner/interval_fingerprint.py),
+  [state_io.py:763-801](../../track_runner/state_io.py).
+- Dead legacy producer: `score_interval` at `scoring.py`.
 - Contract rules this touches: C3 (intervals independent), C4 (seeds are
   truth), C5 (FWD/BWD independent). No contract rewrite needed.
 
@@ -202,97 +202,10 @@ not lost and so M1 can be scoped tightly.
   producer for it).
 - **Problem statement:** Pre-race handling is currently scattered and
   under-specified against contract C2:
-  - [docs/TRACK_RUNNER_CONTRACT.md](../../nsh/track-runner-virtual-dolly-cam/docs/TRACK_RUNNER_CONTRACT.md)
+  - [TRACK_RUNNER_CONTRACT.md](../TRACK_RUNNER_CONTRACT.md)
     C2 requires that torso-box dimensions in
-    `[0, race_start_frame)` be the average of user seeds across that
-    range, and that the box center be anchored to scene coordinates
-    (not re-estimated per frame). No code implements this today; the
-    solver treats each pre-race seed as an independent measurement of a
-    moving target, which C2 explicitly forbids.
-  - `race_phases.detect_race_start` runs **after** interval solving, so
-    the solver cannot use `race_start_frame` to branch. Pre-race and
-    race intervals go through the same `solve_interval_analytical` path
-    with the same scoring.
-  - `score_interval_analytical` is mismatched for stationary subjects:
-    `velocity_consistency` is ill-defined at near-zero speed (its
-    denominator is "typical speed"), `size_consistency` should be
-    trivially 1.0 once C2 averaging is enforced, and `occlusion_fraction`
-    is often the only meaningful signal.
-  - There is no dedicated module; pre-race logic that exists is spread
-    across `interval_solver.py`, `race_phases.py`, and implicit
-    assumptions in `cli.py` / `ui/base_controller.py`.
-- **Proposed charter (for the follow-up planning cycle, not this plan):**
-  - New module `track_runner/pre_race.py` that owns:
-    - averaged torso-box computation per C2 (`compute_pre_race_reference`),
-    - boundary detection for pre-race regions (wraps or replaces the
-      current post-hoc `race_phases.detect_race_start`),
-    - a dedicated stationary-interval solve and score path emitting the
-      same v3 schema as `score_interval_analytical` but with fields that
-      make sense for zero-motion subjects (likely: fixed
-      `velocity_consistency=1.0`, a new `stationary_jitter` warning,
-      reused `occlusion_fraction`, and a new `confidence_tier`
-      classifier).
-  - `solve_queue` branches on pre-race vs race, dispatching to the new
-    module for pre-race intervals so their scores are actually
-    meaningful.
-  - Contract C2 + Design doc updates describing the new module.
-- **Entry criteria:** M1 landed (writer is single-schema, fingerprint
-  covers score schema). Separate brainstorming + design plan written for
-  M2 before any code lands; run `superpowers:brainstorming` then a fresh
-  `manager-make-new-plan` focused on M2.
-- **Exit criteria:** deferred; defined by the M2 plan.
-- **Non-goals for this plan:** no code in `pre_race.py` ships as part of
-  the current fix. M1 must not pre-empt the M2 design by introducing a
-  half-baked pre-race branch.
-
-## Workstream breakdown
-
-### WS-A. Schema hardening
-
-- **Goal:** Writer emits one schema, reader migrates on shape, dead legacy
-  producer gone.
-- **Owner:** python-code-review agent (implementation) plus
-  unit-test-starter agent (tests in WS-C).
-- **Work packages:** WP-1, WP-2 (target 1-3 packages).
-- **Interfaces:**
-  - Needs: current `interval_score` producers in `scoring.py` (only
-    `score_interval_analytical` remains).
-  - Provides: coherent on-disk format, `load_diagnostics` return shape
-    guaranteed to nest `interval_score` for every entry.
-- **Expected patches:** Patch 1 (writer + dead-code removal), Patch 2
-  (reader migration).
-
-### WS-B. Fingerprint and validator resilience
-
-- **Goal:** Schema bumps auto-invalidate caches; validator fails with an
-  actionable message, not a KeyError; `cli.py` stops silently defaulting.
-- **Owner:** python-code-review agent.
-- **Work packages:** WP-3, WP-4.
-- **Interfaces:**
-  - Needs: `SOLVER_FINGERPRINT_TAG` builder and `interval_fingerprint`.
-  - Provides: re-solve invalidation on schema bumps; loud validator.
-- **Expected patches:** Patch 3 (fingerprint), Patch 4 (cli validator and
-  silent-default removal).
-
-### WS-C. Tests and documentation
-
-- **Goal:** Regression coverage + changelog.
-- **Owner:** unit-test-starter agent (tests) + docset-refresh agent
-  (changelog line).
-- **Work packages:** WP-5.
-- **Interfaces:** consumes WS-A and WS-B APIs.
-- **Expected patches:** Patch 5.
-
-## Work packages
-
-### WP-1. Single-schema writer + delete dead legacy producer
-
-- **Title:** Collapse `write_solver_diagnostics` to v3-only; remove
-  `scoring.score_interval`.
-- **Owner:** python-code-review agent.
-- **Touch points:**
-  - [track_runner/state_io.py:834-930](../../nsh/track-runner-virtual-dolly-cam/track_runner/state_io.py)
-  - [track_runner/scoring.py:296-354](../../nsh/track-runner-virtual-dolly-cam/track_runner/scoring.py)
+    `[state_io.py](../../track_runner/state_io.py)
+  - `scoring.py`
 - **Acceptance criteria:**
   - The `else` branch at `state_io.py:881-892` is removed.
   - Missing `confidence_tier` in an input score dict is written as a v3
@@ -315,7 +228,7 @@ not lost and so M1 can be scoped tightly.
 - **Title:** Migrate flat-shape entries regardless of header version.
 - **Owner:** python-code-review agent.
 - **Touch points:**
-  - [track_runner/state_io.py:317-380](../../nsh/track-runner-virtual-dolly-cam/track_runner/state_io.py)
+  - [state_io.py](../../track_runner/state_io.py)
 - **Acceptance criteria:**
   - `load_diagnostics` walks every interval entry; if `"interval_score"` is
     absent, it reconstructs from the flat v2 keys exactly as the existing
@@ -334,8 +247,8 @@ not lost and so M1 can be scoped tightly.
   changes.
 - **Owner:** python-code-review agent.
 - **Touch points:**
-  - [track_runner/interval_fingerprint.py:30-60](../../nsh/track-runner-virtual-dolly-cam/track_runner/interval_fingerprint.py)
-  - [track_runner/scoring.py](../../nsh/track-runner-virtual-dolly-cam/track_runner/scoring.py)
+  - [interval_fingerprint.py](../../track_runner/interval_fingerprint.py)
+  - `scoring.py`
     (add constant near the analytical scorer).
 - **Acceptance criteria:**
   - `scoring.INTERVAL_SCORE_SCHEMA_VERSION = 3` exists as a module-level
@@ -357,8 +270,8 @@ not lost and so M1 can be scoped tightly.
   `.get(key, {})` in cache merge.
 - **Owner:** python-code-review agent.
 - **Touch points:**
-  - [track_runner/cli.py:190-257](../../nsh/track-runner-virtual-dolly-cam/track_runner/cli.py)
-  - [track_runner/cli.py:384-432](../../nsh/track-runner-virtual-dolly-cam/track_runner/cli.py)
+  - [cli.py](../../track_runner/cli.py)
+  - [cli.py](../../track_runner/cli.py)
 - **Acceptance criteria:**
   - `_validate_diagnostics_confidence` uses explicit key access on
     `iv["interval_score"]` but wraps the whole entry check so that a
@@ -393,14 +306,14 @@ not lost and so M1 can be scoped tightly.
   - `tests/test_cli_target.py` (new or extended): stale diagnostics file
     yields the new `RuntimeError` with a clear message (use `tmp_path`
     and a hand-crafted JSON fixture; no video decode).
-  - [docs/CHANGELOG.md](../../nsh/track-runner-virtual-dolly-cam/docs/CHANGELOG.md)
+  - [CHANGELOG.md](../CHANGELOG.md)
     under the existing `## 2026-04-23` day block, in "Fixes and
     Maintenance" and "Behavior or Interface Changes" subsections as
     appropriate.
 - **Acceptance criteria:**
   - All three test modules pass via
     `source source_me.sh && python -m pytest <path>`.
-  - Tests obey [docs/PYTHON_STYLE.md](../../nsh/track-runner-virtual-dolly-cam/docs/PYTHON_STYLE.md)
+  - Tests obey [PYTHON_STYLE.md](../PYTHON_STYLE.md)
     "PYTEST" rules: no brittle assertions on hardcoded constants or
     collection sizes, only behavioural properties.
   - Changelog entry names the plan file and links the touched modules.

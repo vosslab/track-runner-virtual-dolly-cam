@@ -8,11 +8,11 @@ claimed, refined, or closed independently.
 ### Stage 2 race-start refinement (currently deactivated)
 
 Stage 2 was the velocity-onset detector in
-[track_runner/race_phases.py](../track_runner/race_phases.py)
+[race_phases.py](../track_runner/race_phases.py)
 `detect_race_start`, intended to pick the exact race-start frame
 **inside** Stage 1's seed-to-seed crossing interval. As of
 2026-04-24 it is disabled in production:
-[track_runner/solve_queue.py](../track_runner/solve_queue.py) now uses
+[solve_queue.py](../track_runner/solve_queue.py) now uses
 `race_start.pick_race_start_frame_midpoint(low, high)` =
 `ceil((low + high) / 2)` instead.
 
@@ -22,11 +22,11 @@ Why deactivated:
   (`PRE_WINDOW_S * fps` at 60 fps). When Stage 1's crossing interval is
   shorter than that (a common case with dense pre-race seeds), the scan
   loop body in
-  [track_runner/race_phases.py:170-216](../track_runner/race_phases.py)
+  [race_phases.py](../track_runner/race_phases.py)
   never executes and returns `(None, 0.0)`.
 - Even when the scan runs, on ambiguous velocity profiles it returns
   None and the wrapper used to crash solve. Diagnosed via
-  [tools/diagnose_pre_race.py](../tools/diagnose_pre_race.py) on
+  `diagnose_pre_race.py` on
   `Hononega-Orion_600m-IMG_3702.mkv` (interval 340-357, 18 frames,
   baseline window 45 frames -> no scan).
 
@@ -49,7 +49,7 @@ Redesign brief for whoever picks this up:
   pipeline already computes a useful per-frame motion signal from a
   9-frame window.
 - **Recommended basis: the motion-cue heat map** in
-  [track_runner/residual_motion.py](../track_runner/residual_motion.py).
+  [residual_motion.py](../track_runner/residual_motion.py).
   `compute_residual_for_frame` uses `DEFAULT_HALF_WINDOW = 4` -> a
   9-frame aligned-background-subtraction window and produces a
   per-frame residual magnitude map. Run it across the Stage 1 interval
@@ -57,7 +57,7 @@ Redesign brief for whoever picks this up:
   even when the interval itself is short) and pick the first frame
   where residual energy at the runner's expected location crosses a
   torso-relative threshold. The diagnostic in
-  [tools/diagnose_pre_race.py](../tools/diagnose_pre_race.py) already
+  `diagnose_pre_race.py` already
   samples this signal in its `res_e` column; use it to calibrate the
   threshold before wiring the redesign into solve.
 - Per-frame scene velocity (the old Stage 2 input) and camera pan
@@ -73,7 +73,7 @@ Redesign brief for whoever picks this up:
 used by `extract_frame_blobs` to drop noise specks. The constant name
 and its fixed pixel unit look like a runner-relative threshold, which
 would violate
-[docs/TRACK_RUNNER_CONTRACT.md](TRACK_RUNNER_CONTRACT.md) clause C2
+[TRACK_RUNNER_CONTRACT.md](TRACK_RUNNER_CONTRACT.md) clause C2
 ("target size thresholds ... must be expressed in torso units").
 However, C2 explicitly permits raw pixels for "low-level raster-kernel
 sizes that are about the image, not the runner" -- and a speckle
@@ -127,7 +127,7 @@ Follow-up actions depend on the evidence:
   recovered at a typical corpus torso height (avoids surprise
   regressions). This alters blob-extraction output and invalidates
   geometry caches, so per contract C9 and
-  [docs/TR_SCHEMA_VERSION_HISTORY.md](TR_SCHEMA_VERSION_HISTORY.md)
+  [TR_SCHEMA_VERSION_HISTORY.md](TR_SCHEMA_VERSION_HISTORY.md)
   bump `SCHEMA_VERSION` and log the rationale.
 
 Do **not** jump straight to the formula-based fix without the evidence
@@ -146,18 +146,18 @@ only have to land in one place.
 Per-frame `conf` is currently produced and consumed in at least four
 mostly-disconnected places, each with its own conventions:
 
-- [track_runner/velocity_model.py](../track_runner/velocity_model.py)
+- [velocity_model.py](../track_runner/velocity_model.py)
   `blend_paths` emits `merged_conf` per blended-path frame during
   solve; it decays from FWD/BWD propagator state.
-- [track_runner/interval_solver.py](../track_runner/interval_solver.py)
+- [interval_solver.py](../track_runner/interval_solver.py)
   `_stamp_seed_confidence` overwrites seed-frame conf with `1.0` for
   visible/partial and `0.3` for approximate.
-- [track_runner/interval_solver.py](../track_runner/interval_solver.py)
+- [interval_solver.py](../track_runner/interval_solver.py)
   `derive_per_frame_confidence` (added 2026-04-27) reconstructs conf
   from `||fwd-bwd||/torso_h` mapped through `exp(-d/scale)` for
   analyze and encode (because the npz schema does not persist
   per-frame conf).
-- [track_runner/scoring.py](../track_runner/scoring.py) computes
+- [scoring.py](../track_runner/scoring.py) computes
   per-interval agreement / `confidence_tier` from the FWD/BWD pair as
   a separate quantity that lives in `interval_scores.json`.
 

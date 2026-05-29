@@ -1,6 +1,6 @@
 # Blob refinement diagnostic - execution summary
 
-Manager-level rollup of plan `kind-exploring-cray.md` execution. Companion to the formal audit at [docs/active_plans/audits/blob_refinement_visual_audit.md](../audits/blob_refinement_visual_audit.md).
+Manager-level rollup of plan `kind-exploring-cray.md` execution. Companion to the formal audit at [blob_refinement_visual_audit.md](blob_refinement_visual_audit.md).
 
 ## Scope of this report
 

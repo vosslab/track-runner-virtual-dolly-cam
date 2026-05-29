@@ -279,19 +279,27 @@ def extract_frame_blobs(
 	blobs = []
 	for label_id in range(1, num_labels):
 		area = int(label_stats[label_id, cv2.CC_STAT_AREA])
-		# skip tiny noise specks
-		if area < MIN_BLOB_AREA:
-			continue
+		# 2026-05-28 re-scope: MIN_BLOB_AREA is no longer a hard discard
+		# (per audit HIGH finding: small/distant runners were being culled).
+		# Expose small_blob as a per-blob feature; the consumer decides
+		# what's "too small". See dump_step1/BLOB_EXTRACTION_CODE_AUDIT.md.
 		component_pixels = labels == label_id
 		integrated = float(numpy.sum(mag[component_pixels]))
 		cx = float(centroids[label_id][0])
 		cy = float(centroids[label_id][1])
+		# bbox via CC stats (left, top, width, height) for the feature set
+		bx = int(label_stats[label_id, cv2.CC_STAT_LEFT])
+		by = int(label_stats[label_id, cv2.CC_STAT_TOP])
+		bw = int(label_stats[label_id, cv2.CC_STAT_WIDTH])
+		bh = int(label_stats[label_id, cv2.CC_STAT_HEIGHT])
 		blobs.append({
 			"centroid_x": cx,
 			"centroid_y": cy,
 			"area": area,
+			"bbox": (bx, by, bw, bh),
 			"integrated_mag": integrated,
 			"label_id": label_id,
+			"small_blob": area < MIN_BLOB_AREA,
 		})
 
 	# sort by integrated magnitude descending, keep top K
@@ -361,7 +369,7 @@ def _read_gray_frame(
 		cache: Dict mapping frame_index -> grayscale float32 array.
 
 	Returns:
-		Grayscale float32 array, or None if read fails.
+		Grayscale float32 array.
 	"""
 	# cache hit: move to recent end so the LRU eviction picks the
 	# truly oldest entry rather than this one
@@ -371,8 +379,6 @@ def _read_gray_frame(
 		return gray_float
 	# cache miss: read, convert, insert
 	frame_bgr = reader.read_frame(frame_index)
-	if frame_bgr is None:
-		return None
 	gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
 	gray_float = gray.astype(numpy.float32)
 	cache[frame_index] = gray_float
@@ -563,9 +569,6 @@ def compute_residual_for_frame(
 
 	# read center frame as grayscale float (full frame, cached)
 	center_full = _read_gray_frame(reader, frame_index, cache)
-	if center_full is None:
-		return (None, None)
-
 	h_frame, w_frame = center_full.shape[:2]
 
 	# crop to ROI if specified
@@ -580,11 +583,13 @@ def compute_residual_for_frame(
 
 	# degenerate ROI (prediction off-frame, or clamp produced zero area):
 	# downstream cv2.warpAffine calls with a zero-size dsize can yield
-	# an unexpected full-frame-shaped result in this code path, which
-	# then mis-broadcasts against the empty center_float slice. Treat
-	# as "no residual available" for this frame and return.
+	# an unexpected full-frame-shaped result in this code path.
+	# This is a caller bug (off-frame prediction), not a frame read error.
 	if roi_h <= 0 or roi_w <= 0:
-		return (None, None)
+		raise ValueError(
+			f"degenerate ROI (h={roi_h}, w={roi_w}) at frame {frame_index};"
+			f" prediction off-frame?"
+		)
 
 	# collect aligned neighbor frames into a stack for median computation
 	aligned_stack = []
@@ -606,15 +611,14 @@ def compute_residual_for_frame(
 			other_bgr = cache[cache_key_bgr]
 		else:
 			other_bgr = reader.read_frame(fi_other)
-			if other_bgr is None:
-				continue
 			cache[cache_key_bgr] = other_bgr
-		if other_bgr is None:
-			continue
 
 		# warp full frame into center frame's camera position
+		# motion_track dx/dy are stored in source-pixel units; frames are
+		# post-bin so scale_factor must be 1/bin_factor to match.
+		bin_factor = getattr(reader, "bin_factor", 1)
 		warp_mat = build_warp_matrix(
-			scene_transform, frame_index, fi_other, 1.0,
+			scene_transform, frame_index, fi_other, 1.0 / bin_factor,
 		)
 		# warp only the ROI region by adjusting output size and offset
 		# translate warp matrix to ROI origin
@@ -635,7 +639,10 @@ def compute_residual_for_frame(
 		aligned_stack.append(warped_float)
 
 	if len(aligned_stack) < 2:
-		return (None, None)
+		raise RuntimeError(
+			f"insufficient neighbors at frame {frame_index}:"
+			f" aligned_stack len={len(aligned_stack)}"
+		)
 
 	# build median background from aligned stack
 	stack_array = numpy.stack(aligned_stack, axis=0)
@@ -685,8 +692,6 @@ def _compute_residual_with_extras(
 	"""
 	# read center frame
 	center_frame = reader.read_frame(frame_index)
-	if center_frame is None:
-		return (None, None, None, None) if return_extras else (None, None)
 
 	h_orig, w_orig = center_frame.shape[:2]
 	if scale_factor < 1.0:
@@ -713,9 +718,6 @@ def _compute_residual_with_extras(
 			continue
 
 		other_frame = reader.read_frame(fi_other)
-		if other_frame is None:
-			continue
-
 		if scale_factor < 1.0:
 			other_frame = cv2.resize(other_frame, (new_w, new_h))
 
@@ -738,7 +740,10 @@ def _compute_residual_with_extras(
 		aligned_stack.append(warped_float)
 
 	if len(aligned_stack) < 2:
-		return (None, None, None, None) if return_extras else (None, None)
+		raise RuntimeError(
+			f"insufficient neighbors at frame {frame_index} (extras path):"
+			f" aligned_stack len={len(aligned_stack)}"
+		)
 
 	# build median background from aligned stack
 	stack_array = numpy.stack(aligned_stack, axis=0)
@@ -758,16 +763,18 @@ def _compute_residual_with_extras(
 	if not return_extras:
 		return (residual, validity_mask)
 
-	# compute raw single-pair residual as null baseline (extras only)
-	frame_n1 = reader.read_frame(frame_index + 1)
-	raw_mag = numpy.zeros((new_h, new_w), dtype=numpy.float32)
-	if frame_n1 is not None:
+	# compute raw single-pair residual as null baseline (extras only).
+	# frame_index + 1 may be past video end; guard with frame_count.
+	if frame_index + 1 < reader.frame_count:
+		frame_n1 = reader.read_frame(frame_index + 1)
 		if scale_factor < 1.0:
 			frame_n1 = cv2.resize(frame_n1, (new_w, new_h))
 		gray_n1 = cv2.cvtColor(frame_n1, cv2.COLOR_BGR2GRAY)
 		raw_mag = numpy.abs(
 			center_float - gray_n1.astype(numpy.float32)
 		)
+	else:
+		raw_mag = numpy.zeros((new_h, new_w), dtype=numpy.float32)
 
 	return (residual, raw_mag, validity_mask, center_resized)
 
@@ -841,14 +848,20 @@ def compute_cue_confidence(
 	pred_cy: float,
 	pred_w: float,
 	pred_h: float,
-	tangent: tuple,
+	tangent: tuple = None,
 ) -> float:
-	"""Compute confidence of a motion blob as a tracking cue.
+	"""Compute logged metadata score components for a motion blob.
 
-	Factors:
-	  - integrated_mag normalized (blob strength) -- weight 0.3
-	  - area relative to predicted box area (size plausibility) -- weight 0.3
-	  - distance from prediction normalized by box diagonal (proximity) -- weight 0.4
+	2026-05-28 re-scope: this score is METADATA only, used for ranking/
+	diagnostics. It does NOT filter blobs and does NOT pick a winner.
+	The direction-aware area_ratio penalty was removed (audit HIGH:
+	penalized real runners on wide shots). The size-vs-predicted term
+	is no longer included in total_score.
+
+	Components retained:
+	  - strength_score: integrated_mag normalized (heat-map intensity).
+	  - proximity_score: isotropic distance from expected location,
+	    LOGGED per audit boundary; not used to discard candidates.
 
 	Args:
 		blob: Blob dict with centroid_x, centroid_y, area, integrated_mag.
@@ -856,39 +869,39 @@ def compute_cue_confidence(
 		pred_cy: Predicted center y.
 		pred_w: Predicted box width.
 		pred_h: Predicted box height.
-		tangent: (tx, ty, nx, ny) unit vectors. Kept for API symmetry.
+		tangent: Accepted for backward compatibility, unused.
 
 	Returns:
-		Float in [0, 1]. Higher = more trustworthy blob.
+		Float in [0, 1]. Metadata only.
 	"""
+	_ = tangent
 	# strength: integrated magnitude normalized
 	strength = min(float(blob["integrated_mag"]) / 10000.0, 1.0)
 
-	# size plausibility: blob area vs predicted box area
-	pred_area = pred_w * pred_h
-	area_ratio = float(blob["area"]) / pred_area if pred_area > 0 else 0.0
-	# ideal ratio ~0.3-0.8 (blob is part of runner, not whole box)
-	size_score = 1.0 - abs(area_ratio - 0.5) * 2.0
-	size_score = max(0.0, size_score)
-
-	# proximity: isotropic distance normalized by box diagonal
+	# proximity: isotropic distance normalized by box diagonal -- LOGGED
+	# feature only, never used to filter (audit refined boundary).
 	dx = blob["centroid_x"] - pred_cx
 	dy = blob["centroid_y"] - pred_cy
 	dist = (dx**2 + dy**2)**0.5
 	diag = (pred_w**2 + pred_h**2)**0.5
 	proximity = max(0.0, 1.0 - dist / diag) if diag > 0 else 0.0
 
-	confidence = strength * 0.3 + size_score * 0.3 + proximity * 0.4
+	# total_score: strength + proximity. NO direction-aware terms,
+	# NO size_score (removed per audit HIGH finding).
+	confidence = strength * 0.5 + proximity * 0.5
 	result = max(0.0, min(1.0, confidence))
 
-	# Store per-blob score components in the blob dict for trace capture.
-	# These are used by counterfactual simulator (M3) to replay policy G.
-	# The blob dict already has integrated_mag (raw value); we add the distance
-	# in torso-height units, three computed scores, and the final confidence.
+	# Store per-blob score components on the blob dict for trace capture.
+	# These are METADATA only; they do not affect what is returned.
 	dist_h = dist / pred_h if pred_h > 0 else 0.0
 	blob["dist_h"] = dist_h
-	blob["size_score"] = size_score
+	blob["strength_score"] = strength
 	blob["proximity_score"] = proximity
+	# size_score retained as a logged feature (not used in total_score
+	# and not used as a filter). Kept for downstream JSON shape stability.
+	pred_area = pred_w * pred_h
+	area_ratio = float(blob["area"]) / pred_area if pred_area > 0 else 0.0
+	blob["size_score"] = area_ratio
 	blob["total_score"] = result
 
 	return result
@@ -899,17 +912,22 @@ def compute_cue_confidence(
 class BlobObservation:
 	"""A single per-frame blob measurement. Stateless, carries no history.
 
-	Returned by observe_blob_at when a candidate blob exists in the
-	corridor around a predicted position. Gating decisions live in the
-	caller, not in this dataclass.
+	2026-05-28 re-scope: center_pixel is the RAW blob centroid in source
+	pixels (no torso re-anchor, no direction-aware projection). The
+	consumer interprets body-to-torso offset using LOCAL context only
+	(last few accepted walker frames at most -- never derived from a
+	full-interval seed chord). See dump_step1/BLOB_EXTRACTION_CODE_AUDIT.md.
+
+	cross_track and along_track are retained for backward compatibility
+	with downstream consumers but are no longer used to filter; both are
+	zero in the new contract (consumers that need direction info must
+	derive it themselves from LOCAL accepted frames).
 
 	Attributes:
-		center_pixel: (cx, cy) in full-frame pixel coordinates.
-		cross_track: Signed cross-track distance from the predicted
-			center, in pixels. Positive along normal, negative opposite.
-		along_track: Signed along-track distance from the predicted
-			center, in pixels.
-		confidence: Cue confidence in [0, 1] from compute_cue_confidence.
+		center_pixel: (cx, cy) RAW blob centroid in full-frame pixel coords.
+		cross_track: Reserved; always 0.0 in the re-scoped contract.
+		along_track: Reserved; always 0.0 in the re-scoped contract.
+		confidence: Logged metadata score in [0, 1]. Ranking only.
 	"""
 	center_pixel: tuple
 	cross_track: float
@@ -918,6 +936,9 @@ class BlobObservation:
 
 
 #============================================
+# Two call shapes, same extraction pipeline:
+# - Production (FWD/BWD): pred_center/pred_box, default ROI/DoG/corridor, cached.
+# - Seed-local (walker): roi_override/dog_diameter_override/acceptance_box, bypassed cache.
 def observe_blob_at(
 	frame_index: int,
 	pred_center: tuple,
@@ -932,6 +953,9 @@ def observe_blob_at(
 	stride: int = None,
 	precomputed_store: "dict | None" = None,
 	trace_sink: object | None = None,
+	roi_override: "tuple | None" = None,
+	dog_diameter_override: "float | None" = None,
+	acceptance_box: "tuple | None" = None,
 ) -> BlobObservation:
 	"""Return the best blob observation at one frame, or None.
 
@@ -939,6 +963,22 @@ def observe_blob_at(
 	measurement. The caller owns all gating logic (proximity, direction,
 	temporal smoothness). This function owns image extraction and
 	corridor selection only.
+
+	Two call shapes, same code path:
+
+	1. **Production-shape (FWD/BWD propagator).** Caller provides
+	   pred_center and pred_box (from kinematic Hermite prediction).
+	   Uses default ROI sizing, default DoG diameter, and default corridor
+	   filter. All kwargs (_override, acceptance_box, precomputed_store)
+	   are None. Fully benefits from residual caching.
+
+	2. **Seed-local-shape (walker).** Caller provides roi_override,
+	   dog_diameter_override, and acceptance_box tuned to a human-authored
+	   seed's geometry. Extracts blob evidence tightly scoped to seed intent
+	   without cache pollution. When any override is set, the residual cache
+	   is bypassed (different DoG diameter or ROI would otherwise return
+	   wrong cached raw blobs). Honors contract C1 (seeds never modified
+	   by software).
 
 	Cache content boundary (strict). residual_cache may hold raw image
 	data only:
@@ -953,6 +993,14 @@ def observe_blob_at(
 	at interval end. FWD and BWD within the same interval legitimately
 	share raw residuals and raw blobs; they each apply independent gates
 	in the propagator, so sharing image data does not leak decisions.
+
+	Cache bypass (seed-local-shape only). When roi_override,
+	dog_diameter_override, or acceptance_box is set (seed-local call shape),
+	the residual cache is bypassed entirely. A different ROI or DoG diameter
+	would produce a different raw-blob extraction; caching and reusing the
+	default-shape extraction would silently return wrong results. The
+	bypass ensures seed-local queries never return stale cached blobs from
+	a prior default-shape call, and vice versa.
 
 	Cache key is `(frame_index, roi)`. FWD and BWD at the same frame
 	usually produce near-identical ROIs (both pass's raw_pred converges
@@ -1008,29 +1056,138 @@ def observe_blob_at(
 		BlobObservation for the best in-corridor candidate, or None
 		when no residual was computable, no blobs were extracted, or
 		no extracted blob fell inside the corridor.
+
+	Observable contract (2026-05-28 re-scope):
+		Extraction returns raw blob centroids in source pixels. Each blob
+		carries features: centroid_x, centroid_y, bbox, area,
+		integrated_mag, label_id, dist_to_pred_px (logged, not filtered),
+		strength_score, proximity_score, small_blob flag. Consumers
+		interpret these features in their own context; extraction does
+		not apply velocity, direction, or runner-motion priors.
+
+		The previous along-track / cross-track torso re-anchor (landed
+		just before 2026-05-28) was a design error per the audit and per
+		the user direction: there is no reliable track direction available
+		at extraction time, so any projection against an assumed heading
+		silently degrades on non-horizontal runs. This contract change
+		REVERTS that re-anchor. `BlobObservation.center_pixel` is now the
+		raw winner-blob centroid in source pixels. Consumers that need
+		body-to-torso interpretation must derive it from LOCAL context
+		(last few accepted walker frames at most), never from a
+		full-interval seed chord and never carried interval-to-interval
+		(contract C6).
+
+		Corridor / direction-aware filtering inside extraction is also
+		removed. All raw blobs whose centroids land inside the
+		acceptance_box (when provided) are returned as candidates; with no
+		acceptance_box, all raw blobs from the ROI are returned. The
+		previous corridor radius (max(1.5*w, 0.75*h) cross-track) is now
+		exposed as the per-blob logged feature `dist_to_pred_px`. No
+		silent discard based on guessed runner motion.
+
+		Winner selection inside extraction returns the highest
+		integrated_mag blob from the candidate set as a quick-lookup
+		convenience; cue_confidence is metadata only (strength_score +
+		proximity_score, both logged). Consumers may pick their own winner
+		from the candidate list (e.g. by proximity_score) as needed.
+
+		When no observation is produced (returns None), the trace's
+		`reject_reason` field is populated before return with one of
+		"no_residual", "no_raw_blobs", "corridor_empty",
+		"acceptance_box_empty", or "no_winner". Capture and audit tools
+		differentiate these failure modes without re-instrumenting the
+		heat-map pipeline.
 	"""
-	# Bin boundary (entry): pred_center/pred_box are source-frame per
-	# the public contract. ROI and blob extraction must run in
-	# processed-frame coordinates, which is the frame the reader
-	# returns. We convert via the reader's FrameGeometry and operate
-	# entirely in processed-frame space until the exit conversion.
+
+	def _set_reject_reason(reason: str) -> None:
+		# Populate trace_sink.observer_trace with a minimal trace carrying
+		# the tagged reject reason. Lets capture/audit tools distinguish
+		# why observe_blob_at returned None. Safe no-op when trace_sink
+		# is not provided.
+		if trace_sink is None:
+			return
+		# When the trace already exists, just stamp the reason; otherwise
+		# build a minimal stub so the field can be read.
+		existing = getattr(trace_sink, "observer_trace", None)
+		if existing is None:
+			trace_sink.observer_trace = blob_trace.BlobObserverTrace(
+				frame_index=frame_index,
+				roi_bounds=(0, 0, 0, 0),
+				has_residual=False,
+				residual_dog=None,
+				residual_pre_dog=None,
+				validity_mask=None,
+				raw_blobs=[],
+				corridor_blobs=[],
+				winner_blob=None,
+				winner_score=None,
+				local_tangent=local_tangent,
+				reject_reason=reason,
+			)
+		else:
+			existing.reject_reason = reason
+	# Coord contract (Option A, 2026-05-29): all inputs arrive in
+	# PROCESSED-pixel coords.  The prior Model B contract (source coords
+	# everywhere, converted at this boundary) was retired after three
+	# auto-bin coord defects.  Callers that use load_seeds_view or
+	# walk_io.load_walker_seeds_view obtain processed coords from the view;
+	# solve-mode callers (velocity_model) use bin_factor=1 so
+	# source==processed (no behavior change).  The conversion block that
+	# existed here between 2026-05-28 and 2026-05-29 was:
+	#   pred_cx_p = geometry.source_to_processed(*pred_center)   [removed]
+	#   roi_override converted source->processed                  [removed]
+	#   dog_diameter_override converted source->processed         [removed]
+	# These conversions are now the caller's responsibility.
 	geometry = getattr(reader, "geometry", None)
-	if geometry is not None and geometry.bin_factor != 1:
-		pred_cx_p, pred_cy_p = geometry.source_to_processed(*pred_center)
-		pred_w_p, pred_h_p = geometry.source_to_processed_delta(*pred_box)
-	else:
-		pred_cx_p, pred_cy_p = pred_center
-		pred_w_p, pred_h_p = pred_box
+	pred_cx_p, pred_cy_p = pred_center
+	pred_w_p, pred_h_p = pred_box
 
 	# compute ROI from caller's prediction and use it as part of the
 	# cache key so FWD and BWD with divergent raw_pred each get their
 	# own residual. _compute_roi returns a 4-tuple, which is hashable.
 	# All values here are processed-frame; ROI tuples in the cache key
 	# are processed-frame coordinates by contract.
-	frame_w = getattr(reader, "width", 1920)
-	frame_h = getattr(reader, "height", 1080)
-	roi = _compute_roi(pred_cx_p, pred_cy_p, pred_h_p, frame_w, frame_h)
+	# 2026-05-28: reader.width/height are required (PYTHON_STYLE forbids
+	# defensive defaults on required keys). Raise instead of papering over
+	# a missing attribute with a 1920x1080 fallback.
+	if not hasattr(reader, "width") or not hasattr(reader, "height"):
+		raise AttributeError(
+			"observe_blob_at requires reader.width and reader.height; "
+			f"got reader={type(reader).__name__}"
+		)
+	frame_w = reader.width
+	frame_h = reader.height
+	# Optional caller-supplied ROI override in PROCESSED-pixel coords.
+	# roi_override arrives in processed-pixel coords (caller contract since
+	# 2026-05-29; previously source-pixel before Option A migration).
+	# At bin_factor=1 source==processed so old callers are unaffected.
+	if roi_override is not None:
+		ox1 = max(0, min(frame_w, int(roi_override[0])))
+		oy1 = max(0, min(frame_h, int(roi_override[1])))
+		ox2 = max(ox1, min(frame_w, int(roi_override[2])))
+		oy2 = max(oy1, min(frame_h, int(roi_override[3])))
+		roi = (ox1, oy1, ox2, oy2)
+	else:
+		roi = _compute_roi(pred_cx_p, pred_cy_p, pred_h_p, frame_w, frame_h)
 	cache_key = (frame_index, roi)
+
+	# Bypass the residual cache when DoG diameter override is in effect.
+	# The cache stores dog_residual + raw_blobs_processed derived from
+	# the default DoG diameter (pred_w_p). A cache hit under a different
+	# override diameter would return wrong blobs.
+	overrides_in_use = (
+		dog_diameter_override is not None
+		or acceptance_box is not None
+	)
+
+	# Determine actual DoG diameter to be used in this call.
+	# dog_diameter_override arrives in PROCESSED-pixel units (caller contract
+	# since 2026-05-29; previously source-pixel before Option A migration).
+	# At bin_factor=1 source==processed so old callers are unaffected.
+	if dog_diameter_override is not None:
+		dog_diameter_actual = dog_diameter_override
+	else:
+		dog_diameter_actual = pred_w_p
 
 	# fetch or compute cached frame data (raw image-derived only).
 	# Cache key for raw blob lists is "raw_blobs_processed" to make
@@ -1038,7 +1195,7 @@ def observe_blob_at(
 	# the only public consumer is observe_blob_at, which converts
 	# back to source-frame at exit before constructing
 	# BlobObservation.
-	cached = residual_cache.get(cache_key)
+	cached = None if overrides_in_use else residual_cache.get(cache_key)
 	if cached is None:
 		# M3+M4: check the sequential pre-pass store before falling through
 		# to compute_residual_for_frame (which does scattered reads). On a
@@ -1069,6 +1226,7 @@ def observe_blob_at(
 		if residual is None:
 			# negative-result entry avoids re-attempts; holds no decisions
 			residual_cache[cache_key] = {"raw_blobs_processed": []}
+			_set_reject_reason("no_residual")
 			return None
 		# Capture pre-DoG residual (always, for cache storage).
 		residual_pre_dog = residual.copy()
@@ -1076,8 +1234,10 @@ def observe_blob_at(
 		# processed-frame pixels. The residual lives in the processed
 		# frame's pixel space; pred_w_p is in the same space, so the
 		# diameter argument lands directly without any further scaling.
+		# When the caller supplies dog_diameter_override (e.g. seed-local
+		# walker, 0.7 * seed_w per 2026-05-24 spec), use that instead.
 		dog_residual = dog_filter_blob_scale(
-			residual, pred_w_p, k=DOG_K_FACTOR_DEFAULT,
+			residual, dog_diameter_actual, k=DOG_K_FACTOR_DEFAULT,
 		)
 		dog_residual[validity_mask == 0] = 0.0
 		raw_blobs = extract_frame_blobs(dog_residual, validity_mask, threshold)
@@ -1088,13 +1248,15 @@ def observe_blob_at(
 		for blob in raw_blobs:
 			blob["centroid_x"] += roi_x1
 			blob["centroid_y"] += roi_y1
-		residual_cache[cache_key] = {
+		fresh_entry = {
 			"raw_blobs_processed": raw_blobs,
 			"residual_pre_dog": residual_pre_dog,
 			"dog_residual": dog_residual,
 			"validity_mask": validity_mask,
 		}
-		cached = residual_cache[cache_key]
+		if not overrides_in_use:
+			residual_cache[cache_key] = fresh_entry
+		cached = fresh_entry
 	else:
 		# Cache hit: retrieve raw image data from the cache entry.
 		residual_pre_dog = cached.get("residual_pre_dog")
@@ -1103,55 +1265,121 @@ def observe_blob_at(
 
 	raw_blobs = cached["raw_blobs_processed"]
 	if not raw_blobs:
+		_set_reject_reason("no_raw_blobs")
 		return None
 
-	# apply corridor filter (uses caller's tangent; NOT stored in cache)
-	tangent = local_tangent if local_tangent is not None else (1.0, 0.0, 0.0, 1.0)
-	corridor_radius = max(1.5 * pred_w_p, 0.75 * pred_h_p)
-	corridor_blobs = filter_blobs_to_corridor(
-		raw_blobs, pred_cx_p, pred_cy_p, tangent, corridor_radius,
-	)
-	if not corridor_blobs:
-		return None
+	# 2026-05-28 re-scope: extraction returns raw blob centroids. No
+	# direction-aware corridor, no along/cross projection, no torso
+	# re-anchor. local_tangent is accepted for backward compatibility
+	# but is NOT used to filter or to re-anchor any blob centroid.
+	# See docstring "Observable contract (2026-05-28 re-scope)".
+	_ = local_tangent
+	# Logical placeholder kept for the trace structure; no longer a
+	# direction-aware filter radius.
+	corridor_radius = 0.0
+	if acceptance_box is not None:
+		# acceptance_box = (x_min, y_min, x_max, y_max) in PROCESSED-pixel
+		# coords (caller contract since 2026-05-29; previously source-pixel).
+		# At bin_factor=1 source==processed so old callers are unaffected.
+		ab_x1, ab_y1, ab_x2, ab_y2 = acceptance_box
+		# Pure geometric ROI test. Keep every blob whose centroid lies
+		# inside the acceptance box; do NOT discard for direction or for
+		# distance to the predicted center.
+		candidate_blobs = [
+			b for b in raw_blobs
+			if ab_x1 <= b["centroid_x"] <= ab_x2 and ab_y1 <= b["centroid_y"] <= ab_y2
+		]
+		if not candidate_blobs:
+			_set_reject_reason("acceptance_box_empty")
+			return None
+	else:
+		# No acceptance box: return all raw blobs from the ROI. No
+		# silent discard based on guessed runner motion direction.
+		candidate_blobs = list(raw_blobs)
+		if not candidate_blobs:
+			_set_reject_reason("no_raw_blobs")
+			return None
 
-	# pick the highest-confidence blob in the corridor
-	best_blob = None
-	best_score = -1.0
-	for blob in corridor_blobs:
-		score = compute_cue_confidence(
-			blob, pred_cx_p, pred_cy_p, pred_w_p, pred_h_p, tangent,
+	# Compute and log per-blob metadata (proximity_score, strength_score,
+	# size_score, total_score). These are LOGGED features; they do not
+	# filter and the chosen winner is by integrated_mag, not total_score.
+	for blob in candidate_blobs:
+		# Zero out direction-aware fields (kept for downstream JSON shape
+		# compatibility); both are 0.0 in the re-scoped contract.
+		blob["cross_track"] = 0.0
+		blob["along_track"] = 0.0
+		compute_cue_confidence(
+			blob, pred_cx_p, pred_cy_p, pred_w_p, pred_h_p, local_tangent,
 		)
-		if score > best_score:
-			best_score = score
-			best_blob = blob
 
-	if best_blob is None:
-		return None
+	# Quick-lookup winner: strongest blob by integrated_mag. This is the
+	# raw runner-prior-free pick; consumers may re-rank from the candidate
+	# list using proximity_score or any other feature they choose.
+	best_blob = max(candidate_blobs, key=lambda b: b["integrated_mag"])
+	# best_score reports the logged total_score of the chosen winner for
+	# trace continuity. It is metadata, not a gating threshold.
+	best_score = float(best_blob["total_score"])
 
-	# Bin boundary (exit): convert centroid back to source-frame and
-	# convert cross_track / along_track distances by the same scale.
-	# Confidence is dimensionless and unchanged.
+	# Raw centroid (no re-anchor). Convert processed -> source coords.
 	cx_proc = float(best_blob["centroid_x"])
 	cy_proc = float(best_blob["centroid_y"])
-	cross_proc = float(best_blob.get("cross_track", 0.0))
-	along_proc = float(best_blob.get("along_track", 0.0))
 	if geometry is not None and geometry.bin_factor != 1:
 		cx_src, cy_src = geometry.processed_to_source(cx_proc, cy_proc)
-		cross_src, along_src = geometry.processed_to_source_delta(
-			cross_proc, along_proc,
-		)
 	else:
 		cx_src, cy_src = cx_proc, cy_proc
-		cross_src, along_src = cross_proc, along_proc
 
 	observation = BlobObservation(
 		center_pixel=(cx_src, cy_src),
-		cross_track=cross_src,
-		along_track=along_src,
-		confidence=float(best_score),
+		cross_track=0.0,
+		along_track=0.0,
+		confidence=best_score,
 	)
+	# Trace field aliases the candidate list as `corridor_blobs` for
+	# backward compatibility with existing trace consumers; the field
+	# now means "blobs that survived the geometric ROI test", with no
+	# direction-aware filter applied.
+	corridor_blobs = candidate_blobs
 	# Capture trace if requested.
 	if trace_sink is not None:
+		# Build set of corridor blob label_ids for efficient lookup.
+		# filter_blobs_to_corridor creates new blob dicts, so object identity check
+		# won't work; match by label_id instead.
+		corridor_label_ids = {b.get("label_id") for b in corridor_blobs}
+		# Enrich raw blobs with trace metadata (in_corridor, in_acceptance_box, dist_to_pred_px).
+		# These fields are added to raw_blobs for trace output only; they do not affect
+		# the production data flow when trace_sink is None.
+		for blob in raw_blobs:
+			# in_corridor: True if blob passed the corridor or acceptance-box filter
+			blob["in_corridor"] = blob.get("label_id") in corridor_label_ids
+			# in_acceptance_box: True if blob is inside acceptance box (None if acceptance box not used)
+			if acceptance_box is not None:
+				if geometry is not None and geometry.bin_factor != 1:
+					ab_x1, ab_y1 = geometry.source_to_processed(acceptance_box[0], acceptance_box[1])
+					ab_x2, ab_y2 = geometry.source_to_processed(acceptance_box[2], acceptance_box[3])
+				else:
+					ab_x1, ab_y1, ab_x2, ab_y2 = acceptance_box
+				blob["in_acceptance_box"] = (
+					ab_x1 <= blob["centroid_x"] <= ab_x2 and
+					ab_y1 <= blob["centroid_y"] <= ab_y2
+				)
+			else:
+				blob["in_acceptance_box"] = None
+			# dist_to_pred_px: Euclidean distance from blob centroid to predicted center
+			dx = blob["centroid_x"] - pred_cx_p
+			dy = blob["centroid_y"] - pred_cy_p
+			blob["dist_to_pred_px"] = (dx**2 + dy**2)**0.5
+
+		# Score components (strength_score, proximity_score, size_score,
+		# total_score) are already populated by compute_cue_confidence
+		# above. integrated_mag is a required key on every raw blob from
+		# extract_frame_blobs, so we read it directly (no defensive .get).
+		for blob in corridor_blobs:
+			strength = min(float(blob["integrated_mag"]) / 10000.0, 1.0)
+			blob["strength_score"] = strength
+
+		# roi_origin_xy: Top-left corner of ROI in processed-frame coords
+		roi_origin_xy = (roi[0], roi[1])
+
 		roi_bounds = (roi[0], roi[1], roi[2], roi[3])
 		trace = blob_trace.BlobObserverTrace(
 			frame_index=frame_index,
@@ -1164,8 +1392,11 @@ def observe_blob_at(
 			corridor_blobs=corridor_blobs,
 			winner_blob=best_blob,
 			winner_score=best_score,
-			corridor_radius=corridor_radius,
 			local_tangent=local_tangent,
+			roi_origin_xy=roi_origin_xy,
+			acceptance_box=acceptance_box,
+			dog_diameter=dog_diameter_actual,
+			corridor_radius=corridor_radius,
 		)
 		trace_sink.observer_trace = trace
 	return observation

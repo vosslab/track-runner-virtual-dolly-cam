@@ -6,9 +6,9 @@ and smoothing work. Each entry states what was tested, what was found, and what
 it led to.
 
 For the crop algorithm specification, see
-[docs/TRACK_RUNNER_V3_SPEC.md](TRACK_RUNNER_V3_SPEC.md). For crop-path
+[TRACK_RUNNER_V3_SPEC.md](../TRACK_RUNNER_V3_SPEC.md). For crop-path
 stability measurements, see
-[docs/TRACK_RUNNER_CROP_PATH_FINDINGS.md](TRACK_RUNNER_CROP_PATH_FINDINGS.md).
+[TRACK_RUNNER_CROP_PATH_FINDINGS.md](TRACK_RUNNER_CROP_PATH_FINDINGS.md).
 
 ## Test videos
 
@@ -28,7 +28,7 @@ All experiments use the same 7 test videos with solved intervals:
 
 ## Experiments 1-4: axis isolation (2026-03-16 to 2026-03-17)
 
-**Plan:** [docs/archive/TRACK_RUNNER_PLAN_01_AXIS_ISOLATION.md](archive/TRACK_RUNNER_PLAN_01_AXIS_ISOLATION.md)
+**Plan:** [TRACK_RUNNER_PLAN_01_AXIS_ISOLATION.md](TRACK_RUNNER_PLAN_01_AXIS_ISOLATION.md)
 
 **Question:** Is the perceived instability caused primarily by center motion,
 size motion, or both?
@@ -58,7 +58,7 @@ wrong. `fill_ratio` was the first-order problem, not center or size smoothing.
 
 ## Experiment 5: constraint stabilization (2026-03-17 to 2026-03-19)
 
-**Plan:** [docs/archive/TRACK_RUNNER_PLAN_02_CONSTRAINT_STABILIZATION.md](archive/TRACK_RUNNER_PLAN_02_CONSTRAINT_STABILIZATION.md)
+**Plan:** [TRACK_RUNNER_PLAN_02_CONSTRAINT_STABILIZATION.md](TRACK_RUNNER_PLAN_02_CONSTRAINT_STABILIZATION.md)
 
 **Question:** Does tighter crop geometry plus containment constraints produce
 a virtual dolly cam feel?
@@ -94,7 +94,7 @@ Remaining issues are zoom smoothing and vertical composition.
 
 ## Experiment 6: smart mode v1a (2026-03-17 to 2026-03-18)
 
-**Plan:** [docs/archive/TRACK_RUNNER_PLAN_03_SMART_MODE_V1A.md](archive/TRACK_RUNNER_PLAN_03_SMART_MODE_V1A.md)
+**Plan:** [TRACK_RUNNER_PLAN_03_SMART_MODE_V1A.md](TRACK_RUNNER_PLAN_03_SMART_MODE_V1A.md)
 
 **Question:** Can a regime-switching crop controller (clear/uncertain/distance)
 improve output quality by adapting crop behavior to trajectory confidence?
@@ -133,7 +133,7 @@ failure modes (zoom transitions, composition) that need targeted fixes.
 
 ## Experiment 7: zoom-event detection (2026-03-18)
 
-**Plan:** [docs/archive/TRACK_RUNNER_PLAN_04_COMPOSITION_ZOOM.md](archive/TRACK_RUNNER_PLAN_04_COMPOSITION_ZOOM.md)
+**Plan:** [TRACK_RUNNER_PLAN_04_COMPOSITION_ZOOM.md](TRACK_RUNNER_PLAN_04_COMPOSITION_ZOOM.md)
 
 **Question:** Can single-frame height-ratio detection identify and damp
 discrete camera zoom jumps (iPhone 1X/2X/5X mode switching)?
@@ -161,7 +161,7 @@ zoom transitions. Need a sliding-window detector.
 
 ## Experiment 7b: sliding-window zoom stabilization (2026-03-19)
 
-**Plan:** [docs/archive/TRACK_RUNNER_PLAN_05_SLIDING_WINDOW.md](archive/TRACK_RUNNER_PLAN_05_SLIDING_WINDOW.md)
+**Plan:** [TRACK_RUNNER_PLAN_05_SLIDING_WINDOW.md](TRACK_RUNNER_PLAN_05_SLIDING_WINDOW.md)
 
 **Question:** Does a 3-mode piecewise zoom controller (normal drift, transition
 freeze, settling convergence) with a sliding-window detector reduce zoom
@@ -235,7 +235,7 @@ mechanisms. When EMA is active, the rate limiter must be bypassed.
 
 ## Experiment 8: rate-limiter bypass validation (2026-03-20)
 
-**Plan:** [docs/archive/TRACK_RUNNER_PLAN_06_ZOOM_BOUNCE_FIX.md](archive/TRACK_RUNNER_PLAN_06_ZOOM_BOUNCE_FIX.md)
+**Plan:** [TRACK_RUNNER_PLAN_06_ZOOM_BOUNCE_FIX.md](TRACK_RUNNER_PLAN_06_ZOOM_BOUNCE_FIX.md)
 
 **Question:** Does bypassing the rate limiter when `alpha_size > 0` fix the
 EMA + limiter destructive interaction found in 7d?
@@ -267,7 +267,7 @@ the bounce fix.
 
 ## Experiment 9A: composition offset isolation (2026-03-23)
 
-**Plan:** [docs/TRACK_RUNNER_EXPERIMENT_9_PLAN.md](../docs/../.claude/plans/peaceful-hatching-kitten.md) (active)
+**Plan:** `peaceful-hatching-kitten.md` (active)
 
 **Question:** Does a single global `torso_anchor` value (0.38) fix the
 headroom/feet framing problem across all 7 videos?

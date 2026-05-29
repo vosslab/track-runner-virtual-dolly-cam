@@ -4,7 +4,7 @@ Status: IN PROGRESS. Fresh oracle landed; M3 sweep re-run in flight.
 
 This document summarizes the diagnostic and measurement results from the
 counterfactual-selected blob-refinement fix plan
-([kind-exploring-cray.md](../../../../.claude/plans/kind-exploring-cray.md))
+(`kind-exploring-cray.md`)
 through milestones M0 (instrumentation), M1 (oracle + sweep data
 gathering), and M2 (per-hypothesis analyzers). M3 (counterfactual gate
 simulator ranking) is in progress and M4 (production fix) is pending.
@@ -30,7 +30,7 @@ intervals show `blob_accept = 0%/0%` per pass despite a clear blob in the
 heat map within the corridor of the predicted runner position.
 
 The predecessor diagnostic plan
-([archive/...](../audits/blob_refinement_visual_audit.md)) confirmed on
+([blob_refinement_visual_audit.md](blob_refinement_visual_audit.md)) confirmed on
 one Jason interval (2444-2491) that 93% of non-endpoint FWD frames lost
 at the proximity gate. The current plan corrects that one-interval, one-
 video finding into a corpus-driven counterfactual ranking, with explicit
@@ -166,114 +166,7 @@ gate_prox`):
 
 | Test | Verdict | Corpus rate | Policy implication |
 | --- | --- | --- | --- |
-| H_DIST_SHAPE_THRESHOLD vs H_DIST_SHAPE_BLOB | **SUPPORTED THRESHOLD** | mode bin [0.6, 0.7) over 3884 prox-rejected frames | Support for policy B (loosen ALPHA from 0.6 to 1.0). Winners cluster right at the cutoff. |
-| H_ALT_PASSES (alternate-blob rescue) | REFUTED | 5.5% rescue rate (214/3884) | Policy C is weak as a standalone fix. Closest-blob picks only rescue a small fraction; the cue-conf winner is usually the right object. |
-| H_CENTROID_BIAS (with policy-E gates) | INCONCLUSIVE (degraded) | computed corpus-wide; AC-2d/2e blocked; H1 corpus REFUTED | `policy_e_eligible: false`. Tier columns missing in oracle.csv. AC-2d (TRUST 0% oracle-correctness) and AC-2e (positive-control oracle-correctness) report BLOCKED. Policy E auto-drops from M3 unless rebucket lands. |
-
-The distance-shape verdict is the load-bearing M2 result. The mode bin
-sitting at [0.6, 0.7) means most proximity rejections happen just past
-the current `0.6 * h` threshold. Loosening to `1.0 * h` (policy B)
-would capture the bulk of the distribution without changing the
-geometry-of-rejection: the winners are not pathological, they just
-exceed the cutoff by a small margin.
-
-## Leading candidate fix
-
-The candidate fix prior to the fresh oracle was policy B, anchored on
-the M2 distance-shape mode in [0.6, 0.7) and on H_ALT_PASSES REFUTED.
-The fresh oracle keeps the cited evidence intact: H_DIST_SHAPE_THRESHOLD
-SUPPORTED, H_ALT_PASSES REFUTED, and H2 REFUTED corpus-wide. Policy B
-remains the smallest-surface fix matching the distance shape.
-
-What the fresh oracle changes is the strength of the "raw_pred is
-right" anchor. Two videos (IMG_3627 at 32.9% and IMG_3839 at 26.1%)
-sit above the 20% per-video threshold for H2, with IMG_3627 above the
-30% threshold individually even though the corpus is REFUTED and the
-suspension quorum (6 of 12) does not trigger. The M3 counterfactual
-simulator must therefore answer whether policy B genuinely rescues
-trust_0 intervals on this corpus, or whether it would over-snap on the
-two videos where raw_pred itself is wrong. The simulator's bisection
-job is to discriminate B's behavior on those two videos from its
-behavior on the other ten.
-
-Remaining policy summary:
-
-- The dominant mechanism on this corpus is proximity-threshold-too-
-  tight. Centroid bias (H1) and DoG suppression (H8) are both REFUTED
-  at every threshold tested.
-- Policy B (one-constant change, `BLOB_SNAP_ALPHA: 0.6 -> 1.0`) is the
-  smallest-surface fix matching the M2 distance shape.
-- Policy F (weighted snap) and policy G (cue-conf reshaping) remain in
-  the M3 evaluation set. The fresh-oracle H6 result (11.8% wrong-winner
-  rate, the most prominent signal among tested hypotheses) gives G a
-  stronger prior than it had under the previous rev. See the working
-  hypothesis below.
-- Policy C is REFUTED for being the standalone fix (5.5% rescue), but
-  it may still rank if combined evidence shifts in the M3 simulator.
-- Policy E auto-drops because H1 is REFUTED corpus-wide
-  (`h1_supported_corpus: false`, `policy_e_eligible: false` in
-  `analyses/policy_e_gates.json`).
-
-No fix has been committed to production code. The plan explicitly
-forbids landing a fix before M3 RANKING.md picks one based on G-4 gate
-results.
-
-## Working hypothesis after fresh oracle
-
-With no hypothesis SUPPORTED at any threshold in the fresh corpus, the
-original audit's pointer toward "H1 or H6 dominant" is REFUTED. The
-signal closest to support is H6 wrong-winner at 11.8% corpus-wide,
-below the 20% threshold but the most prominent of the four tested.
-This nudges the policy ranking prior toward:
-
-1. **Policy G** (cue-confidence reshape, winner selection) -- weighted
-   by the H6 corpus rate even though H6 itself is REFUTED. If a non-
-   trivial fraction of corridor winners are the wrong blob, reshaping
-   the cue-confidence score is the lever that fixes selection without
-   touching ALPHA.
-2. **Policy B** (loosen ALPHA from 0.6 to 1.0) -- still backed by the
-   M2 distance-shape mode at [0.6, 0.7). Smallest surface, but does not
-   address the wrong-winner signal at all.
-3. **Policy F** (weighted snap) -- a softer-landing alternative to B
-   that decays with distance. Less aggressive than B at small distances,
-   more permissive at large ones.
-
-This is a working hypothesis, not a conclusion. The M3 counterfactual
-simulator is the arbiter. Recording the ranking shift here so the
-simulator's policy-prior section can cite an evidence-grounded
-starting order rather than re-deriving it.
-
-## Pending work
-
-| Item | Blocker | ETA |
-| --- | --- | --- |
-| Oracle re-run with H1/H6 producer fix | DONE | n/a |
-| Rebucket selection.csv from sweep verdicts (compute blob_accept_fwd/_bwd per interval, classify TRUST 0% / TRUST high-accept) | small tool, not built | one focused task |
-| H_CENTROID_BIAS AC-2d/2e | rebucket | minutes after rebucket |
-| Counterfactual sim instrumentation re-fix | DONE (vacuous gate column landed) | n/a |
-| Ranking-sample sweep re-run with new verdicts.csv schema | in flight | running |
-| M3 counterfactual sim real implementation (policies B, C, F, G; E auto-dropped) | sweep re-run + rebucket | 30-60 min after both |
-| WP-3A real impl: per-policy replay, G-4 gate, RANKING.md | M3 sim | 30-60 min |
-| WP-4A production fix | M3 RANKING.md winner | 15 min |
-| WP-4B production-fix reviewer (read-only) | WP-4A | 5 min |
-| WP-4C validation re-render (ranking-sample + held-out passes) | WP-4A | ~20 min |
-| WP-4D full pytest | WP-4A | 5 min |
-| WP-5A-C audit doc FINAL + changelog + plan archive | M4 done | 15 min |
-
-## Caveats
-
-1. Bucket labels in `per_video_selection.csv` are `trust_pending` /
-   `weak_fair_pending` placeholders. A rebucket step using the sweep's
-   `gate == accepted` counts per interval is needed before per-video
-   G-4 preservation gates can fire.
-2. The sweep wrapper had a transient command-line bug (passed `-c
-   tr_config` to a visualizer that doesn't accept `-c`); fixed and the
-   sweep re-ran clean. Sweep output paths have a nested-dir oddity
-   (`interval_X_Y/interval_X_Y/verdicts.csv`) from the wrapper double-
-   naming; downstream glob `**/verdicts.csv` handles it but it should
-   be cleaned before WP-4C.
-3. The `interval_fingerprint` coverage gap
-   ([memory](../../../../.claude/projects/-Users-vosslab-nsh-track-runner-virtual-dolly-cam/memory/fingerprint-coverage-gap-blob-policies.md))
+| H_DIST_SHAPE_THRESHOLD vs H_DIST_SHAPE_BLOB | **SUPPORTED THRESHOLD** | mode bin `fingerprint-coverage-gap-blob-policies.md`)
    means a production policy fix to `compute_cue_confidence` or
    `BLOB_SNAP_ALPHA` will NOT invalidate the per-user refine cache.
    Users will not see the fix until they delete their cache. This is a

@@ -56,7 +56,7 @@ Validate each fix in isolation and in combination on the same test videos.
 
 ## Setup
 
-`direct_center_crop_trajectory()` in [emwy_tools/track_runner/tr_crop.py](emwy_tools/track_runner/tr_crop.py) (line 360) is the target function. Its pipeline:
+`direct_center_crop_trajectory()` in [tr_crop.py](../../track_runner/tr_crop.py) (line 360) is the target function. Its pipeline:
 
 1. Extract `cx`, `cy`, `h` from trajectory (line 401)
 2. Compute `desired_crop_h = raw_h / fill_ratio` (line 412)
@@ -70,7 +70,7 @@ Validate each fix in isolation and in combination on the same test videos.
 
 **Zoom constraint** uses a single scalar `max_height_change` (default 0.005 = 0.5%/frame). This treats camera zoom events the same as normal scale variation. The per-frame `max_height_change` array pattern already exists in `smart_crop_trajectory()` (lines 780-784) and can be reused.
 
-**Experiment harness** at [tools/batch_encode_experiment.py](tools/batch_encode_experiment.py) uses a `VARIANTS` dict (line 101) with per-variant config overrides applied via `apply_overrides()` (line 138).
+**Experiment harness** at `batch_encode_experiment.py` uses a `VARIANTS` dict (line 101) with per-variant config overrides applied via `apply_overrides()` (line 138).
 
 ## Definitions
 

@@ -16,8 +16,8 @@ Implementation lives in a follow-up rename plan.
 
 Every cell in the inventory and reconciliation tables carries one label:
 
-- `OBSERVED`: present in [../../../track_runner/cli_args.py](../../../track_runner/cli_args.py)
-  or [../../../track_runner/ui/base_controller.py](../../../track_runner/ui/base_controller.py)
+- `OBSERVED`: present in [cli_args.py](../../track_runner/cli_args.py)
+  or [base_controller.py](../../track_runner/ui/base_controller.py)
   at HEAD on 2026-05-24. Line ranges cited inline.
 - `PROPOSED`: recommendation in this audit, not yet approved.
 - `APPROVED`: confirmed by user in the 2026-05-23 planning session.
@@ -27,7 +27,7 @@ Every cell in the inventory and reconciliation tables carries one label:
 ## Validation artifact
 
 The live argparse surface is dumped to
-[cli_argparse_dump.txt](cli_argparse_dump.txt). Regenerate with:
+`cli_argparse_dump.txt`. Regenerate with:
 
 ```
 source source_me.sh && python3 tools/dump_cli_help.py > docs/active_plans/audits/cli_argparse_dump.txt
@@ -41,7 +41,7 @@ git ls-files docs/active_plans/audits/cli_argparse_dump.txt | xargs cat | grep -
 ```
 
 Inventory parity is a doc-review checklist, not a CI gate. Per
-[docs/PYTEST_STYLE.md](../../PYTEST_STYLE.md), asserting on
+[PYTEST_STYLE.md](../PYTEST_STYLE.md), asserting on
 collections of argparse flags is fragile and rots fast.
 
 ## Current state inventory (OBSERVED)
@@ -257,7 +257,7 @@ Reserved / unused letters: `-c` (dropped), `-h` (argparse help), `-n`,
 ## Decisions
 
 Decision records live in
-[../decisions/cli_unification_decisions.md](../decisions/cli_unification_decisions.md).
+[cli_unification_decisions.md](cli_unification_decisions.md).
 D1-D5, D7-D9 APPROVED on 2026-05-23. D6 (rename deprecation policy)
 DEFERRED to the follow-up rename plan; default if unspecified at
 rename time is **hard-cut**.
@@ -266,6 +266,6 @@ rename time is **hard-cut**.
 
 The rename plan will land in `~/.claude/plans/<slug>-cli-rename.md`.
 That plan owns the actual edits to
-[../../../track_runner/cli_args.py](../../../track_runner/cli_args.py),
+[cli_args.py](../../track_runner/cli_args.py),
 the changelog entries for each rename group, and the validation
 re-dump.

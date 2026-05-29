@@ -4,7 +4,7 @@ Measurements from `tools/analyze_track_runner_json.py` (v1.0.0) run on 2026-03-1
 three test videos with track runner v3 JSON data (seeds, intervals, diagnostics).
 
 For earlier v1/v2 era measurements using YAML seed files, see
-[docs/archive/SEED_VARIABILITY_FINDINGS.md](SEED_VARIABILITY_FINDINGS.md).
+[SEED_VARIABILITY_FINDINGS.md](SEED_VARIABILITY_FINDINGS.md).
 
 ## Test videos
 
@@ -226,6 +226,6 @@ appearance discrimination: low competitor margins and unreliable identity scores
 - Seeds JSON: human annotations with status, mode, torso_box, jersey_hsv
 - Intervals JSON: fused FWD/BWD tracking with per-interval scoring
 - Diagnostics JSON: per-frame agreement, identity, margin scores (where available)
-- Analysis script: [tools/analyze_track_runner_json.py](../../tools/analyze_track_runner_json.py)
+- Analysis script: `analyze_track_runner_json.py`
 - Output artifacts: `output_smoke/track_runner_analysis_*.csv`,
   `output_smoke/track_runner_analysis_summary.json`

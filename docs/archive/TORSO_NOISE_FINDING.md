@@ -19,9 +19,9 @@ series.
 | IMG_3823 | 30 | 4083 | +0.1878 | +0.0084 |
 
 Per-video summaries with full numbers:
-[Glenbrook](2025-Glenbrook_South-1600m-IMG_1503/2025-Glenbrook_South-1600m-IMG_1503_torso_noise_summary.md),
-[IMG_3830](IMG_3830/IMG_3830_torso_noise_summary.md),
-[IMG_3823](IMG_3823/IMG_3823_torso_noise_summary.md).
+`2025-Glenbrook_South-1600m-IMG_1503_torso_noise_summary.md`,
+`IMG_3830_torso_noise_summary.md`,
+`IMG_3823_torso_noise_summary.md`.
 
 ## Per-pass introduction point
 
