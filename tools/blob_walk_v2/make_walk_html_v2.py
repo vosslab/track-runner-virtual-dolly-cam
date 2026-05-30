@@ -23,6 +23,7 @@ Usage:
 
 # Standard Library
 import sys
+import json
 import argparse
 import pathlib
 import logging
@@ -127,6 +128,19 @@ def parse_args() -> argparse.Namespace:
 			'Overrides --sample-intervals-per-video.'
 		),
 	)
+	parser.add_argument(
+		'--heat-movie', dest='heat_movie', action='store_true',
+		help=(
+			'Encode a per-direction heat movie (.mkv) alongside each interval\'s '
+			'render output.  Requires ffmpeg in PATH.  Only active when --walk is '
+			'set.  Off by default.'
+		),
+	)
+	parser.add_argument(
+		'--no-heat-movie', dest='heat_movie', action='store_false',
+		help='Do not encode heat movies (default).',
+	)
+	parser.set_defaults(heat_movie=False)
 	args = parser.parse_args()
 	return args
 
@@ -291,15 +305,33 @@ def process_video(
 	resume: bool,
 	render_tiles: bool,
 	corpus_left_frames: frozenset | None = None,
+	heat_movie: bool = False,
 ) -> dict:
 	"""Walk + render one video. Returns counters dict."""
 	logger.info(f'Processing video: {video_basename}')
-	seeds_dict = walk_io.load_walker_seeds(video_basename)
 	reader, probe_info = walk_io.open_walker_reader(video_basename)
+	# WS2-D (2026-05-29): load seeds as a SeedsView in processed-pixel coords,
+	# mirroring walk_driver.main, so run_interval_walk receives PROCESSED seeds
+	# natively. Previously this path loaded SOURCE seeds via load_walker_seeds
+	# and fed them straight into run_interval_walk; at bin > 1 a source cx (near
+	# the right edge) built a degenerate ROI clamped against the processed width
+	# (bug #101), and after WS2-C that degenerate ROI soft-missed every frame.
+	# assert_geometry_match guards against any reader/view bin mismatch.
+	seeds_view = walk_io.load_walker_seeds_view(video_basename, reader.geometry)
+	seeds_view.assert_geometry_match(reader.geometry)
 	scene_transform = walk_io.load_walker_scene_transform(video_basename)
 	race_start_frame = walk_io.load_race_start_frame(video_basename)
 
-	intervals = walk_io.enumerate_seed_to_seed_intervals(seeds_dict, race_start_frame)
+	# Processed-pixel seed map keyed by frame_index. This is BOTH the walk input
+	# (passed to run_interval_walk per interval below) and the renderer's seed-box
+	# source (proc_seed_by_frame). Per the coordinate contract (docs/COORDINATE_SPACES.md)
+	# the walker steps in PROCESSED space; SeedsView.seeds is PROCESSED.
+	proc_seed_by_frame = {s['frame_index']: s for s in seeds_view.seeds}
+
+	# Enumerate intervals using the source-pixel seeds dict for frame-index
+	# bookkeeping only (mirrors walk_driver.main). Seed coords for walking come
+	# from proc_seed_by_frame (processed), never from seeds_view.source.
+	intervals = walk_io.enumerate_seed_to_seed_intervals(seeds_view.source, race_start_frame)
 	post_start = [i for i in intervals if i.label == 'post_start']
 
 	# If corpus filter is set, restrict to those left_frames only.
@@ -320,12 +352,19 @@ def process_video(
 
 	counters = {'walked': 0, 'skipped_resume': 0, 'errors': 0}
 	video_output_dir = output_root / video_basename
+	# WS2-C: accumulate per-tile render manifests across all intervals for this
+	# video; written once to render_manifest.json below (machine-checkable gate
+	# consumed by check_render_manifest.py).
+	video_manifest_records = []
 
 	for idx, interval in enumerate(post_start):
-		left_seed = interval.left_seed
-		right_seed = interval.right_seed
-		left_frame = left_seed['frame_index']
-		right_frame = right_seed['frame_index']
+		# interval.left_seed/right_seed are SOURCE-pixel dicts (used only for
+		# frame-index bookkeeping). Walk inputs are the PROCESSED seed dicts
+		# looked up by frame_index, identical in space to walk_driver.main.
+		left_frame = interval.left_seed['frame_index']
+		right_frame = interval.right_seed['frame_index']
+		left_seed = proc_seed_by_frame[left_frame]
+		right_seed = proc_seed_by_frame[right_frame]
 		interval_dir = video_output_dir / f'seed_{left_frame}_{right_frame}'
 
 		if walk_driver.check_resume_needed(interval_dir, resume):
@@ -335,23 +374,47 @@ def process_video(
 
 		logger.info(f'  [{idx + 1}/{len(post_start)}] Interval [{left_frame}, {right_frame}]')
 		try:
-			walk_driver.run_interval_walk(
-				left_seed=left_seed,
-				right_seed=right_seed,
-				reader=reader,
-				scene_transform=scene_transform,
-				probe_info=probe_info,
-				output_interval_dir=interval_dir,
-				winner_mode='production_winner',
-				audit_rule=None,
-				render_tiles=render_tiles,
+			_summary, _fp_key, _solved_entry, fwd_manifests, bwd_manifests = (
+				walk_driver.run_interval_walk(
+					left_seed=left_seed,
+					right_seed=right_seed,
+					reader=reader,
+					scene_transform=scene_transform,
+					probe_info=probe_info,
+					output_interval_dir=interval_dir,
+					winner_mode='production_winner',
+					audit_rule=None,
+					render_tiles=render_tiles,
+					proc_seed_by_frame=proc_seed_by_frame,
+					heat_movie=heat_movie,
+				)
 			)
+			# WS2-C: tag each per-tile manifest with its interval and accumulate.
+			for manifest in fwd_manifests + bwd_manifests:
+				manifest['interval_left_frame'] = left_frame
+				manifest['interval_right_frame'] = right_frame
+				video_manifest_records.append(manifest)
 			counters['walked'] += 1
 		except Exception as e:
 			logger.error(f'  Exception in interval [{left_frame}, {right_frame}]: {e}')
 			counters['errors'] += 1
 
 	reader.close()
+
+	# WS2-C: write the machine-checkable render manifest for this video. One JSON
+	# record per rendered tile; consumed by check_render_manifest.py which fails
+	# the gate if any non-seed frame lacks a solved box or any tile has
+	# conversion_count != 1 (catches the "magenta + only" symptom).
+	if video_manifest_records:
+		video_output_dir.mkdir(parents=True, exist_ok=True)
+		manifest_path = video_output_dir / 'render_manifest.json'
+		with open(manifest_path, 'w') as f:
+			json.dump(video_manifest_records, f, indent=2)
+		logger.info(
+			f'  Wrote render manifest: {manifest_path} '
+			f'({len(video_manifest_records)} tile records)'
+		)
+
 	return counters
 
 
@@ -359,7 +422,8 @@ def process_video(
 
 def _video_worker(payload: tuple) -> dict:
 	"""Pool worker entry point."""
-	(video_basename, output_root_str, max_intervals, resume, render_tiles, corpus_left_frames) = payload
+	(video_basename, output_root_str, max_intervals, resume, render_tiles,
+		corpus_left_frames, heat_movie) = payload
 	return process_video(
 		video_basename=video_basename,
 		output_root=pathlib.Path(output_root_str),
@@ -367,6 +431,7 @@ def _video_worker(payload: tuple) -> dict:
 		resume=resume,
 		render_tiles=render_tiles,
 		corpus_left_frames=corpus_left_frames,
+		heat_movie=heat_movie,
 	)
 
 
@@ -378,6 +443,12 @@ def main() -> None:
 		format='%(asctime)s - %(levelname)s - %(message)s',
 	)
 	args = parse_args()
+
+	# Fail early when --heat-movie is requested but ffmpeg is absent.
+	# Import heat_movie_encode lazily so the normal walk path never imports it.
+	if args.heat_movie:
+		import heat_movie_encode
+		heat_movie_encode.check_ffmpeg_available()
 
 	# Load corpus interval filter if --intervals-from-corpus is set.
 	# Maps video_basename -> frozenset of left_frame ints.
@@ -443,6 +514,7 @@ def main() -> None:
 				render_tiles,
 				# Pass per-video corpus set, or None if not in corpus mode.
 				corpus_intervals[v] if (corpus_intervals is not None and v in corpus_intervals) else None,
+				args.heat_movie,
 			)
 			for v in videos
 		]

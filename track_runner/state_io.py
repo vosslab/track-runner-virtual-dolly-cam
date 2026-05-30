@@ -37,6 +37,7 @@ import tempfile
 import numpy
 
 # local repo modules
+import common_tools.coord_space as coord_space
 import tr_schema
 
 #============================================
@@ -670,6 +671,11 @@ def load_torso_box_coords(path: str) -> dict:
 			"solve_complete": bool,
 		}
 
+	All per-frame cx/cy/w/h values in the returned paths are SOURCE-frame
+	pixels (written and stored in source space per the coordinate contract in
+	docs/COORDINATE_SPACES.md).  To obtain a typed coord_space.SourceBox from
+	a frame dict, call frame_dict_to_source_box(frame_dict).
+
 	Returns an empty skeleton if the file does not exist. Raises if the file
 	exists but has a different or missing schema_version.
 
@@ -809,6 +815,71 @@ def load_torso_box_coords(path: str) -> dict:
 
 #============================================
 
+def _extract_source_box_coords(frame_obj) -> tuple:
+	"""Extract (cx, cy, w, h) floats from a SOURCE-space frame box object.
+
+	Accepts either:
+	  - A coord_space.SourceBox typed primitive (validated via require_source_box).
+	  - A plain dict with cx/cy/w/h keys (assumed SOURCE-frame; callers must
+	    ensure they project to source before calling write_torso_box_coords).
+
+	Typed primitives that are NOT SourceBox (e.g. ProcessedBox) are rejected
+	loudly by require_source_box, so the write boundary fails loud on a
+	wrong-space caller rather than silently storing processed coordinates.
+
+	Args:
+		frame_obj: SourceBox typed primitive or plain {cx, cy, w, h} dict.
+
+	Returns:
+		tuple: (cx, cy, w, h) as Python floats.
+
+	Raises:
+		ValueError: If frame_obj is a typed primitive that is not SourceBox.
+	"""
+	# typed primitive: validate space then extract
+	if isinstance(frame_obj, (coord_space.SourceBox, coord_space.ProcessedBox,
+		coord_space.SourcePoint, coord_space.ProcessedPoint)):
+		# require_source_box raises ValueError for any non-SourceBox primitive
+		coord_space.require_source_box(frame_obj)
+		result = (float(frame_obj.cx), float(frame_obj.cy),
+			float(frame_obj.w), float(frame_obj.h))
+		return result
+	# plain dict assumed SOURCE (walk_driver projects processed->source before writing)
+	result = (float(frame_obj["cx"]), float(frame_obj["cy"]),
+		float(frame_obj["w"]), float(frame_obj["h"]))
+	return result
+
+
+#============================================
+
+def frame_dict_to_source_box(frame_dict: dict) -> coord_space.SourceBox:
+	"""Wrap a loaded torso-box frame dict as a typed SourceBox.
+
+	The npz store written by write_torso_box_coords and read by
+	load_torso_box_coords is SOURCE-frame pixels per the coordinate contract
+	(docs/COORDINATE_SPACES.md). This accessor lets callers obtain a typed
+	SourceBox from a loaded frame dict so they can pass it to coord_space
+	conversions without re-introducing implicit space tracking.
+
+	Args:
+		frame_dict: One element from a forward_path / backward_path /
+			blended_path list returned by load_torso_box_coords. Must have
+			cx, cy, w, h keys.
+
+	Returns:
+		coord_space.SourceBox with the same cx/cy/w/h values.
+	"""
+	source_box = coord_space.SourceBox(
+		cx=float(frame_dict["cx"]),
+		cy=float(frame_dict["cy"]),
+		w=float(frame_dict["w"]),
+		h=float(frame_dict["h"]),
+	)
+	return source_box
+
+
+#============================================
+
 def _round_clip_uint16(arr: numpy.ndarray) -> numpy.ndarray:
 	"""Round float coords to nearest int, clip to [0, 65535], cast to uint16.
 
@@ -847,6 +918,14 @@ def write_torso_box_coords(path: str, cache_data: dict) -> None:
 
 	Atomic write via a sibling temp file and `os.replace`.
 
+	SOURCE-space boundary: all per-frame box objects in forward_path,
+	backward_path, and blended_path must be in SOURCE pixels.  If a caller
+	passes typed coord_space primitives, they must be SourceBox (not ProcessedBox);
+	_extract_source_box_coords raises ValueError on a wrong-space typed input,
+	failing loud rather than silently storing processed coordinates.  Plain dicts
+	are accepted as-is and assumed SOURCE (walk_driver projects processed->source
+	before calling here).  See docs/COORDINATE_SPACES.md.
+
 	Args:
 		path: Output NPZ file path.
 		cache_data: Dict shaped like `load_torso_box_coords` returns --
@@ -865,12 +944,14 @@ def write_torso_box_coords(path: str, cache_data: dict) -> None:
 		fwd = entry.get("forward_path")
 		bwd = entry.get("backward_path")
 		blended = entry.get("blended_path") or []
-		# always write blended path
+		# always write blended path; each frame goes through _extract_source_box_coords
+		# so typed ProcessedBox passed here raises ValueError at the boundary
 		for direction_tag, track in (("blended", blended),):
-			cx_in = numpy.asarray([float(s["cx"]) for s in track], dtype=numpy.float32)
-			cy_in = numpy.asarray([float(s["cy"]) for s in track], dtype=numpy.float32)
-			w_in = numpy.asarray([float(s["w"]) for s in track], dtype=numpy.float32)
-			h_in = numpy.asarray([float(s["h"]) for s in track], dtype=numpy.float32)
+			coords = [_extract_source_box_coords(s) for s in track]
+			cx_in = numpy.asarray([c[0] for c in coords], dtype=numpy.float32)
+			cy_in = numpy.asarray([c[1] for c in coords], dtype=numpy.float32)
+			w_in = numpy.asarray([c[2] for c in coords], dtype=numpy.float32)
+			h_in = numpy.asarray([c[3] for c in coords], dtype=numpy.float32)
 			arrays[f"i{idx}_{direction_tag}_cx"] = _round_clip_uint16(cx_in)
 			arrays[f"i{idx}_{direction_tag}_cy"] = _round_clip_uint16(cy_in)
 			arrays[f"i{idx}_{direction_tag}_w"] = _round_clip_uint16(w_in)
@@ -878,10 +959,11 @@ def write_torso_box_coords(path: str, cache_data: dict) -> None:
 		# write forward and backward only if both present (post-race intervals)
 		if fwd is not None and bwd is not None:
 			for direction_tag, track in (("fwd", fwd), ("bwd", bwd)):
-				cx_in = numpy.asarray([float(s["cx"]) for s in track], dtype=numpy.float32)
-				cy_in = numpy.asarray([float(s["cy"]) for s in track], dtype=numpy.float32)
-				w_in = numpy.asarray([float(s["w"]) for s in track], dtype=numpy.float32)
-				h_in = numpy.asarray([float(s["h"]) for s in track], dtype=numpy.float32)
+				coords = [_extract_source_box_coords(s) for s in track]
+				cx_in = numpy.asarray([c[0] for c in coords], dtype=numpy.float32)
+				cy_in = numpy.asarray([c[1] for c in coords], dtype=numpy.float32)
+				w_in = numpy.asarray([c[2] for c in coords], dtype=numpy.float32)
+				h_in = numpy.asarray([c[3] for c in coords], dtype=numpy.float32)
 				arrays[f"i{idx}_{direction_tag}_cx"] = _round_clip_uint16(cx_in)
 				arrays[f"i{idx}_{direction_tag}_cy"] = _round_clip_uint16(cy_in)
 				arrays[f"i{idx}_{direction_tag}_w"] = _round_clip_uint16(w_in)

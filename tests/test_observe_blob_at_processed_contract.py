@@ -24,6 +24,17 @@ sys.path.insert(0, os.path.join(REPO_ROOT, "common_tools"))
 
 import residual_motion
 import frame_reader as fr
+import common_tools.coord_space as coord_space
+
+
+#============================================
+def _proc_box_from_edges(edges: tuple) -> coord_space.ProcessedBox:
+	"""Build a PROCESSED-space ProcessedBox from (x1, y1, x2, y2) edges."""
+	x1, y1, x2, y2 = edges
+	cx = (x1 + x2) / 2.0
+	cy = (y1 + y2) / 2.0
+	box = coord_space.ProcessedBox(cx=cx, cy=cy, w=float(x2 - x1), h=float(y2 - y1))
+	return box
 
 
 #============================================
@@ -119,13 +130,13 @@ def test_roi_override_processed_no_conversion():
 
 	residual_motion.observe_blob_at(
 		frame_index=5,
-		pred_center=(100.0, 100.0),   # processed coords
-		pred_box=(50.0, 100.0),       # processed coords
+		pred_center=coord_space.ProcessedPoint(cx=100.0, cy=100.0),
+		pred_box=coord_space.ProcessedBox(cx=100.0, cy=100.0, w=50.0, h=100.0),
 		local_tangent=(1.0, 0.0),
 		scene_transform=scene_transform,
 		reader=reader,
 		residual_cache=spy_cache,
-		roi_override=roi_proc,
+		roi_override=_proc_box_from_edges(roi_proc),
 		precomputed_store=ps,
 	)
 
@@ -166,14 +177,14 @@ def test_dog_diameter_override_processed_no_conversion():
 	):
 		residual_motion.observe_blob_at(
 			frame_index=5,
-			pred_center=(100.0, 100.0),   # processed coords
-			pred_box=(50.0, 100.0),       # processed coords
+			pred_center=coord_space.ProcessedPoint(cx=100.0, cy=100.0),
+			pred_box=coord_space.ProcessedBox(cx=100.0, cy=100.0, w=50.0, h=100.0),
 			local_tangent=(1.0, 0.0),
 			scene_transform=scene_transform,
 			reader=reader,
 			residual_cache={},
 			dog_diameter_override=dog_proc,
-			roi_override=roi_proc,
+			roi_override=_proc_box_from_edges(roi_proc),
 			precomputed_store=ps,
 		)
 
@@ -210,14 +221,14 @@ def test_at_bin1_no_change():
 	):
 		residual_motion.observe_blob_at(
 			frame_index=5,
-			pred_center=(150.0, 150.0),
-			pred_box=(60.0, 120.0),
+			pred_center=coord_space.ProcessedPoint(cx=150.0, cy=150.0),
+			pred_box=coord_space.ProcessedBox(cx=150.0, cy=150.0, w=60.0, h=120.0),
 			local_tangent=(1.0, 0.0),
 			scene_transform=scene_transform,
 			reader=reader,
 			residual_cache={},
 			dog_diameter_override=dog_diam,
-			roi_override=roi,
+			roi_override=_proc_box_from_edges(roi),
 			precomputed_store=ps,
 		)
 

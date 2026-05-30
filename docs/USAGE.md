@@ -59,6 +59,46 @@ The flag tables on those pages are auto-regenerated from `--help` by `tools/refr
 solver context, and motion-regime classification without producing a
 video; it is not required before `encode`. Run either when you need it.
 
+## Heat movie diagnostic (blob_walk_v2)
+
+The `--heat-movie` flag is available on both
+`tools/blob_walk_v2/make_walk_html_v2.py` and
+`tools/blob_walk_v2/core/walk_driver.py`. It is off by default and
+only active when `--walk` is also set.
+
+When enabled, it writes one per-direction `.mkv` file (`heat_fwd.mkv`
+and `heat_bwd.mkv`) beside each interval's render output tiles. Each
+movie shows the residual-motion heat overlay cropped to a fixed ROI
+derived from the larger of the two bracketing seeds; the solved torso
+box and in-box hot-mean value are drawn on every frame.
+
+**ffmpeg is required** only for `--heat-movie`. The flag is checked at
+startup and raises a clean error immediately if ffmpeg is absent. A
+normal `--walk` run does not need ffmpeg.
+
+Memory and scratch: raw `.bgr` frames are spilled one at a time to a
+run-scoped scratch directory under `/tmp`, encoded with ffmpeg
+`image2` (libx264, yuv420p), verified, then copied beside the render
+output. The scratch directory is deleted at the end of each interval
+encode. Nothing is retained between runs.
+
+```bash
+# Walk with heat movies (ffmpeg required)
+python3 tools/blob_walk_v2/make_walk_html_v2.py --walk --heat-movie
+
+# Explicitly disable (default)
+python3 tools/blob_walk_v2/make_walk_html_v2.py --walk --no-heat-movie
+```
+
+Install ffmpeg if missing:
+
+```bash
+brew install ffmpeg
+```
+
+See [tools/blob_walk_v2/README.md](../tools/blob_walk_v2/README.md) for
+the full blob_walk_v2 flag reference.
+
 ## Motion heat-map overlay
 
 The annotation GUI (`seed`, `edit`, `target`) can show a residual-motion heat

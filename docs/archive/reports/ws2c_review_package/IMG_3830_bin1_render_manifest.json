@@ -1,0 +1,2198 @@
+[
+  {
+    "frame_index": 225,
+    "seed_box_present": true,
+    "solved_box_present": true,
+    "solved_box_source": "in-memory",
+    "trace_present": [
+      {
+        "centroid_x": 949.5545454545454,
+        "centroid_y": 267.15,
+        "area": 220,
+        "bbox": [
+          18,
+          12,
+          15,
+          18
+        ],
+        "integrated_mag": 8746.25,
+        "label_id": 1,
+        "small_blob": false,
+        "cross_track": 0.0,
+        "along_track": 0.0,
+        "dist_h": 0.7478773477523983,
+        "strength_score": 0.874625,
+        "proximity_score": 0.32166853881266233,
+        "size_score": 0.6043956043956044,
+        "total_score": 0.5981467694063312,
+        "in_corridor": true,
+        "in_acceptance_box": true,
+        "dist_to_pred_px": 20.940565737067153
+      }
+    ],
+    "raw_blob_count": 1,
+    "corridor_blob_count": 1,
+    "winner_blob_count": 1,
+    "box_coord_space_before_draw": "processed",
+    "trace_coord_space_before_draw": "processed",
+    "conversion_count": 1,
+    "roi_origin_xy": [
+      925,
+      247
+    ],
+    "crop_origin_xy": [
+      0,
+      0
+    ],
+    "bin_factor": 1,
+    "direction": "FWD",
+    "non_seed_missing_solved_box": false,
+    "interval_left_frame": 225,
+    "interval_right_frame": 227
+  },
+  {
+    "frame_index": 226,
+    "seed_box_present": false,
+    "solved_box_present": true,
+    "solved_box_source": "in-memory",
+    "trace_present": [
+      {
+        "centroid_x": 950.2064056939502,
+        "centroid_y": 270.1708185053381,
+        "area": 281,
+        "bbox": [
+          16,
+          12,
+          19,
+          24
+        ],
+        "integrated_mag": 9564.201171875,
+        "label_id": 1,
+        "small_blob": false,
+        "cross_track": 0.0,
+        "along_track": 0.0,
+        "dist_h": 0.6384302926069233,
+        "strength_score": 0.9564201171875,
+        "proximity_score": 0.42093799932326526,
+        "size_score": 0.771978021978022,
+        "total_score": 0.6886790582553826,
+        "in_corridor": true,
+        "in_acceptance_box": true,
+        "dist_to_pred_px": 17.876048192993853
+      }
+    ],
+    "raw_blob_count": 1,
+    "corridor_blob_count": 1,
+    "winner_blob_count": 1,
+    "box_coord_space_before_draw": "processed",
+    "trace_coord_space_before_draw": "processed",
+    "conversion_count": 1,
+    "roi_origin_xy": [
+      925,
+      247
+    ],
+    "crop_origin_xy": [
+      0,
+      0
+    ],
+    "bin_factor": 1,
+    "direction": "FWD",
+    "non_seed_missing_solved_box": false,
+    "interval_left_frame": 225,
+    "interval_right_frame": 227
+  },
+  {
+    "frame_index": 227,
+    "seed_box_present": true,
+    "solved_box_present": false,
+    "solved_box_source": "none",
+    "trace_present": false,
+    "raw_blob_count": 0,
+    "corridor_blob_count": 0,
+    "winner_blob_count": 0,
+    "box_coord_space_before_draw": "processed",
+    "trace_coord_space_before_draw": "processed",
+    "conversion_count": 1,
+    "roi_origin_xy": null,
+    "crop_origin_xy": [
+      0,
+      0
+    ],
+    "bin_factor": 1,
+    "direction": "FWD",
+    "non_seed_missing_solved_box": false,
+    "interval_left_frame": 225,
+    "interval_right_frame": 227
+  },
+  {
+    "frame_index": 225,
+    "seed_box_present": true,
+    "solved_box_present": false,
+    "solved_box_source": "none",
+    "trace_present": false,
+    "raw_blob_count": 0,
+    "corridor_blob_count": 0,
+    "winner_blob_count": 0,
+    "box_coord_space_before_draw": "processed",
+    "trace_coord_space_before_draw": "processed",
+    "conversion_count": 1,
+    "roi_origin_xy": null,
+    "crop_origin_xy": [
+      0,
+      0
+    ],
+    "bin_factor": 1,
+    "direction": "BWD",
+    "non_seed_missing_solved_box": false,
+    "interval_left_frame": 225,
+    "interval_right_frame": 227
+  },
+  {
+    "frame_index": 226,
+    "seed_box_present": false,
+    "solved_box_present": true,
+    "solved_box_source": "in-memory",
+    "trace_present": [
+      {
+        "centroid_x": 950.2966666666666,
+        "centroid_y": 269.99333333333334,
+        "area": 300,
+        "bbox": [
+          15,
+          16,
+          18,
+          24
+        ],
+        "integrated_mag": 9707.818359375,
+        "label_id": 1,
+        "small_blob": false,
+        "cross_track": 0.0,
+        "along_track": 0.0,
+        "dist_h": 0.518709914705198,
+        "strength_score": 0.9707818359375,
+        "proximity_score": 0.5395129227129729,
+        "size_score": 0.7936507936507936,
+        "total_score": 0.7551473793252365,
+        "in_corridor": true,
+        "in_acceptance_box": true,
+        "dist_to_pred_px": 14.005167697040346
+      }
+    ],
+    "raw_blob_count": 1,
+    "corridor_blob_count": 1,
+    "winner_blob_count": 1,
+    "box_coord_space_before_draw": "processed",
+    "trace_coord_space_before_draw": "processed",
+    "conversion_count": 1,
+    "roi_origin_xy": [
+      927,
+      243
+    ],
+    "crop_origin_xy": [
+      0,
+      0
+    ],
+    "bin_factor": 1,
+    "direction": "BWD",
+    "non_seed_missing_solved_box": false,
+    "interval_left_frame": 225,
+    "interval_right_frame": 227
+  },
+  {
+    "frame_index": 227,
+    "seed_box_present": true,
+    "solved_box_present": true,
+    "solved_box_source": "in-memory",
+    "trace_present": [
+      {
+        "centroid_x": 950.8600508905853,
+        "centroid_y": 271.3587786259542,
+        "area": 393,
+        "bbox": [
+          14,
+          15,
+          20,
+          28
+        ],
+        "integrated_mag": 12453.1513671875,
+        "label_id": 1,
+        "small_blob": false,
+        "cross_track": 0.0,
+        "along_track": 0.0,
+        "dist_h": 0.46446945538318474,
+        "strength_score": 1.0,
+        "proximity_score": 0.5876651362639614,
+        "size_score": 1.0396825396825398,
+        "total_score": 0.7938325681319807,
+        "in_corridor": true,
+        "in_acceptance_box": true,
+        "dist_to_pred_px": 12.540675295345988
+      }
+    ],
+    "raw_blob_count": 1,
+    "corridor_blob_count": 1,
+    "winner_blob_count": 1,
+    "box_coord_space_before_draw": "processed",
+    "trace_coord_space_before_draw": "processed",
+    "conversion_count": 1,
+    "roi_origin_xy": [
+      927,
+      243
+    ],
+    "crop_origin_xy": [
+      0,
+      0
+    ],
+    "bin_factor": 1,
+    "direction": "BWD",
+    "non_seed_missing_solved_box": false,
+    "interval_left_frame": 225,
+    "interval_right_frame": 227
+  },
+  {
+    "frame_index": 1541,
+    "seed_box_present": true,
+    "solved_box_present": true,
+    "solved_box_source": "in-memory",
+    "trace_present": false,
+    "raw_blob_count": 0,
+    "corridor_blob_count": 0,
+    "winner_blob_count": 0,
+    "box_coord_space_before_draw": "processed",
+    "trace_coord_space_before_draw": "processed",
+    "conversion_count": 1,
+    "roi_origin_xy": null,
+    "crop_origin_xy": [
+      0,
+      0
+    ],
+    "bin_factor": 1,
+    "direction": "FWD",
+    "non_seed_missing_solved_box": false,
+    "interval_left_frame": 1541,
+    "interval_right_frame": 1549
+  },
+  {
+    "frame_index": 1542,
+    "seed_box_present": false,
+    "solved_box_present": true,
+    "solved_box_source": "in-memory",
+    "trace_present": [
+      {
+        "centroid_x": 237.4188790560472,
+        "centroid_y": 530.7994100294985,
+        "area": 339,
+        "bbox": [
+          0,
+          16,
+          9,
+          45
+        ],
+        "integrated_mag": 6016.15234375,
+        "label_id": 2,
+        "small_blob": false,
+        "in_corridor": false,
+        "in_acceptance_box": false,
+        "dist_to_pred_px": 27.18537482828651
+      },
+      {
+        "centroid_x": 260.03053435114504,
+        "centroid_y": 513.2748091603054,
+        "area": 131,
+        "bbox": [
+          20,
+          13,
+          12,
+          15
+        ],
+        "integrated_mag": 2197.9052734375,
+        "label_id": 1,
+        "small_blob": false,
+        "cross_track": 0.0,
+        "along_track": 0.0,
+        "dist_h": 0.7469348640236323,
+        "strength_score": 0.21979052734375,
+        "proximity_score": 0.33192114771143844,
+        "size_score": 0.2021604938271605,
+        "total_score": 0.27585583752759424,
+        "in_corridor": true,
+        "in_acceptance_box": true,
+        "dist_to_pred_px": 26.889655104850764
+      }
+    ],
+    "raw_blob_count": 2,
+    "corridor_blob_count": 1,
+    "winner_blob_count": 1,
+    "box_coord_space_before_draw": "processed",
+    "trace_coord_space_before_draw": "processed",
+    "conversion_count": 1,
+    "roi_origin_xy": [
+      234,
+      493
+    ],
+    "crop_origin_xy": [
+      0,
+      0
+    ],
+    "bin_factor": 1,
+    "direction": "FWD",
+    "non_seed_missing_solved_box": false,
+    "interval_left_frame": 1541,
+    "interval_right_frame": 1549
+  },
+  {
+    "frame_index": 1543,
+    "seed_box_present": false,
+    "solved_box_present": true,
+    "solved_box_source": "in-memory",
+    "trace_present": false,
+    "raw_blob_count": 0,
+    "corridor_blob_count": 0,
+    "winner_blob_count": 0,
+    "box_coord_space_before_draw": "processed",
+    "trace_coord_space_before_draw": "processed",
+    "conversion_count": 1,
+    "roi_origin_xy": null,
+    "crop_origin_xy": [
+      0,
+      0
+    ],
+    "bin_factor": 1,
+    "direction": "FWD",
+    "non_seed_missing_solved_box": false,
+    "interval_left_frame": 1541,
+    "interval_right_frame": 1549
+  },
+  {
+    "frame_index": 1544,
+    "seed_box_present": false,
+    "solved_box_present": true,
+    "solved_box_source": "in-memory",
+    "trace_present": false,
+    "raw_blob_count": 0,
+    "corridor_blob_count": 0,
+    "winner_blob_count": 0,
+    "box_coord_space_before_draw": "processed",
+    "trace_coord_space_before_draw": "processed",
+    "conversion_count": 1,
+    "roi_origin_xy": null,
+    "crop_origin_xy": [
+      0,
+      0
+    ],
+    "bin_factor": 1,
+    "direction": "FWD",
+    "non_seed_missing_solved_box": false,
+    "interval_left_frame": 1541,
+    "interval_right_frame": 1549
+  },
+  {
+    "frame_index": 1545,
+    "seed_box_present": false,
+    "solved_box_present": true,
+    "solved_box_source": "in-memory",
+    "trace_present": false,
+    "raw_blob_count": 0,
+    "corridor_blob_count": 0,
+    "winner_blob_count": 0,
+    "box_coord_space_before_draw": "processed",
+    "trace_coord_space_before_draw": "processed",
+    "conversion_count": 1,
+    "roi_origin_xy": null,
+    "crop_origin_xy": [
+      0,
+      0
+    ],
+    "bin_factor": 1,
+    "direction": "FWD",
+    "non_seed_missing_solved_box": false,
+    "interval_left_frame": 1541,
+    "interval_right_frame": 1549
+  },
+  {
+    "frame_index": 1546,
+    "seed_box_present": false,
+    "solved_box_present": true,
+    "solved_box_source": "in-memory",
+    "trace_present": false,
+    "raw_blob_count": 0,
+    "corridor_blob_count": 0,
+    "winner_blob_count": 0,
+    "box_coord_space_before_draw": "processed",
+    "trace_coord_space_before_draw": "processed",
+    "conversion_count": 1,
+    "roi_origin_xy": null,
+    "crop_origin_xy": [
+      0,
+      0
+    ],
+    "bin_factor": 1,
+    "direction": "FWD",
+    "non_seed_missing_solved_box": false,
+    "interval_left_frame": 1541,
+    "interval_right_frame": 1549
+  },
+  {
+    "frame_index": 1547,
+    "seed_box_present": false,
+    "solved_box_present": true,
+    "solved_box_source": "in-memory",
+    "trace_present": false,
+    "raw_blob_count": 0,
+    "corridor_blob_count": 0,
+    "winner_blob_count": 0,
+    "box_coord_space_before_draw": "processed",
+    "trace_coord_space_before_draw": "processed",
+    "conversion_count": 1,
+    "roi_origin_xy": null,
+    "crop_origin_xy": [
+      0,
+      0
+    ],
+    "bin_factor": 1,
+    "direction": "FWD",
+    "non_seed_missing_solved_box": false,
+    "interval_left_frame": 1541,
+    "interval_right_frame": 1549
+  },
+  {
+    "frame_index": 1548,
+    "seed_box_present": false,
+    "solved_box_present": true,
+    "solved_box_source": "in-memory",
+    "trace_present": false,
+    "raw_blob_count": 0,
+    "corridor_blob_count": 0,
+    "winner_blob_count": 0,
+    "box_coord_space_before_draw": "processed",
+    "trace_coord_space_before_draw": "processed",
+    "conversion_count": 1,
+    "roi_origin_xy": null,
+    "crop_origin_xy": [
+      0,
+      0
+    ],
+    "bin_factor": 1,
+    "direction": "FWD",
+    "non_seed_missing_solved_box": false,
+    "interval_left_frame": 1541,
+    "interval_right_frame": 1549
+  },
+  {
+    "frame_index": 1549,
+    "seed_box_present": true,
+    "solved_box_present": false,
+    "solved_box_source": "none",
+    "trace_present": false,
+    "raw_blob_count": 0,
+    "corridor_blob_count": 0,
+    "winner_blob_count": 0,
+    "box_coord_space_before_draw": "processed",
+    "trace_coord_space_before_draw": "processed",
+    "conversion_count": 1,
+    "roi_origin_xy": null,
+    "crop_origin_xy": [
+      0,
+      0
+    ],
+    "bin_factor": 1,
+    "direction": "FWD",
+    "non_seed_missing_solved_box": false,
+    "interval_left_frame": 1541,
+    "interval_right_frame": 1549
+  },
+  {
+    "frame_index": 1541,
+    "seed_box_present": true,
+    "solved_box_present": false,
+    "solved_box_source": "none",
+    "trace_present": false,
+    "raw_blob_count": 0,
+    "corridor_blob_count": 0,
+    "winner_blob_count": 0,
+    "box_coord_space_before_draw": "processed",
+    "trace_coord_space_before_draw": "processed",
+    "conversion_count": 1,
+    "roi_origin_xy": null,
+    "crop_origin_xy": [
+      0,
+      0
+    ],
+    "bin_factor": 1,
+    "direction": "BWD",
+    "non_seed_missing_solved_box": false,
+    "interval_left_frame": 1541,
+    "interval_right_frame": 1549
+  },
+  {
+    "frame_index": 1542,
+    "seed_box_present": false,
+    "solved_box_present": true,
+    "solved_box_source": "in-memory",
+    "trace_present": false,
+    "raw_blob_count": 0,
+    "corridor_blob_count": 0,
+    "winner_blob_count": 0,
+    "box_coord_space_before_draw": "processed",
+    "trace_coord_space_before_draw": "processed",
+    "conversion_count": 1,
+    "roi_origin_xy": null,
+    "crop_origin_xy": [
+      0,
+      0
+    ],
+    "bin_factor": 1,
+    "direction": "BWD",
+    "non_seed_missing_solved_box": false,
+    "interval_left_frame": 1541,
+    "interval_right_frame": 1549
+  },
+  {
+    "frame_index": 1543,
+    "seed_box_present": false,
+    "solved_box_present": true,
+    "solved_box_source": "in-memory",
+    "trace_present": false,
+    "raw_blob_count": 0,
+    "corridor_blob_count": 0,
+    "winner_blob_count": 0,
+    "box_coord_space_before_draw": "processed",
+    "trace_coord_space_before_draw": "processed",
+    "conversion_count": 1,
+    "roi_origin_xy": null,
+    "crop_origin_xy": [
+      0,
+      0
+    ],
+    "bin_factor": 1,
+    "direction": "BWD",
+    "non_seed_missing_solved_box": false,
+    "interval_left_frame": 1541,
+    "interval_right_frame": 1549
+  },
+  {
+    "frame_index": 1544,
+    "seed_box_present": false,
+    "solved_box_present": true,
+    "solved_box_source": "in-memory",
+    "trace_present": false,
+    "raw_blob_count": 0,
+    "corridor_blob_count": 0,
+    "winner_blob_count": 0,
+    "box_coord_space_before_draw": "processed",
+    "trace_coord_space_before_draw": "processed",
+    "conversion_count": 1,
+    "roi_origin_xy": null,
+    "crop_origin_xy": [
+      0,
+      0
+    ],
+    "bin_factor": 1,
+    "direction": "BWD",
+    "non_seed_missing_solved_box": false,
+    "interval_left_frame": 1541,
+    "interval_right_frame": 1549
+  },
+  {
+    "frame_index": 1545,
+    "seed_box_present": false,
+    "solved_box_present": true,
+    "solved_box_source": "in-memory",
+    "trace_present": false,
+    "raw_blob_count": 0,
+    "corridor_blob_count": 0,
+    "winner_blob_count": 0,
+    "box_coord_space_before_draw": "processed",
+    "trace_coord_space_before_draw": "processed",
+    "conversion_count": 1,
+    "roi_origin_xy": null,
+    "crop_origin_xy": [
+      0,
+      0
+    ],
+    "bin_factor": 1,
+    "direction": "BWD",
+    "non_seed_missing_solved_box": false,
+    "interval_left_frame": 1541,
+    "interval_right_frame": 1549
+  },
+  {
+    "frame_index": 1546,
+    "seed_box_present": false,
+    "solved_box_present": true,
+    "solved_box_source": "in-memory",
+    "trace_present": false,
+    "raw_blob_count": 0,
+    "corridor_blob_count": 0,
+    "winner_blob_count": 0,
+    "box_coord_space_before_draw": "processed",
+    "trace_coord_space_before_draw": "processed",
+    "conversion_count": 1,
+    "roi_origin_xy": null,
+    "crop_origin_xy": [
+      0,
+      0
+    ],
+    "bin_factor": 1,
+    "direction": "BWD",
+    "non_seed_missing_solved_box": false,
+    "interval_left_frame": 1541,
+    "interval_right_frame": 1549
+  },
+  {
+    "frame_index": 1547,
+    "seed_box_present": false,
+    "solved_box_present": true,
+    "solved_box_source": "in-memory",
+    "trace_present": false,
+    "raw_blob_count": 0,
+    "corridor_blob_count": 0,
+    "winner_blob_count": 0,
+    "box_coord_space_before_draw": "processed",
+    "trace_coord_space_before_draw": "processed",
+    "conversion_count": 1,
+    "roi_origin_xy": null,
+    "crop_origin_xy": [
+      0,
+      0
+    ],
+    "bin_factor": 1,
+    "direction": "BWD",
+    "non_seed_missing_solved_box": false,
+    "interval_left_frame": 1541,
+    "interval_right_frame": 1549
+  },
+  {
+    "frame_index": 1548,
+    "seed_box_present": false,
+    "solved_box_present": true,
+    "solved_box_source": "in-memory",
+    "trace_present": false,
+    "raw_blob_count": 0,
+    "corridor_blob_count": 0,
+    "winner_blob_count": 0,
+    "box_coord_space_before_draw": "processed",
+    "trace_coord_space_before_draw": "processed",
+    "conversion_count": 1,
+    "roi_origin_xy": null,
+    "crop_origin_xy": [
+      0,
+      0
+    ],
+    "bin_factor": 1,
+    "direction": "BWD",
+    "non_seed_missing_solved_box": false,
+    "interval_left_frame": 1541,
+    "interval_right_frame": 1549
+  },
+  {
+    "frame_index": 1549,
+    "seed_box_present": true,
+    "solved_box_present": true,
+    "solved_box_source": "in-memory",
+    "trace_present": false,
+    "raw_blob_count": 0,
+    "corridor_blob_count": 0,
+    "winner_blob_count": 0,
+    "box_coord_space_before_draw": "processed",
+    "trace_coord_space_before_draw": "processed",
+    "conversion_count": 1,
+    "roi_origin_xy": null,
+    "crop_origin_xy": [
+      0,
+      0
+    ],
+    "bin_factor": 1,
+    "direction": "BWD",
+    "non_seed_missing_solved_box": false,
+    "interval_left_frame": 1541,
+    "interval_right_frame": 1549
+  },
+  {
+    "frame_index": 2696,
+    "seed_box_present": true,
+    "solved_box_present": true,
+    "solved_box_source": "in-memory",
+    "trace_present": [
+      {
+        "centroid_x": 1043.9611650485438,
+        "centroid_y": 533.6269070735091,
+        "area": 721,
+        "bbox": [
+          25,
+          25,
+          34,
+          43
+        ],
+        "integrated_mag": 12348.9482421875,
+        "label_id": 1,
+        "small_blob": false,
+        "cross_track": 0.0,
+        "along_track": 0.0,
+        "dist_h": 0.2315945867040205,
+        "strength_score": 1.0,
+        "proximity_score": 0.7938707747669017,
+        "size_score": 0.8373983739837398,
+        "total_score": 0.8969353873834509,
+        "in_corridor": true,
+        "in_acceptance_box": true,
+        "dist_to_pred_px": 9.49537805486484
+      },
+      {
+        "centroid_x": 1059.150234741784,
+        "centroid_y": 581.8356807511738,
+        "area": 213,
+        "bbox": [
+          44,
+          86,
+          19,
+          18
+        ],
+        "integrated_mag": 4662.591796875,
+        "label_id": 4,
+        "small_blob": false,
+        "in_corridor": false,
+        "in_acceptance_box": false,
+        "dist_to_pred_px": 48.013987529919085
+      },
+      {
+        "centroid_x": 1060.0,
+        "centroid_y": 527.7857142857143,
+        "area": 98,
+        "bbox": [
+          49,
+          37,
+          14,
+          9
+        ],
+        "integrated_mag": 1135.388671875,
+        "label_id": 2,
+        "small_blob": false,
+        "in_corridor": false,
+        "in_acceptance_box": false,
+        "dist_to_pred_px": 26.257846252042782
+      },
+      {
+        "centroid_x": 1041.1851851851852,
+        "centroid_y": 572.8148148148148,
+        "area": 27,
+        "bbox": [
+          34,
+          83,
+          6,
+          6
+        ],
+        "integrated_mag": 282.38671875,
+        "label_id": 3,
+        "small_blob": false,
+        "in_corridor": false,
+        "in_acceptance_box": false,
+        "dist_to_pred_px": 33.642649217397874
+      }
+    ],
+    "raw_blob_count": 4,
+    "corridor_blob_count": 1,
+    "winner_blob_count": 1,
+    "box_coord_space_before_draw": "processed",
+    "trace_coord_space_before_draw": "processed",
+    "conversion_count": 1,
+    "roi_origin_xy": [
+      1005,
+      487
+    ],
+    "crop_origin_xy": [
+      0,
+      0
+    ],
+    "bin_factor": 1,
+    "direction": "FWD",
+    "non_seed_missing_solved_box": false,
+    "interval_left_frame": 2696,
+    "interval_right_frame": 2699
+  },
+  {
+    "frame_index": 2697,
+    "seed_box_present": false,
+    "solved_box_present": true,
+    "solved_box_source": "in-memory",
+    "trace_present": [
+      {
+        "centroid_x": 1043.663007683864,
+        "centroid_y": 545.2590559824368,
+        "area": 911,
+        "bbox": [
+          25,
+          25,
+          38,
+          69
+        ],
+        "integrated_mag": 14482.09765625,
+        "label_id": 1,
+        "small_blob": false,
+        "cross_track": 0.0,
+        "along_track": 0.0,
+        "dist_h": 0.22417195756905559,
+        "strength_score": 1.0,
+        "proximity_score": 0.8004772365782838,
+        "size_score": 1.0580720092915215,
+        "total_score": 0.900238618289142,
+        "in_corridor": true,
+        "in_acceptance_box": true,
+        "dist_to_pred_px": 9.191050260331279
+      },
+      {
+        "centroid_x": 1064.1610169491526,
+        "centroid_y": 539.9322033898305,
+        "area": 118,
+        "bbox": [
+          55,
+          44,
+          8,
+          19
+        ],
+        "integrated_mag": 1552.1102294921875,
+        "label_id": 2,
+        "small_blob": false,
+        "in_corridor": false,
+        "in_acceptance_box": false,
+        "dist_to_pred_px": 27.664393332070123
+      }
+    ],
+    "raw_blob_count": 2,
+    "corridor_blob_count": 1,
+    "winner_blob_count": 1,
+    "box_coord_space_before_draw": "processed",
+    "trace_coord_space_before_draw": "processed",
+    "conversion_count": 1,
+    "roi_origin_xy": [
+      1005,
+      487
+    ],
+    "crop_origin_xy": [
+      0,
+      0
+    ],
+    "bin_factor": 1,
+    "direction": "FWD",
+    "non_seed_missing_solved_box": false,
+    "interval_left_frame": 2696,
+    "interval_right_frame": 2699
+  },
+  {
+    "frame_index": 2698,
+    "seed_box_present": false,
+    "solved_box_present": true,
+    "solved_box_source": "in-memory",
+    "trace_present": [
+      {
+        "centroid_x": 1040.4925170068027,
+        "centroid_y": 544.8993197278911,
+        "area": 735,
+        "bbox": [
+          27,
+          29,
+          19,
+          59
+        ],
+        "integrated_mag": 11653.884765625,
+        "label_id": 1,
+        "small_blob": false,
+        "cross_track": 0.0,
+        "along_track": 0.0,
+        "dist_h": 0.16378343090467717,
+        "strength_score": 1.0,
+        "proximity_score": 0.8542256440495044,
+        "size_score": 0.8536585365853658,
+        "total_score": 0.9271128220247522,
+        "in_corridor": true,
+        "in_acceptance_box": true,
+        "dist_to_pred_px": 6.715120667091764
+      },
+      {
+        "centroid_x": 1063.9370078740158,
+        "centroid_y": 574.992125984252,
+        "area": 127,
+        "bbox": [
+          53,
+          80,
+          10,
+          24
+        ],
+        "integrated_mag": 1584.1676025390625,
+        "label_id": 2,
+        "small_blob": false,
+        "in_corridor": false,
+        "in_acceptance_box": false,
+        "dist_to_pred_px": 44.86067774745291
+      }
+    ],
+    "raw_blob_count": 2,
+    "corridor_blob_count": 1,
+    "winner_blob_count": 1,
+    "box_coord_space_before_draw": "processed",
+    "trace_coord_space_before_draw": "processed",
+    "conversion_count": 1,
+    "roi_origin_xy": [
+      1005,
+      487
+    ],
+    "crop_origin_xy": [
+      0,
+      0
+    ],
+    "bin_factor": 1,
+    "direction": "FWD",
+    "non_seed_missing_solved_box": false,
+    "interval_left_frame": 2696,
+    "interval_right_frame": 2699
+  },
+  {
+    "frame_index": 2699,
+    "seed_box_present": true,
+    "solved_box_present": false,
+    "solved_box_source": "none",
+    "trace_present": false,
+    "raw_blob_count": 0,
+    "corridor_blob_count": 0,
+    "winner_blob_count": 0,
+    "box_coord_space_before_draw": "processed",
+    "trace_coord_space_before_draw": "processed",
+    "conversion_count": 1,
+    "roi_origin_xy": null,
+    "crop_origin_xy": [
+      0,
+      0
+    ],
+    "bin_factor": 1,
+    "direction": "FWD",
+    "non_seed_missing_solved_box": false,
+    "interval_left_frame": 2696,
+    "interval_right_frame": 2699
+  },
+  {
+    "frame_index": 2696,
+    "seed_box_present": true,
+    "solved_box_present": false,
+    "solved_box_source": "none",
+    "trace_present": false,
+    "raw_blob_count": 0,
+    "corridor_blob_count": 0,
+    "winner_blob_count": 0,
+    "box_coord_space_before_draw": "processed",
+    "trace_coord_space_before_draw": "processed",
+    "conversion_count": 1,
+    "roi_origin_xy": null,
+    "crop_origin_xy": [
+      0,
+      0
+    ],
+    "bin_factor": 1,
+    "direction": "BWD",
+    "non_seed_missing_solved_box": false,
+    "interval_left_frame": 2696,
+    "interval_right_frame": 2699
+  },
+  {
+    "frame_index": 2697,
+    "seed_box_present": false,
+    "solved_box_present": true,
+    "solved_box_source": "in-memory",
+    "trace_present": [
+      {
+        "centroid_x": 1041.2227011494253,
+        "centroid_y": 540.6321839080459,
+        "area": 696,
+        "bbox": [
+          20,
+          21,
+          23,
+          57
+        ],
+        "integrated_mag": 10900.1708984375,
+        "label_id": 1,
+        "small_blob": false,
+        "cross_track": 0.0,
+        "along_track": 0.0,
+        "dist_h": 0.16028331576481972,
+        "strength_score": 1.0,
+        "proximity_score": 0.8541921904293528,
+        "size_score": 0.7204968944099379,
+        "total_score": 0.9270960952146764,
+        "in_corridor": true,
+        "in_acceptance_box": true,
+        "dist_to_pred_px": 7.373032525181707
+      },
+      {
+        "centroid_x": 1068.1203703703704,
+        "centroid_y": 542.0308641975308,
+        "area": 324,
+        "bbox": [
+          52,
+          31,
+          11,
+          41
+        ],
+        "integrated_mag": 5937.162109375,
+        "label_id": 2,
+        "small_blob": false,
+        "in_corridor": false,
+        "in_acceptance_box": false,
+        "dist_to_pred_px": 27.281398440769408
+      },
+      {
+        "centroid_x": 1066.690082644628,
+        "centroid_y": 577.8388429752066,
+        "area": 242,
+        "bbox": [
+          46,
+          73,
+          17,
+          27
+        ],
+        "integrated_mag": 5531.18017578125,
+        "label_id": 3,
+        "small_blob": false,
+        "in_corridor": false,
+        "in_acceptance_box": false,
+        "dist_to_pred_px": 39.0499271925343
+      }
+    ],
+    "raw_blob_count": 3,
+    "corridor_blob_count": 1,
+    "winner_blob_count": 1,
+    "box_coord_space_before_draw": "processed",
+    "trace_coord_space_before_draw": "processed",
+    "conversion_count": 1,
+    "roi_origin_xy": [
+      1010,
+      492
+    ],
+    "crop_origin_xy": [
+      0,
+      0
+    ],
+    "bin_factor": 1,
+    "direction": "BWD",
+    "non_seed_missing_solved_box": false,
+    "interval_left_frame": 2696,
+    "interval_right_frame": 2699
+  },
+  {
+    "frame_index": 2698,
+    "seed_box_present": false,
+    "solved_box_present": true,
+    "solved_box_source": "in-memory",
+    "trace_present": [
+      {
+        "centroid_x": 1040.8120978120978,
+        "centroid_y": 546.7078507078508,
+        "area": 777,
+        "bbox": [
+          22,
+          24,
+          21,
+          62
+        ],
+        "integrated_mag": 12404.5634765625,
+        "label_id": 1,
+        "small_blob": false,
+        "cross_track": 0.0,
+        "along_track": 0.0,
+        "dist_h": 0.03182284383959023,
+        "strength_score": 1.0,
+        "proximity_score": 0.9710511407103182,
+        "size_score": 0.8043478260869565,
+        "total_score": 0.9855255703551591,
+        "in_corridor": true,
+        "in_acceptance_box": true,
+        "dist_to_pred_px": 1.4638508166211506
+      },
+      {
+        "centroid_x": 1064.419689119171,
+        "centroid_y": 573.7979274611399,
+        "area": 193,
+        "bbox": [
+          46,
+          73,
+          17,
+          19
+        ],
+        "integrated_mag": 2590.95068359375,
+        "label_id": 2,
+        "small_blob": false,
+        "in_corridor": false,
+        "in_acceptance_box": false,
+        "dist_to_pred_px": 34.50862516255435
+      }
+    ],
+    "raw_blob_count": 2,
+    "corridor_blob_count": 1,
+    "winner_blob_count": 1,
+    "box_coord_space_before_draw": "processed",
+    "trace_coord_space_before_draw": "processed",
+    "conversion_count": 1,
+    "roi_origin_xy": [
+      1010,
+      492
+    ],
+    "crop_origin_xy": [
+      0,
+      0
+    ],
+    "bin_factor": 1,
+    "direction": "BWD",
+    "non_seed_missing_solved_box": false,
+    "interval_left_frame": 2696,
+    "interval_right_frame": 2699
+  },
+  {
+    "frame_index": 2699,
+    "seed_box_present": true,
+    "solved_box_present": true,
+    "solved_box_source": "in-memory",
+    "trace_present": [
+      {
+        "centroid_x": 1043.0703363914372,
+        "centroid_y": 552.8399592252804,
+        "area": 981,
+        "bbox": [
+          21,
+          23,
+          29,
+          70
+        ],
+        "integrated_mag": 18739.09765625,
+        "label_id": 1,
+        "small_blob": false,
+        "cross_track": 0.0,
+        "along_track": 0.0,
+        "dist_h": 0.11061599665849725,
+        "strength_score": 1.0,
+        "proximity_score": 0.8993739548044116,
+        "size_score": 1.015527950310559,
+        "total_score": 0.9496869774022059,
+        "in_corridor": true,
+        "in_acceptance_box": true,
+        "dist_to_pred_px": 5.088335846290874
+      },
+      {
+        "centroid_x": 1070.4259259259259,
+        "centroid_y": 571.1111111111111,
+        "area": 54,
+        "bbox": [
+          58,
+          72,
+          5,
+          14
+        ],
+        "integrated_mag": 687.5296020507812,
+        "label_id": 2,
+        "small_blob": false,
+        "in_corridor": false,
+        "in_acceptance_box": false,
+        "dist_to_pred_px": 37.024757223542636
+      },
+      {
+        "centroid_x": 1071.6,
+        "centroid_y": 601.2,
+        "area": 5,
+        "bbox": [
+          61,
+          108,
+          2,
+          3
+        ],
+        "integrated_mag": 51.224769592285156,
+        "label_id": 3,
+        "small_blob": true,
+        "in_corridor": false,
+        "in_acceptance_box": false,
+        "dist_to_pred_px": 61.124872188005426
+      }
+    ],
+    "raw_blob_count": 3,
+    "corridor_blob_count": 1,
+    "winner_blob_count": 1,
+    "box_coord_space_before_draw": "processed",
+    "trace_coord_space_before_draw": "processed",
+    "conversion_count": 1,
+    "roi_origin_xy": [
+      1010,
+      492
+    ],
+    "crop_origin_xy": [
+      0,
+      0
+    ],
+    "bin_factor": 1,
+    "direction": "BWD",
+    "non_seed_missing_solved_box": false,
+    "interval_left_frame": 2696,
+    "interval_right_frame": 2699
+  },
+  {
+    "frame_index": 4202,
+    "seed_box_present": true,
+    "solved_box_present": true,
+    "solved_box_source": "in-memory",
+    "trace_present": [
+      {
+        "centroid_x": 919.00547112462,
+        "centroid_y": 333.2887537993921,
+        "area": 1645,
+        "bbox": [
+          15,
+          20,
+          36,
+          76
+        ],
+        "integrated_mag": 27503.24609375,
+        "label_id": 1,
+        "small_blob": false,
+        "cross_track": 0.0,
+        "along_track": 0.0,
+        "dist_h": 0.23067088916595546,
+        "strength_score": 1.0,
+        "proximity_score": 0.8007513528869666,
+        "size_score": 2.175925925925926,
+        "total_score": 0.9003756764434834,
+        "in_corridor": true,
+        "in_acceptance_box": true,
+        "dist_to_pred_px": 8.304152009974397
+      }
+    ],
+    "raw_blob_count": 1,
+    "corridor_blob_count": 1,
+    "winner_blob_count": 1,
+    "box_coord_space_before_draw": "processed",
+    "trace_coord_space_before_draw": "processed",
+    "conversion_count": 1,
+    "roi_origin_xy": [
+      887,
+      277
+    ],
+    "crop_origin_xy": [
+      0,
+      0
+    ],
+    "bin_factor": 1,
+    "direction": "FWD",
+    "non_seed_missing_solved_box": false,
+    "interval_left_frame": 4202,
+    "interval_right_frame": 4216
+  },
+  {
+    "frame_index": 4203,
+    "seed_box_present": false,
+    "solved_box_present": true,
+    "solved_box_source": "in-memory",
+    "trace_present": [
+      {
+        "centroid_x": 915.4285714285714,
+        "centroid_y": 313.2963951935915,
+        "area": 749,
+        "bbox": [
+          13,
+          19,
+          33,
+          33
+        ],
+        "integrated_mag": 14760.0517578125,
+        "label_id": 1,
+        "small_blob": false,
+        "cross_track": 0.0,
+        "along_track": 0.0,
+        "dist_h": 0.33610886010951496,
+        "strength_score": 1.0,
+        "proximity_score": 0.7096762582323779,
+        "size_score": 0.9907407407407407,
+        "total_score": 0.854838129116189,
+        "in_corridor": true,
+        "in_acceptance_box": true,
+        "dist_to_pred_px": 12.099918963942539
+      },
+      {
+        "centroid_x": 916.8504672897196,
+        "centroid_y": 358.1752336448598,
+        "area": 428,
+        "bbox": [
+          14,
+          68,
+          31,
+          28
+        ],
+        "integrated_mag": 6271.2109375,
+        "label_id": 2,
+        "small_blob": false,
+        "in_corridor": false,
+        "in_acceptance_box": false,
+        "dist_to_pred_px": 33.21621720716138
+      }
+    ],
+    "raw_blob_count": 2,
+    "corridor_blob_count": 1,
+    "winner_blob_count": 1,
+    "box_coord_space_before_draw": "processed",
+    "trace_coord_space_before_draw": "processed",
+    "conversion_count": 1,
+    "roi_origin_xy": [
+      887,
+      277
+    ],
+    "crop_origin_xy": [
+      0,
+      0
+    ],
+    "bin_factor": 1,
+    "direction": "FWD",
+    "non_seed_missing_solved_box": false,
+    "interval_left_frame": 4202,
+    "interval_right_frame": 4216
+  },
+  {
+    "frame_index": 4204,
+    "seed_box_present": false,
+    "solved_box_present": true,
+    "solved_box_source": "in-memory",
+    "trace_present": [
+      {
+        "centroid_x": 911.5996784565916,
+        "centroid_y": 310.0369774919614,
+        "area": 622,
+        "bbox": [
+          12,
+          17,
+          27,
+          31
+        ],
+        "integrated_mag": 11611.14453125,
+        "label_id": 1,
+        "small_blob": false,
+        "cross_track": 0.0,
+        "along_track": 0.0,
+        "dist_h": 0.4577070468368906,
+        "strength_score": 1.0,
+        "proximity_score": 0.6046423101497629,
+        "size_score": 0.8227513227513228,
+        "total_score": 0.8023211550748814,
+        "in_corridor": true,
+        "in_acceptance_box": true,
+        "dist_to_pred_px": 16.47745368612806
+      },
+      {
+        "centroid_x": 923.4850746268656,
+        "centroid_y": 362.63059701492534,
+        "area": 268,
+        "bbox": [
+          28,
+          76,
+          17,
+          20
+        ],
+        "integrated_mag": 5197.44580078125,
+        "label_id": 3,
+        "small_blob": false,
+        "in_corridor": false,
+        "in_acceptance_box": false,
+        "dist_to_pred_px": 37.959357222365185
+      },
+      {
+        "centroid_x": 902.977186311787,
+        "centroid_y": 348.98859315589357,
+        "area": 263,
+        "bbox": [
+          9,
+          60,
+          16,
+          23
+        ],
+        "integrated_mag": 4129.060546875,
+        "label_id": 2,
+        "small_blob": false,
+        "in_corridor": false,
+        "in_acceptance_box": false,
+        "dist_to_pred_px": 28.572895310030376
+      }
+    ],
+    "raw_blob_count": 3,
+    "corridor_blob_count": 1,
+    "winner_blob_count": 1,
+    "box_coord_space_before_draw": "processed",
+    "trace_coord_space_before_draw": "processed",
+    "conversion_count": 1,
+    "roi_origin_xy": [
+      887,
+      277
+    ],
+    "crop_origin_xy": [
+      0,
+      0
+    ],
+    "bin_factor": 1,
+    "direction": "FWD",
+    "non_seed_missing_solved_box": false,
+    "interval_left_frame": 4202,
+    "interval_right_frame": 4216
+  },
+  {
+    "frame_index": 4205,
+    "seed_box_present": false,
+    "solved_box_present": true,
+    "solved_box_source": "in-memory",
+    "trace_present": [
+      {
+        "centroid_x": 910.4910858995138,
+        "centroid_y": 329.6393841166937,
+        "area": 1234,
+        "bbox": [
+          9,
+          15,
+          35,
+          81
+        ],
+        "integrated_mag": 23919.734375,
+        "label_id": 1,
+        "small_blob": false,
+        "cross_track": 0.0,
+        "along_track": 0.0,
+        "dist_h": 0.257100688307893,
+        "strength_score": 1.0,
+        "proximity_score": 0.7779218500331775,
+        "size_score": 1.6322751322751323,
+        "total_score": 0.8889609250165887,
+        "in_corridor": true,
+        "in_acceptance_box": true,
+        "dist_to_pred_px": 9.25562477908415
+      }
+    ],
+    "raw_blob_count": 1,
+    "corridor_blob_count": 1,
+    "winner_blob_count": 1,
+    "box_coord_space_before_draw": "processed",
+    "trace_coord_space_before_draw": "processed",
+    "conversion_count": 1,
+    "roi_origin_xy": [
+      887,
+      277
+    ],
+    "crop_origin_xy": [
+      0,
+      0
+    ],
+    "bin_factor": 1,
+    "direction": "FWD",
+    "non_seed_missing_solved_box": false,
+    "interval_left_frame": 4202,
+    "interval_right_frame": 4216
+  },
+  {
+    "frame_index": 4206,
+    "seed_box_present": false,
+    "solved_box_present": true,
+    "solved_box_source": "in-memory",
+    "trace_present": false,
+    "raw_blob_count": 0,
+    "corridor_blob_count": 0,
+    "winner_blob_count": 0,
+    "box_coord_space_before_draw": "processed",
+    "trace_coord_space_before_draw": "processed",
+    "conversion_count": 1,
+    "roi_origin_xy": null,
+    "crop_origin_xy": [
+      0,
+      0
+    ],
+    "bin_factor": 1,
+    "direction": "FWD",
+    "non_seed_missing_solved_box": false,
+    "interval_left_frame": 4202,
+    "interval_right_frame": 4216
+  },
+  {
+    "frame_index": 4207,
+    "seed_box_present": false,
+    "solved_box_present": true,
+    "solved_box_source": "in-memory",
+    "trace_present": false,
+    "raw_blob_count": 0,
+    "corridor_blob_count": 0,
+    "winner_blob_count": 0,
+    "box_coord_space_before_draw": "processed",
+    "trace_coord_space_before_draw": "processed",
+    "conversion_count": 1,
+    "roi_origin_xy": null,
+    "crop_origin_xy": [
+      0,
+      0
+    ],
+    "bin_factor": 1,
+    "direction": "FWD",
+    "non_seed_missing_solved_box": false,
+    "interval_left_frame": 4202,
+    "interval_right_frame": 4216
+  },
+  {
+    "frame_index": 4208,
+    "seed_box_present": false,
+    "solved_box_present": true,
+    "solved_box_source": "in-memory",
+    "trace_present": false,
+    "raw_blob_count": 0,
+    "corridor_blob_count": 0,
+    "winner_blob_count": 0,
+    "box_coord_space_before_draw": "processed",
+    "trace_coord_space_before_draw": "processed",
+    "conversion_count": 1,
+    "roi_origin_xy": null,
+    "crop_origin_xy": [
+      0,
+      0
+    ],
+    "bin_factor": 1,
+    "direction": "FWD",
+    "non_seed_missing_solved_box": false,
+    "interval_left_frame": 4202,
+    "interval_right_frame": 4216
+  },
+  {
+    "frame_index": 4209,
+    "seed_box_present": false,
+    "solved_box_present": true,
+    "solved_box_source": "in-memory",
+    "trace_present": false,
+    "raw_blob_count": 0,
+    "corridor_blob_count": 0,
+    "winner_blob_count": 0,
+    "box_coord_space_before_draw": "processed",
+    "trace_coord_space_before_draw": "processed",
+    "conversion_count": 1,
+    "roi_origin_xy": null,
+    "crop_origin_xy": [
+      0,
+      0
+    ],
+    "bin_factor": 1,
+    "direction": "FWD",
+    "non_seed_missing_solved_box": false,
+    "interval_left_frame": 4202,
+    "interval_right_frame": 4216
+  },
+  {
+    "frame_index": 4210,
+    "seed_box_present": false,
+    "solved_box_present": true,
+    "solved_box_source": "in-memory",
+    "trace_present": false,
+    "raw_blob_count": 0,
+    "corridor_blob_count": 0,
+    "winner_blob_count": 0,
+    "box_coord_space_before_draw": "processed",
+    "trace_coord_space_before_draw": "processed",
+    "conversion_count": 1,
+    "roi_origin_xy": null,
+    "crop_origin_xy": [
+      0,
+      0
+    ],
+    "bin_factor": 1,
+    "direction": "FWD",
+    "non_seed_missing_solved_box": false,
+    "interval_left_frame": 4202,
+    "interval_right_frame": 4216
+  },
+  {
+    "frame_index": 4211,
+    "seed_box_present": false,
+    "solved_box_present": true,
+    "solved_box_source": "in-memory",
+    "trace_present": false,
+    "raw_blob_count": 0,
+    "corridor_blob_count": 0,
+    "winner_blob_count": 0,
+    "box_coord_space_before_draw": "processed",
+    "trace_coord_space_before_draw": "processed",
+    "conversion_count": 1,
+    "roi_origin_xy": null,
+    "crop_origin_xy": [
+      0,
+      0
+    ],
+    "bin_factor": 1,
+    "direction": "FWD",
+    "non_seed_missing_solved_box": false,
+    "interval_left_frame": 4202,
+    "interval_right_frame": 4216
+  },
+  {
+    "frame_index": 4212,
+    "seed_box_present": false,
+    "solved_box_present": true,
+    "solved_box_source": "in-memory",
+    "trace_present": false,
+    "raw_blob_count": 0,
+    "corridor_blob_count": 0,
+    "winner_blob_count": 0,
+    "box_coord_space_before_draw": "processed",
+    "trace_coord_space_before_draw": "processed",
+    "conversion_count": 1,
+    "roi_origin_xy": null,
+    "crop_origin_xy": [
+      0,
+      0
+    ],
+    "bin_factor": 1,
+    "direction": "FWD",
+    "non_seed_missing_solved_box": false,
+    "interval_left_frame": 4202,
+    "interval_right_frame": 4216
+  },
+  {
+    "frame_index": 4213,
+    "seed_box_present": false,
+    "solved_box_present": true,
+    "solved_box_source": "in-memory",
+    "trace_present": false,
+    "raw_blob_count": 0,
+    "corridor_blob_count": 0,
+    "winner_blob_count": 0,
+    "box_coord_space_before_draw": "processed",
+    "trace_coord_space_before_draw": "processed",
+    "conversion_count": 1,
+    "roi_origin_xy": null,
+    "crop_origin_xy": [
+      0,
+      0
+    ],
+    "bin_factor": 1,
+    "direction": "FWD",
+    "non_seed_missing_solved_box": false,
+    "interval_left_frame": 4202,
+    "interval_right_frame": 4216
+  },
+  {
+    "frame_index": 4214,
+    "seed_box_present": false,
+    "solved_box_present": true,
+    "solved_box_source": "in-memory",
+    "trace_present": false,
+    "raw_blob_count": 0,
+    "corridor_blob_count": 0,
+    "winner_blob_count": 0,
+    "box_coord_space_before_draw": "processed",
+    "trace_coord_space_before_draw": "processed",
+    "conversion_count": 1,
+    "roi_origin_xy": null,
+    "crop_origin_xy": [
+      0,
+      0
+    ],
+    "bin_factor": 1,
+    "direction": "FWD",
+    "non_seed_missing_solved_box": false,
+    "interval_left_frame": 4202,
+    "interval_right_frame": 4216
+  },
+  {
+    "frame_index": 4215,
+    "seed_box_present": false,
+    "solved_box_present": true,
+    "solved_box_source": "in-memory",
+    "trace_present": false,
+    "raw_blob_count": 0,
+    "corridor_blob_count": 0,
+    "winner_blob_count": 0,
+    "box_coord_space_before_draw": "processed",
+    "trace_coord_space_before_draw": "processed",
+    "conversion_count": 1,
+    "roi_origin_xy": null,
+    "crop_origin_xy": [
+      0,
+      0
+    ],
+    "bin_factor": 1,
+    "direction": "FWD",
+    "non_seed_missing_solved_box": false,
+    "interval_left_frame": 4202,
+    "interval_right_frame": 4216
+  },
+  {
+    "frame_index": 4216,
+    "seed_box_present": true,
+    "solved_box_present": false,
+    "solved_box_source": "none",
+    "trace_present": false,
+    "raw_blob_count": 0,
+    "corridor_blob_count": 0,
+    "winner_blob_count": 0,
+    "box_coord_space_before_draw": "processed",
+    "trace_coord_space_before_draw": "processed",
+    "conversion_count": 1,
+    "roi_origin_xy": null,
+    "crop_origin_xy": [
+      0,
+      0
+    ],
+    "bin_factor": 1,
+    "direction": "FWD",
+    "non_seed_missing_solved_box": false,
+    "interval_left_frame": 4202,
+    "interval_right_frame": 4216
+  },
+  {
+    "frame_index": 4202,
+    "seed_box_present": true,
+    "solved_box_present": false,
+    "solved_box_source": "none",
+    "trace_present": false,
+    "raw_blob_count": 0,
+    "corridor_blob_count": 0,
+    "winner_blob_count": 0,
+    "box_coord_space_before_draw": "processed",
+    "trace_coord_space_before_draw": "processed",
+    "conversion_count": 1,
+    "roi_origin_xy": null,
+    "crop_origin_xy": [
+      0,
+      0
+    ],
+    "bin_factor": 1,
+    "direction": "BWD",
+    "non_seed_missing_solved_box": false,
+    "interval_left_frame": 4202,
+    "interval_right_frame": 4216
+  },
+  {
+    "frame_index": 4203,
+    "seed_box_present": false,
+    "solved_box_present": true,
+    "solved_box_source": "in-memory",
+    "trace_present": false,
+    "raw_blob_count": 0,
+    "corridor_blob_count": 0,
+    "winner_blob_count": 0,
+    "box_coord_space_before_draw": "processed",
+    "trace_coord_space_before_draw": "processed",
+    "conversion_count": 1,
+    "roi_origin_xy": null,
+    "crop_origin_xy": [
+      0,
+      0
+    ],
+    "bin_factor": 1,
+    "direction": "BWD",
+    "non_seed_missing_solved_box": false,
+    "interval_left_frame": 4202,
+    "interval_right_frame": 4216
+  },
+  {
+    "frame_index": 4204,
+    "seed_box_present": false,
+    "solved_box_present": true,
+    "solved_box_source": "in-memory",
+    "trace_present": false,
+    "raw_blob_count": 0,
+    "corridor_blob_count": 0,
+    "winner_blob_count": 0,
+    "box_coord_space_before_draw": "processed",
+    "trace_coord_space_before_draw": "processed",
+    "conversion_count": 1,
+    "roi_origin_xy": null,
+    "crop_origin_xy": [
+      0,
+      0
+    ],
+    "bin_factor": 1,
+    "direction": "BWD",
+    "non_seed_missing_solved_box": false,
+    "interval_left_frame": 4202,
+    "interval_right_frame": 4216
+  },
+  {
+    "frame_index": 4205,
+    "seed_box_present": false,
+    "solved_box_present": true,
+    "solved_box_source": "in-memory",
+    "trace_present": false,
+    "raw_blob_count": 0,
+    "corridor_blob_count": 0,
+    "winner_blob_count": 0,
+    "box_coord_space_before_draw": "processed",
+    "trace_coord_space_before_draw": "processed",
+    "conversion_count": 1,
+    "roi_origin_xy": null,
+    "crop_origin_xy": [
+      0,
+      0
+    ],
+    "bin_factor": 1,
+    "direction": "BWD",
+    "non_seed_missing_solved_box": false,
+    "interval_left_frame": 4202,
+    "interval_right_frame": 4216
+  },
+  {
+    "frame_index": 4206,
+    "seed_box_present": false,
+    "solved_box_present": true,
+    "solved_box_source": "in-memory",
+    "trace_present": false,
+    "raw_blob_count": 0,
+    "corridor_blob_count": 0,
+    "winner_blob_count": 0,
+    "box_coord_space_before_draw": "processed",
+    "trace_coord_space_before_draw": "processed",
+    "conversion_count": 1,
+    "roi_origin_xy": null,
+    "crop_origin_xy": [
+      0,
+      0
+    ],
+    "bin_factor": 1,
+    "direction": "BWD",
+    "non_seed_missing_solved_box": false,
+    "interval_left_frame": 4202,
+    "interval_right_frame": 4216
+  },
+  {
+    "frame_index": 4207,
+    "seed_box_present": false,
+    "solved_box_present": true,
+    "solved_box_source": "in-memory",
+    "trace_present": false,
+    "raw_blob_count": 0,
+    "corridor_blob_count": 0,
+    "winner_blob_count": 0,
+    "box_coord_space_before_draw": "processed",
+    "trace_coord_space_before_draw": "processed",
+    "conversion_count": 1,
+    "roi_origin_xy": null,
+    "crop_origin_xy": [
+      0,
+      0
+    ],
+    "bin_factor": 1,
+    "direction": "BWD",
+    "non_seed_missing_solved_box": false,
+    "interval_left_frame": 4202,
+    "interval_right_frame": 4216
+  },
+  {
+    "frame_index": 4208,
+    "seed_box_present": false,
+    "solved_box_present": true,
+    "solved_box_source": "in-memory",
+    "trace_present": false,
+    "raw_blob_count": 0,
+    "corridor_blob_count": 0,
+    "winner_blob_count": 0,
+    "box_coord_space_before_draw": "processed",
+    "trace_coord_space_before_draw": "processed",
+    "conversion_count": 1,
+    "roi_origin_xy": null,
+    "crop_origin_xy": [
+      0,
+      0
+    ],
+    "bin_factor": 1,
+    "direction": "BWD",
+    "non_seed_missing_solved_box": false,
+    "interval_left_frame": 4202,
+    "interval_right_frame": 4216
+  },
+  {
+    "frame_index": 4209,
+    "seed_box_present": false,
+    "solved_box_present": true,
+    "solved_box_source": "in-memory",
+    "trace_present": false,
+    "raw_blob_count": 0,
+    "corridor_blob_count": 0,
+    "winner_blob_count": 0,
+    "box_coord_space_before_draw": "processed",
+    "trace_coord_space_before_draw": "processed",
+    "conversion_count": 1,
+    "roi_origin_xy": null,
+    "crop_origin_xy": [
+      0,
+      0
+    ],
+    "bin_factor": 1,
+    "direction": "BWD",
+    "non_seed_missing_solved_box": false,
+    "interval_left_frame": 4202,
+    "interval_right_frame": 4216
+  },
+  {
+    "frame_index": 4210,
+    "seed_box_present": false,
+    "solved_box_present": true,
+    "solved_box_source": "in-memory",
+    "trace_present": false,
+    "raw_blob_count": 0,
+    "corridor_blob_count": 0,
+    "winner_blob_count": 0,
+    "box_coord_space_before_draw": "processed",
+    "trace_coord_space_before_draw": "processed",
+    "conversion_count": 1,
+    "roi_origin_xy": null,
+    "crop_origin_xy": [
+      0,
+      0
+    ],
+    "bin_factor": 1,
+    "direction": "BWD",
+    "non_seed_missing_solved_box": false,
+    "interval_left_frame": 4202,
+    "interval_right_frame": 4216
+  },
+  {
+    "frame_index": 4211,
+    "seed_box_present": false,
+    "solved_box_present": true,
+    "solved_box_source": "in-memory",
+    "trace_present": false,
+    "raw_blob_count": 0,
+    "corridor_blob_count": 0,
+    "winner_blob_count": 0,
+    "box_coord_space_before_draw": "processed",
+    "trace_coord_space_before_draw": "processed",
+    "conversion_count": 1,
+    "roi_origin_xy": null,
+    "crop_origin_xy": [
+      0,
+      0
+    ],
+    "bin_factor": 1,
+    "direction": "BWD",
+    "non_seed_missing_solved_box": false,
+    "interval_left_frame": 4202,
+    "interval_right_frame": 4216
+  },
+  {
+    "frame_index": 4212,
+    "seed_box_present": false,
+    "solved_box_present": true,
+    "solved_box_source": "in-memory",
+    "trace_present": false,
+    "raw_blob_count": 0,
+    "corridor_blob_count": 0,
+    "winner_blob_count": 0,
+    "box_coord_space_before_draw": "processed",
+    "trace_coord_space_before_draw": "processed",
+    "conversion_count": 1,
+    "roi_origin_xy": null,
+    "crop_origin_xy": [
+      0,
+      0
+    ],
+    "bin_factor": 1,
+    "direction": "BWD",
+    "non_seed_missing_solved_box": false,
+    "interval_left_frame": 4202,
+    "interval_right_frame": 4216
+  },
+  {
+    "frame_index": 4213,
+    "seed_box_present": false,
+    "solved_box_present": true,
+    "solved_box_source": "in-memory",
+    "trace_present": [
+      {
+        "centroid_x": 869.052871467639,
+        "centroid_y": 316.27164995442115,
+        "area": 1097,
+        "bbox": [
+          23,
+          22,
+          43,
+          49
+        ],
+        "integrated_mag": 19215.3359375,
+        "label_id": 1,
+        "small_blob": false,
+        "cross_track": 0.0,
+        "along_track": 0.0,
+        "dist_h": 0.3032289187122714,
+        "strength_score": 1.0,
+        "proximity_score": 0.7358941410046407,
+        "size_score": 1.2785547785547786,
+        "total_score": 0.8679470705023203,
+        "in_corridor": true,
+        "in_acceptance_box": true,
+        "dist_to_pred_px": 11.825927829778585
+      }
+    ],
+    "raw_blob_count": 1,
+    "corridor_blob_count": 1,
+    "winner_blob_count": 1,
+    "box_coord_space_before_draw": "processed",
+    "trace_coord_space_before_draw": "processed",
+    "conversion_count": 1,
+    "roi_origin_xy": [
+      826,
+      271
+    ],
+    "crop_origin_xy": [
+      0,
+      0
+    ],
+    "bin_factor": 1,
+    "direction": "BWD",
+    "non_seed_missing_solved_box": false,
+    "interval_left_frame": 4202,
+    "interval_right_frame": 4216
+  },
+  {
+    "frame_index": 4214,
+    "seed_box_present": false,
+    "solved_box_present": true,
+    "solved_box_source": "in-memory",
+    "trace_present": [
+      {
+        "centroid_x": 866.624674196351,
+        "centroid_y": 314.8314509122502,
+        "area": 1151,
+        "bbox": [
+          20,
+          21,
+          46,
+          48
+        ],
+        "integrated_mag": 20002.00390625,
+        "label_id": 1,
+        "small_blob": false,
+        "cross_track": 0.0,
+        "along_track": 0.0,
+        "dist_h": 0.27728170238904826,
+        "strength_score": 1.0,
+        "proximity_score": 0.7584936077200358,
+        "size_score": 1.3414918414918415,
+        "total_score": 0.8792468038600179,
+        "in_corridor": true,
+        "in_acceptance_box": true,
+        "dist_to_pred_px": 10.813986393172883
+      }
+    ],
+    "raw_blob_count": 1,
+    "corridor_blob_count": 1,
+    "winner_blob_count": 1,
+    "box_coord_space_before_draw": "processed",
+    "trace_coord_space_before_draw": "processed",
+    "conversion_count": 1,
+    "roi_origin_xy": [
+      826,
+      271
+    ],
+    "crop_origin_xy": [
+      0,
+      0
+    ],
+    "bin_factor": 1,
+    "direction": "BWD",
+    "non_seed_missing_solved_box": false,
+    "interval_left_frame": 4202,
+    "interval_right_frame": 4216
+  },
+  {
+    "frame_index": 4215,
+    "seed_box_present": false,
+    "solved_box_present": true,
+    "solved_box_source": "in-memory",
+    "trace_present": [
+      {
+        "centroid_x": 860.7607973421927,
+        "centroid_y": 314.26495016611295,
+        "area": 1204,
+        "bbox": [
+          11,
+          21,
+          47,
+          45
+        ],
+        "integrated_mag": 21675.298828125,
+        "label_id": 1,
+        "small_blob": false,
+        "cross_track": 0.0,
+        "along_track": 0.0,
+        "dist_h": 0.21592796703373457,
+        "strength_score": 1.0,
+        "proximity_score": 0.8119313901301122,
+        "size_score": 1.4032634032634033,
+        "total_score": 0.9059656950650561,
+        "in_corridor": true,
+        "in_acceptance_box": true,
+        "dist_to_pred_px": 8.421190714315648
+      }
+    ],
+    "raw_blob_count": 1,
+    "corridor_blob_count": 1,
+    "winner_blob_count": 1,
+    "box_coord_space_before_draw": "processed",
+    "trace_coord_space_before_draw": "processed",
+    "conversion_count": 1,
+    "roi_origin_xy": [
+      826,
+      271
+    ],
+    "crop_origin_xy": [
+      0,
+      0
+    ],
+    "bin_factor": 1,
+    "direction": "BWD",
+    "non_seed_missing_solved_box": false,
+    "interval_left_frame": 4202,
+    "interval_right_frame": 4216
+  },
+  {
+    "frame_index": 4216,
+    "seed_box_present": true,
+    "solved_box_present": true,
+    "solved_box_source": "in-memory",
+    "trace_present": [
+      {
+        "centroid_x": 858.1630067567568,
+        "centroid_y": 313.7314189189189,
+        "area": 1184,
+        "bbox": [
+          10,
+          20,
+          45,
+          43
+        ],
+        "integrated_mag": 22944.91796875,
+        "label_id": 1,
+        "small_blob": false,
+        "cross_track": 0.0,
+        "along_track": 0.0,
+        "dist_h": 0.22585737277487894,
+        "strength_score": 1.0,
+        "proximity_score": 0.8032830915320924,
+        "size_score": 1.3799533799533799,
+        "total_score": 0.9016415457660463,
+        "in_corridor": true,
+        "in_acceptance_box": true,
+        "dist_to_pred_px": 8.808437538220279
+      }
+    ],
+    "raw_blob_count": 1,
+    "corridor_blob_count": 1,
+    "winner_blob_count": 1,
+    "box_coord_space_before_draw": "processed",
+    "trace_coord_space_before_draw": "processed",
+    "conversion_count": 1,
+    "roi_origin_xy": [
+      826,
+      271
+    ],
+    "crop_origin_xy": [
+      0,
+      0
+    ],
+    "bin_factor": 1,
+    "direction": "BWD",
+    "non_seed_missing_solved_box": false,
+    "interval_left_frame": 4202,
+    "interval_right_frame": 4216
+  }
+]

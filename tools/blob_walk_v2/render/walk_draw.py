@@ -17,11 +17,58 @@ import walk_paths
 _REPO_ROOT = walk_paths.setup()
 
 # local repo modules
+import draw_utils
 import overlay_config
 import walk_palette
+import common_tools.coord_space
 
 # Load walk overlay palette (colors for velocity vector, circle, residual line).
 _WALK_PALETTE = walk_palette.load_walk_overlays()
+
+
+#============================================
+def processed_box_to_tile_local(
+	box: common_tools.coord_space.ProcessedBox,
+	roi_origin: tuple,
+) -> tuple:
+	"""Convert a PROCESSED box to a tile-local edge rectangle (single subtraction).
+
+	TILE-LOCAL is the render-only third coordinate flavor: it is PROCESSED
+	pixels minus the per-tile ROI origin (the tile is a crop of the processed
+	frame).  It is deliberately NOT a global pipeline space and NOT a new type
+	in common_tools/coord_space.py: docs/COORDINATE_SPACES.md fixes the pipeline
+	at exactly two spaces (SOURCE, PROCESSED), and tile-local is an ephemeral
+	draw-time coordinate parameterized by the ROI origin, valid only inside one
+	tile.  Keeping it a render-local typed helper honors that contract while
+	still making the processed->tile-local conversion explicit, single-direction,
+	and impossible to double-apply by accident.
+
+	The ROI-origin subtraction happens HERE and only here.  This is the single
+	conversion site that the render manifest's conversion_count == 1 refers to.
+	Edges derive from the float center BEFORE any rounding, per the render
+	rounding policy (matching ProcessedBox.edges() semantics).
+
+	Args:
+		box: a typed PROCESSED-space center-size box (validated by the caller
+			with require_processed_box at the render entry).
+		roi_origin: (roi_x_origin, roi_y_origin) in PROCESSED pixels.
+
+	Returns:
+		(x1, y1, x2, y2) tile-local edge tuple as floats.
+	"""
+	# Guard: refuse any non-ProcessedBox so a space mismatch fails loud.
+	common_tools.coord_space.require_processed_box(box)
+	roi_x_origin, roi_y_origin = roi_origin
+	# Single ROI-origin subtraction: processed center -> tile-local center.
+	tile_cx = box.cx - roi_x_origin
+	tile_cy = box.cy - roi_y_origin
+	# Width/height are deltas: the ROI origin does not shift them.
+	x1 = tile_cx - box.w / 2.0
+	y1 = tile_cy - box.h / 2.0
+	x2 = tile_cx + box.w / 2.0
+	y2 = tile_cy + box.h / 2.0
+	edge_tuple = (x1, y1, x2, y2)
+	return edge_tuple
 
 
 #============================================
@@ -216,6 +263,76 @@ def _draw_blob_ellipse_cv2(
 		color=color,
 		thickness=thickness,
 		lineType=cv2.LINE_AA,
+	)
+
+
+#============================================
+def _draw_torso_box_solid_heavy_edges(
+	frame: numpy.ndarray,
+	edges: tuple,
+	color: tuple,
+	base_thickness: int,
+) -> None:
+	"""Draw a solid heavy torso box from a precomputed tile-local edge rectangle.
+
+	Solid heavy seed-box draw from precomputed edges: the (x1, y1, x2, y2)
+	tuple is already derived from the float center by the single processed->tile-local
+	conversion (processed_box_to_tile_local), so no center math or second
+	roi subtraction happens here.  Visual output is identical: heavy tier is
+	2x base, solid rectangle, rounded to int only at the final draw call.
+
+	Args:
+		frame: BGR image to draw on (modified in-place).
+		edges: (x1, y1, x2, y2) tile-local float edges.
+		color: BGR color tuple.
+		base_thickness: Base line thickness; heavy tier multiplies by 2.
+	"""
+	x1, y1, x2, y2 = edges
+	# Heavy tier is 2x base (overlay_styles.yaml thickness_tiers.heavy = 2.0).
+	heavy_thickness = max(1, int(round(base_thickness * 2.0)))
+	# Round to int only at the final draw call.
+	cv2.rectangle(
+		frame,
+		(int(round(x1)), int(round(y1))),
+		(int(round(x2)), int(round(y2))),
+		color=color,
+		thickness=heavy_thickness,
+		lineType=cv2.LINE_AA,
+	)
+
+
+#============================================
+def _draw_torso_box_dashed_normal_edges(
+	frame: numpy.ndarray,
+	edges: tuple,
+	color: tuple,
+	base_thickness: int,
+) -> None:
+	"""Draw a dashed normal torso box from a precomputed tile-local edge rectangle.
+
+	Dashed normal solved-box draw from precomputed edges: the (x1, y1, x2, y2)
+	tuple is already derived from the float center by the single processed->tile-local
+	conversion (processed_box_to_tile_local), so no center math or second
+	roi subtraction happens here.  Visual output is identical: normal tier is
+	1x base, dashed rectangle, rounded to int only at the final draw call.
+
+	Args:
+		frame: BGR image to draw on (modified in-place).
+		edges: (x1, y1, x2, y2) tile-local float edges.
+		color: BGR color tuple.
+		base_thickness: Base line thickness; normal tier is 1x.
+	"""
+	x1, y1, x2, y2 = edges
+	# Normal tier is 1x base.
+	normal_thickness = max(1, base_thickness)
+	# Round to int only at the final draw call (via draw_utils).
+	draw_utils.draw_dashed_rect(
+		frame,
+		int(round(x1)), int(round(y1)),
+		int(round(x2)), int(round(y2)),
+		color=color,
+		thickness=normal_thickness,
+		dash_len=10,
 	)
 
 

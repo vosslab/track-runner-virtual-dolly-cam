@@ -21,6 +21,7 @@ import types
 # local repo modules (bare imports resolved by conftest.py)
 import blob_trace
 import residual_motion
+import common_tools.coord_space as coord_space
 
 
 #============================================
@@ -95,8 +96,8 @@ def test_center_pixel_equals_raw_centroid():
 	)
 	obs = residual_motion.observe_blob_at(
 		frame_index=frame_idx,
-		pred_center=(pred_cx, pred_cy),
-		pred_box=(pred_w, pred_h),
+		pred_center=coord_space.ProcessedPoint(cx=pred_cx, cy=pred_cy),
+		pred_box=coord_space.ProcessedBox(cx=pred_cx, cy=pred_cy, w=pred_w, h=pred_h),
 		local_tangent=(1.0, 0.0, 0.0, 1.0),
 		scene_transform=None,
 		reader=reader,
@@ -104,8 +105,8 @@ def test_center_pixel_equals_raw_centroid():
 	)
 	assert obs is not None
 	# Raw centroid: BOTH axes preserved (no cross-track drop).
-	assert abs(obs.center_pixel[0] - blob_x) < 1e-6
-	assert abs(obs.center_pixel[1] - blob_y) < 1e-6
+	assert abs(obs.center_pixel.cx - blob_x) < 1e-6
+	assert abs(obs.center_pixel.cy - blob_y) < 1e-6
 	# Direction-aware fields are zeroed in the re-scoped contract.
 	assert abs(obs.cross_track) < 1e-6
 	assert abs(obs.along_track) < 1e-6
@@ -136,16 +137,16 @@ def test_corridor_failing_blob_still_returned():
 	)
 	obs = residual_motion.observe_blob_at(
 		frame_index=frame_idx,
-		pred_center=(pred_cx, pred_cy),
-		pred_box=(pred_w, pred_h),
+		pred_center=coord_space.ProcessedPoint(cx=pred_cx, cy=pred_cy),
+		pred_box=coord_space.ProcessedBox(cx=pred_cx, cy=pred_cy, w=pred_w, h=pred_h),
 		local_tangent=(1.0, 0.0, 0.0, 1.0),
 		scene_transform=None,
 		reader=reader,
 		residual_cache=residual_cache,
 	)
 	assert obs is not None
-	assert abs(obs.center_pixel[0] - blob_x) < 1e-6
-	assert abs(obs.center_pixel[1] - blob_y) < 1e-6
+	assert abs(obs.center_pixel.cx - blob_x) < 1e-6
+	assert abs(obs.center_pixel.cy - blob_y) < 1e-6
 
 
 #============================================
@@ -187,8 +188,8 @@ def test_total_score_is_metadata_only():
 	)
 	obs = residual_motion.observe_blob_at(
 		frame_index=frame_idx,
-		pred_center=(pred_cx, pred_cy),
-		pred_box=(pred_w, pred_h),
+		pred_center=coord_space.ProcessedPoint(cx=pred_cx, cy=pred_cy),
+		pred_box=coord_space.ProcessedBox(cx=pred_cx, cy=pred_cy, w=pred_w, h=pred_h),
 		local_tangent=(1.0, 0.0, 0.0, 1.0),
 		scene_transform=None,
 		reader=reader,
@@ -197,8 +198,8 @@ def test_total_score_is_metadata_only():
 	assert obs is not None
 	# Winner is blob_b (higher integrated_mag), not blob_a (higher
 	# total_score from proximity).
-	assert abs(obs.center_pixel[0] - (pred_cx + 30.0)) < 1e-6
-	assert abs(obs.center_pixel[1] - (pred_cy + 30.0)) < 1e-6
+	assert abs(obs.center_pixel.cx - (pred_cx + 30.0)) < 1e-6
+	assert abs(obs.center_pixel.cy - (pred_cy + 30.0)) < 1e-6
 
 
 #============================================
@@ -218,8 +219,8 @@ def test_reject_reason_no_raw_blobs():
 	trace_sink = types.SimpleNamespace(observer_trace=None)
 	obs = residual_motion.observe_blob_at(
 		frame_index=frame_idx,
-		pred_center=(pred_cx, pred_cy),
-		pred_box=(pred_w, pred_h),
+		pred_center=coord_space.ProcessedPoint(cx=pred_cx, cy=pred_cy),
+		pred_box=coord_space.ProcessedBox(cx=pred_cx, cy=pred_cy, w=pred_w, h=pred_h),
 		local_tangent=(1.0, 0.0, 0.0, 1.0),
 		scene_transform=None,
 		reader=reader,
@@ -244,17 +245,13 @@ def test_reject_reason_acceptance_box_empty():
 	# Blob far outside the acceptance box.
 	blobs = [_make_blob(pred_cx + 500.0, pred_cy + 500.0)]
 	reader = _make_reader()
-	roi_override = (
-		int(pred_cx - 100),
-		int(pred_cy - 100),
-		int(pred_cx + 100),
-		int(pred_cy + 100),
+	# roi_override / acceptance_box are PROCESSED-space ProcessedBox now;
+	# build them center-size from the same edge extents the test used.
+	roi_override = coord_space.ProcessedBox(
+		cx=pred_cx, cy=pred_cy, w=200.0, h=200.0,
 	)
-	acceptance_box = (
-		pred_cx - 25.0,
-		pred_cy - 25.0,
-		pred_cx + 25.0,
-		pred_cy + 25.0,
+	acceptance_box = coord_space.ProcessedBox(
+		cx=pred_cx, cy=pred_cy, w=50.0, h=50.0,
 	)
 	orig_compute = residual_motion.compute_residual_for_frame
 	orig_extract = residual_motion.extract_frame_blobs
@@ -276,8 +273,8 @@ def test_reject_reason_acceptance_box_empty():
 		trace_sink = types.SimpleNamespace(observer_trace=None)
 		obs = residual_motion.observe_blob_at(
 			frame_index=frame_idx,
-			pred_center=(pred_cx, pred_cy),
-			pred_box=(pred_w, pred_h),
+			pred_center=coord_space.ProcessedPoint(cx=pred_cx, cy=pred_cy),
+			pred_box=coord_space.ProcessedBox(cx=pred_cx, cy=pred_cy, w=pred_w, h=pred_h),
 			local_tangent=(1.0, 0.0, 0.0, 1.0),
 			scene_transform=None,
 			reader=reader,
@@ -313,8 +310,8 @@ def test_dist_to_pred_px_is_logged_feature():
 	trace_sink = types.SimpleNamespace(observer_trace=None)
 	obs = residual_motion.observe_blob_at(
 		frame_index=frame_idx,
-		pred_center=(pred_cx, pred_cy),
-		pred_box=(pred_w, pred_h),
+		pred_center=coord_space.ProcessedPoint(cx=pred_cx, cy=pred_cy),
+		pred_box=coord_space.ProcessedBox(cx=pred_cx, cy=pred_cy, w=pred_w, h=pred_h),
 		local_tangent=(1.0, 0.0, 0.0, 1.0),
 		scene_transform=None,
 		reader=reader,

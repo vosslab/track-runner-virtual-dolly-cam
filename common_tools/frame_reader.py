@@ -15,14 +15,12 @@ Two seek strategies fire in read_frame:
 No further fallbacks are kept. Source videos must be .mkv; MP4/MOV users
 should remux losslessly via `mkvmerge -o out.mkv in.mov` before use.
 
-Coordinate-system model (model B):
-  All public coordinates (pred_center, pred_box, seed cx/cy/w/h,
-  BlobObservation.center_pixel, scene_transform inputs) are in
-  SOURCE-FRAME pixel units, regardless of bin_factor.  reader.width and
-  reader.height return POST-BIN (processed) dimensions and are used only
-  as frame-boundary clamps inside residual_motion.observe_blob_at, which
-  owns the source<->processed conversion via FrameGeometry.  Callers must
-  never pass post-bin pixel coords to scene_transform.
+Coordinate-system model:
+  See docs/COORDINATE_SPACES.md for the single coordinate-space contract.
+  In short: reader.width and reader.height are PROCESSED dimensions
+  (post-bin and post-goodbox snap).  source<->processed conversions are
+  pure scale via FrameGeometry; they do not clamp to frame bounds.
+  Frame bounds are checked explicitly via coord_space.ProcessedPoint.in_bounds.
 
 Auto-bin selection:
   Use select_bin_factor_for_analysis(source_width) before constructing a

@@ -125,8 +125,8 @@ Allowed:
 ## C13. Cleaner configuration files
 
 - No directories in tr_config.
-- Cache is temporary and never saved or depended on. If it is needed, it is not
-    cache.
+- Cache is temporary and never saved or depended on between runs. If it is needed, for future
+    runs then it is not cache.
 - Frame-based data is minimal, stored in .npz, and should prefer integers over
     floats.
 - Interval and seed data is usually JSON.

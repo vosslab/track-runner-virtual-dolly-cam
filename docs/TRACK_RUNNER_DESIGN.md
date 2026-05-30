@@ -267,7 +267,10 @@ Four distinct jobs, four distinct systems:
   optional filters, and ffmpeg encoding.
 
 These systems communicate through well-defined interfaces (trajectory arrays,
-crop rectangles, seed JSON) rather than sharing internal state.
+crop rectangles, seed JSON) rather than sharing internal state. The pixel
+coordinate spaces those interfaces use (SOURCE vs PROCESSED, and why analysis
+runs in PROCESSED while storage and encode stay SOURCE) are defined in
+[COORDINATE_SPACES.md](COORDINATE_SPACES.md).
 
 Within the tracker, the interval-solve execution layer splits along the same
 line. The solver driver in `interval_solver.solve_all_intervals` owns all I/O

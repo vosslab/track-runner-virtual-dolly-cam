@@ -39,6 +39,7 @@ import numpy
 
 # local repo modules
 import blob_trace
+import common_tools.coord_space as coord_space
 
 # === Tunable constants ===
 
@@ -918,18 +919,28 @@ class BlobObservation:
 	(last few accepted walker frames at most -- never derived from a
 	full-interval seed chord). See dump_step1/BLOB_EXTRACTION_CODE_AUDIT.md.
 
+	2026-05-29 typed boundary (M2/WS2-B): center_pixel is now a typed
+	coord_space.SourcePoint (SOURCE space), not a bare (cx, cy) tuple. The
+	observe_blob_at INPUTS are PROCESSED and the RETURN centroid is SOURCE;
+	this processed-in / source-out flip was previously silent and fed the
+	walker a source centroid as if it were processed (the #101 class of
+	bug). The typed SourcePoint makes the space unmistakable: a caller that
+	wants to feed it back as a prediction must call .to_processed(geometry)
+	explicitly. Read .cx / .cy for the scalar coordinates.
+
 	cross_track and along_track are retained for backward compatibility
 	with downstream consumers but are no longer used to filter; both are
 	zero in the new contract (consumers that need direction info must
 	derive it themselves from LOCAL accepted frames).
 
 	Attributes:
-		center_pixel: (cx, cy) RAW blob centroid in full-frame pixel coords.
+		center_pixel: coord_space.SourcePoint RAW blob centroid in SOURCE
+			(full-frame) pixel coords. Read .cx / .cy.
 		cross_track: Reserved; always 0.0 in the re-scoped contract.
 		along_track: Reserved; always 0.0 in the re-scoped contract.
 		confidence: Logged metadata score in [0, 1]. Ranking only.
 	"""
-	center_pixel: tuple
+	center_pixel: coord_space.SourcePoint
 	cross_track: float
 	along_track: float
 	confidence: float
@@ -941,8 +952,8 @@ class BlobObservation:
 # - Seed-local (walker): roi_override/dog_diameter_override/acceptance_box, bypassed cache.
 def observe_blob_at(
 	frame_index: int,
-	pred_center: tuple,
-	pred_box: tuple,
+	pred_center: coord_space.ProcessedPoint,
+	pred_box: coord_space.ProcessedBox,
 	local_tangent: tuple,
 	scene_transform: object,
 	reader: object,
@@ -953,9 +964,9 @@ def observe_blob_at(
 	stride: int = None,
 	precomputed_store: "dict | None" = None,
 	trace_sink: object | None = None,
-	roi_override: "tuple | None" = None,
+	roi_override: "coord_space.ProcessedBox | None" = None,
 	dog_diameter_override: "float | None" = None,
-	acceptance_box: "tuple | None" = None,
+	acceptance_box: "coord_space.ProcessedBox | None" = None,
 ) -> BlobObservation:
 	"""Return the best blob observation at one frame, or None.
 
@@ -1014,13 +1025,23 @@ def observe_blob_at(
 	disagree. Raw frame reads (the nested `_frames` sub-cache) are keyed
 	by `frame_index` alone and stay shared -- they don't depend on ROI.
 
+	Coordinate-space boundary (typed, M2/WS2-B, 2026-05-29):
+		All geometric INPUTS are PROCESSED space, expressed as typed
+		coord_space primitives, and the RETURN centroid is SOURCE space.
+		The require_processed_* guards at entry reject a SOURCE-space
+		caller LOUDLY (ValueError) at the boundary instead of building a
+		degenerate ROI deep inside (the #101 class of bug). See
+		docs/COORDINATE_SPACES.md.
+
 	Args:
 		frame_index: Frame to observe.
-		pred_center: (cx, cy) raw kinematic prediction in pixels. Used
-			only to seed the ROI and to decompose blob displacement into
-			along-track / cross-track; never written into the cache.
-		pred_box: (w, h) predicted box size in pixels. Used for ROI
-			size, corridor radius, and confidence scoring.
+		pred_center: coord_space.ProcessedPoint kinematic prediction in
+			PROCESSED pixels. Used only to seed the ROI and to score
+			blob proximity; never written into the cache.
+		pred_box: coord_space.ProcessedBox predicted box in PROCESSED
+			pixels. Only its .w / .h (size) are used (ROI size, DoG
+			diameter default, confidence scoring); its center is ignored
+			here because pred_center already carries the center.
 		local_tangent: (tx, ty, nx, ny) unit vectors describing the
 			pass's local motion direction. Pass (1, 0, 0, 1) to fall
 			back to axis-aligned decomposition.
@@ -1051,11 +1072,22 @@ def observe_blob_at(
 			When non-None, a BlobObserverTrace is captured and set on
 			trace_sink.observer_trace. Default None preserves byte-identical
 			behavior. Trace is never cached; it is computed per call.
+		roi_override: Optional coord_space.ProcessedBox in PROCESSED pixels.
+			Its .edges() (x1, y1, x2, y2) replace the default ROI sizing
+			(seed-local walker shape). Bypasses the residual cache.
+		dog_diameter_override: Optional scalar DoG diameter, a LENGTH in
+			PROCESSED pixels (not a point, so it stays a bare scalar). When
+			set, overrides the default diameter (pred_box.w). Bypasses cache.
+		acceptance_box: Optional coord_space.ProcessedBox in PROCESSED
+			pixels. Its .edges() define the geometric ROI test that selects
+			candidate blobs (seed-local walker shape). Bypasses cache.
 
 	Returns:
-		BlobObservation for the best in-corridor candidate, or None
-		when no residual was computable, no blobs were extracted, or
-		no extracted blob fell inside the corridor.
+		BlobObservation whose center_pixel is a coord_space.SourcePoint
+		(SOURCE space) for the best in-corridor candidate, or None when no
+		residual was computable, no blobs were extracted, or no extracted
+		blob fell inside the corridor. The single processed->source
+		conversion happens once, at the exit, on the winner centroid.
 
 	Observable contract (2026-05-28 re-scope):
 		Extraction returns raw blob centroids in source pixels. Each blob
@@ -1139,8 +1171,19 @@ def observe_blob_at(
 	#   dog_diameter_override converted source->processed         [removed]
 	# These conversions are now the caller's responsibility.
 	geometry = getattr(reader, "geometry", None)
-	pred_cx_p, pred_cy_p = pred_center
-	pred_w_p, pred_h_p = pred_box
+	# Typed boundary (M2/WS2-B): guard the PROCESSED-space inputs LOUDLY so
+	# a SOURCE-space caller (the #101 class) fails with ValueError right
+	# here instead of building a degenerate ROI deep inside. Unwrap the
+	# typed primitives to the bare floats the internal math uses; the
+	# internal code below is unchanged.
+	coord_space.require_processed_point(pred_center)
+	coord_space.require_processed_box(pred_box)
+	pred_cx_p = pred_center.cx
+	pred_cy_p = pred_center.cy
+	# pred_box carries the predicted SIZE; only .w / .h are used (its center
+	# is ignored, pred_center owns the center).
+	pred_w_p = pred_box.w
+	pred_h_p = pred_box.h
 
 	# compute ROI from caller's prediction and use it as part of the
 	# cache key so FWD and BWD with divergent raw_pred each get their
@@ -1157,15 +1200,16 @@ def observe_blob_at(
 		)
 	frame_w = reader.width
 	frame_h = reader.height
-	# Optional caller-supplied ROI override in PROCESSED-pixel coords.
-	# roi_override arrives in processed-pixel coords (caller contract since
-	# 2026-05-29; previously source-pixel before Option A migration).
-	# At bin_factor=1 source==processed so old callers are unaffected.
+	# Optional caller-supplied ROI override as a PROCESSED-space ProcessedBox.
+	# Guard the space at the boundary, then derive its (x1, y1, x2, y2)
+	# edges for the clamp math (the numeric clamp below is unchanged).
 	if roi_override is not None:
-		ox1 = max(0, min(frame_w, int(roi_override[0])))
-		oy1 = max(0, min(frame_h, int(roi_override[1])))
-		ox2 = max(ox1, min(frame_w, int(roi_override[2])))
-		oy2 = max(oy1, min(frame_h, int(roi_override[3])))
+		coord_space.require_processed_box(roi_override)
+		roi_x1, roi_y1, roi_x2, roi_y2 = roi_override.edges()
+		ox1 = max(0, min(frame_w, int(roi_x1)))
+		oy1 = max(0, min(frame_h, int(roi_y1)))
+		ox2 = max(ox1, min(frame_w, int(roi_x2)))
+		oy2 = max(oy1, min(frame_h, int(roi_y2)))
 		roi = (ox1, oy1, ox2, oy2)
 	else:
 		roi = _compute_roi(pred_cx_p, pred_cy_p, pred_h_p, frame_w, frame_h)
@@ -1181,9 +1225,9 @@ def observe_blob_at(
 	)
 
 	# Determine actual DoG diameter to be used in this call.
-	# dog_diameter_override arrives in PROCESSED-pixel units (caller contract
-	# since 2026-05-29; previously source-pixel before Option A migration).
-	# At bin_factor=1 source==processed so old callers are unaffected.
+	# dog_diameter_override is a scalar LENGTH in PROCESSED pixels (not a
+	# point, so it is not a coord_space primitive). It lands directly on the
+	# DoG band-pass diameter, in the same space as the processed residual.
 	if dog_diameter_override is not None:
 		dog_diameter_actual = dog_diameter_override
 	else:
@@ -1278,10 +1322,11 @@ def observe_blob_at(
 	# direction-aware filter radius.
 	corridor_radius = 0.0
 	if acceptance_box is not None:
-		# acceptance_box = (x_min, y_min, x_max, y_max) in PROCESSED-pixel
-		# coords (caller contract since 2026-05-29; previously source-pixel).
-		# At bin_factor=1 source==processed so old callers are unaffected.
-		ab_x1, ab_y1, ab_x2, ab_y2 = acceptance_box
+		# acceptance_box is a PROCESSED-space ProcessedBox; guard the space
+		# at the boundary, then derive its (x1, y1, x2, y2) edges for the
+		# geometric ROI test (the test below is unchanged).
+		coord_space.require_processed_box(acceptance_box)
+		ab_x1, ab_y1, ab_x2, ab_y2 = acceptance_box.edges()
 		# Pure geometric ROI test. Keep every blob whose centroid lies
 		# inside the acceptance box; do NOT discard for direction or for
 		# distance to the predicted center.
@@ -1320,16 +1365,27 @@ def observe_blob_at(
 	# trace continuity. It is metadata, not a gating threshold.
 	best_score = float(best_blob["total_score"])
 
-	# Raw centroid (no re-anchor). Convert processed -> source coords.
+	# Raw centroid (no re-anchor) lives in PROCESSED space. This is the
+	# single, explicit processed -> source conversion at the exit boundary:
+	# wrap the winner into a typed ProcessedPoint and convert once to a
+	# typed SourcePoint, so the caller cannot feed the SOURCE centroid back
+	# into a PROCESSED stepping loop without an explicit .to_processed().
+	# Numeric behavior is unchanged: at bin_factor==1 (or no geometry) the
+	# conversion is a no-op, matching the prior pass-through.
 	cx_proc = float(best_blob["centroid_x"])
 	cy_proc = float(best_blob["centroid_y"])
+	winner_processed = coord_space.ProcessedPoint(cx=cx_proc, cy=cy_proc)
 	if geometry is not None and geometry.bin_factor != 1:
-		cx_src, cy_src = geometry.processed_to_source(cx_proc, cy_proc)
+		# one explicit processed -> source conversion, routed through the
+		# typed primitive (same scale as the prior processed_to_source call).
+		center_source = winner_processed.to_source(geometry)
 	else:
-		cx_src, cy_src = cx_proc, cy_proc
+		# no geometry or bin_factor==1: source==processed, wrap directly so
+		# the return type is still a typed SourcePoint (no numeric change).
+		center_source = coord_space.SourcePoint(cx=cx_proc, cy=cy_proc)
 
 	observation = BlobObservation(
-		center_pixel=(cx_src, cy_src),
+		center_pixel=center_source,
 		cross_track=0.0,
 		along_track=0.0,
 		confidence=best_score,
@@ -1353,11 +1409,11 @@ def observe_blob_at(
 			blob["in_corridor"] = blob.get("label_id") in corridor_label_ids
 			# in_acceptance_box: True if blob is inside acceptance box (None if acceptance box not used)
 			if acceptance_box is not None:
-				if geometry is not None and geometry.bin_factor != 1:
-					ab_x1, ab_y1 = geometry.source_to_processed(acceptance_box[0], acceptance_box[1])
-					ab_x2, ab_y2 = geometry.source_to_processed(acceptance_box[2], acceptance_box[3])
-				else:
-					ab_x1, ab_y1, ab_x2, ab_y2 = acceptance_box
+				# acceptance_box is already a PROCESSED-space ProcessedBox
+				# (guarded above); its edges match the processed-frame blob
+				# centroids directly, so no source->processed conversion is
+				# needed (the prior conversion was a stale Model-B remnant).
+				ab_x1, ab_y1, ab_x2, ab_y2 = acceptance_box.edges()
 				blob["in_acceptance_box"] = (
 					ab_x1 <= blob["centroid_x"] <= ab_x2 and
 					ab_y1 <= blob["centroid_y"] <= ab_y2
@@ -1381,6 +1437,12 @@ def observe_blob_at(
 		roi_origin_xy = (roi[0], roi[1])
 
 		roi_bounds = (roi[0], roi[1], roi[2], roi[3])
+		# Trace keeps acceptance_box as a PROCESSED-space (x1,y1,x2,y2) tuple
+		# (unchanged trace artifact contract; the renderer unpacks a 4-tuple).
+		# Derive it from the typed ProcessedBox here at the single trace site.
+		acceptance_box_edges = (
+			acceptance_box.edges() if acceptance_box is not None else None
+		)
 		trace = blob_trace.BlobObserverTrace(
 			frame_index=frame_index,
 			roi_bounds=roi_bounds,
@@ -1394,7 +1456,7 @@ def observe_blob_at(
 			winner_score=best_score,
 			local_tangent=local_tangent,
 			roi_origin_xy=roi_origin_xy,
-			acceptance_box=acceptance_box,
+			acceptance_box=acceptance_box_edges,
 			dog_diameter=dog_diameter_actual,
 			corridor_radius=corridor_radius,
 		)

@@ -11,6 +11,11 @@ Five statuses:
 These functions carry no cross-frame or cross-pass state; all input arrives
 as arguments and all output is returned (per contract C9 FWD/BWD
 independence and the chained-blob-state anti-pattern).
+
+Position note: the walker solves runner POSITION per frame (cx, cy). The
+per-frame torso SIZE (w, h) is not an independent size solve; it is
+seed-derived geometry supplied by the caller through size_at_frame and
+attached to every emitted frame for downstream box assembly.
 """
 
 # Max number of consecutive extrapolated frames before demoting to soft_miss_no_path.
@@ -24,6 +29,7 @@ def emit_status_from_path(
 	path: list,
 	last_accepted_cx: object,
 	last_accepted_cy: object,
+	size_at_frame: object = None,
 ) -> list:
 	"""Determine status and interpolated/extrapolated positions from a selected path.
 
@@ -33,11 +39,16 @@ def emit_status_from_path(
 		path: List of blob dicts or None from walk_viterbi.select_path.
 		last_accepted_cx: x-pixel of the most recent accepted position before this window.
 		last_accepted_cy: y-pixel of the most recent accepted position before this window.
+		size_at_frame: Optional callable frame_index -> (w, h) returning the
+		    seed-derived torso box size for that frame. When None, w and h are
+		    left None on every result (legacy/diagnostic callers). The walker
+		    solves position; size is seed-derived geometry, not a size solve.
 
 	Returns:
 		List of dicts, one per frame, each with keys:
-		  frame_index, status, cx, cy, blob (the selected blob dict or None),
-		  candidates_empty (bool).
+		  frame_index, status, cx, cy, w, h, blob (the selected blob dict or
+		  None), candidates_empty (bool). w and h are present (not None) on
+		  every frame when size_at_frame is supplied.
 	"""
 	n = len(window_frames)
 	results = []
@@ -113,11 +124,23 @@ def emit_status_from_path(
 				cy = last_accepted_cy if last_accepted_cy is not None else 0.0
 				consec_extrap = 0
 
+		# Attach seed-derived torso size (w, h) for this frame. The walker
+		# solves position; size is geometry interpolated from the bracketing
+		# seed boxes by the caller-supplied size_at_frame (None for legacy
+		# diagnostic callers that do not assemble a box path).
+		if size_at_frame is not None:
+			box_w, box_h = size_at_frame(frame_index)
+		else:
+			box_w = None
+			box_h = None
+
 		results.append({
 			"frame_index": frame_index,
 			"status": status,
 			"cx": cx,
 			"cy": cy,
+			"w": box_w,
+			"h": box_h,
 			"blob": blob,
 			"candidates_empty": candidates_empty,
 		})

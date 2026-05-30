@@ -1,14 +1,17 @@
-"""Behavioral tests for observe_blob_at's source-frame contract under bin.
+"""Behavioral tests for observe_blob_at's SOURCE-space return under bin.
 
 These tests do not assert on internal cache shapes or hardcoded
 implementation values. They check the property:
-"BlobObservation.center_pixel is in source-frame pixels regardless
-of FrameReader.bin_factor."
+"BlobObservation.center_pixel is a coord_space.SourcePoint (SOURCE
+space) regardless of FrameReader.bin_factor."
 
-The mechanism is verified by mocking the inner pipeline (residual,
-DoG, blob extraction) so we can place a synthetic blob at a known
-processed-frame centroid and confirm observe_blob_at converts it
-to the source-frame value the caller expects.
+Under the Option A contract (2026-05-29) the INPUTS are PROCESSED and
+the RETURN is SOURCE. The typed boundary (M2/WS2-B) makes inputs
+coord_space.ProcessedPoint / ProcessedBox and the return centroid a
+coord_space.SourcePoint. The mechanism is verified by mocking the inner
+pipeline (residual, DoG, blob extraction) so we can place a synthetic
+blob at a known PROCESSED-frame centroid and confirm observe_blob_at
+converts it to the SOURCE-frame value the caller expects.
 """
 
 # PIP3 modules
@@ -16,8 +19,9 @@ import numpy
 import pytest
 
 # local repo modules
-import common_tools.frame_reader
 import residual_motion
+import common_tools.frame_reader
+import common_tools.coord_space as coord_space
 
 
 _BIN_2_GEOMETRY = common_tools.frame_reader.FrameGeometry(
@@ -124,8 +128,12 @@ def _patch_inner_pipeline(monkeypatch, blob_proc_xy, blob_score=0.7):
 
 
 #============================================
-def _observe_at_geometry(monkeypatch, geometry, src_pred_xy, src_box_wh, blob_proc_xy):
-	"""Helper: run observe_blob_at with the given geometry and stubs."""
+def _observe_at_geometry(monkeypatch, geometry, proc_pred_xy, proc_box_wh, blob_proc_xy):
+	"""Helper: run observe_blob_at with the given geometry and stubs.
+
+	proc_pred_xy / proc_box_wh are PROCESSED-space coords (Option A); they
+	are wrapped into typed coord_space primitives at the boundary.
+	"""
 	_patch_inner_pipeline(monkeypatch, blob_proc_xy)
 	reader = _StubReader(geometry)
 	cache = {}
@@ -164,10 +172,12 @@ def _observe_at_geometry(monkeypatch, geometry, src_pred_xy, src_box_wh, blob_pr
 		lambda cx, cy, h, fw, fh: (0, 0, fw, fh),
 	)
 	monkeypatch.setattr(residual_motion, "extract_frame_blobs", _stub_extract)
+	pred_cx, pred_cy = proc_pred_xy
+	box_w, box_h = proc_box_wh
 	return residual_motion.observe_blob_at(
 		frame_index=10,
-		pred_center=src_pred_xy,
-		pred_box=src_box_wh,
+		pred_center=coord_space.ProcessedPoint(cx=pred_cx, cy=pred_cy),
+		pred_box=coord_space.ProcessedBox(cx=pred_cx, cy=pred_cy, w=box_w, h=box_h),
 		local_tangent=(1.0, 0.0, 0.0, 1.0),
 		scene_transform=None,
 		reader=reader,
@@ -177,36 +187,37 @@ def _observe_at_geometry(monkeypatch, geometry, src_pred_xy, src_box_wh, blob_pr
 
 #============================================
 def test_observe_blob_at_returns_source_frame_at_bin1(monkeypatch):
-	# baseline: at bin=1, src == proc; placing a blob at proc=(100,80)
-	# should produce a source-frame BlobObservation at (100,80).
+	# baseline: at bin=1, src == proc; processed pred=(100,80), a blob at
+	# processed (100,80) should produce a SOURCE-space SourcePoint at (100,80).
 	obs = _observe_at_geometry(
 		monkeypatch,
 		geometry=_BIN_1_GEOMETRY,
-		src_pred_xy=(100.0, 80.0),
-		src_box_wh=(40.0, 60.0),
+		proc_pred_xy=(100.0, 80.0),
+		proc_box_wh=(40.0, 60.0),
 		blob_proc_xy=(100.0, 80.0),
 	)
 	assert obs is not None
-	assert obs.center_pixel == pytest.approx((100.0, 80.0))
+	assert isinstance(obs.center_pixel, coord_space.SourcePoint)
+	assert (obs.center_pixel.cx, obs.center_pixel.cy) == pytest.approx((100.0, 80.0))
 
 
 #============================================
 def test_observe_blob_at_returns_source_frame_at_bin2(monkeypatch):
-	# under bin=2 the function receives source-frame pred=(200,160)
-	# and pred_box=(80,120). Internally those become processed
-	# (100,80) / (40,60). A blob at processed (100,80) MUST come
-	# back as source (200,160) -- the contract is "BlobObservation
-	# is source-frame pixels".
+	# under bin=2 the function receives PROCESSED pred=(100,80) and
+	# pred_box=(40,60) directly (Option A: inputs are processed). A blob
+	# at processed (100,80) MUST come back as a SOURCE SourcePoint at
+	# (200,160) -- the single processed->source conversion at exit.
 	obs = _observe_at_geometry(
 		monkeypatch,
 		geometry=_BIN_2_GEOMETRY,
-		src_pred_xy=(200.0, 160.0),
-		src_box_wh=(80.0, 120.0),
+		proc_pred_xy=(100.0, 80.0),
+		proc_box_wh=(40.0, 60.0),
 		blob_proc_xy=(100.0, 80.0),
 	)
 	assert obs is not None
+	assert isinstance(obs.center_pixel, coord_space.SourcePoint)
 	# property: bin_factor scales centroid back to source-frame
-	assert obs.center_pixel == pytest.approx((200.0, 160.0))
+	assert (obs.center_pixel.cx, obs.center_pixel.cy) == pytest.approx((200.0, 160.0))
 
 
 #============================================
@@ -222,8 +233,8 @@ def test_observe_blob_at_cache_key_is_processed_frame(monkeypatch):
 	cache = {}
 	residual_motion.observe_blob_at(
 		frame_index=5,
-		pred_center=(200.0, 160.0),
-		pred_box=(80.0, 120.0),
+		pred_center=coord_space.ProcessedPoint(cx=100.0, cy=80.0),
+		pred_box=coord_space.ProcessedBox(cx=100.0, cy=80.0, w=40.0, h=60.0),
 		local_tangent=(1.0, 0.0, 0.0, 1.0),
 		scene_transform=None,
 		reader=reader,

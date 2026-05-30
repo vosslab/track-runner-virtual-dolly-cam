@@ -25,6 +25,7 @@ import numpy
 # local repo modules
 import blob_trace
 import residual_motion
+import common_tools.coord_space as coord_space
 
 
 #============================================
@@ -782,11 +783,19 @@ def _apply_blob_snap(
 		else:
 			observer_sink = None
 
+		# raw_cx/raw_cy/w/h are in PROCESSED-pixel space (produced by
+		# scene_box_to_pixel, which maps scene coords back to the reader's
+		# decoded-frame pixel space = PROCESSED at any bin_factor).
+		# Wrap them as typed ProcessedPoint / ProcessedBox before passing
+		# to observe_blob_at so the boundary guards do not reject them.
+		# At bin_factor==1, source==processed so this is a numeric no-op.
+		pred_center_typed = coord_space.ProcessedPoint(cx=raw_cx, cy=raw_cy)
+		pred_box_typed = coord_space.ProcessedBox(cx=raw_cx, cy=raw_cy, w=w, h=h)
 		if observer_sink is not None:
 			observation = residual_motion.observe_blob_at(
 				frame_index,
-				(raw_cx, raw_cy),
-				(w, h),
+				pred_center_typed,
+				pred_box_typed,
 				local_tangent,
 				scene_transform,
 				effective_reader,
@@ -797,8 +806,8 @@ def _apply_blob_snap(
 		else:
 			observation = residual_motion.observe_blob_at(
 				frame_index,
-				(raw_cx, raw_cy),
-				(w, h),
+				pred_center_typed,
+				pred_box_typed,
 				local_tangent,
 				scene_transform,
 				effective_reader,
@@ -817,7 +826,11 @@ def _apply_blob_snap(
 		if observation is None:
 			gate = "absent"
 		else:
-			bx, by = observation.center_pixel
+			# observation.center_pixel is a coord_space.SourcePoint (SOURCE space).
+			# Convert to PROCESSED so dx/dy are in the same space as raw_cx/raw_cy.
+			# At bin_factor==1, source==processed so this is a numeric identity.
+			obs_processed = observation.center_pixel.to_processed(effective_reader.geometry)
+			bx, by = obs_processed.cx, obs_processed.cy
 			dx = bx - raw_cx
 			dy = by - raw_cy
 			dist = (dx * dx + dy * dy) ** 0.5

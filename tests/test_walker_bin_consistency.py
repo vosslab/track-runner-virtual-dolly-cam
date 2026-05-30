@@ -22,6 +22,17 @@ sys.path.insert(0, os.path.join(REPO_ROOT, "common_tools"))
 import residual_motion
 import state_io
 import frame_reader as fr
+import common_tools.coord_space as coord_space
+
+
+#============================================
+def _proc_box_from_edges(edges: tuple) -> coord_space.ProcessedBox:
+	"""Build a PROCESSED-space ProcessedBox from (x1, y1, x2, y2) edges."""
+	x1, y1, x2, y2 = edges
+	cx = (x1 + x2) / 2.0
+	cy = (y1 + y2) / 2.0
+	box = coord_space.ProcessedBox(cx=cx, cy=cy, w=float(x2 - x1), h=float(y2 - y1))
+	return box
 
 
 #============================================
@@ -162,15 +173,17 @@ def test_dog_diameter_override_is_post_bin_at_bin4():
 	):
 		residual_motion.observe_blob_at(
 			frame_index=0,
-			pred_center=(seed_cx_proc, seed_cy_proc),
-			pred_box=(seed_w_proc, seed_h_proc),
+			pred_center=coord_space.ProcessedPoint(cx=seed_cx_proc, cy=seed_cy_proc),
+			pred_box=coord_space.ProcessedBox(
+				cx=seed_cx_proc, cy=seed_cy_proc, w=seed_w_proc, h=seed_h_proc,
+			),
 			local_tangent=(1.0, 0.0),
 			scene_transform=scene_transform,
 			reader=reader,
 			residual_cache={},
 			dog_diameter_override=expected_dog_diam,
-			roi_override=roi_proc,
-			acceptance_box=ab,
+			roi_override=_proc_box_from_edges(roi_proc),
+			acceptance_box=_proc_box_from_edges(ab),
 			precomputed_store=ps,
 		)
 

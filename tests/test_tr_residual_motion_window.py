@@ -25,6 +25,7 @@ import blob_trace
 import camera_motion
 import residual_motion
 import scene_coords
+import common_tools.coord_space as coord_space
 
 
 def test_resolve_stride_60fps_anchor():
@@ -180,13 +181,15 @@ def test_observe_blob_at_with_overrides_and_trace():
 	seed_cx, seed_cy = 160.0, 120.0
 	seed_w, seed_h = 40.0, 60.0
 
-	# Override parameters (WP-1A)
-	# ROI: a tight box around the seed (not full 8x torso)
-	roi_override = (130, 90, 190, 150)
-	# Dog diameter: 70% of seed width (common for tight crops)
+	# Override parameters (WP-1A); typed PROCESSED-space ProcessedBox now.
+	# ROI: a tight box around the seed (center 160,120 spanning 130..190 x
+	# 90..150 -> w=60, h=60).
+	roi_override = coord_space.ProcessedBox(cx=160.0, cy=120.0, w=60.0, h=60.0)
+	# Dog diameter: 70% of seed width (common for tight crops); scalar length.
 	dog_diameter_override = 0.7 * seed_w
-	# Acceptance box: a box slightly larger than the seed
-	acceptance_box = (140, 100, 180, 140)
+	# Acceptance box: a box slightly larger than the seed (140..180 x
+	# 100..140 -> center 160,120, w=40, h=40).
+	acceptance_box = coord_space.ProcessedBox(cx=160.0, cy=120.0, w=40.0, h=40.0)
 
 	# Create a trace sink to capture the observer trace (WP-1B)
 	trace_sink = type("TraceSink", (), {})()
@@ -195,8 +198,8 @@ def test_observe_blob_at_with_overrides_and_trace():
 	residual_cache = {}
 	obs = residual_motion.observe_blob_at(
 		frame_index=frame_index,
-		pred_center=(seed_cx, seed_cy),
-		pred_box=(seed_w, seed_h),
+		pred_center=coord_space.ProcessedPoint(cx=seed_cx, cy=seed_cy),
+		pred_box=coord_space.ProcessedBox(cx=seed_cx, cy=seed_cy, w=seed_w, h=seed_h),
 		local_tangent=(1.0, 0.0, 0.0, 1.0),
 		scene_transform=scene_transform,
 		reader=reader,
