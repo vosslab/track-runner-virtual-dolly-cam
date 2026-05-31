@@ -131,12 +131,13 @@ def test_heat_computed_requires_live_residual_dog():
 
 #============================================
 def test_check_manifest_skips_not_computed_tiles():
-	"""NOT-COMPUTED tiles (computed=False) are excluded from the denominator.
+	"""A manifest with no heat keys still passes the two gates (C13 rework).
 
-	This is the expected behavior for a post-lighten walk run: all tiles are
-	skipped, the gate reports 'n/a (no eligible tiles)', and exit code is PASS.
+	Heat is no longer stored per tile; the gate over per-tile records only
+	checks conversion_count and non-seed-missing-solved-box. A manifest from a
+	post-lighten / render-only walk carries no heat keys and must still PASS.
 	"""
-	# Build a synthetic manifest where all tiles are NOT-COMPUTED.
+	# Build a synthetic manifest with only gate fields (no heat keys).
 	import check_render_manifest
 	records = []
 	for i in range(10):
@@ -146,11 +147,6 @@ def test_check_manifest_skips_not_computed_tiles():
 			"solved_box_present": True,
 			"conversion_count": 1,
 			"direction": "FWD",
-			"in_box_heat_computed": False,
-			"in_box_heat_present": False,
-			"in_box_hot_mean": None,
-			"in_box_hot_count": 0,
-			"heat_threshold_used": 10.0,
 			"non_seed_missing_solved_box": False,
 		})
 

@@ -214,7 +214,7 @@ def measure_in_box_heat_for_frame(
 	already computed during the walk and lives on the trace until lightening.
 
 	The single-source threshold is residual_motion.DEFAULT_THRESHOLD, the same
-	value the manifest records as heat_threshold_used.
+	value the per-interval render_heat_summary.json records as "threshold".
 
 	Args:
 		live_trace: The LIVE BlobObserverTrace (residual_dog/validity_mask

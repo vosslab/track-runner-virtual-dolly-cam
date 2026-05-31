@@ -82,46 +82,64 @@ source source_me.sh && python3 tools/blob_walk_v2/check_render_manifest.py \
 Corpus quality metrics (classification, accepted_fraction rollups, FWD/BWD
 agreement) render directly inside `walk.html`.
 
-### Render manifest heat fields
+### Interval heat summary
 
-Each record in `render_manifest.json` carries five per-tile heat fields
-written by `walk_driver.py` `_render_direction_tiles` after
-`common_tools.in_box_heat.measure_in_box_heat` runs:
+In-box motion-cue heat is frame-derived but SPARSE: only the frames the walk
+actually observed have a measured value (interpolated, extrapolated, soft-miss,
+and render-only frames have none). Contract C13 routes dense frame data to the
+`.npz` (integers) and interval data to JSON; sparse per-frame heat fits neither,
+so it is NOT stored per frame. The walk does not put any heat keys on the
+per-tile records in `render_manifest.json`.
+
+Instead `walk_driver.py` aggregates heat to one record per `(interval,
+direction)` and writes them to a sibling `render_heat_summary.json` (interval
+data, JSON-approved by C13). Each summary record:
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `in_box_hot_mean` | float or null | Mean DoG value of above-threshold in-box pixels; null when none qualify. |
-| `in_box_hot_count` | int | Count of above-threshold in-box pixels (0 when none qualify). |
-| `in_box_heat_present` | bool | True when `in_box_hot_count > 0`. |
-| `in_box_heat_computed` | bool | True only when a live trace with `residual_dog` AND a `solved_box` were both present (the primitive actually ran). |
-| `heat_threshold_used` | float | The threshold passed to the primitive; always `residual_motion.DEFAULT_THRESHOLD` (10.0). |
+| `left_frame` | int | Interval left seed frame index. |
+| `right_frame` | int | Interval right seed frame index. |
+| `direction` | string | `fwd` or `bwd`. |
+| `heat_eligible` | int | Frames the walk observed (heat was actually computed). |
+| `heat_present` | int | Eligible frames with at least one above-threshold in-box pixel. |
+| `heat_present_pct` | float | Fraction of eligible frames with heat, in [0, 1] (`heat_present / heat_eligible`; 0.0 when `heat_eligible == 0`). |
+| `mean_heat` | float or null | Mean of per-frame hot-pixel means across heat-present frames only. Null when no heat-present frames. |
+| `not_computed` | int | Frames with no walk observation (coverage, not hidden). |
+| `seed_cold_frames` | list of int | Seed frames that were computed but came back cold. |
+| `threshold` | float | `residual_motion.DEFAULT_THRESHOLD` used during the walk. |
 
-`in_box_heat_computed=False` records a not-computed tile (stub trace from a
-render-only npz, or no solved box). `in_box_heat_computed=True` with
-`in_box_heat_present=False` records a computed-cold tile (the primitive ran
-but found no above-threshold pixels inside the box).
+`heat_eligible` is the denominator (frames the walk observed). `not_computed`
+surfaces sparsity as coverage rather than hiding it. A seed frame is cold when
+its heat was computed but no in-box pixel cleared the threshold -- a likely
+stale or background-parked annotation. `heat_present_pct` is the fraction (not
+a percentage integer) of eligible frames that are heat-present; `mean_heat` is
+the mean over those same frames' per-frame hot-pixel means and is null when no
+frame is heat-present. Both are C13-approved interval-level floats stored in
+JSON (not per-frame, not in the npz). The per-frame float hot-pixel mean is
+NOT persisted to `render_manifest.json`; it is threaded in-memory at walk time
+and aggregated into `mean_heat` only.
 
-The heat arrays are read in PROCESSED space. `measure_in_box_heat` subtracts
-`roi_origin` from the box center exactly once before deriving pixel edges,
-mirroring `walk_draw.processed_box_to_tile_local`. See
+The heat arrays are measured in PROCESSED space during the walk;
+`common_tools.in_box_heat.measure_in_box_heat` subtracts `roi_origin` from the
+box center exactly once. See
 [docs/COORDINATE_SPACES.md](../../docs/COORDINATE_SPACES.md) for the
 PROCESSED-space contract.
 
 ### Heat report in the manifest gate
 
-`check_render_manifest.py` prints a heat-present fraction report after the
-standard pass/fail gates. For each `(source, direction)` it prints:
+`check_render_manifest.py` reads the sibling `render_heat_summary.json` (when
+present) and prints, per interval-direction:
 
 ```
-  HEAT REPORT <manifest> [<direction>]: heat-present N/M eligible (X%); K not-computed (skipped); total T tiles; threshold=<value>
+  HEAT REPORT <summary> [L,R] [<direction>]: heat-present N/M (X%); mean_heat=<float or n/a>; K not-computed; threshold=<value>
+  SEED-COLD <summary> [L,R] [<direction>]: C seed tiles heat-cold; frames=[...]
 ```
 
-Eligibility is `in_box_heat_computed == true`. Computed-cold tiles stay in
-the denominator; not-computed tiles are excluded (skipped). The report is
-printed whether the gate passes or fails. The heat fraction does NOT affect
-the exit code; the two existing gates (conversion_count == 1 and
-non-seed-missing-solved-box) alone govern process exit status. Older manifests
-without `in_box_heat_computed` on any record are silently skipped.
+These reports are report-only: they do NOT affect the exit code. The two gates
+over `render_manifest.json` (conversion_count == 1 and
+non-seed-missing-solved-box) alone govern process exit status. A run with no
+`render_heat_summary.json` sibling (older run) skips the heat and seed-cold
+reports cleanly.
 
 ## Library modules
 

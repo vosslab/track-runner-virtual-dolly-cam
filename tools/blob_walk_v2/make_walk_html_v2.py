@@ -24,6 +24,7 @@ Usage:
 # Standard Library
 import sys
 import json
+import random
 import argparse
 import pathlib
 import logging
@@ -126,6 +127,28 @@ def parse_args() -> argparse.Namespace:
 			'Reads per-video interval left_frame lists from JSON filenames under '
 			'<corpus>/<video>/FWD_<left_frame>.json. Restricts walk to those intervals only. '
 			'Overrides --sample-intervals-per-video.'
+		),
+	)
+	parser.add_argument(
+		'--random-sample', dest='random_sample', action='store_true',
+		help=(
+			'Select N random visible-both intervals per video instead of the '
+			'even spread.  Both bracketing seeds must have status == "visible"; '
+			'"partial" and "not_in_frame" intervals are excluded.  N is set by '
+			'-n / --sample-intervals-per-video.  Ignored when '
+			'--intervals-from-corpus is set.'
+		),
+	)
+	parser.add_argument(
+		'--no-random-sample', dest='random_sample', action='store_false',
+		help='Use deterministic even spread (default).',
+	)
+	parser.set_defaults(random_sample=False)
+	parser.add_argument(
+		'--random-seed', dest='random_seed', type=int, default=None,
+		help=(
+			'Seed the RNG for reproducible --random-sample selection.  '
+			'Omit for a fresh (nondeterministic) sample each run.'
 		),
 	)
 	parser.add_argument(
@@ -306,6 +329,8 @@ def process_video(
 	render_tiles: bool,
 	corpus_left_frames: frozenset | None = None,
 	heat_movie: bool = False,
+	random_sample: bool = False,
+	random_seed: int | None = None,
 ) -> dict:
 	"""Walk + render one video. Returns counters dict."""
 	logger.info(f'Processing video: {video_basename}')
@@ -344,6 +369,20 @@ def process_video(
 		logger.info(
 			f'  corpus filter: {len(post_start)}/{before} intervals kept '
 			f'(left_frames: {sorted(i.left_seed["frame_index"] for i in post_start)})'
+		)
+	elif random_sample:
+		# Random visible-both sampling mode: pick max_intervals random intervals
+		# where both seeds have status == "visible".
+		n = max_intervals if (max_intervals is not None and max_intervals > 0) else len(post_start)
+		rng = random.Random(random_seed)
+		visible_count = sum(
+			1 for i in post_start
+			if i.left_seed["status"] == "visible" and i.right_seed["status"] == "visible"
+		)
+		post_start = walk_util.select_random_visible(post_start, n, rng)
+		logger.info(
+			f'  random-sample: {len(post_start)}/{visible_count} visible-both intervals '
+			f'selected (n={n}, rng_seed={random_seed})'
 		)
 	else:
 		# Default cap is 4; a value <= 0 is the explicit opt-in to ALL intervals.
@@ -423,7 +462,7 @@ def process_video(
 def _video_worker(payload: tuple) -> dict:
 	"""Pool worker entry point."""
 	(video_basename, output_root_str, max_intervals, resume, render_tiles,
-		corpus_left_frames, heat_movie) = payload
+		corpus_left_frames, heat_movie, random_sample, random_seed) = payload
 	return process_video(
 		video_basename=video_basename,
 		output_root=pathlib.Path(output_root_str),
@@ -432,6 +471,8 @@ def _video_worker(payload: tuple) -> dict:
 		render_tiles=render_tiles,
 		corpus_left_frames=corpus_left_frames,
 		heat_movie=heat_movie,
+		random_sample=random_sample,
+		random_seed=random_seed,
 	)
 
 
@@ -515,6 +556,8 @@ def main() -> None:
 				# Pass per-video corpus set, or None if not in corpus mode.
 				corpus_intervals[v] if (corpus_intervals is not None and v in corpus_intervals) else None,
 				args.heat_movie,
+				args.random_sample,
+				args.random_seed,
 			)
 			for v in videos
 		]

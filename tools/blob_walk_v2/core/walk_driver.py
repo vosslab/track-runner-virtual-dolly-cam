@@ -435,14 +435,15 @@ def _render_direction_tiles(
 		for entry in direction_path:
 			fi = entry["frame_index"]
 			# Extract only the box fields; drop conf (not needed by render_walk_tile)
-			# M1-G: also carry the walk-time-cached in-box heat scalars so the
-			# renderer reads them instead of re-deriving the residual.
+			# Carry the walk-time-cached in-box heat COUNT so the manifest loop
+			# can derive per-frame computed/present without re-deriving the
+			# residual. The float in_box_hot_mean is dropped entirely (C13: the
+			# heat reports never used it; only the count drives present/cold).
 			direction_box_by_frame[fi] = {
 				"cx": entry["cx"],
 				"cy": entry["cy"],
 				"w": entry["w"],
 				"h": entry["h"],
-				"in_box_hot_mean": entry["in_box_hot_mean"],
 				"in_box_hot_count": entry["in_box_hot_count"],
 			}
 	elif (
@@ -625,37 +626,44 @@ def _render_direction_tiles(
 			manifest["non_seed_missing_solved_box"] = (
 				not is_seed_frame and not manifest["solved_box_present"]
 			)
-			# In-box motion-cue heat fields (M1-B, M1-G).
+			# In-box motion-cue heat (C13 rework, 2026-05-30).
+			# Heat is FRAME-derived but SPARSE (only walk-observed frames are
+			#   computed). Per contract C13 frame data belongs in the npz (dense
+			#   ints) and interval data belongs in JSON. Sparse per-frame heat fits
+			#   neither, so it is NOT persisted on the per-tile record. Instead the
+			#   per-frame computed/present scalars are stashed in a private
+			#   "_heat" carrier on the in-memory manifest dict; the video loop
+			#   aggregates them into a per-(interval, direction) summary written to
+			#   render_heat_summary.json, then strips the carrier before
+			#   render_manifest.json is written (no heat keys on disk).
 			# The scalars are CACHED at walk time by walk_walker, where the
 			#   residual is still live on the trace and is measured against the
-			#   FINAL solved box (the emitted cx/cy/w/h). The renderer reads the
-			#   cached scalars from the per-frame direction_path entry instead of
-			#   re-deriving the residual (M1-F's render-time decode is removed):
-			#   the residual was already computed during the walk, so no extra
-			#   decode is paid.  Memory is bounded -- only the <=9 in-buffer window
-			#   frames ever hold a live residual at once.
-			# in_box_heat_computed: True when a real walk produced a solved box AND
-			#   the cached scalars are present.  computed=False records a
-			#   NOT-COMPUTED frame (no solved box, or render-only npz mode that has
-			#   no cached scalars); computed=True with hot_count=0 records a
-			#   COMPUTED-COLD frame.  The gate (M1-C) keeps COMPUTED-COLD in the
-			#   denominator and skips NOT-COMPUTED.
-			heat_threshold = residual_motion.DEFAULT_THRESHOLD
-			hot_mean = None
+			#   FINAL solved box (the emitted cx/cy/w/h). Memory is bounded -- only
+			#   the <=9 in-buffer window frames ever hold a live residual at once.
+			# computed=True records a real walk-observed frame (solved box AND
+			#   cached scalars present); computed=False records a NOT-COMPUTED
+			#   frame (no solved box, or render-only npz mode with no cached
+			#   scalars). computed=True with hot_count==0 is a COMPUTED-COLD frame.
 			hot_count = 0
+			hot_mean = None
 			in_box_heat_computed = False
 			# Cached scalars are present only on the --walk path (direction_path),
 			# carried into direction_box_by_frame above; render-only npz boxes lack
 			# them, so the metric is NOT-COMPUTED there.
 			if solved_box is not None and "in_box_hot_count" in solved_box:
-				hot_mean = solved_box["in_box_hot_mean"]
 				hot_count = solved_box["in_box_hot_count"]
+				# in_box_hot_mean is float|None; present when in_box_hot_count is.
+				hot_mean = solved_box.get("in_box_hot_mean")
 				in_box_heat_computed = True
-			manifest["in_box_hot_mean"] = hot_mean
-			manifest["in_box_hot_count"] = hot_count
-			manifest["in_box_heat_present"] = (hot_count > 0)
-			manifest["in_box_heat_computed"] = in_box_heat_computed
-			manifest["heat_threshold_used"] = heat_threshold
+			# Private in-memory carrier (leading underscore signals "do not persist").
+			# Stripped in the video loop after aggregation.
+			# hot_mean is re-threaded in-memory for the interval mean_heat stat;
+			# it is NOT persisted to the per-tile render_manifest.json (C13).
+			manifest["_heat"] = {
+				"computed": in_box_heat_computed,
+				"hot_count": hot_count,
+				"hot_mean": hot_mean,
+			}
 			manifests.append(manifest)
 		except RuntimeError as e:
 			logger.error(f"Render error ({direction_label} frame {frame_index}): {e}")
@@ -663,6 +671,91 @@ def _render_direction_tiles(
 			continue
 
 	return render_error, manifests
+
+
+#============================================
+def aggregate_interval_heat(
+	manifests: list,
+	left_frame: int,
+	right_frame: int,
+	direction: str,
+	threshold: float,
+) -> dict:
+	"""Aggregate per-tile in-box heat into one interval-direction summary.
+
+	Heat is frame-derived but sparse (only walk-observed frames are computed),
+	so per contract C13 it is summarized at the interval level (JSON-approved)
+	rather than stored per frame. This pure helper reads the private "_heat"
+	carrier each tile manifest holds in memory and reduces it to a single dict.
+
+	A "seed tile" is one with seed_box_present is True. A seed tile is
+	heat-cold when its heat was computed (computed is True) but no in-box pixel
+	cleared the threshold (hot_count == 0). Seed tiles whose heat was not
+	computed are excluded -- the result is unknown for those, not cold.
+
+	Args:
+		manifests: per-tile manifest dicts for one interval and one direction.
+			Each must carry a "_heat" dict with keys "computed" (bool) and
+			"hot_count" (int).
+		left_frame: interval left seed frame index.
+		right_frame: interval right seed frame index.
+		direction: direction label ("fwd" or "bwd").
+		threshold: residual-motion intensity threshold used during the walk.
+
+	Returns:
+		Summary dict with keys left_frame, right_frame, direction,
+		heat_eligible, heat_present, heat_present_pct, mean_heat,
+		not_computed, seed_cold_frames, threshold.
+		heat_present_pct: float fraction in [0, 1] = heat_present / heat_eligible,
+		or 0.0 when heat_eligible == 0. Store as a fraction; report formats it
+		as a percent.
+		mean_heat: mean of per-frame hot-pixel means across heat-present frames
+		(frames where hot_count > 0, i.e. hot_mean is not None); null (None)
+		when no heat-present frames exist.
+	"""
+	# Frames whose heat was actually computed (a real walk observation).
+	eligible = [m for m in manifests if m["_heat"]["computed"] is True]
+	heat_eligible = len(eligible)
+	# Eligible frames where at least one in-box pixel cleared the threshold.
+	heat_present_list = [m for m in eligible if m["_heat"]["hot_count"] > 0]
+	heat_present = len(heat_present_list)
+	# Coverage: frames with no walk observation (not hidden, just uncovered).
+	not_computed = len(manifests) - heat_eligible
+	# Seed tiles that are computed AND cold (hot_count == 0).
+	seed_cold_frames = sorted(
+		m["frame_index"]
+		for m in eligible
+		if m["seed_box_present"] is True and m["_heat"]["hot_count"] == 0
+	)
+	# Percent of eligible frames with heat (fraction in [0, 1], 0.0 when no eligible).
+	if heat_eligible > 0:
+		heat_present_pct = heat_present / heat_eligible
+	else:
+		heat_present_pct = 0.0
+	# Mean of per-frame hot-pixel means over heat-present frames only.
+	# None when there are no heat-present frames (C13-approved float at interval level).
+	hot_means = [
+		m["_heat"]["hot_mean"]
+		for m in heat_present_list
+		if m["_heat"]["hot_mean"] is not None
+	]
+	if hot_means:
+		mean_heat = sum(hot_means) / len(hot_means)
+	else:
+		mean_heat = None
+	summary = {
+		"left_frame": left_frame,
+		"right_frame": right_frame,
+		"direction": direction,
+		"heat_eligible": heat_eligible,
+		"heat_present": heat_present,
+		"heat_present_pct": heat_present_pct,
+		"mean_heat": mean_heat,
+		"not_computed": not_computed,
+		"seed_cold_frames": seed_cold_frames,
+		"threshold": threshold,
+	}
+	return summary
 
 
 #============================================
@@ -1064,6 +1157,12 @@ def main() -> None:
 		# WS2-C: accumulate per-tile render manifests across all intervals for this
 		# video; written once to render_manifest.json below (machine-checkable gate).
 		video_manifest_records = []
+		# C13 rework: accumulate per-(interval, direction) heat summaries; written
+		# once to render_heat_summary.json (interval data, JSON-approved). Heat is
+		# aggregated here in the video loop (not in run_interval_walk) because this
+		# is the single seam that already knows left/right frame AND has both
+		# direction manifest lists in hand, so no value is re-derived.
+		video_heat_summaries = []
 		for idx, interval in enumerate(post_start_intervals):
 			# Use processed-pixel seeds for walk (Option A, 2026-05-29).
 			left_frame = interval.left_seed["frame_index"]
@@ -1101,6 +1200,27 @@ def main() -> None:
 					manifest["interval_left_frame"] = left_frame
 					manifest["interval_right_frame"] = right_frame
 					video_manifest_records.append(manifest)
+				# C13 rework: aggregate the sparse per-frame heat carrier into one
+				# interval-direction summary per direction, then strip the private
+				# "_heat" carrier so render_manifest.json carries NO heat keys.
+				heat_threshold = residual_motion.DEFAULT_THRESHOLD
+				for direction_label, direction_manifests in (
+					("fwd", fwd_manifests),
+					("bwd", bwd_manifests),
+				):
+					if not direction_manifests:
+						continue
+					video_heat_summaries.append(
+						aggregate_interval_heat(
+							direction_manifests,
+							left_frame,
+							right_frame,
+							direction_label,
+							heat_threshold,
+						)
+					)
+				for manifest in fwd_manifests + bwd_manifests:
+					del manifest["_heat"]
 				interval_summaries.append(summary)
 				# Accumulate solved interval entry for later npz write.
 				# None means direction_path was empty (logged inside run_interval_walk).
@@ -1141,6 +1261,20 @@ def main() -> None:
 			logger.info(
 				f"  Wrote render manifest: {manifest_path} "
 				f"({len(video_manifest_records)} tile records)"
+			)
+
+		# C13 rework: write the per-interval-direction heat summary alongside the
+		# manifest. This is interval data (JSON-approved by C13). The heat report
+		# and seed-cold report in check_render_manifest.py read this sibling file;
+		# the per-tile manifest carries no heat keys. Report-only -- not gated.
+		if video_heat_summaries:
+			video_output_dir.mkdir(parents=True, exist_ok=True)
+			heat_summary_path = video_output_dir / "render_heat_summary.json"
+			with open(heat_summary_path, 'w') as f:
+				json.dump(video_heat_summaries, f, indent=2)
+			logger.info(
+				f"  Wrote heat summary: {heat_summary_path} "
+				f"({len(video_heat_summaries)} interval-direction records)"
 			)
 
 		reader.close()

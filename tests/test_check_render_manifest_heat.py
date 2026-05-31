@@ -1,14 +1,13 @@
-"""Fixture-based tests for the heat-present fraction REPORT in check_render_manifest.
+"""Tests for the interval-level heat REPORT in check_render_manifest (C13 rework).
 
-Three synthetic intervals verify the eligibility rules and the exit-code contract:
-  1. Warm interval: all eligible tiles are heat-present -> fraction 1.0.
-  2. Computed-cold interval: eligible (computed=true) but present=false -> fraction 0.0.
-     Exit code must be UNCHANGED (PASS) because cold tiles are not a gate failure.
-  3. Not-computed interval: computed=false tiles are excluded from the denominator.
-     Zero eligible tiles -> fraction reported as n/a; exit code UNCHANGED.
-
-Also verifies that older manifests (no in_box_heat_computed field) skip the heat
-report cleanly without crashing.
+Heat is no longer stored per tile; it lives in a sibling render_heat_summary.json
+as one record per interval-direction. These tests verify:
+  1. report_heat_summaries prints one HEAT REPORT and one SEED-COLD line per
+     interval-direction summary, with correct eligible/present counts and the
+     not-computed coverage surfaced.
+  2. A zero-eligible summary reports n/a without crashing.
+  3. check_records (the gate over per-tile records) still fires the
+     conversion_count gate and is unaffected by the heat move.
 
 All tests are offline, deterministic, and finish in well under one second.
 """
@@ -27,8 +26,32 @@ import check_render_manifest
 
 #============================================
 
+def _summary(left, right, direction, eligible, present, not_computed,
+		seed_cold_frames, threshold=10.0,
+		heat_present_pct=None, mean_heat=None) -> dict:
+	"""Build one interval-direction heat summary dict.
+
+	heat_present_pct defaults to present/eligible (or 0.0 when eligible==0).
+	mean_heat defaults to None (no heat-present frames).
+	"""
+	if heat_present_pct is None:
+		heat_present_pct = present / eligible if eligible > 0 else 0.0
+	return {
+		"left_frame": left,
+		"right_frame": right,
+		"direction": direction,
+		"heat_eligible": eligible,
+		"heat_present": present,
+		"heat_present_pct": heat_present_pct,
+		"mean_heat": mean_heat,
+		"not_computed": not_computed,
+		"seed_cold_frames": seed_cold_frames,
+		"threshold": threshold,
+	}
+
+
 def _base_record(frame_index: int, direction: str = "fwd") -> dict:
-	"""Return a minimal valid manifest record with the two existing gate fields."""
+	"""Return a minimal valid per-tile manifest record (gate fields only)."""
 	return {
 		"frame_index": frame_index,
 		"direction": direction,
@@ -39,98 +62,44 @@ def _base_record(frame_index: int, direction: str = "fwd") -> dict:
 	}
 
 
-def _with_heat(record: dict, computed: bool, present: bool, threshold: float = 10.0) -> dict:
-	"""Add the M1-B heat fields to a record dict."""
-	record["in_box_heat_computed"] = computed
-	record["in_box_heat_present"] = present
-	record["in_box_hot_count"] = 3 if present else 0
-	record["in_box_hot_mean"] = 15.2 if present else None
-	record["heat_threshold_used"] = threshold
-	return record
-
-
 #============================================
 
-def test_warm_interval_fraction_is_correct(capsys):
-	"""All eligible tiles are heat-present: fraction should be 1.0 (100%)."""
-	records = [
-		_with_heat(_base_record(10), computed=True, present=True),
-		_with_heat(_base_record(11), computed=True, present=True),
-		_with_heat(_base_record(12), computed=True, present=True),
-	]
-	failures = check_render_manifest.check_records(records, "fake/manifest.json")
+def test_warm_summary_fraction_is_correct(capsys):
+	"""All eligible frames are heat-present: fraction is 100%."""
+	summaries = [_summary(10, 12, "fwd", eligible=3, present=3,
+		not_computed=0, seed_cold_frames=[])]
+	check_render_manifest.report_heat_summaries(summaries, "fake/heat.json")
 	captured = capsys.readouterr()
-	# No gate failures.
-	assert failures == []
-	# The heat report line must show 3/3 eligible and 100% fraction.
-	assert "3/3 eligible" in captured.out
+	assert "heat-present 3/3" in captured.out
 	assert "100.0%" in captured.out
 
 
-def test_computed_cold_fraction_is_zero_exit_unaffected(capsys):
-	"""Computed-cold tiles (computed=true, present=false) stay in denominator.
-
-	Fraction is 0/2 (0.0%). Exit code is unchanged -- check_records still returns
-	an empty failure list, so the process would exit 0.
-	"""
-	records = [
-		_with_heat(_base_record(20), computed=True, present=False),
-		_with_heat(_base_record(21), computed=True, present=False),
-	]
-	failures = check_render_manifest.check_records(records, "fake/manifest.json")
+def test_cold_summary_reports_zero_fraction(capsys):
+	"""Eligible but zero present: fraction 0.0%, coverage surfaced."""
+	summaries = [_summary(20, 22, "fwd", eligible=2, present=0,
+		not_computed=1, seed_cold_frames=[20])]
+	check_render_manifest.report_heat_summaries(summaries, "fake/heat.json")
 	captured = capsys.readouterr()
-	# Cold tiles do NOT produce gate failures -- exit code is unchanged.
-	assert failures == []
-	# Report line must show 0/2 eligible (denominator includes cold tiles).
-	assert "0/2 eligible" in captured.out
+	assert "heat-present 0/2" in captured.out
 	assert "0.0%" in captured.out
+	assert "1 not-computed" in captured.out
+	assert "1 seed tiles heat-cold" in captured.out
 
 
-def test_not_computed_excluded_from_denominator(capsys):
-	"""Not-computed tiles (computed=false) are excluded from the denominator.
-
-	With zero eligible tiles the fraction is reported as n/a and no failures are
-	produced (exit code unchanged).
-	"""
-	records = [
-		_with_heat(_base_record(30), computed=False, present=False),
-		_with_heat(_base_record(31), computed=False, present=False),
-	]
-	failures = check_render_manifest.check_records(records, "fake/manifest.json")
+def test_zero_eligible_summary_reports_zero_pct(capsys):
+	"""Zero eligible frames: fraction reported as 0.0%, not-computed surfaced."""
+	summaries = [_summary(30, 33, "bwd", eligible=0, present=0,
+		not_computed=4, seed_cold_frames=[])]
+	check_render_manifest.report_heat_summaries(summaries, "fake/heat.json")
 	captured = capsys.readouterr()
-	# Not-computed tiles do NOT produce gate failures.
-	assert failures == []
-	# Report line must mention 0 eligible tiles.
-	assert "0/0 eligible" in captured.out or "n/a" in captured.out
-	# Both tiles should appear in the skipped (not-computed) count.
-	assert "2 not-computed" in captured.out
+	assert "0.0%" in captured.out
+	assert "4 not-computed" in captured.out
 
 
-def test_older_manifest_without_heat_fields_skips_cleanly(capsys):
-	"""Manifests without in_box_heat_computed skip the heat report without crashing."""
-	# These records have no heat fields at all (pre-M1-B manifest).
-	records = [
-		_base_record(40),
-		_base_record(41),
-	]
-	failures = check_render_manifest.check_records(records, "fake/old_manifest.json")
-	captured = capsys.readouterr()
-	# No failures from the two existing gates.
-	assert failures == []
-	# No HEAT REPORT line should appear (older manifest silently skips).
-	assert "HEAT REPORT" not in captured.out
-
-
-def test_existing_gate_failures_unaffected_by_heat(capsys):
-	"""The two existing gate failures are produced regardless of heat fields.
-
-	Specifically: conversion_count != 1 still fires and is not silenced by the
-	heat report being present.
-	"""
-	# One record with bad conversion_count and valid heat fields.
-	record = _with_heat(_base_record(50), computed=True, present=True)
+def test_gate_failure_unaffected_by_heat_move():
+	"""The conversion_count gate still fires on per-tile records."""
+	record = _base_record(50)
 	record["conversion_count"] = 2
 	failures = check_render_manifest.check_records([record], "fake/manifest.json")
-	# The conversion-count gate must still fire.
 	assert len(failures) == 1
 	assert "conversion_count=2" in failures[0]

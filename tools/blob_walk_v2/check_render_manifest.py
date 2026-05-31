@@ -76,101 +76,116 @@ def find_manifest_files(input_paths: list) -> list:
 
 
 #============================================
-def _group_by_direction(records: list) -> dict:
-	"""Group records by direction string.
+def heat_summary_present(summary: dict) -> int:
+	"""Return the heat-present count for one interval-direction summary.
+
+	A small pure helper kept testable in isolation: it reads the required
+	summary keys directly (no dict.get defaults) so a malformed summary fails
+	loudly per PYTHON_STYLE.
 
 	Args:
-		records: list of per-tile manifest dicts.
+		summary: one interval-direction summary dict from render_heat_summary.json.
 
 	Returns:
-		Dict mapping direction string to list of records in that direction.
+		The heat_present count (eligible frames with at least one in-box hot
+		pixel) for the summary.
 	"""
-	# Build a mapping from direction -> list of records.
-	by_direction = {}
-	for record in records:
-		# Use "unknown" for manifests that pre-date the direction field.
-		direction = record.get("direction", "unknown")
-		if direction not in by_direction:
-			by_direction[direction] = []
-		by_direction[direction].append(record)
-	return by_direction
+	# Direct key access: these keys are required in a summary record.
+	present = summary["heat_present"]
+	return present
 
 
 #============================================
-def report_heat_fraction(records: list, source: str, direction: str) -> None:
-	"""Print a per-interval heat-present fraction REPORT line.
+def report_heat_fraction(summary: dict, source: str) -> None:
+	"""Print a per-interval-direction heat-present fraction REPORT line.
 
-	This is report-only: it does NOT affect the exit code or return any failure.
-	Eligible tiles are those where in_box_heat_computed == true. Computed-cold
-	tiles (computed=true, present=false) stay in the denominator; only
-	not-computed tiles are excluded from the denominator.
-
-	If no record in this direction carries in_box_heat_computed (older manifest),
-	the heat report is silently skipped for this interval -- no crash, no error.
+	Report-only: does NOT affect the exit code. Eligible frames are those the
+	walk actually observed (heat_eligible). not_computed frames are surfaced as
+	coverage, not hidden.
 
 	Args:
-		records: list of per-tile manifest dicts for one direction.
-		source: manifest file path, for the report line prefix.
-		direction: direction label (e.g. "fwd", "bwd").
+		summary: one interval-direction summary dict.
+		source: heat-summary file path, for the report line prefix.
 	"""
-	# Check whether the new heat fields are present at all. Use explicit key
-	# presence checks rather than dict.get defaults so a real missing field is
-	# not silently hidden (PYTHON_STYLE: do not hide bugs with defaults).
-	computed_present_count = sum(
-		1 for r in records if "in_box_heat_computed" in r
-	)
-	# If no record carries the field, this is an older manifest -- skip cleanly.
-	if computed_present_count == 0:
-		return
+	direction = summary["direction"]
+	left_frame = summary["left_frame"]
+	right_frame = summary["right_frame"]
+	heat_eligible = summary["heat_eligible"]
+	heat_present = heat_summary_present(summary)
+	not_computed = summary["not_computed"]
+	threshold = summary["threshold"]
+	# New stats: read as required keys (no .get defaults per PYTHON_STYLE).
+	heat_present_pct = summary["heat_present_pct"]
+	mean_heat = summary["mean_heat"]
 
-	# Collect threshold from the first record that carries it (all tiles in one
-	# direction share the same threshold).
-	threshold_used = None
-	for record in records:
-		if "heat_threshold_used" in record:
-			threshold_used = record["heat_threshold_used"]
-			break
-
-	# Eligible = in_box_heat_computed is explicitly True. Not-computed tiles are
-	# excluded from the denominator (no implicit default: we require the field).
-	eligible_records = [r for r in records if r["in_box_heat_computed"] is True]
-	total_count = len(records)
-	eligible_count = len(eligible_records)
-	not_computed_count = total_count - eligible_count
-
-	# Among eligible tiles, count how many are heat-present.
-	heat_present_count = sum(1 for r in eligible_records if r["in_box_heat_present"] is True)
-
-	# Compute fraction with a guard for a zero eligible-count denominator.
-	if eligible_count > 0:
-		fraction = heat_present_count / eligible_count
-		fraction_str = f"{fraction:.1%}"
+	# Format the percent fraction (stored as [0,1], displayed as percent).
+	fraction_str = f"{heat_present_pct:.1%}"
+	# Format mean_heat: rounded float when present, n/a when null.
+	if mean_heat is not None:
+		mean_heat_str = f"{mean_heat:.2f}"
 	else:
-		fraction_str = "n/a (no eligible tiles)"
-
-	# Build the threshold part of the report line.
-	threshold_str = f"threshold={threshold_used}" if threshold_used is not None else "threshold=n/a"
+		mean_heat_str = "n/a"
 
 	print(
-		f"  HEAT REPORT {source} [{direction}]: "
-		f"heat-present {heat_present_count}/{eligible_count} eligible "
-		f"({fraction_str}); "
-		f"{not_computed_count} not-computed (skipped); "
-		f"total {total_count} tiles; "
-		f"{threshold_str}"
+		f"  HEAT REPORT {source} [{left_frame},{right_frame}] [{direction}]: "
+		f"heat-present {heat_present}/{heat_eligible} ({fraction_str}); "
+		f"mean_heat={mean_heat_str}; "
+		f"{not_computed} not-computed; "
+		f"threshold={threshold}"
 	)
+
+
+#============================================
+def report_seed_cold(summary: dict, source: str) -> None:
+	"""Print a per-interval-direction seed-cold REPORT line.
+
+	Flags human seed boxes that came back heat-cold -- a likely indicator of a
+	stale or background-parked annotation. Report-only: does NOT affect the exit
+	code or the gate failure list.
+
+	Args:
+		summary: one interval-direction summary dict.
+		source: heat-summary file path, for the report line prefix.
+	"""
+	direction = summary["direction"]
+	left_frame = summary["left_frame"]
+	right_frame = summary["right_frame"]
+	seed_cold_frames = summary["seed_cold_frames"]
+	cold_count = len(seed_cold_frames)
+	print(
+		f"  SEED-COLD {source} [{left_frame},{right_frame}] [{direction}]: "
+		f"{cold_count} seed tiles heat-cold; frames={seed_cold_frames}"
+	)
+
+
+#============================================
+def report_heat_summaries(summaries: list, source: str) -> None:
+	"""Print the heat and seed-cold REPORT lines for one video's summaries.
+
+	Report-only: does NOT affect the exit code. Iterates the interval-direction
+	summary records and prints one HEAT REPORT line and one SEED-COLD line each.
+
+	Args:
+		summaries: list of interval-direction summary dicts.
+		source: heat-summary file path, for the report line prefix.
+	"""
+	# Stable ordering: by interval left frame, then direction.
+	ordered = sorted(summaries, key=lambda s: (s["left_frame"], s["direction"]))
+	for summary in ordered:
+		report_heat_fraction(summary, source)
+		report_seed_cold(summary, source)
 
 
 #============================================
 def check_records(records: list, source: str) -> list:
 	"""Check one manifest's records and return a list of failure strings.
 
-	Also prints per-direction HEAT REPORT lines (report-only, does not affect
-	the returned failure list or the exit code).
-
 	Failure conditions (per tile):
 	  - conversion_count != 1 (double or zero coordinate conversion).
 	  - non-seed frame with no solved box (magenta + only symptom).
+
+	Heat is no longer stored per tile (C13); the heat and seed-cold reports read
+	the sibling render_heat_summary.json (see report_heat_summaries / main).
 
 	Args:
 		records: list of per-tile manifest dicts.
@@ -205,11 +220,6 @@ def check_records(records: list, source: str) -> list:
 				f"box (magenta + only symptom)"
 			)
 
-	# Per-direction heat report (report-only; does not affect failures or exit code).
-	by_direction = _group_by_direction(records)
-	for direction in sorted(by_direction):
-		report_heat_fraction(by_direction[direction], source, direction)
-
 	return failures
 
 
@@ -232,6 +242,17 @@ def main() -> None:
 		total_tiles += len(records)
 		failures = check_records(records, manifest_file)
 		all_failures.extend(failures)
+
+		# Heat + seed-cold reports read the sibling render_heat_summary.json
+		# (interval data per C13). Absent sibling (older run) skips the reports
+		# cleanly -- no crash, no error, no exit-code change.
+		heat_summary_file = os.path.join(
+			os.path.dirname(manifest_file), "render_heat_summary.json"
+		)
+		if os.path.isfile(heat_summary_file):
+			with open(heat_summary_file) as f:
+				summaries = json.load(f)
+			report_heat_summaries(summaries, heat_summary_file)
 
 	manifest_count = len(manifest_files)
 	if all_failures:
