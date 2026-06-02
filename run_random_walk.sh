@@ -8,7 +8,10 @@
 #
 # For a reproducible selection, set RANDOM_SEED to an integer below.
 
-set -euo pipefail
+# -e + pipefail for loud failure; NOT -u (nounset): `source source_me.sh` pulls
+# in profile scripts (e.g. bash_completion) that reference interactive-only vars
+# like $PS1, which are unset in this non-interactive shell and would abort.
+set -eo pipefail
 
 # Resolve repo root via git; never derive from cwd per repo convention.
 REPO_ROOT="$(git rev-parse --show-toplevel)"
@@ -16,13 +19,14 @@ cd "$REPO_ROOT"
 
 # Constants -- single-purpose runner, no flags needed.
 CORPUS_FILE="data/outdoor_corpus.txt"
-OUTPUT_DIR="output_smoke_random20"
+OUTPUT_DIR="corpus_walk"
 SAMPLE_N=20
 # Set to an integer for a reproducible sample; leave empty for a fresh sample.
 RANDOM_SEED=""
 
 # Build the optional --random-seed argument. A plain string (not an array) so
-# the empty case word-splits to nothing even under `set -u` on bash 3.2.
+# the empty case word-splits to nothing (portable to old bash, no empty-array
+# expansion edge cases).
 SEED_FLAG=""
 if [ -n "$RANDOM_SEED" ]; then
     SEED_FLAG="--random-seed $RANDOM_SEED"
