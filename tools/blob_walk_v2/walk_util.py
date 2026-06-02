@@ -77,17 +77,3 @@ def select_random_visible(post_start: list, n: int, rng: random.Random) -> list:
 	# sort by left frame_index for consistent ordering across runs
 	chosen_sorted = sorted(chosen, key=lambda i: i.left_seed["frame_index"])
 	return chosen_sorted
-
-
-#============================================
-#============================================
-def _evenly_spread(items: list, n: int | None) -> list:
-	"""Pick n items evenly spread across items. Returns items unchanged if len <= n."""
-	if n is None or len(items) <= n:
-		return items
-	if n == 1:
-		return [items[len(items) // 2]]
-	# evenly-spaced indices including first and last
-	step = (len(items) - 1) / (n - 1)
-	indices = [round(i * step) for i in range(n)]
-	return [items[i] for i in indices]

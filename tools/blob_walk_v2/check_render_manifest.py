@@ -244,12 +244,19 @@ def main() -> None:
 		all_failures.extend(failures)
 
 		# Heat + seed-cold reports read the sibling render_heat_summary.json
-		# (interval data per C13). Absent sibling (older run) skips the reports
-		# cleanly -- no crash, no error, no exit-code change.
+		# (interval data per C13). The walk writes it whenever it writes the
+		# manifest, so a manifest WITHOUT the sibling is a stale run or a driver
+		# bug -- fail loudly rather than skip silently (a silent skip is exactly
+		# what hid the heat report being unwired for an entire release).
 		heat_summary_file = os.path.join(
 			os.path.dirname(manifest_file), "render_heat_summary.json"
 		)
-		if os.path.isfile(heat_summary_file):
+		if not os.path.isfile(heat_summary_file):
+			all_failures.append(
+				f"{manifest_file}: render_heat_summary.json sibling missing; the walk "
+				f"did not write it (stale pre-2026-06-02 run or driver bug). Re-walk."
+			)
+		else:
 			with open(heat_summary_file) as f:
 				summaries = json.load(f)
 			report_heat_summaries(summaries, heat_summary_file)
@@ -260,7 +267,7 @@ def main() -> None:
 		for failure in all_failures:
 			print(f"  {failure}")
 		print(
-			f"FAIL: {len(all_failures)} failing tile(s) across {total_tiles} "
+			f"FAIL: {len(all_failures)} failing check(s) across {total_tiles} "
 			f"tiles in {manifest_count} manifest(s)"
 		)
 		sys.exit(1)

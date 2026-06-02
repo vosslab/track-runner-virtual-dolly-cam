@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # run_random_walk.sh
-# Walk 20 random visible-both intervals per video and report per-video
+# Walk random visible-both intervals for EACH video listed in
+# data/outdoor_corpus.txt (SAMPLE_N per video), then report per-video
 # in-box motion-heat fractions.
 # Does NOT require arguments; constants are hardcoded (single-purpose runner).
 # Run directly: ./run_random_walk.sh
 #
-# For a reproducible selection add: --random-seed 12345
+# For a reproducible selection, set RANDOM_SEED to an integer below.
 
 set -euo pipefail
 
@@ -14,24 +15,38 @@ REPO_ROOT="$(git rev-parse --show-toplevel)"
 cd "$REPO_ROOT"
 
 # Constants -- single-purpose runner, no flags needed.
+CORPUS_FILE="data/outdoor_corpus.txt"
 OUTPUT_DIR="output_smoke_random20"
-JOBS=4
+SAMPLE_N=20
+# Set to an integer for a reproducible sample; leave empty for a fresh sample.
+RANDOM_SEED=""
+
+# Build the optional --random-seed argument. A plain string (not an array) so
+# the empty case word-splits to nothing even under `set -u` on bash 3.2.
+SEED_FLAG=""
+if [ -n "$RANDOM_SEED" ]; then
+    SEED_FLAG="--random-seed $RANDOM_SEED"
+fi
 
 # -----------------------------------------------------------------------
 echo "=== RANDOM-SAMPLE WALK ==="
+echo "Corpus:  $CORPUS_FILE"
 echo "Output:  $OUTPUT_DIR"
-echo "Workers: $JOBS"
-echo "Mode:    20 random visible-both intervals per video"
+echo "Mode:    $SAMPLE_N random visible-both intervals per video"
 echo ""
 
-# Source the Python environment and run the windowed Viterbi walker using
-# random visible-both interval sampling.  -n 20 sets the sample size per video.
-source source_me.sh && python3 tools/blob_walk_v2/make_walk_html_v2.py \
-    --walk \
-    --random-sample \
-    -n 20 \
-    -o "$OUTPUT_DIR" \
-    -j "$JOBS"
+# make_walk_html_v2.py is video-agnostic: it walks ONE video per invocation.
+# Loop over each corpus line, skipping comment (#) and blank lines and trimming
+# any trailing whitespace, passing one video at a time.
+grep -vE '^[[:space:]]*(#|$)' "$CORPUS_FILE" | sed 's/[[:space:]]*$//' | while read -r video_path; do
+    echo "--- walking $video_path ---"
+    source source_me.sh && python3 tools/blob_walk_v2/make_walk_html_v2.py \
+        --walk \
+        -v "$video_path" \
+        -n "$SAMPLE_N" \
+        -o "$OUTPUT_DIR" \
+        $SEED_FLAG
+done
 
 # -----------------------------------------------------------------------
 echo ""

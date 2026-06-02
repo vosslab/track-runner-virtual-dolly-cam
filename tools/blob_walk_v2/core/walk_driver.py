@@ -1,12 +1,11 @@
-#!/usr/bin/env python3
-"""Walk driver: orchestrates FWD/BWD walks on seed-to-seed intervals for a corpus.
+"""Walk engine: per-interval FWD/BWD walk + render library for blob_walk_v2.
 
-Per-video corpus runner: enumerates intervals, runs walks, renders tiles,
-builds HTML. Exception handling is per-interval: walker and renderer raise
-loudly; driver catches, records failure, and continues to the next interval.
-
-Sequential single loop (no multiprocessing). Winner mode is shared across
-all intervals in one invocation.
+Library module (no CLI). The single-video entry point
+`tools/blob_walk_v2/make_walk_html_v2.py` drives this: it calls
+`run_interval_walk` per interval, then the `write_*` helpers below to persist
+the npz, render manifest, and heat summary. The walker IS the solver:
+`run_interval_walk` returns a solved interval entry plus per-tile render
+manifests and a per-frame heat carrier.
 
 Output layout:
   {output_dir}/
@@ -26,17 +25,16 @@ import sys
 import csv
 import json
 import logging
-import argparse
 import pathlib
 import dataclasses
 
-# Standalone-run bootstrap: this module lives at tools/blob_walk_v2/core/, but
-# walk_paths.py lives one level up at the package root. When walk_driver is run
-# directly (python3 .../core/walk_driver.py), sys.path[0] is core/, so the bare
-# import walk_paths below would fail. Put the package root on sys.path first so
-# walk_paths resolves; walk_paths.setup() then wires up the rest (track_runner,
-# tests, repo root, core/, render/). Library callers that import walk_driver
-# have already run setup(), so this insert is a harmless no-op for them.
+# Import bootstrap: this module lives at tools/blob_walk_v2/core/, but
+# walk_paths.py lives one level up at the package root. A caller (or test) that
+# imports walk_driver before the package root is on sys.path would fail the bare
+# `import walk_paths` below, so put the package root on sys.path first; the
+# `if not in` guard makes it a harmless no-op when the importer (e.g.
+# make_walk_html_v2) has already run walk_paths.setup(). This is a library
+# module with no CLI -- it is never executed directly.
 _PACKAGE_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PACKAGE_ROOT not in sys.path:
 	sys.path.insert(0, _PACKAGE_ROOT)
@@ -46,12 +44,10 @@ import walk_paths
 walk_paths.setup()
 
 # local repo modules
-import walk_io
 import walk_util
 import walk_walker
 import walk_debug_log
 import walk_render
-import walk_html
 import blob_trace
 import interval_fingerprint
 import interval_solver
@@ -92,103 +88,6 @@ class IntervalSummary:
 	render_error: bool
 	fwd_mode_disagreement_count: int
 	bwd_mode_disagreement_count: int
-
-
-#============================================
-def parse_args() -> argparse.Namespace:
-	"""Parse command-line arguments."""
-	parser = argparse.ArgumentParser(
-		description=(
-			"Walk driver: orchestrates FWD/BWD walks on seed-to-seed intervals. "
-			"Runs on a corpus of videos, enumerates intervals, walks and renders tiles, "
-			"builds HTML."
-		),
-	)
-	parser.add_argument(
-		'-v', '--videos', dest='video_basenames', nargs='+', required=True,
-		help=(
-			"Video basename(s) to process (space-separated or repeated flag). "
-			"Example: -v video1.mkv video2.mkv"
-		),
-	)
-	parser.add_argument(
-		'-i', '--max-intervals', dest='max_intervals', type=int, default=4,
-		help=(
-			"Cap intervals per video (evenly spread). Default: 4. "
-			"A full walk of every interval is intentionally never the default "
-			"because it is catastrophically slow on large corpora. "
-			"Pass 0 (or any value <= 0) to opt in to ALL post_start intervals."
-		),
-	)
-	parser.add_argument(
-		'-o', '--output-dir', dest='output_dir', default='blob_walk_v2',
-		help="Output root directory. Default: blob_walk_v2/",
-	)
-	parser.add_argument(
-		'-r', '--resume', dest='resume', action='store_true',
-		help=(
-			"Skip intervals that already have CSV + at least one tile. "
-			"Default: recompute all."
-		),
-	)
-	parser.add_argument(
-		'--no-render', dest='render_tiles', action='store_false',
-		help="Skip PNG tile rendering (still write CSVs).",
-	)
-	parser.set_defaults(render_tiles=True)
-	parser.add_argument(
-		'--no-html', dest='build_html', action='store_false',
-		help="Skip HTML build after corpus run.",
-	)
-	parser.set_defaults(build_html=True)
-	parser.add_argument(
-		'--heat-movie', dest='heat_movie', action='store_true',
-		help=(
-			"Encode a per-direction heat movie (.mkv) alongside each interval's "
-			"render output.  Requires ffmpeg in PATH.  Encodes only when --walk "
-			"is active (live direction_path).  Off by default."
-		),
-	)
-	parser.add_argument(
-		'--no-heat-movie', dest='heat_movie', action='store_false',
-		help="Do not encode heat movies (default).",
-	)
-	parser.set_defaults(heat_movie=False)
-	parser.add_argument(
-		'-w', '--winner-mode', dest='winner_mode',
-		choices=['production_winner', 'audit_winner'],
-		default='production_winner',
-		help=(
-			"Winner resolution mode. Default: production_winner. "
-			"Audit mode requires --audit-rule."
-		),
-	)
-	parser.add_argument(
-		'--audit-rule', dest='audit_rule',
-		choices=['center_of_mass', 'strongest_blob', 'body_position'],
-		default=None,
-		help=(
-			"Audit rule for audit_winner mode. "
-			"One of: center_of_mass, strongest_blob, body_position. "
-			"Only meaningful with -w audit_winner."
-		),
-	)
-	args = parser.parse_args()
-
-	# Validate audit_rule if audit_winner is set
-	if args.winner_mode == 'audit_winner' and args.audit_rule is None:
-		parser.error(
-			"--audit-rule is required when --winner-mode audit_winner is set. "
-			"Choose from: center_of_mass, strongest_blob, body_position"
-		)
-
-	# Fail early when --heat-movie is requested but ffmpeg is absent.
-	# Import heat_movie_encode lazily here so the normal walk path never imports it.
-	if args.heat_movie:
-		import heat_movie_encode
-		heat_movie_encode.check_ffmpeg_available()
-
-	return args
 
 
 #============================================
@@ -250,7 +149,7 @@ def _normalize_video_basename(video_basename: str) -> str:
 
 
 #============================================
-def _video_npz_path(video_basename: str) -> str:
+def video_npz_path(video_basename: str) -> str:
 	"""Return the torso_box_coords.npz path for this video.
 
 	Mirrors the walk_io convention: tr_config lives under walk_paths.setup()
@@ -819,8 +718,8 @@ def run_interval_walk(
 	interval_length = right_frame - left_frame
 
 	# WS2-D typed seed boundary (bug #101 cure): the walker steps in PROCESSED
-	# space (docs/COORDINATE_SPACES.md). Both entry points (walk_driver.main and
-	# make_walk_html_v2.process_video) must feed PROCESSED seeds. Construct a
+	# space (docs/COORDINATE_SPACES.md). The caller (make_walk_html_v2.process_video)
+	# must feed PROCESSED seeds. Construct a
 	# typed ProcessedBox for each seed and assert the space at the boundary so a
 	# future caller that hands in a SOURCE-derived seed fails loud here instead of
 	# building a degenerate ROI deep inside observe_blob_at. Seeds arrive PROCESSED
@@ -1092,203 +991,103 @@ def run_interval_walk(
 
 
 #============================================
-def main() -> None:
-	"""Main driver loop: iterate corpus, walk intervals, render, build HTML."""
-	args = parse_args()
+def summarize_and_strip_heat(
+	left_frame: int,
+	right_frame: int,
+	fwd_manifests: list,
+	bwd_manifests: list,
+) -> list:
+	"""Aggregate the sparse per-frame heat carrier into per-direction summaries.
 
-	output_root = pathlib.Path(args.output_dir)
-	output_root.mkdir(parents=True, exist_ok=True)
+	Reduces each non-empty direction's manifests into one interval-direction
+	heat summary (C13: interval data), then strips the private "_heat" carrier
+	from every manifest in place so render_manifest.json carries no heat keys.
 
-	# Process each video
-	for video_basename in args.video_basenames:
-		logger.info(f"Processing video: {video_basename}")
+	Args:
+		left_frame: Left seed frame index of the interval.
+		right_frame: Right seed frame index of the interval.
+		fwd_manifests: Per-tile manifest dicts from the FWD pass.
+		bwd_manifests: Per-tile manifest dicts from the BWD pass.
 
-		# Load seeds and video
-		try:
-			reader, probe_info = walk_io.open_walker_reader(video_basename)
-			# Option A (2026-05-29): load seeds as a SeedsView in processed-pixel
-			# coords so walk_one_direction receives processed coords natively.
-			# assert_geometry_match guards against any reader/view bin mismatch.
-			seeds_view = walk_io.load_walker_seeds_view(video_basename, reader.geometry)
-			seeds_view.assert_geometry_match(reader.geometry)
-			scene_transform = walk_io.load_walker_scene_transform(video_basename)
-			race_start_frame = walk_io.load_race_start_frame(video_basename)
-		except RuntimeError as e:
-			logger.error(f"Failed to load video {video_basename}: {e}")
+	Returns:
+		list: Heat-summary dicts, one per non-empty direction (may be empty).
+	"""
+	heat_threshold = residual_motion.DEFAULT_THRESHOLD
+	summaries = []
+	for direction_label, direction_manifests in (("fwd", fwd_manifests), ("bwd", bwd_manifests)):
+		if not direction_manifests:
 			continue
-
-		# Enumerate intervals using the source-pixel seeds dict for frame-index
-		# bookkeeping only. Seed coords for walking come from seeds_view.seeds.
-		intervals = walk_io.enumerate_seed_to_seed_intervals(seeds_view.source, race_start_frame)
-		# Build a fast lookup from frame_index to processed-pixel seed dict.
-		_proc_seed_by_frame = {s["frame_index"]: s for s in seeds_view.seeds}
-
-		# Filter to post_start intervals only
-		post_start_intervals = [
-			i for i in intervals if i.label == "post_start"
-		]
-
-		# Spread by max_intervals: evenly distributed, not first-N.
-		# Default is 4; a value <= 0 is the explicit opt-in to ALL intervals.
-		if args.max_intervals > 0:
-			post_start_intervals = walk_util._evenly_spread(post_start_intervals, args.max_intervals)
-
-		logger.info(f"  Found {len(post_start_intervals)} post_start intervals")
-
-		# Compute the npz path once per video; passed to run_interval_walk so that
-		# _render_direction_tiles can load source-frame solved boxes for render-only
-		# mode (direction_path=None). The same path is also used for the npz write
-		# at the end of the video loop.
-		video_npz_path = _video_npz_path(video_basename)
-
-		video_output_dir = output_root / video_basename
-
-		# Surface crossing_race_start intervals (skip with reason)
-		crossing_intervals = [i for i in intervals if i.label == "crossing_race_start"]
-		if crossing_intervals:
-			logger.info(f"  Found {len(crossing_intervals)} crossing_race_start intervals (skipping)")
-
-		# Process each interval.
-		# Accumulate all solved interval entries here; write the npz ONCE at
-		# the end of the video loop (no per-interval read-modify-write, which
-		# would overwrite earlier intervals on each call).
-		interval_summaries = []
-		accumulated_solved = {}  # fingerprint_key -> solved_entry, source-frame
-		# WS2-C: accumulate per-tile render manifests across all intervals for this
-		# video; written once to render_manifest.json below (machine-checkable gate).
-		video_manifest_records = []
-		# C13 rework: accumulate per-(interval, direction) heat summaries; written
-		# once to render_heat_summary.json (interval data, JSON-approved). Heat is
-		# aggregated here in the video loop (not in run_interval_walk) because this
-		# is the single seam that already knows left/right frame AND has both
-		# direction manifest lists in hand, so no value is re-derived.
-		video_heat_summaries = []
-		for idx, interval in enumerate(post_start_intervals):
-			# Use processed-pixel seeds for walk (Option A, 2026-05-29).
-			left_frame = interval.left_seed["frame_index"]
-			right_frame = interval.right_seed["frame_index"]
-			left_seed = _proc_seed_by_frame[left_frame]
-			right_seed = _proc_seed_by_frame[right_frame]
-
-			interval_dir = video_output_dir / f"seed_{left_frame}_{right_frame}"
-
-			# Check resume
-			if check_resume_needed(interval_dir, args.resume):
-				logger.info(f"  Skipping (resume): interval [{left_frame}, {right_frame}]")
-				continue
-
-			logger.info(f"  [{idx + 1}/{len(post_start_intervals)}] Interval [{left_frame}, {right_frame}]")
-
-			try:
-				summary, fp_key, solved_entry, fwd_manifests, bwd_manifests = run_interval_walk(
-					left_seed=left_seed,
-					right_seed=right_seed,
-					reader=reader,
-					scene_transform=scene_transform,
-					probe_info=probe_info,
-					output_interval_dir=interval_dir,
-					winner_mode=args.winner_mode,
-					audit_rule=args.audit_rule,
-					render_tiles=args.render_tiles,
-					proc_seed_by_frame=_proc_seed_by_frame,
-					npz_path=video_npz_path,
-					heat_movie=args.heat_movie,
-				)
-				# WS2-C: tag each per-tile manifest with its interval identity and
-				# accumulate for the video-level render_manifest.json artifact.
-				for manifest in fwd_manifests + bwd_manifests:
-					manifest["interval_left_frame"] = left_frame
-					manifest["interval_right_frame"] = right_frame
-					video_manifest_records.append(manifest)
-				# C13 rework: aggregate the sparse per-frame heat carrier into one
-				# interval-direction summary per direction, then strip the private
-				# "_heat" carrier so render_manifest.json carries NO heat keys.
-				heat_threshold = residual_motion.DEFAULT_THRESHOLD
-				for direction_label, direction_manifests in (
-					("fwd", fwd_manifests),
-					("bwd", bwd_manifests),
-				):
-					if not direction_manifests:
-						continue
-					video_heat_summaries.append(
-						aggregate_interval_heat(
-							direction_manifests,
-							left_frame,
-							right_frame,
-							direction_label,
-							heat_threshold,
-						)
-					)
-				for manifest in fwd_manifests + bwd_manifests:
-					del manifest["_heat"]
-				interval_summaries.append(summary)
-				# Accumulate solved interval entry for later npz write.
-				# None means direction_path was empty (logged inside run_interval_walk).
-				if fp_key is not None and solved_entry is not None:
-					accumulated_solved[fp_key] = solved_entry
-			except Exception as e:
-				logger.error(f"  Exception in interval [{left_frame}, {right_frame}]: {e}")
-				# Continue to next interval
-
-		# Write solved intervals to npz ONCE for this video (load-merge-write-back).
-		# Overwrite at the interval-key level is intentional (walker IS the solver).
-		if accumulated_solved:
-			os.makedirs(os.path.dirname(video_npz_path), exist_ok=True)
-			# Load existing data to merge with (returns empty skeleton if missing).
-			existing = state_io.load_torso_box_coords(video_npz_path)
-			existing_solved = existing["solved_intervals"]
-			# Merge: accumulated entries overwrite any same-key existing entries.
-			merged_solved = dict(existing_solved)
-			merged_solved.update(accumulated_solved)
-			cache_data = dict(existing)
-			cache_data["solved_intervals"] = merged_solved
-			state_io.write_torso_box_coords(video_npz_path, cache_data)
-			logger.info(
-				f"  Wrote {len(accumulated_solved)} solved interval(s) to {video_npz_path} "
-				f"(total in file: {len(merged_solved)})"
+		summaries.append(
+			aggregate_interval_heat(
+				direction_manifests, left_frame, right_frame, direction_label, heat_threshold
 			)
-
-		# WS2-C: write the machine-checkable render manifest for this video.
-		# One JSON record per rendered tile; consumed by the manifest checker
-		# (tools/blob_walk_v2/check_render_manifest.py) which fails the gate if
-		# any non-seed frame lacks a solved box or any tile has conversion_count
-		# != 1 -- catching the "magenta + only" symptom without opening walk.html.
-		if video_manifest_records:
-			video_output_dir.mkdir(parents=True, exist_ok=True)
-			manifest_path = video_output_dir / "render_manifest.json"
-			with open(manifest_path, 'w') as f:
-				json.dump(video_manifest_records, f, indent=2)
-			logger.info(
-				f"  Wrote render manifest: {manifest_path} "
-				f"({len(video_manifest_records)} tile records)"
-			)
-
-		# C13 rework: write the per-interval-direction heat summary alongside the
-		# manifest. This is interval data (JSON-approved by C13). The heat report
-		# and seed-cold report in check_render_manifest.py read this sibling file;
-		# the per-tile manifest carries no heat keys. Report-only -- not gated.
-		if video_heat_summaries:
-			video_output_dir.mkdir(parents=True, exist_ok=True)
-			heat_summary_path = video_output_dir / "render_heat_summary.json"
-			with open(heat_summary_path, 'w') as f:
-				json.dump(video_heat_summaries, f, indent=2)
-			logger.info(
-				f"  Wrote heat summary: {heat_summary_path} "
-				f"({len(video_heat_summaries)} interval-direction records)"
-			)
-
-		reader.close()
-
-	# Build HTML if requested
-	if args.build_html:
-		logger.info("Building HTML...")
-		try:
-			walk_html.build_walk_html(str(output_root))
-			logger.info(f"HTML built: {output_root / 'walk.html'}")
-		except Exception as e:
-			logger.error(f"Failed to build HTML: {e}")
+		)
+	# Strip the private carrier so render_manifest.json carries no heat keys.
+	for manifest in fwd_manifests + bwd_manifests:
+		del manifest["_heat"]
+	return summaries
 
 
 #============================================
-if __name__ == '__main__':
-	main()
+def write_solved_intervals_npz(npz_path: str, accumulated_solved: dict) -> None:
+	"""Merge solved interval entries into the video's torso_box_coords npz.
+
+	Load-merge-write-back: accumulated entries overwrite same-key existing
+	entries (the walker IS the solver), all other intervals are preserved.
+	No-op when accumulated_solved is empty.
+	"""
+	if not accumulated_solved:
+		return
+	os.makedirs(os.path.dirname(npz_path), exist_ok=True)
+	# Load existing data to merge with (returns empty skeleton if missing).
+	existing = state_io.load_torso_box_coords(npz_path)
+	existing_solved = existing["solved_intervals"]
+	# Merge: accumulated entries overwrite any same-key existing entries.
+	merged_solved = dict(existing_solved)
+	merged_solved.update(accumulated_solved)
+	cache_data = dict(existing)
+	cache_data["solved_intervals"] = merged_solved
+	state_io.write_torso_box_coords(npz_path, cache_data)
+	logger.info(
+		f"  Wrote {len(accumulated_solved)} solved interval(s) to {npz_path} "
+		f"(total in file: {len(merged_solved)})"
+	)
+
+
+#============================================
+def write_render_manifest(video_output_dir: pathlib.Path, video_manifest_records: list) -> None:
+	"""Write the per-tile render manifest JSON for one video (machine-checkable gate).
+
+	One JSON record per rendered tile; consumed by check_render_manifest.py,
+	which fails the gate if any non-seed frame lacks a solved box or any tile
+	has conversion_count != 1. No-op when there are no records.
+	"""
+	if not video_manifest_records:
+		return
+	video_output_dir.mkdir(parents=True, exist_ok=True)
+	manifest_path = video_output_dir / "render_manifest.json"
+	with open(manifest_path, 'w') as f:
+		json.dump(video_manifest_records, f, indent=2)
+	logger.info(
+		f"  Wrote render manifest: {manifest_path} "
+		f"({len(video_manifest_records)} tile records)"
+	)
+
+
+#============================================
+def write_heat_summary(video_output_dir: pathlib.Path, video_heat_summaries: list) -> None:
+	"""Write the per-(interval, direction) heat summary JSON (C13 interval data).
+
+	The heat report and seed-cold report in check_render_manifest.py read this
+	sibling file; the per-tile manifest carries no heat keys. No-op when empty.
+	"""
+	if not video_heat_summaries:
+		return
+	video_output_dir.mkdir(parents=True, exist_ok=True)
+	heat_summary_path = video_output_dir / "render_heat_summary.json"
+	with open(heat_summary_path, 'w') as f:
+		json.dump(video_heat_summaries, f, indent=2)
+	logger.info(
+		f"  Wrote heat summary: {heat_summary_path} "
+		f"({len(video_heat_summaries)} interval-direction records)"
+	)

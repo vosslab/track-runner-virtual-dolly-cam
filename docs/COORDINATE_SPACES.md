@@ -115,7 +115,8 @@ Bug #101 (degenerate ROI, `w=0`, at `bin_factor > 1`) came from two walker
 callers feeding the boundary DIFFERENT spaces:
 
 - `make_walk_html_v2.process_video` passed SOURCE-pixel seeds.
-- `walk_driver.main` passed PROCESSED-pixel seeds (from `SeedsView.seeds`).
+- the former `walk_driver.main` (removed 2026-06-02) passed PROCESSED-pixel
+  seeds (from `SeedsView.seeds`).
 
 At `bin_factor > 1` the SOURCE seed, treated as PROCESSED, built a degenerate
 ROI: a source `cx` near the right edge, clamped against the PROCESSED width,

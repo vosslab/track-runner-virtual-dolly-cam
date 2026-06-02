@@ -4,24 +4,27 @@ Blob walker v2 tools for track runner virtual dolly cam.
 
 ## Entry point
 
-The single all-in-one driver discovers videos, optionally walks intervals,
-renders walker tiles, and builds `walk.html`:
+The driver walks ONE video per invocation: it enumerates seed-to-seed
+intervals, randomly samples up to `-n` visible-both intervals, walks each,
+renders walker tiles, and builds `walk.html`. It is video-agnostic; batch
+runs loop over a corpus list in the shell (see
+[run_random_walk.sh](../../run_random_walk.sh)) calling it once per video.
 
 ```
-python3 tools/blob_walk_v2/make_walk_html_v2.py [flags]
+python3 tools/blob_walk_v2/make_walk_html_v2.py -v TRACK_VIDEOS/IMG_3823.mkv [flags]
 ```
 
 ### Key flags
 
 | Flag | What it does |
 | --- | --- |
+| `-v`, `--video` | Video path or basename to walk (required) |
 | `-o`, `--output-root` | Root output directory (default: `blob_walk_v2`) |
-| `-w`, `--walk` | Run the walker batch before rendering (default: skip walker) |
-| `-j`, `--workers` | Number of parallel video workers for render (default: 1) |
-| `--intervals-from-corpus` | Restrict the walk to the intervals named in a `dump_step1` corpus directory |
+| `-w`, `--walk` | Run the walker before rendering (default: skip walker) |
+| `-n`, `--sample-intervals` | Number of random visible-both intervals to walk (default: 20; `<= 0` walks all) |
+| `--random-seed` | Seed the RNG for reproducible interval selection (default: fresh) |
 | `--skip-render` | Rebuild `walk.html` from existing CSVs and PNGs only |
-| `-d`, `--dry-run` | Print selected videos and intended work, then exit |
-
+| `-d`, `--dry-run` | Print the resolved video and output dir, then exit |
 | `--heat-movie` / `--no-heat-movie` | Encode per-direction heat movies alongside each interval's render output (default: off). Requires `--walk` and ffmpeg in PATH. See [docs/USAGE.md](../../docs/USAGE.md) for details. |
 
 Run `make_walk_html_v2.py --help` for the full flag list.
@@ -53,12 +56,16 @@ No scratch data persists between runs.
 # Get help
 python3 tools/blob_walk_v2/make_walk_html_v2.py --help
 
-# Walk and render walk.html (single worker)
-python3 tools/blob_walk_v2/make_walk_html_v2.py --walk --workers 1
-
-# Walk only the corpus intervals, then build walk.html
+# Walk 20 random visible-both intervals of one video, then build walk.html
 python3 tools/blob_walk_v2/make_walk_html_v2.py \
-    --walk --intervals-from-corpus dump_step1/24corpus
+    --walk -v TRACK_VIDEOS/IMG_3823.mkv -n 20 -o output_smoke_random20
+
+# Reproducible selection: pin the RNG seed
+python3 tools/blob_walk_v2/make_walk_html_v2.py \
+    --walk -v TRACK_VIDEOS/IMG_3823.mkv -n 20 --random-seed 12345
+
+# Batch the whole outdoor corpus (6 videos x 20 = 120 intervals)
+./run_random_walk.sh
 ```
 
 ## Default output paths
@@ -135,11 +142,13 @@ present) and prints, per interval-direction:
   SEED-COLD <summary> [L,R] [<direction>]: C seed tiles heat-cold; frames=[...]
 ```
 
-These reports are report-only: they do NOT affect the exit code. The two gates
-over `render_manifest.json` (conversion_count == 1 and
-non-seed-missing-solved-box) alone govern process exit status. A run with no
-`render_heat_summary.json` sibling (older run) skips the heat and seed-cold
-reports cleanly.
+The heat and seed-cold report *contents* are report-only: they do NOT affect
+the exit code. But a `render_manifest.json` with no `render_heat_summary.json`
+sibling is a hard FAILURE (exit non-zero): the walk writes the sibling whenever
+it writes the manifest, so a missing sibling means a stale pre-2026-06-02 output
+dir or a driver bug -- re-walk. The two per-tile gates (conversion_count == 1
+and non-seed-missing-solved-box) plus the missing-sibling check govern exit
+status.
 
 ## Library modules
 
@@ -155,14 +164,15 @@ Package root:
 - `make_walk_html_v2.py` -- the all-in-one entry point.
 - `walk_paths.py` -- shared repo-root and `sys.path` setup (adds `core/` and
   `render/` to `sys.path`).
-- `walk_util.py` -- small generic helpers (`_to_float`, `_evenly_spread`, ...).
+- `walk_util.py` -- small generic helpers (`_to_float`, `select_random_visible`, ...).
 
 `core/` -- walk orchestration, algorithm, I/O, and schema:
 
-- `walk_driver.py` -- per-video FWD/BWD interval-walk orchestrator. Called as a
-  library by `make_walk_html_v2.py` and by `tests/e2e/e2e_blob_walk_baseline.py`.
-  It also has a standalone `main()`/argparse for direct single-video runs:
-  `python3 tools/blob_walk_v2/core/walk_driver.py --help`.
+- `walk_driver.py` -- the walk engine: `run_interval_walk` (per-interval FWD/BWD
+  walk + render) plus the `write_solved_intervals_npz` / `write_render_manifest`
+  / `write_heat_summary` / `summarize_and_strip_heat` artifact helpers. Pure
+  library (no CLI); driven by `make_walk_html_v2.py` and
+  `tests/e2e/e2e_blob_walk_baseline.py`.
 - `walk_walker.py` -- `walk_one_direction` orchestration plus `resolve_audit_winner`.
 - `walk_viterbi.py` -- windowed path selection (`select_path` + cost functions).
 - `walk_status.py` -- per-frame status enum and interpolation/extrapolation.

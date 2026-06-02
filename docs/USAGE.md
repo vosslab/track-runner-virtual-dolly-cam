@@ -61,9 +61,8 @@ video; it is not required before `encode`. Run either when you need it.
 
 ## Heat movie diagnostic (blob_walk_v2)
 
-The `--heat-movie` flag is available on both
-`tools/blob_walk_v2/make_walk_html_v2.py` and
-`tools/blob_walk_v2/core/walk_driver.py`. It is off by default and
+The `--heat-movie` flag is available on
+`tools/blob_walk_v2/make_walk_html_v2.py`. It is off by default and
 only active when `--walk` is also set.
 
 When enabled, it writes one per-direction `.mkv` file (`heat_fwd.mkv`
@@ -83,11 +82,11 @@ output. The scratch directory is deleted at the end of each interval
 encode. Nothing is retained between runs.
 
 ```bash
-# Walk with heat movies (ffmpeg required)
-python3 tools/blob_walk_v2/make_walk_html_v2.py --walk --heat-movie
+# Walk one video with heat movies (ffmpeg required; -v is required)
+python3 tools/blob_walk_v2/make_walk_html_v2.py --walk -v TRACK_VIDEOS/IMG_3823.mkv --heat-movie
 
 # Explicitly disable (default)
-python3 tools/blob_walk_v2/make_walk_html_v2.py --walk --no-heat-movie
+python3 tools/blob_walk_v2/make_walk_html_v2.py --walk -v TRACK_VIDEOS/IMG_3823.mkv --no-heat-movie
 ```
 
 Install ffmpeg if missing:
