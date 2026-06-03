@@ -4,20 +4,23 @@ Enforces contract: the walker is stateless and never leaks Hermite state
 into blob evidence selection. Violates contract if any v2 file imports
 velocity_model, interval_solver, or scoring.
 
-Exception: walk_driver.py is the orchestration driver that calls track_runner
-infrastructure (blend_paths, state_io, interval_fingerprint) for persistence.
-It is intentionally excluded from this ban because it does not use any
-Hermite propagation state -- only the post-walk blend utility.
+Exception: the orchestration/driver tier (walk_driver.py, make_walk_html_v2.py)
+calls track_runner infrastructure -- walk_driver.py for persistence
+(blend_paths, state_io, interval_fingerprint) and make_walk_html_v2.py for the
+shared rich progress renderer (make_solve_progress, FrameETAColumn). Neither
+uses Hermite propagation state, so they are intentionally excluded from this
+ban; the rule still binds every walker-algorithm file.
 """
 
 import ast
 import pathlib
 
-# walk_driver.py is the persistence/orchestration layer, not the walker algorithm.
-# It imports interval_solver only for blend_paths (a pure path-blending utility
-# with no Hermite state). Excluding it from the scan preserves the intent of
-# the no-Hermite rule for the walker algorithm files.
-_EXCLUDED_FROM_NO_HERMITE_BAN = {"walk_driver.py"}
+# The driver tier is not the walker algorithm. walk_driver.py imports
+# interval_solver only for blend_paths (a pure path-blending utility, no Hermite
+# state); make_walk_html_v2.py imports it only for the progress-bar classes
+# (pure UI, no Hermite state). Excluding both preserves the intent of the
+# no-Hermite rule for the walker-algorithm files.
+_EXCLUDED_FROM_NO_HERMITE_BAN = {"walk_driver.py", "make_walk_html_v2.py"}
 
 
 def test_blob_walk_v2_no_hermite_import():

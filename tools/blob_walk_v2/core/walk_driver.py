@@ -759,8 +759,9 @@ def run_interval_walk(
 	fwd_sampled_frames = sorted({left_frame + off for off in offsets if 0 < off <= interval_length})
 	bwd_sampled_frames = sorted({right_frame - off for off in offsets if 0 < off <= interval_length}, reverse=True)
 
-	# Run FWD walk
-	logger.info(f"Running FWD walk: interval [{left_frame}, {right_frame}]")
+	# Run FWD walk. Per-direction detail at DEBUG so these lines do not interleave
+	# with a caller-owned progress bar over the interval loop.
+	logger.debug(f"Running FWD walk: interval [{left_frame}, {right_frame}]")
 	fwd_csv_path = output_interval_dir / "fwd_verdicts.csv"
 	fwd_debug_log = walk_debug_log.DebugLogWriter(fwd_csv_path)
 
@@ -784,8 +785,8 @@ def run_interval_walk(
 	)
 	fwd_debug_log.close()
 
-	# Run BWD walk
-	logger.info(f"Running BWD walk: interval [{left_frame}, {right_frame}]")
+	# Run BWD walk (DEBUG; see FWD note above).
+	logger.debug(f"Running BWD walk: interval [{left_frame}, {right_frame}]")
 	bwd_csv_path = output_interval_dir / "bwd_verdicts.csv"
 	bwd_debug_log = walk_debug_log.DebugLogWriter(bwd_csv_path)
 

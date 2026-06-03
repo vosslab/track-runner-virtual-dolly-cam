@@ -36,6 +36,7 @@ import walk_io
 import walk_util
 import walk_driver
 import walk_html
+import interval_solver  # track_runner/interval_solver.py: reused progress renderer
 
 
 logger = logging.getLogger(__name__)
@@ -168,64 +169,93 @@ def process_video(
 	video_manifest_records = []
 	video_heat_summaries = []
 
-	for idx, interval in enumerate(post_start):
-		# interval.left_seed/right_seed are SOURCE-pixel dicts (frame-index
-		# bookkeeping only). Walk inputs are the PROCESSED seed dicts looked up by
-		# frame_index (the bug #101 cure; see run_interval_walk).
-		left_frame = interval.left_seed['frame_index']
-		right_frame = interval.right_seed['frame_index']
-		left_seed = proc_seed_by_frame[left_frame]
-		right_seed = proc_seed_by_frame[right_frame]
-		interval_dir = video_output_dir / f'seed_{left_frame}_{right_frame}'
+	# Frame-weighted progress: span is the inclusive seed-to-seed length (both
+	# endpoints are seeds). Used only as an ETA cost proxy so the bar's ETA stays
+	# smooth across intervals that range from ~10s to several minutes.
+	spans = [
+		i.right_seed['frame_index'] - i.left_seed['frame_index'] + 1
+		for i in post_start
+	]
+	total_frames = sum(spans)
 
-		if walk_driver.check_resume_needed(interval_dir, resume):
-			logger.info(f'  Skip (resume): interval [{left_frame}, {right_frame}]')
-			counters['skipped_resume'] += 1
-			continue
+	# Empty selection: skip the progress bar entirely -- a 0-of-0 bar and its ETA
+	# are meaningless. Writers below are no-ops on empty accumulators, so behavior
+	# is otherwise unchanged.
+	if not post_start:
+		logger.info('  no visible-both intervals to walk')
+	else:
+		# Reuse track_runner's solve/refine progress renderer (rich): one bar per
+		# video, M/N by interval, ETA frame-weighted via the shared frame counter.
+		frame_counter = [0]
+		eta_column = interval_solver.FrameETAColumn(frame_counter, total_frames)
+		with interval_solver.make_solve_progress(eta_column) as progress:
+			task = progress.add_task(video_basename, total=len(post_start))
+			for interval in post_start:
+				# left/right seeds are SOURCE-pixel dicts (frame-index bookkeeping
+				# only); walk inputs are the PROCESSED seeds looked up by frame_index
+				# (the bug #101 cure; see run_interval_walk).
+				left_frame = interval.left_seed['frame_index']
+				right_frame = interval.right_seed['frame_index']
+				span = right_frame - left_frame + 1
+				interval_dir = video_output_dir / f'seed_{left_frame}_{right_frame}'
 
-		logger.info(f'  [{idx + 1}/{len(post_start)}] Interval [{left_frame}, {right_frame}]')
-		# No try/except: a failure here is a real bug, not an expected per-interval
-		# outcome (an empty direction_path is handled inside run_interval_walk, not
-		# raised). Let it propagate so the bad interval is loud, not swallowed.
-		_summary, fp_key, solved_entry, fwd_manifests, bwd_manifests = (
-			walk_driver.run_interval_walk(
-				left_seed=left_seed,
-				right_seed=right_seed,
-				reader=reader,
-				scene_transform=scene_transform,
-				probe_info=probe_info,
-				output_interval_dir=interval_dir,
-				winner_mode='production_winner',
-				audit_rule=None,
-				render_tiles=render_tiles,
-				proc_seed_by_frame=proc_seed_by_frame,
-				npz_path=npz_path,
-				heat_movie=heat_movie,
-			)
-		)
-		# Tag each per-tile manifest with its interval and accumulate.
-		for manifest in fwd_manifests + bwd_manifests:
-			manifest['interval_left_frame'] = left_frame
-			manifest['interval_right_frame'] = right_frame
-			video_manifest_records.append(manifest)
-		# Aggregate the per-frame heat carrier into interval-direction summaries
-		# and strip the carrier so render_manifest.json holds no heat keys.
-		video_heat_summaries.extend(
-			walk_driver.summarize_and_strip_heat(
-				left_frame, right_frame, fwd_manifests, bwd_manifests
-			)
-		)
-		# Accumulate the solved interval entry for the npz write (None when the
-		# direction_path was empty; logged inside run_interval_walk).
-		if fp_key is not None and solved_entry is not None:
-			accumulated_solved[fp_key] = solved_entry
-		counters['walked'] += 1
+				if walk_driver.check_resume_needed(interval_dir, resume):
+					logger.debug(f'Skip (resume): interval [{left_frame}, {right_frame}]')
+					counters['skipped_resume'] += 1
+					# A resume-skip still advances the bar and the frame counter so
+					# M/N reaches N and the ETA does not look stuck.
+					frame_counter[0] += span
+					progress.update(task, advance=1)
+					continue
+
+				left_seed = proc_seed_by_frame[left_frame]
+				right_seed = proc_seed_by_frame[right_frame]
+				# No try/except: a failure here is a real bug, not an expected
+				# per-interval outcome (an empty direction_path is handled inside
+				# run_interval_walk, not raised). Let it propagate, not be swallowed.
+				_summary, fp_key, solved_entry, fwd_manifests, bwd_manifests = (
+					walk_driver.run_interval_walk(
+						left_seed=left_seed,
+						right_seed=right_seed,
+						reader=reader,
+						scene_transform=scene_transform,
+						probe_info=probe_info,
+						output_interval_dir=interval_dir,
+						winner_mode='production_winner',
+						audit_rule=None,
+						render_tiles=render_tiles,
+						proc_seed_by_frame=proc_seed_by_frame,
+						npz_path=npz_path,
+						heat_movie=heat_movie,
+					)
+				)
+				# Tag each per-tile manifest with its interval and accumulate.
+				for manifest in fwd_manifests + bwd_manifests:
+					manifest['interval_left_frame'] = left_frame
+					manifest['interval_right_frame'] = right_frame
+					video_manifest_records.append(manifest)
+				# Aggregate the per-frame heat carrier into interval-direction
+				# summaries and strip the carrier so render_manifest.json holds no
+				# heat keys.
+				video_heat_summaries.extend(
+					walk_driver.summarize_and_strip_heat(
+						left_frame, right_frame, fwd_manifests, bwd_manifests
+					)
+				)
+				# Accumulate the solved interval entry for the npz write (None when
+				# the direction_path was empty; logged inside run_interval_walk).
+				if fp_key is not None and solved_entry is not None:
+					accumulated_solved[fp_key] = solved_entry
+				counters['walked'] += 1
+				frame_counter[0] += span
+				progress.update(task, advance=1)
 
 	reader.close()
 
-	# Persist the three per-video artifacts via the shared walk_driver writers:
-	# solved torso boxes (npz), the machine-checkable render manifest, and the
-	# heat summary that check_render_manifest.py's heat report reads.
+	# Persist the three per-video artifacts via the shared walk_driver writers,
+	# OUTSIDE the progress `with` block so the bar has closed before these (slow,
+	# disk-bound) writes log: solved torso boxes (npz), the machine-checkable
+	# render manifest, and the heat summary check_render_manifest.py reads.
 	walk_driver.write_solved_intervals_npz(npz_path, accumulated_solved)
 	walk_driver.write_render_manifest(video_output_dir, video_manifest_records)
 	walk_driver.write_heat_summary(video_output_dir, video_heat_summaries)
