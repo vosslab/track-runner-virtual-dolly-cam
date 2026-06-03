@@ -1,3 +1,73 @@
+## 2026-06-03
+
+### Behavior or Interface Changes
+
+- **WP-VIS-1: blob_walk_v2 per-frame debug tile overlays now scale with the runner's torso box
+  instead of fixed pixels, keeping geometry legible at every crop/zoom level (contract C2):
+  [walk_draw.py](../tools/blob_walk_v2/render/walk_draw.py),
+  [walk_render.py](../tools/blob_walk_v2/render/walk_render.py).**
+  Replaced hardcoded `size_px=12` (plus marker), `square_half=8` (audit square), and
+  `thickness=1` (velocity vector, allowed-jump circle, audit square, residual line) with
+  torso-height-derived values. New helpers `compute_plus_arm_px` and `compute_sq_half_px`
+  in `walk_draw.py` use named, commented pixel-space min/max legibility clamp constants
+  (the allowed C2 exception for non-scene quantities).
+
+- **WP-VIS-2: blob_walk_v2 tile draw order is now data-driven via a new `walk_tile_layer_order`
+  key in [overlay_styles.yaml](../track_runner/overlay_styles.yaml):
+  [walk_render.py](../tools/blob_walk_v2/render/walk_render.py),
+  [walk_palette.py](../tools/blob_walk_v2/render/walk_palette.py).**
+  `render_walk_tile` was restructured so each overlay (including the heat-map
+  alpha-composite) is a named layer dispatched in the resolved order; the canvas now starts
+  as the source crop rather than pre-compositing heat. Default order draws heat last
+  (on top) so the motion-cue heat is no longer hidden behind boxes/markers. Heat content,
+  threshold, and 0.40 alpha are unchanged.
+  `walk_palette.resolve_layer_order()` behavior: missing key falls back to the built-in
+  default; unknown, duplicate, or omitted layer names raise `ValueError` loudly.
+
+- **WP-RPT-1: blob_walk_v2 per-interval summary now prints real numbers or a reason token
+  instead of a bare "?" for `accepted_fraction`, `max`/`median actual_jump`,
+  `final_disp_to_neighbor`, and `longest_no_accept_streak`:
+  [walk_html.py](../tools/blob_walk_v2/render/walk_html.py).**
+  Undefined values print a naming token (`no_walkable_frames`, `no_accepted_position`,
+  `no_neighbor_seed`, `no_jump_rows`); `longest_no_accept_streak` prints
+  `no_walkable_frames` instead of a misleading 0 when undefined; the " W" unit is
+  suppressed for reason tokens.
+
+### Fixes and Maintenance
+
+- **WP-RPT-1 root cause: `_compute_walk_quality` discarded every real walk row by filtering
+  on a blank `step` field, so all quality metrics came back undefined:
+  [walk_html.py](../tools/blob_walk_v2/render/walk_html.py),
+  [walk_walker.py](../tools/blob_walk_v2/core/walk_walker.py).**
+  The walker writes a blank `step` on every emitted walk row (only the bootstrap row
+  carries an explicit step); the fix treats a blank step as a walk row and excludes only
+  the explicit `step=="0"` bootstrap row. `walk_walker.py` now populates the pre-existing
+  `actual_jump` column with the per-frame pred-to-cand Euclidean displacement (a recorded
+  value only; no change to candidate scoring or acceptance). No `SCHEMA_VERSION` bump
+  (`actual_jump` already existed at `SCHEMA_VERSION=13`; it is now merely populated,
+  per contract C10).
+
+### Developer Tests and Notes
+
+- **Added `test_blob_walk_v2_layer_order.py`.**
+  Fast unit tests for `walk_palette.resolve_layer_order` validation: missing-key default
+  fallback, and unknown / duplicate / omitted layer names raise `ValueError`.
+
+- **Added `test_blob_walk_v2_visible_seed_filter.py`.**
+  Regression tests locking visible-only interval selection at both filter sites
+  (`walk_util.select_random_visible` and the `make_walk_html_v2.py` predicate); confirms
+  partial, `not_in_frame`, and approximate seed pairs are excluded. The selection behavior
+  was already correct; no code change.
+
+- **Corpus integration smoke (manual E2E over `data/outdoor_corpus.txt`):** walks completed
+  for IMG_3823, IMG_3830, Conant-4x400, Jason-3200m, Lyra-Hersey-800m; every `walk.html`
+  summary rendered numeric metrics or reason tokens with zero bare "?". The 4k/120fps clip
+  (Lyra-Wheeling-IMG_3912) is decode-bound; analysis already auto-bins to 960px via
+  `common_tools.frame_reader.select_bin_factor_for_analysis`, so the cost is per-frame 4k
+  HEVC decode, not analysis overhead. Full suite:
+  `pytest tests/ -k "walk or manifest or heat or select_random or layer_order or visible_seed or shebang"`
+  -> 283 passed.
+
 ## 2026-06-02
 
 ### Behavior or Interface Changes

@@ -184,5 +184,5 @@ Package root:
 
 - `walk_render.py` -- per-frame tile orchestration.
 - `walk_draw.py` -- low-level cv2 draw primitives.
-- `walk_palette.py` -- `overlay_styles.yaml` color lookup for walker overlays.
+- `walk_palette.py` -- `overlay_styles.yaml` color lookup and `walk_tile_layer_order` draw-order resolution for walker overlays.
 - `walk_html.py` -- builds `walk.html` (including the corpus quality summary).

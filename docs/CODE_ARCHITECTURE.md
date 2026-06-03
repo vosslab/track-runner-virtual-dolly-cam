@@ -212,6 +212,8 @@ setup --> seed --> solve --> (target --> refine)* --> encode
 - [overlay_config.py](../track_runner/overlay_config.py) --
   overlay style loader, backed by
   [overlay_styles.yaml](../track_runner/overlay_styles.yaml).
+  `overlay_styles.yaml` also holds the `walk_tile_layer_order` key consumed by
+  `walk_palette.resolve_layer_order` for blob-walk tile draw-order resolution.
 - [track_runner.config.yaml](../track_runner/track_runner.config.yaml)
   -- default runtime config (camera, detection, processing sections).
 

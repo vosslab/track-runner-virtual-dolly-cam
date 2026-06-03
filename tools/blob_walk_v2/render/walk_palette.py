@@ -19,6 +19,86 @@ established blob_walk_v2 import pattern).
 # local repo modules
 import overlay_config
 
+# Closed set of layer names the renderer knows.
+# source_frame is the implicit canvas base and is NOT in this set.
+_KNOWN_LAYERS = (
+	"heat",
+	"seed_box",
+	"solved_box",
+	"blob_ellipses",
+	"plus_marker",
+	"acceptance_box",
+	"audit_square",
+	"residual_line",
+	"allowed_jump_circle",
+	"velocity_vector",
+)
+
+# Built-in default order (heat on top).
+_DEFAULT_LAYER_ORDER = (
+	"seed_box",
+	"solved_box",
+	"blob_ellipses",
+	"plus_marker",
+	"acceptance_box",
+	"audit_square",
+	"residual_line",
+	"allowed_jump_circle",
+	"velocity_vector",
+	"heat",
+)
+
+
+#============================================
+def resolve_layer_order() -> tuple:
+	"""Return the tile draw order as a tuple of layer-name strings.
+
+	Reads walk_tile_layer_order from track_runner/overlay_styles.yaml via
+	overlay_config.load_palette().  Falls back to the built-in default order
+	when the key is absent (backward-compatible).  Raises loudly on unknown
+	layer names, duplicate names, or omitted known layers.
+
+	Returns:
+		tuple: Ordered layer names, first entry drawn first (bottom).
+
+	Raises:
+		ValueError: If the YAML list contains unknown names, duplicates,
+			or omits any known layer name.
+	"""
+	palette = overlay_config.load_palette()
+	# Missing key -> fall back to default (backward compatible)
+	if "walk_tile_layer_order" not in palette:
+		return _DEFAULT_LAYER_ORDER
+	yaml_order = list(palette["walk_tile_layer_order"])
+	known_set = set(_KNOWN_LAYERS)
+	yaml_names = [str(n) for n in yaml_order]
+	# Check for unknown names
+	unknown = [n for n in yaml_names if n not in known_set]
+	if unknown:
+		raise ValueError(
+			f"walk_tile_layer_order: unknown layer name(s): {unknown}. "
+			f"Allowed names: {list(_KNOWN_LAYERS)}"
+		)
+	# Check for duplicates
+	seen = set()
+	duplicates = []
+	for n in yaml_names:
+		if n in seen:
+			duplicates.append(n)
+		seen.add(n)
+	if duplicates:
+		raise ValueError(
+			f"walk_tile_layer_order: duplicate layer name(s): {duplicates}."
+		)
+	# Check for omitted known layers
+	omitted = [n for n in _KNOWN_LAYERS if n not in seen]
+	if omitted:
+		raise ValueError(
+			f"walk_tile_layer_order: omitted known layer name(s): {omitted}. "
+			f"All known layers must appear exactly once."
+		)
+	return tuple(yaml_names)
+
 
 #============================================
 def load_walk_overlays() -> dict:

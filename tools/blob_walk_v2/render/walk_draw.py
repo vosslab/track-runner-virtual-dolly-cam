@@ -71,11 +71,55 @@ def processed_box_to_tile_local(
 	return edge_tuple
 
 
+# Named constants for torso-relative marker geometry.
+# k_plus_arm: fraction of torso height used as plus-marker arm length.
+# k_sq_half: fraction of torso height used as audit-square half-side.
+# Clamp bounds are intentional pixel-space limits (allowed exception to the
+# no-raw-pixel rule: these are UI element minimum/maximum legibility clamps,
+# not scene-geometry thresholds).
+_K_PLUS_ARM: float = 0.10          # arm length = 10% of torso height
+_PLUS_ARM_MIN_PX: int = 5          # minimum arm length in pixels (legibility clamp)
+_PLUS_ARM_MAX_PX: int = 24         # maximum arm length in pixels (legibility clamp)
+_K_SQ_HALF: float = 0.07           # square half-side = 7% of torso height
+_SQ_HALF_MIN_PX: int = 4           # minimum square half-side in pixels (legibility clamp)
+_SQ_HALF_MAX_PX: int = 16          # maximum square half-side in pixels (legibility clamp)
+
+
 #============================================
 def _compute_thickness_from_torso_h(torso_h_px: float) -> int:
-	"""Compute line thickness as 4% of torso height, minimum 2 pixels."""
-	thickness = max(2, int(round(0.04 * torso_h_px)))
+	"""Compute line thickness as 2% of torso height, minimum 1 pixel."""
+	thickness = max(1, int(round(0.02 * torso_h_px)))
 	return thickness
+
+
+#============================================
+def compute_plus_arm_px(torso_h_px: float) -> int:
+	"""Compute plus-marker arm length from torso height, clamped for legibility.
+
+	Args:
+		torso_h_px: Torso height in pixels.
+
+	Returns:
+		Arm length in pixels, clamped to [_PLUS_ARM_MIN_PX, _PLUS_ARM_MAX_PX].
+	"""
+	arm = int(round(_K_PLUS_ARM * torso_h_px))
+	arm = max(_PLUS_ARM_MIN_PX, min(_PLUS_ARM_MAX_PX, arm))
+	return arm
+
+
+#============================================
+def compute_sq_half_px(torso_h_px: float) -> int:
+	"""Compute audit-square half-side from torso height, clamped for legibility.
+
+	Args:
+		torso_h_px: Torso height in pixels.
+
+	Returns:
+		Half-side in pixels, clamped to [_SQ_HALF_MIN_PX, _SQ_HALF_MAX_PX].
+	"""
+	half = int(round(_K_SQ_HALF * torso_h_px))
+	half = max(_SQ_HALF_MIN_PX, min(_SQ_HALF_MAX_PX, half))
+	return half
 
 
 #============================================
@@ -278,18 +322,19 @@ def _draw_torso_box_solid_heavy_edges(
 	Solid heavy seed-box draw from precomputed edges: the (x1, y1, x2, y2)
 	tuple is already derived from the float center by the single processed->tile-local
 	conversion (processed_box_to_tile_local), so no center math or second
-	roi subtraction happens here.  Visual output is identical: heavy tier is
-	2x base, solid rectangle, rounded to int only at the final draw call.
+	roi subtraction happens here.  Visual output is identical: the seed box uses
+	a 1.5x emphasis tier (heavy), solid rectangle, rounded to int only at the
+	final draw call.
 
 	Args:
 		frame: BGR image to draw on (modified in-place).
 		edges: (x1, y1, x2, y2) tile-local float edges.
 		color: BGR color tuple.
-		base_thickness: Base line thickness; heavy tier multiplies by 2.
+		base_thickness: Base line thickness; heavy tier multiplies by 1.5.
 	"""
 	x1, y1, x2, y2 = edges
-	# Heavy tier is 2x base (overlay_styles.yaml thickness_tiers.heavy = 2.0).
-	heavy_thickness = max(1, int(round(base_thickness * 2.0)))
+	# Heavy tier is 1.5x base (seed box emphasis tier).
+	heavy_thickness = max(1, int(round(base_thickness * 1.5)))
 	# Round to int only at the final draw call.
 	cv2.rectangle(
 		frame,

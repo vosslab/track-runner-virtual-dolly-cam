@@ -404,6 +404,20 @@ def _run_viterbi_and_emit_oldest(
 			cand_scene_x_val = sc[0]
 			cand_scene_y_val = sc[1]
 
+		# actual_jump: observed per-frame displacement (processed pixels) from the
+		# prediction anchor (last-accepted center) to this frame's selected candidate.
+		# Already implied by the emitted pred/cand pair; recorded so the report layer
+		# can express it in torso-width units. Blank on miss frames (no candidate)
+		# where no real displacement exists.
+		pred_cx_val = entry["pred_cx"]
+		pred_cy_val = entry["pred_cy"]
+		actual_jump_val: float | None = None
+		if (cand_cx_val is not None and cand_cy_val is not None
+				and pred_cx_val is not None and pred_cy_val is not None):
+			jump_dx = cand_cx_val - pred_cx_val
+			jump_dy = cand_cy_val - pred_cy_val
+			actual_jump_val = (jump_dx * jump_dx + jump_dy * jump_dy) ** 0.5
+
 		# Per-frame solved box: position from the path, size seed-derived,
 		# conf the deterministic distance-from-anchor decay (WS1-A). Carried
 		# on EVERY emitted frame (not None) for the downstream box path.
@@ -447,6 +461,7 @@ def _run_viterbi_and_emit_oldest(
 			cand_cy=cand_cy_val,
 			cand_scene_x=cand_scene_x_val,
 			cand_scene_y=cand_scene_y_val,
+			actual_jump=actual_jump_val,
 			obs_confidence=entry["obs_confidence"],
 			obs_corridor_n=entry["obs_corridor_n"],
 			obs_raw_n=entry["obs_raw_n"],

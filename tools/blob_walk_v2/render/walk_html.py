@@ -598,6 +598,10 @@ class WalkQualityMetrics:
 	# Euclidean distance in px from last accepted position to neighbor seed.
 	# None if the walk never accepted or positions unavailable.
 	final_displacement_to_neighbor_px: float | None
+	# Reason token naming why a metric is undefined (None when the metric is
+	# defined). The formatter prints this token instead of a bare "?".
+	accepted_fraction_reason: str | None = None
+	final_displacement_reason: str | None = None
 
 
 #============================================
@@ -639,15 +643,13 @@ def _compute_walk_quality(
 	walk_rows = []
 	for frame_index in sorted(rows_by_frame.keys()):
 		row = rows_by_frame[frame_index]
+		# Bootstrap detection: only the bootstrap row carries an explicit step of
+		# 0; the walker writes blank step on every emitted walk row. Excluding
+		# blank-step rows (the old behavior) discarded every real walk row, so
+		# the metrics always came back undefined. Treat blank step as a walk row
+		# and exclude only the explicit step == 0 bootstrap row.
 		step_str = (row.get('step') or '').strip()
-		if not step_str:
-			continue
-		try:
-			step = int(step_str)
-		except ValueError:
-			continue
-		# Bootstrap step is 0; skip it for the fraction denominator.
-		if step == 0:
+		if step_str == '0':
 			continue
 		status = (row.get('status') or '').strip()
 		if status not in walkable_statuses:
@@ -659,6 +661,8 @@ def _compute_walk_quality(
 			accepted_fraction=None,
 			longest_no_accept_streak=0,
 			final_displacement_to_neighbor_px=None,
+			accepted_fraction_reason='no_walkable_frames',
+			final_displacement_reason='no_walkable_frames',
 		)
 
 	# Count accepted rows.
@@ -688,10 +692,16 @@ def _compute_walk_quality(
 			if current_streak > longest_streak:
 				longest_streak = current_streak
 
-	# Final displacement: distance from last accepted position to neighbor seed.
+	# Final displacement: distance from the terminal accepted row's candidate
+	# position to the neighbor seed. last_accepted_cx/cy track the most recent
+	# accepted row's cand_cx/cand_cy above.
 	final_displacement: float | None = None
-	if (last_accepted_cx is not None and last_accepted_cy is not None
-			and neighbor_cx is not None and neighbor_cy is not None):
+	final_displacement_reason: str | None = None
+	if last_accepted_cx is None or last_accepted_cy is None:
+		final_displacement_reason = 'no_accepted_position'
+	elif neighbor_cx is None or neighbor_cy is None:
+		final_displacement_reason = 'no_neighbor_seed'
+	else:
 		dx = last_accepted_cx - neighbor_cx
 		dy = last_accepted_cy - neighbor_cy
 		final_displacement = (dx * dx + dy * dy) ** 0.5
@@ -700,6 +710,8 @@ def _compute_walk_quality(
 		accepted_fraction=accepted_fraction,
 		longest_no_accept_streak=longest_streak,
 		final_displacement_to_neighbor_px=final_displacement,
+		accepted_fraction_reason=None,
+		final_displacement_reason=final_displacement_reason,
 	)
 
 
@@ -751,38 +763,26 @@ def _compute_interval_stats(
 		'?'
 	)
 
-	# Compute max and median actual_jump in W-fractions.
+	# Compute max and median actual_jump in torso-width (W) units. Only rows
+	# that carry a real per-frame displacement (actual_jump present AND
+	# torso_w_px > 0) contribute; miss frames have no actual_jump and are
+	# skipped. Undefined when no such row exists in either pass.
 	actual_jumps_w = []
-	for row in fwd_rows.values():
-		actual = row.get('actual_jump')
-		torso_w = row.get('torso_w_px')
-		if actual and torso_w:
-			try:
-				actual_f = float(actual)
-				torso_w_f = float(torso_w)
-				if torso_w_f > 0:
-					actual_jumps_w.append(actual_f / torso_w_f)
-			except ValueError:
-				pass
-	for row in bwd_rows.values():
-		actual = row.get('actual_jump')
-		torso_w = row.get('torso_w_px')
-		if actual and torso_w:
-			try:
-				actual_f = float(actual)
-				torso_w_f = float(torso_w)
-				if torso_w_f > 0:
-					actual_jumps_w.append(actual_f / torso_w_f)
-			except ValueError:
-				pass
+	for row in list(fwd_rows.values()) + list(bwd_rows.values()):
+		actual_f = walk_util._to_float_or_none(row.get('actual_jump'))
+		torso_w_f = walk_util._to_float_or_none(row.get('torso_w_px'))
+		if actual_f is not None and torso_w_f is not None and torso_w_f > 0:
+			actual_jumps_w.append(actual_f / torso_w_f)
 
-	max_actual_jump_w = f"{max(actual_jumps_w):.2f}" if actual_jumps_w else "?"
 	if actual_jumps_w:
+		max_actual_jump_w = f"{max(actual_jumps_w):.2f}"
 		sorted_jumps = sorted(actual_jumps_w)
 		median = sorted_jumps[len(sorted_jumps) // 2]
 		median_actual_jump_w = f"{median:.2f}"
 	else:
-		median_actual_jump_w = "?"
+		# Reason token replaces a bare "?" per the metric contract.
+		max_actual_jump_w = "no_jump_rows"
+		median_actual_jump_w = "no_jump_rows"
 
 	# Count mode disagreements.
 	mode_disagreement_count = 0
@@ -1185,6 +1185,41 @@ def build_walk_html(run_root: pathlib.Path) -> pathlib.Path:
 	out.extend(_build_quality_summary_html(intervals))
 
 	# Per-interval sections
+	# Interval summary formatters -- defined once, used inside each interval block.
+	def _fmt_frac(f: float | None, reason: str | None = None) -> str:
+		# Returns a formatted percentage when defined; when undefined (None),
+		# returns the reason token instead of a bare "?" per the metric contract.
+		if f is not None:
+			return f"{f:.2%}"
+		return reason if reason is not None else "undefined"
+
+	def _fmt_disp(d: float | None, reason: str | None = None) -> str:
+		# Returns a formatted pixel displacement when defined; when undefined,
+		# returns the reason token instead of a bare "?".
+		if d is not None:
+			return f"{d:.1f}px"
+		return reason if reason is not None else "undefined"
+
+	def _fmt_px(d: float | None) -> str:
+		return f"{d:.1f}px" if d is not None else "undefined"
+
+	# _fmt_jump appends " W" unit only when the value is numeric; reason tokens
+	# (e.g. "no_jump_rows") are emitted as-is without a stray " W" suffix.
+	def _fmt_jump(val: str) -> str:
+		try:
+			float(val)
+			return f"{val} W"
+		except (ValueError, TypeError):
+			return val
+
+	# _fmt_streak: when accepted_fraction_reason is 'no_walkable_frames' the
+	# streak value is a meaningless 0 (no frames were walked at all); print the
+	# reason token instead so the reader is not misled.
+	def _fmt_streak(streak: int, reason: str | None) -> str:
+		if reason == 'no_walkable_frames':
+			return reason
+		return str(streak)
+
 	for iv in intervals:
 		video = iv['video']
 		f_l = iv['f_l']
@@ -1195,15 +1230,6 @@ def build_walk_html(run_root: pathlib.Path) -> pathlib.Path:
 		out.append('<div class="interval">')
 		out.append(f'  <h2>{video} &middot; seed {f_l} - {f_r} (len {length} frames)</h2>')
 
-		def _fmt_frac(f: float | None) -> str:
-			return f"{f:.2%}" if f is not None else "?"
-
-		def _fmt_disp(d: float | None) -> str:
-			return f"{d:.1f}px" if d is not None else "?"
-
-		def _fmt_px(d: float | None) -> str:
-			return f"{d:.1f}px" if d is not None else "?"
-
 		fq = stats.fwd_quality
 		bq = stats.bwd_quality
 		summary_parts = [
@@ -1212,19 +1238,21 @@ def build_walk_html(run_root: pathlib.Path) -> pathlib.Path:
 			f"gap={stats.gap}",
 			f"FWD stop_reason={stats.fwd_stop_reason}",
 			f"BWD stop_reason={stats.bwd_stop_reason}",
-			f"max actual_jump={stats.max_actual_jump_w} W",
-			f"median actual_jump={stats.median_actual_jump_w} W",
+			f"max actual_jump={_fmt_jump(stats.max_actual_jump_w)}",
+			f"median actual_jump={_fmt_jump(stats.median_actual_jump_w)}",
 			f"mode_disagreement_count={stats.mode_disagreement_count}",
 		]
 		out.append(f'  <div class="interval-summary">{" &middot; ".join(summary_parts)}</div>')
 		# Quality metrics row (FWD and BWD side-by-side).
+		# _fmt_frac / _fmt_disp / _fmt_streak print a reason token when the value is
+		# None or undefined (see helpers defined above the loop).
 		quality_parts = [
-			f"FWD accepted_fraction={_fmt_frac(fq.accepted_fraction)}",
-			f"FWD longest_no_accept_streak={fq.longest_no_accept_streak}",
-			f"FWD final_disp_to_neighbor={_fmt_disp(fq.final_displacement_to_neighbor_px)}",
-			f"BWD accepted_fraction={_fmt_frac(bq.accepted_fraction)}",
-			f"BWD longest_no_accept_streak={bq.longest_no_accept_streak}",
-			f"BWD final_disp_to_neighbor={_fmt_disp(bq.final_displacement_to_neighbor_px)}",
+			f"FWD accepted_fraction={_fmt_frac(fq.accepted_fraction, fq.accepted_fraction_reason)}",
+			f"FWD longest_no_accept_streak={_fmt_streak(fq.longest_no_accept_streak, fq.accepted_fraction_reason)}",
+			f"FWD final_disp_to_neighbor={_fmt_disp(fq.final_displacement_to_neighbor_px, fq.final_displacement_reason)}",
+			f"BWD accepted_fraction={_fmt_frac(bq.accepted_fraction, bq.accepted_fraction_reason)}",
+			f"BWD longest_no_accept_streak={_fmt_streak(bq.longest_no_accept_streak, bq.accepted_fraction_reason)}",
+			f"BWD final_disp_to_neighbor={_fmt_disp(bq.final_displacement_to_neighbor_px, bq.final_displacement_reason)}",
 		]
 		out.append(f'  <div class="interval-summary" style="color: #cce;">{" &middot; ".join(quality_parts)}</div>')
 		# Corpus-quality row: classification + FWD/BWD agreement (folded in from

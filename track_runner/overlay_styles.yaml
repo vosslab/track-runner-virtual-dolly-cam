@@ -158,6 +158,27 @@ heat_map:
   legend_text: "motion low -> high: blue -> cyan -> yellow -> red"
   missing_transform_note: "camera motion not compensated"
 
+# -- Blob walker v2 tile layer draw order --
+# Controls the z-order of overlays drawn onto the per-frame debug tile PNG.
+# Layers are drawn bottom-first (first entry drawn first, last entry on top).
+# source_frame is the implicit canvas base and is NOT listed here.
+# Closed set of allowed layer names: heat, seed_box, solved_box, blob_ellipses,
+# plus_marker, acceptance_box, audit_square, residual_line,
+# allowed_jump_circle, velocity_vector.
+# Missing key: renderer falls back to the built-in default order below.
+# Unknown name, duplicate name, or omitted known layer: renderer raises loudly.
+walk_tile_layer_order:
+  - seed_box
+  - solved_box
+  - blob_ellipses
+  - plus_marker
+  - acceptance_box
+  - audit_square
+  - residual_line
+  - allowed_jump_circle
+  - velocity_vector
+  - heat
+
 # -- Blob walker v2 SVG overlay status colors --
 # Used by walk_html.py legend and any SVG-based per-frame overlays.
 # Five primary statuses per schema v13; two legacy v12 statuses for read compat.

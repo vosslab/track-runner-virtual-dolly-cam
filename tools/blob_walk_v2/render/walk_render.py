@@ -1,7 +1,7 @@
 """Render per-frame walker tiles with heat-map overlay and blob geometry.
 
 Produces one PNG per visited frame showing:
-- Source frame at the ROI crop
+- Source frame at the ROI crop (implicit base layer, not in the layer list)
 - Transparent JET heat-map overlay alpha-composited at the ROI
 - Blob ellipses from the real BlobObserverTrace (WS2-A): yellow=winner,
   cyan=corridor non-winner, faded gray=raw blobs outside corridor,
@@ -14,6 +14,12 @@ Produces one PNG per visited frame showing:
 - Velocity vector: arrowed line from pred to pred + (vx*dt, vy*dt)
 - Allowed-jump circle: dashed circle at pred with radius max_displacement_px
 - Residual line: pred to candidate, green if accepted, red if rejected
+
+Draw order is data-driven: walk_palette.resolve_layer_order() reads the
+walk_tile_layer_order list from track_runner/overlay_styles.yaml; each layer
+is a callable dispatched in that order.  heat is one named layer (the
+alpha-composite step); all others are vector-draw steps.  Reordering the YAML
+list changes z-order with no code edits.
 
 Coordinate contract (WS2-B2 / WS2-F): blob centroid_x/y in the
 BlobObserverTrace are in PROCESSED-pixel space (roi_x1/roi_y1 was added to
@@ -173,29 +179,10 @@ def render_walk_tile(
 	roi_x2 = roi_x_origin + roi_w
 	roi_y2 = roi_y_origin + roi_h
 
-	# Crop source frame to ROI
+	# Crop source frame to ROI -- this is the implicit base canvas.
+	# source_crop is the starting canvas; overlays (including heat) draw on top
+	# in the order driven by walk_palette.resolve_layer_order().
 	source_crop = source_bgr[roi_y_origin:roi_y2, roi_x_origin:roi_x2].copy()
-
-	# Alpha-composite the BGRA overlay onto the cropped BGR source frame
-	# Formula: out = src * (1 - alpha) + overlay_rgb * alpha
-	overlay_rgb = overlay_bgra[:, :, :3]
-	overlay_alpha = overlay_bgra[:, :, 3].astype(numpy.float32) / 255.0
-
-	# Reshape alpha for broadcasting (HxW1 instead of HxW)
-	alpha_3ch = numpy.stack(
-		(overlay_alpha, overlay_alpha, overlay_alpha), axis=-1
-	)
-
-	# Convert source to float for compositing
-	source_float = source_crop.astype(numpy.float32)
-	overlay_float = overlay_rgb.astype(numpy.float32)
-
-	# Composite: src * (1 - alpha) + overlay_rgb * alpha
-	composited_float = (
-		source_float * (1.0 - alpha_3ch) +
-		overlay_float * alpha_3ch
-	)
-	composited_bgr = numpy.clip(composited_float, 0, 255).astype(numpy.uint8)
 
 	# Draw line thickness based on torso height
 	thickness = walk_draw._compute_thickness_from_torso_h(torso_h_px)
@@ -236,12 +223,44 @@ def render_walk_tile(
 	# box by walk_draw.processed_box_to_tile_local.
 	roi_origin = (roi_x_origin, roi_y_origin)
 
-	# SEED BOX: solid + heavy, user-authored style (C1/C3 truth).
-	# seed_box arrives as a PROCESSED-pixel dict; build the typed ProcessedBox
-	# at this render boundary and validate with require_processed_box, then run
-	# the single typed processed->tile-local conversion.  Edges derive from the
-	# float center before any rounding (inside the conversion helper).
-	if seed_box is not None:
+	# Precompute prior tile-local coords (used by plus_marker, residual_line,
+	# allowed_jump_circle, velocity_vector layers).
+	prior_local_cx = int(pred_cx - roi_x_origin)
+	prior_local_cy = int(pred_cy - roi_y_origin)
+
+	# --- Layer dispatch table ---
+	# Each entry is a zero-argument callable that draws onto `canvas` in-place.
+	# canvas is a one-element list so closures share the same mutable reference;
+	# each callable reads canvas[0] and draws on it.
+	canvas = [source_crop]
+
+	def _layer_heat():
+		"""Alpha-composite JET heat onto the canvas (alpha=0.40)."""
+		# Formula: out = src * (1 - alpha) + overlay_rgb * alpha
+		overlay_rgb = overlay_bgra[:, :, :3]
+		overlay_alpha = overlay_bgra[:, :, 3].astype(numpy.float32) / 255.0
+		# Reshape alpha for broadcasting (HxW1 -> HxWx3)
+		alpha_3ch = numpy.stack(
+			(overlay_alpha, overlay_alpha, overlay_alpha), axis=-1
+		)
+		source_float = canvas[0].astype(numpy.float32)
+		overlay_float = overlay_rgb.astype(numpy.float32)
+		composited_float = (
+			source_float * (1.0 - alpha_3ch) +
+			overlay_float * alpha_3ch
+		)
+		canvas[0] = numpy.clip(composited_float, 0, 255).astype(numpy.uint8)
+
+	def _layer_seed_box():
+		"""SEED BOX: solid + heavy, user-authored style (C1/C3 truth).
+
+		seed_box arrives as a PROCESSED-pixel dict; build the typed ProcessedBox
+		at this render boundary and validate with require_processed_box, then run
+		the single typed processed->tile-local conversion.  Edges derive from the
+		float center before any rounding (inside the conversion helper).
+		"""
+		if seed_box is None:
+			return
 		seed_proc_box = common_tools.coord_space.ProcessedBox(
 			cx=float(seed_box["cx"]),
 			cy=float(seed_box["cy"]),
@@ -253,17 +272,21 @@ def render_walk_tile(
 		# Color from overlay_config seed_status "visible" (green, solid, heavy).
 		seed_color_bgr = overlay_config.get_seed_status_bgr("visible")
 		walk_draw._draw_torso_box_solid_heavy_edges(
-			composited_bgr,
+			canvas[0],
 			seed_edges,
 			color=seed_color_bgr,
 			base_thickness=thickness,
 		)
 
-	# SOLVED BOX: dashed + normal, predicted style.
-	# solved_box arrives as a PROCESSED-pixel dict; build the typed ProcessedBox
-	# at this render boundary and validate, then run the single typed
-	# processed->tile-local conversion (the same single roi subtraction).
-	if solved_box is not None:
+	def _layer_solved_box():
+		"""SOLVED BOX: dashed + normal, predicted style.
+
+		solved_box arrives as a PROCESSED-pixel dict; build the typed ProcessedBox
+		at this render boundary and validate, then run the single typed
+		processed->tile-local conversion (the same single roi subtraction).
+		"""
+		if solved_box is None:
+			return
 		solved_proc_box = common_tools.coord_space.ProcessedBox(
 			cx=float(solved_box["cx"]),
 			cy=float(solved_box["cy"]),
@@ -275,237 +298,257 @@ def render_walk_tile(
 		# Color from overlay_config predictions "blended" (cyan, dashed, normal).
 		solved_color_bgr = overlay_config.get_prediction_bgr("blended")
 		walk_draw._draw_torso_box_dashed_normal_edges(
-			composited_bgr,
+			canvas[0],
 			solved_edges,
 			color=solved_color_bgr,
 			base_thickness=thickness,
 		)
 
-	# Draw blob ellipses in the tile frame (local ROI coordinates)
-	# Convert trace blob coordinates to tile-local (subtract ROI origin)
+	def _layer_blob_ellipses():
+		"""Blob ellipses: yellow winner, cyan corridor, gray raw, light-red legacy.
 
-	# YELLOW ellipse: walker-accepted winner blob from the real trace.
-	# Use trace.winner_blob["centroid_x/y"] directly (PROCESSED space).
-	# Subtract roi_origin once to convert to tile-local; no bin upscale.
-	# In audit_winner mode, also overlay the audit winner when it differs.
-	if debug_row.status == "accepted" and trace.winner_blob is not None:
-		# Primary: draw winner from the canonical trace blob centroid.
-		blob_cx = float(trace.winner_blob["centroid_x"])
-		blob_cy = float(trace.winner_blob["centroid_y"])
-		local_cx = blob_cx - roi_x_origin
-		local_cy = blob_cy - roi_y_origin
-
-		yellow_bgr = walk_palette.get_walker_overlay_color_bgr("winner")
-		walk_draw._draw_blob_ellipse_cv2(
-			composited_bgr,
-			local_cx, local_cy,
-			_ellipse_area_from_blob(trace.winner_blob),
-			torso_h_px, torso_w_px,
-			color=yellow_bgr,
-			thickness=thickness,
-		)
-
-		# In audit_winner mode: additionally draw the audit-winner position
-		# (may differ from production winner) using debug_row coords.
-		if (debug_row.winner_mode == "audit_winner" and
-			debug_row.audit_winner_cx is not None and
-			debug_row.audit_winner_cy is not None):
-			audit_local_cx = float(debug_row.audit_winner_cx) - roi_x_origin
-			audit_local_cy = float(debug_row.audit_winner_cy) - roi_y_origin
+		All blob centroid_x/y are in PROCESSED space.  Subtract roi_origin once
+		to convert to tile-local; no bin upscale.
+		"""
+		# YELLOW ellipse: walker-accepted winner blob from the real trace.
+		if debug_row.status == "accepted" and trace.winner_blob is not None:
+			blob_cx = float(trace.winner_blob["centroid_x"])
+			blob_cy = float(trace.winner_blob["centroid_y"])
+			local_cx = blob_cx - roi_x_origin
+			local_cy = blob_cy - roi_y_origin
+			yellow_bgr = walk_palette.get_walker_overlay_color_bgr("winner")
 			walk_draw._draw_blob_ellipse_cv2(
-				composited_bgr,
-				audit_local_cx, audit_local_cy,
+				canvas[0],
+				local_cx, local_cy,
 				_ellipse_area_from_blob(trace.winner_blob),
 				torso_h_px, torso_w_px,
 				color=yellow_bgr,
 				thickness=thickness,
 			)
+			# In audit_winner mode: additionally draw the audit-winner position
+			# (may differ from production winner) using debug_row coords.
+			if (debug_row.winner_mode == "audit_winner" and
+				debug_row.audit_winner_cx is not None and
+				debug_row.audit_winner_cy is not None):
+				audit_local_cx = float(debug_row.audit_winner_cx) - roi_x_origin
+				audit_local_cy = float(debug_row.audit_winner_cy) - roi_y_origin
+				walk_draw._draw_blob_ellipse_cv2(
+					canvas[0],
+					audit_local_cx, audit_local_cy,
+					_ellipse_area_from_blob(trace.winner_blob),
+					torso_h_px, torso_w_px,
+					color=yellow_bgr,
+					thickness=thickness,
+				)
 
-	# LIGHT-RED ellipse: v12 motion-gate-rejected status.
-	# rejected_motion_gate is a legacy v12 status; v13 walker never emits it.
-	# Branch retained for backward CSV read compat when rendering v12 debug logs.
-	if debug_row.status == "rejected_motion_gate":
-		if debug_row.cand_cx is not None and debug_row.cand_cy is not None:
-			local_cx = debug_row.cand_cx - roi_x_origin
-			local_cy = debug_row.cand_cy - roi_y_origin
+		# LIGHT-RED ellipse: v12 motion-gate-rejected status.
+		# rejected_motion_gate is a legacy v12 status; v13 walker never emits it.
+		# Branch retained for backward CSV read compat when rendering v12 debug logs.
+		if debug_row.status == "rejected_motion_gate":
+			if debug_row.cand_cx is not None and debug_row.cand_cy is not None:
+				local_cx = debug_row.cand_cx - roi_x_origin
+				local_cy = debug_row.cand_cy - roi_y_origin
+				light_red_bgr = walk_palette.get_walker_overlay_color_bgr("rejected_winner")
+				walk_draw._draw_blob_ellipse_cv2(
+					canvas[0],
+					local_cx, local_cy,
+					_ellipse_area_from_blob(trace.winner_blob) if trace.winner_blob else 1.0,
+					torso_h_px, torso_w_px,
+					color=light_red_bgr,
+					thickness=thickness,
+				)
 
-			light_red_bgr = walk_palette.get_walker_overlay_color_bgr("rejected_winner")
+		# CYAN ellipse: non-winner corridor blobs
+		if trace.corridor_blobs:
+			cyan_bgr = walk_palette.get_walker_overlay_color_bgr("corridor_non_winner")
+			for blob in trace.corridor_blobs:
+				# Skip the winner blob (already drawn in yellow above)
+				if (trace.winner_blob is not None and
+					blob.get("centroid_x") == trace.winner_blob.get("centroid_x") and
+					blob.get("centroid_y") == trace.winner_blob.get("centroid_y")):
+					continue
+				blob_cx = float(blob.get("centroid_x", 0.0))
+				blob_cy = float(blob.get("centroid_y", 0.0))
+				local_cx = blob_cx - roi_x_origin
+				local_cy = blob_cy - roi_y_origin
+				walk_draw._draw_blob_ellipse_cv2(
+					canvas[0],
+					local_cx, local_cy,
+					_ellipse_area_from_blob(blob),
+					torso_h_px, torso_w_px,
+					color=cyan_bgr,
+					thickness=thickness,
+				)
 
-			walk_draw._draw_blob_ellipse_cv2(
-				composited_bgr,
-				local_cx, local_cy,
-				_ellipse_area_from_blob(trace.winner_blob) if trace.winner_blob else 1.0,
-				torso_h_px, torso_w_px,
-				color=light_red_bgr,
-				thickness=thickness,
-			)
+		# FADED GRAY ellipse: raw blobs outside corridor
+		if trace.raw_blobs:
+			gray_bgr = walk_palette.get_walker_overlay_color_bgr("raw_outside_corridor")
+			for blob in trace.raw_blobs:
+				# Only draw if not in corridor
+				if blob.get("in_corridor", False):
+					continue
+				blob_cx = float(blob.get("centroid_x", 0.0))
+				blob_cy = float(blob.get("centroid_y", 0.0))
+				local_cx = blob_cx - roi_x_origin
+				local_cy = blob_cy - roi_y_origin
+				walk_draw._draw_blob_ellipse_cv2(
+					canvas[0],
+					local_cx, local_cy,
+					_ellipse_area_from_blob(blob),
+					torso_h_px, torso_w_px,
+					color=gray_bgr,
+					thickness=int(thickness * 0.5),  # fainter
+				)
 
-	# CYAN ellipse: non-winner corridor blobs
-	if trace.corridor_blobs:
-		cyan_bgr = walk_palette.get_walker_overlay_color_bgr("corridor_non_winner")
+	def _layer_plus_marker():
+		"""MAGENTA +: walker prior at (pred_cx, pred_cy)."""
+		magenta_bgr = walk_palette.get_walker_overlay_color_bgr("prior_cross")
+		walk_draw._draw_plus_marker(
+			canvas[0],
+			prior_local_cx, prior_local_cy,
+			color=magenta_bgr,
+			size_px=walk_draw.compute_plus_arm_px(torso_h_px),
+			thickness=thickness,
+		)
 
-		for blob in trace.corridor_blobs:
-			# Skip the winner blob (already drawn in yellow above)
-			if trace.winner_blob is not None and blob.get("centroid_x") == trace.winner_blob.get("centroid_x") and blob.get("centroid_y") == trace.winner_blob.get("centroid_y"):
-				continue
+	def _layer_acceptance_box():
+		"""DASHED AMBER acceptance-corridor rectangle on step==0 bootstrap frame only.
 
-			blob_cx = float(blob.get("centroid_x", 0.0))
-			blob_cy = float(blob.get("centroid_y", 0.0))
-			local_cx = blob_cx - roi_x_origin
-			local_cy = blob_cy - roi_y_origin
-
-			walk_draw._draw_blob_ellipse_cv2(
-				composited_bgr,
-				local_cx, local_cy,
-				_ellipse_area_from_blob(blob),
-				torso_h_px, torso_w_px,
-				color=cyan_bgr,
-				thickness=thickness,
-			)
-
-	# FADED GRAY ellipse: raw blobs outside corridor
-	if trace.raw_blobs:
-		gray_bgr = walk_palette.get_walker_overlay_color_bgr("raw_outside_corridor")
-
-		for blob in trace.raw_blobs:
-			# Only draw if not in corridor
-			if blob.get("in_corridor", False):
-				continue
-
-			blob_cx = float(blob.get("centroid_x", 0.0))
-			blob_cy = float(blob.get("centroid_y", 0.0))
-			local_cx = blob_cx - roi_x_origin
-			local_cy = blob_cy - roi_y_origin
-
-			walk_draw._draw_blob_ellipse_cv2(
-				composited_bgr,
-				local_cx, local_cy,
-				_ellipse_area_from_blob(blob),
-				torso_h_px, torso_w_px,
-				color=gray_bgr,
-				thickness=int(thickness * 0.5),  # fainter
-			)
-
-	# MAGENTA +: walker prior at (pred_cx, pred_cy)
-	magenta_bgr = walk_palette.get_walker_overlay_color_bgr("prior_cross")
-
-	prior_local_cx = int(pred_cx - roi_x_origin)
-	prior_local_cy = int(pred_cy - roi_y_origin)
-	walk_draw._draw_plus_marker(
-		composited_bgr,
-		prior_local_cx, prior_local_cy,
-		color=magenta_bgr,
-		size_px=12,
-		thickness=thickness,
-	)
-
-	# DASHED AMBER acceptance-corridor rectangle: walker search region on
-	# step==0 bootstrap frame only.  This is the acceptance BOX (corridor),
-	# NOT a torso box.  Distinct from seed/solved boxes by color (amber
-	# #FBBF24 vs green/cyan) and semantic role.
-	# acceptance_box = (x_min, y_min, x_max, y_max) in PROCESSED frame
-	# coords; subtract roi_origin once to convert to tile-local.
-	if debug_row.step == 0 and trace.acceptance_box is not None:
+		This is the walker search corridor, NOT a torso box.  Distinct from
+		seed/solved boxes by color (amber #FBBF24 vs green/cyan) and role.
+		acceptance_box = (x_min, y_min, x_max, y_max) in PROCESSED frame
+		coords; subtract roi_origin once to convert to tile-local.
+		"""
+		if not (debug_row.step == 0 and trace.acceptance_box is not None):
+			return
 		box_bgr = walk_palette.get_walker_overlay_color_bgr("acceptance_box")
-
 		box_x_min, box_y_min, box_x_max, box_y_max = trace.acceptance_box
-
 		# Convert to tile-local (single subtraction, no bin upscale).
 		local_x1 = int(box_x_min - roi_x_origin)
 		local_y1 = int(box_y_min - roi_y_origin)
 		local_x2 = int(box_x_max - roi_x_origin)
 		local_y2 = int(box_y_max - roi_y_origin)
-
 		# Clamp to tile bounds.
 		local_x1 = max(0, min(local_x1, roi_w - 1))
 		local_y1 = max(0, min(local_y1, roi_h - 1))
 		local_x2 = max(0, min(local_x2, roi_w))
 		local_y2 = max(0, min(local_y2, roi_h))
-
 		# Draw dashed rectangle (not solid, not heavy: clearly not a torso box).
 		draw_utils.draw_dashed_rect(
-			composited_bgr,
+			canvas[0],
 			local_x1, local_y1, local_x2, local_y2,
 			color=box_bgr,
 			thickness=thickness,
 			dash_len=10,
 		)
 
-	# AUDIT-MODE DISAGREEMENT MARKER: small open square when production_winner != audit_winner
-	if (debug_row.winner_mode == "audit_winner" and
-		debug_row.production_winner_cx is not None and
-		debug_row.audit_winner_cx is not None):
-		# Check if production and audit winners differ
+	def _layer_audit_square():
+		"""AUDIT-MODE DISAGREEMENT MARKER: small open square when production_winner != audit_winner."""
+		if not (debug_row.winner_mode == "audit_winner" and
+			debug_row.production_winner_cx is not None and
+			debug_row.audit_winner_cx is not None):
+			return
 		prod_pt = (debug_row.production_winner_cx, debug_row.production_winner_cy)
 		audit_pt = (debug_row.audit_winner_cx, debug_row.audit_winner_cy)
-
 		# Small threshold for "different" (not exact equality due to floating point)
 		dist = math.sqrt(
 			(prod_pt[0] - audit_pt[0]) ** 2 +
 			(prod_pt[1] - audit_pt[1]) ** 2
 		)
+		if dist <= 0.5:
+			return
+		# Draw small open square at production winner location
+		local_prod_cx = int(debug_row.production_winner_cx - roi_x_origin)
+		local_prod_cy = int(debug_row.production_winner_cy - roi_y_origin)
+		disagreement_bgr = walk_palette.get_walker_overlay_color_bgr("audit_disagreement")
+		square_half = walk_draw.compute_sq_half_px(torso_h_px)
+		cv2.rectangle(
+			canvas[0],
+			(local_prod_cx - square_half, local_prod_cy - square_half),
+			(local_prod_cx + square_half, local_prod_cy + square_half),
+			color=disagreement_bgr,
+			thickness=thickness,
+			lineType=cv2.LINE_AA,
+		)
 
-		if dist > 0.5:
-			# Draw small open square at production winner location
-			local_prod_cx = int(debug_row.production_winner_cx - roi_x_origin)
-			local_prod_cy = int(debug_row.production_winner_cy - roi_y_origin)
+	def _layer_residual_line():
+		"""RESIDUAL LINE: pred -> candidate, colored by gate decision.
 
-			disagreement_bgr = walk_palette.get_walker_overlay_color_bgr("audit_disagreement")
+		Drawn for accepted (green) and soft_miss_no_path (red: candidate present
+		but no plausible path survived the displacement cap).
+		Also drawn for legacy v12 rejected_motion_gate (backward compat).
+		"""
+		if debug_row.cand_cx is None or debug_row.cand_cy is None:
+			return
+		if debug_row.status not in ("accepted", "soft_miss_no_path", "rejected_motion_gate"):
+			return
+		cand_local_cx = int(debug_row.cand_cx - roi_x_origin)
+		cand_local_cy = int(debug_row.cand_cy - roi_y_origin)
+		walk_draw._draw_residual_line(
+			canvas[0],
+			prior_local_cx, prior_local_cy,
+			cand_local_cx, cand_local_cy,
+			accepted=(debug_row.status == "accepted"),
+			thickness=thickness,
+		)
 
-			# Draw small open square (no fill, outline only)
-			square_half = 8  # small marker
-			cv2.rectangle(
-				composited_bgr,
-				(local_prod_cx - square_half, local_prod_cy - square_half),
-				(local_prod_cx + square_half, local_prod_cy + square_half),
-				color=disagreement_bgr,
-				thickness=1,
-				lineType=cv2.LINE_AA,
-			)
+	def _layer_allowed_jump_circle():
+		"""ALLOWED-JUMP CIRCLE: dashed circle centered on pred with radius max_displacement_px.
 
-	# RESIDUAL LINE: pred -> candidate, colored by gate decision.
-	# Drawn for accepted (green) and soft_miss_no_path (red: candidate present
-	# but no plausible path survived the displacement cap).
-	# Also drawn for legacy v12 rejected_motion_gate (backward compat).
-	if debug_row.cand_cx is not None and debug_row.cand_cy is not None:
-		if debug_row.status in ("accepted", "soft_miss_no_path", "rejected_motion_gate"):
-			cand_local_cx = int(debug_row.cand_cx - roi_x_origin)
-			cand_local_cy = int(debug_row.cand_cy - roi_y_origin)
-			walk_draw._draw_residual_line(
-				composited_bgr,
-				prior_local_cx, prior_local_cy,
-				cand_local_cx, cand_local_cy,
-				accepted=(debug_row.status == "accepted"),
-				thickness=thickness,
-			)
-
-	# ALLOWED-JUMP CIRCLE: dashed circle centered on pred with radius max_displacement_px.
-	# Uses M1 schema field; silently skipped when absent.
-	if max_displacement_px is not None and max_displacement_px > 0:
+		Uses schema field max_displacement_px; silently skipped when absent.
+		"""
+		if max_displacement_px is None or max_displacement_px <= 0:
+			return
 		circle_color = overlay_config.hex_to_bgr(_WALK_PALETTE['allowed_jump_circle'])
 		walk_draw._draw_allowed_jump_circle(
-			composited_bgr,
+			canvas[0],
 			prior_local_cx, prior_local_cy,
 			max_displacement_px,
 			circle_color,
-			thickness=1,
+			thickness=thickness,
 		)
 
-	# VELOCITY VECTOR: arrowed line from pred in the (vx*dt, vy*dt) direction.
-	# Uses M1 schema fields; silently skipped when absent.
-	if vx_px is not None and vy_px is not None and debug_row.dt is not None:
+	def _layer_velocity_vector():
+		"""VELOCITY VECTOR: arrowed line from pred in the (vx*dt, vy*dt) direction.
+
+		Uses schema fields vx_px/vy_px/dt; silently skipped when absent.
+		"""
+		if vx_px is None or vy_px is None or debug_row.dt is None:
+			return
 		vec_color = overlay_config.hex_to_bgr(_WALK_PALETTE['velocity_vector'])
 		walk_draw._draw_velocity_vector(
-			composited_bgr,
+			canvas[0],
 			prior_local_cx, prior_local_cy,
 			vx_px, vy_px,
 			float(debug_row.dt),
 			vec_color,
-			thickness=1,
+			thickness=thickness,
 		)
 
+	# Map layer names to callables (closed set; must match _KNOWN_LAYERS in walk_palette).
+	layer_dispatch = {
+		"heat": _layer_heat,
+		"seed_box": _layer_seed_box,
+		"solved_box": _layer_solved_box,
+		"blob_ellipses": _layer_blob_ellipses,
+		"plus_marker": _layer_plus_marker,
+		"acceptance_box": _layer_acceptance_box,
+		"audit_square": _layer_audit_square,
+		"residual_line": _layer_residual_line,
+		"allowed_jump_circle": _layer_allowed_jump_circle,
+		"velocity_vector": _layer_velocity_vector,
+	}
+
+	# Resolve draw order from config (missing key falls back to built-in default;
+	# unknown/duplicate/omitted names raise loudly in resolve_layer_order).
+	layer_order = walk_palette.resolve_layer_order()
+
+	# Draw each layer in the resolved order onto canvas[0].
+	for layer_name in layer_order:
+		layer_dispatch[layer_name]()
+
 	# Save PNG
-	success = cv2.imwrite(str(out_png_path), composited_bgr)
+	success = cv2.imwrite(str(out_png_path), canvas[0])
 	if not success:
 		raise RuntimeError(
 			f"render_walk_tile: failed to write PNG to {out_png_path}"
