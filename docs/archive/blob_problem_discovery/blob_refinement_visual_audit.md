@@ -46,7 +46,7 @@ can see the scope of every claim.
 
 ## 4. Confirmed and refuted prior findings
 
-- [BLOB_REDESIGN_REPORT.md](../../BLOB_REDESIGN_REPORT.md), Conant oracle
+- [V1_BLOB_REDESIGN_REPORT.md](../V1_BLOB_REDESIGN_REPORT.md), Conant oracle
   test, Finding 4: of 72 intervals with real accept < 20%, the oracle
   rescue distribution put 46 intervals in the "gates fine, real blob is
   wrong" bucket. The 2444-2491 funnel-stage finding is CONSISTENT with the

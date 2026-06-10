@@ -24,6 +24,7 @@ import residual_motion
 import residual_pre_pass
 import race_start
 import solve_queue
+import walker_bundle
 import interval_fingerprint
 
 # re-export fingerprint helpers so existing `interval_solver.foo` call
@@ -34,7 +35,7 @@ compute_interval_fingerprint = interval_fingerprint.compute_interval_fingerprint
 filter_usable_seeds_sorted = interval_fingerprint.filter_usable_seeds_sorted
 
 # Stage 4 promotion: intervals with confidence_tier in this set are promoted
-# to blob-snap re-solve. Internal constant; not exposed on CLI (per argparse
+# to walker blob re-solve. Internal constant; not exposed on CLI (per argparse
 # minimalism in docs/PYTHON_STYLE.md).
 PROMOTION_TIERS = frozenset({"low", "fair"})
 
@@ -84,77 +85,6 @@ def select_promoted_intervals(
 		if tier in PROMOTION_TIERS:
 			promoted.append(pair_idx)
 	return promoted
-
-
-#============================================
-def _coverage_from_track(track: list) -> dict:
-	"""Compute blob-snap coverage for one pass from its blob_gate stamps.
-
-	Returns a dict with `fraction` (float in [0, 1] or None),
-	`candidate_count`, and `propagated_count`. `skipped` frames
-	(endpoints, stationary, no reader) are excluded from both counts.
-	"""
-	accepted_count = 0
-	candidate_count = 0
-	propagated_count = 0
-	for state in track:
-		gate = state.get("blob_gate")
-		if gate == "accepted":
-			accepted_count += 1
-			candidate_count += 1
-			propagated_count += 1
-		elif gate == "rejected":
-			candidate_count += 1
-			propagated_count += 1
-		elif gate == "absent":
-			propagated_count += 1
-		# "skipped" excluded
-	if candidate_count == 0:
-		fraction = None
-	else:
-		fraction = accepted_count / candidate_count
-	result = {
-		"fraction": fraction,
-		"candidate_count": int(candidate_count),
-		"propagated_count": int(propagated_count),
-	}
-	return result
-
-
-#============================================
-def _stamp_blob_coverage(
-	interval_score: dict,
-	forward_path: list,
-	backward_path: list,
-) -> None:
-	"""Write per-pass blob-snap coverage fields into an interval_score dict.
-
-	FWD and BWD are reported separately to preserve diagnostic purity --
-	asymmetric coverage (one pass good, the other bad) is itself a
-	signal and must not be averaged away. Downstream consumers that
-	want a single number should take the min or the geometric mean at
-	the point of use.
-
-	Fields written to `interval_score`:
-	  - blob_coverage_fwd: float in [0, 1] or None.
-	  - blob_coverage_bwd: float in [0, 1] or None.
-	  - no_candidate_blobs: bool; True only when BOTH passes saw zero
-	    candidates. When one pass saw candidates and the other did not,
-	    the flag is False and the None-valued pass carries its None.
-	  - candidate_frame_count_fwd / _bwd: ints.
-	  - propagated_frame_count_fwd / _bwd: ints.
-	"""
-	fwd = _coverage_from_track(forward_path)
-	bwd = _coverage_from_track(backward_path)
-	interval_score["blob_coverage_fwd"] = fwd["fraction"]
-	interval_score["blob_coverage_bwd"] = bwd["fraction"]
-	interval_score["candidate_frame_count_fwd"] = fwd["candidate_count"]
-	interval_score["candidate_frame_count_bwd"] = bwd["candidate_count"]
-	interval_score["propagated_frame_count_fwd"] = fwd["propagated_count"]
-	interval_score["propagated_frame_count_bwd"] = bwd["propagated_count"]
-	interval_score["no_candidate_blobs"] = (
-		fwd["fraction"] is None and bwd["fraction"] is None
-	)
 
 
 #============================================
@@ -469,11 +399,11 @@ def solve_interval_analytical(
 	scene_transform: object,
 	all_seeds_scene: list,
 	fps: float,
-	blob_snap_enabled: bool,
 	debug: bool = False,
 	motion_track: object = None,
 	all_seeds: list = None,
 	reader: object = None,
+	blob_pass: bool = True,
 ) -> dict:
 	"""Solve one interval using analytical velocity model (no optical flow).
 
@@ -488,8 +418,15 @@ def solve_interval_analytical(
 		all_seeds_scene: List of all seeds as (frame, sx, sy, sw, sh) tuples
 			in scene coordinates.
 		fps: Video frame rate for duration thresholds.
-		blob_snap_enabled: Required bool. When False, skip blob observer.
-			When True, behavior is byte-identical to prior code.
+		blob_pass: Default True (on). When True AND a reader is present,
+			the FWD/BWD interval paths are produced by the windowed walker
+			(walker_bundle.walk_bundle_to_path) instead of the pure-Hermite
+			propagators, with a per-pass Hermite fallback when a pass stalls
+			(zero accepted frames). The Stage-3 dispatch sites
+			(solve_queue, solver_workers) pass blob_pass=False explicitly so
+			Stage 3 stays pure Hermite on every interval; the walker is gated
+			to the Stage-4 promotion pass. With no reader (test/diagnostic
+			paths) the gate falls through to pure Hermite regardless.
 		debug: If True, print diagnostic information.
 
 	Returns:
@@ -499,7 +436,8 @@ def solve_interval_analytical(
 			- forward_path: forward interval path (for diagnostics)
 			- backward_path: backward interval path (for diagnostics)
 			- interval_score: interval_score_v2 dict from score_interval_analytical
-			- propagator_path: str indicator of which path produced result ("hermite" or "blob")
+			- propagator_path: str indicator of which path produced result
+			  ("hermite" or "walker")
 	"""
 	start_frame = int(seed_start["frame_index"])
 	end_frame = int(seed_end["frame_index"])
@@ -522,21 +460,34 @@ def solve_interval_analytical(
 	if debug:
 		print("    propagating forward/backward analytically...")
 
-	# per-interval residual cache, scoped to this call. Shared between
-	# FWD and BWD so raw residuals are computed once per frame, but holds
-	# image-derived data only (no accepted blobs, no gate decisions).
-	# Cleared at the end of this function.
-	residual_cache = {} if reader is not None and blob_snap_enabled else None
+	# walker branch is ON by default for callers that supply a reader (the
+	# Stage-4 promotion pass). It only activates when blob_pass is set AND a
+	# reader is available; the Stage-3 dispatch sites pass blob_pass=False, so
+	# Stage 3 stays pure Hermite on every interval. No-reader test/diagnostic
+	# paths fall through to the pure-Hermite propagator path below.
+	walker_active = blob_pass and reader is not None
 
-	# M3+M4: sequential pre-pass. When blob snap is enabled and a reader
-	# is present, walk the interval's frame range once in monotonic order
-	# to build an in-memory residual store. FrameReader's strategy-0
-	# fast-path fires for every read after the first (sequential, no
-	# scattered seeks). The store is keyed by (frame_index, roi) and
-	# consumed by observe_blob_at before falling through to the legacy
-	# reader path. Scoped to this call; destroyed on exit.
-	if blob_snap_enabled and reader is not None:
-		# M2: use the fixed DEFAULT_HALF_WINDOW + stride model so the pre-pass
+	# per-pass stall-fallback flags, stamped on the result for observability.
+	# Only the walker branch can set these True (a pass with zero accepted
+	# frames falls back to its Hermite path); the pure-Hermite branch leaves
+	# them False.
+	walker_fallback_fwd = False
+	walker_fallback_bwd = False
+
+	# The pure-Hermite propagators consult no image evidence, so the
+	# residual cache and the sequential residual pre-pass are only built when
+	# the walker is active. Both hold image-derived data only (no accepted
+	# blobs, no gate decisions) and are cleared at the end of this function.
+	residual_cache = {} if walker_active else None
+
+	# Sequential pre-pass. When the walker is active, walk the interval's
+	# frame range once in monotonic order to build an in-memory residual
+	# store. FrameReader's strategy-0 fast-path fires for every read after
+	# the first (sequential, no scattered seeks). The store is keyed by
+	# (frame_index, roi) and consumed by observe_blob_at before falling
+	# through to the legacy reader path. Scoped to this call; destroyed on exit.
+	if walker_active:
+		# use the fixed DEFAULT_HALF_WINDOW + stride model so the pre-pass
 		# produces residuals with the same sampling pattern as observe_blob_at.
 		pre_half_window = residual_motion.DEFAULT_HALF_WINDOW
 		pre_stride = residual_motion.resolve_stride(fps)
@@ -557,19 +508,74 @@ def solve_interval_analytical(
 	else:
 		precomputed_store = None
 
-	# propagate forward (backward-looking slopes)
-	forward_path_scene = velocity_model.propagate_forward_analytical(
-		interval_curves, scene_transform, blob_snap_enabled,
-		reader=reader, residual_cache=residual_cache,
-		precomputed_store=precomputed_store,
-	)
+	if walker_active:
+		# Stage 4 walker path: FWD and BWD each get their own bundle
+		# and their own walk_one_direction call (contract C9). The adapter
+		# returns full-span, chronological, PROCESSED-pixel state lists aligned
+		# slot-by-slot, so blend_paths/compute_agreement consume them unchanged.
+		# precomputed_store is built above but not threaded into the walker
+		# (perf-only; see walker_bundle.walk_bundle_to_path docstring).
+		forward_bundle, backward_bundle = (
+			walker_bundle.build_walker_bundles_for_interval(
+				seed_start=seed_start,
+				seed_end=seed_end,
+				reader=reader,
+				scene_transform=scene_transform,
+				fps=fps,
+				stride=residual_motion.resolve_stride(fps),
+				precomputed_store=precomputed_store,
+			)
+		)
+		# capture each pass's own accepted-frame coverage alongside its path.
+		# coverage is the walker's "accepted" status count, read from the
+		# WalkSummary before the path projection discards per-frame status.
+		forward_path_scene, fwd_accepted = (
+			walker_bundle.walk_bundle_to_path_with_coverage(forward_bundle)
+		)
+		backward_path_scene, bwd_accepted = (
+			walker_bundle.walk_bundle_to_path_with_coverage(backward_bundle)
+		)
 
-	# propagate backward (forward-looking slopes)
-	backward_path_scene = velocity_model.propagate_backward_analytical(
-		interval_curves, scene_transform, blob_snap_enabled,
-		reader=reader, residual_cache=residual_cache,
-		precomputed_store=precomputed_store,
-	)
+		# Per-pass Hermite stall fallback (guarantees "never worse than
+		# Hermite" on promoted intervals). A pure stall is ZERO accepted
+		# frames: the walker rejected every candidate and emitted a degenerate
+		# straight line (100% interpolated) between the seeds, which is strictly
+		# worse than Hermite. The fallback is applied per pass, not per
+		# interval, so FWD and BWD stay independent (contract C9): a stalled
+		# FWD is replaced by the Hermite FWD path while a healthy BWD keeps the
+		# walker path. If both stall, both fall back and the interval is pure
+		# Hermite. This is OUTPUT SELECTION after both producers have run; it
+		# reads the walker's own coverage, never raw_pred and never FWD/BWD
+		# agreement (the C9 scoring signal), so Hermite independence of the
+		# walk itself is preserved.
+		walker_fallback_fwd = (fwd_accepted == 0)
+		walker_fallback_bwd = (bwd_accepted == 0)
+		if walker_fallback_fwd:
+			forward_path_scene = velocity_model.propagate_forward_analytical(
+				interval_curves, scene_transform,
+				reader=None, residual_cache=None,
+				precomputed_store=None,
+			)
+		if walker_fallback_bwd:
+			backward_path_scene = velocity_model.propagate_backward_analytical(
+				interval_curves, scene_transform,
+				reader=None, residual_cache=None,
+				precomputed_store=None,
+			)
+	else:
+		# pure-Hermite path: propagate forward (backward-looking slopes)
+		forward_path_scene = velocity_model.propagate_forward_analytical(
+			interval_curves, scene_transform,
+			reader=reader, residual_cache=residual_cache,
+			precomputed_store=precomputed_store,
+		)
+
+		# pure-Hermite path: propagate backward (forward-looking slopes)
+		backward_path_scene = velocity_model.propagate_backward_analytical(
+			interval_curves, scene_transform,
+			reader=reader, residual_cache=residual_cache,
+			precomputed_store=precomputed_store,
+		)
 
 	# drop the caches; they must not escape the interval scope
 	if residual_cache is not None:
@@ -601,15 +607,17 @@ def solve_interval_analytical(
 		fps=fps,
 	)
 
-	# stamp blob-snap coverage diagnostic (additive; legacy diagnostics
-	# remain valid). coverage = accepted / frames_with_candidate_blob,
-	# excluding seed frames (blob_gate == "skipped"). endpoints carry
-	# "skipped" because propagators skip snap at index 0 and -1 of each
-	# pass. the denominator is candidate frames only, so heavily occluded
-	# intervals (mostly "absent") are not unfairly penalized.
-	_stamp_blob_coverage(interval_score, forward_path, backward_path)
-
-	propagator_path = "blob" if blob_snap_enabled else "hermite"
+	# propagator_path records which producer drove this interval. When the
+	# walker ran but BOTH passes stalled (zero accepted frames each), the
+	# output is pure Hermite, so report "hermite" honestly. When at least one
+	# pass kept walker geometry, report "walker"; the per-pass fallback flags
+	# below disambiguate a partial fallback.
+	if not walker_active:
+		propagator_path = "hermite"
+	elif walker_fallback_fwd and walker_fallback_bwd:
+		propagator_path = "hermite"
+	else:
+		propagator_path = "walker"
 	result = {
 		"start_frame": start_frame,
 		"end_frame": end_frame,
@@ -618,6 +626,10 @@ def solve_interval_analytical(
 		"backward_path": backward_path,
 		"interval_score": interval_score,
 		"propagator_path": propagator_path,
+		# per-pass walker stall fallback stamps (observability). True means
+		# that pass had zero accepted walker frames and used its Hermite path.
+		"walker_fallback_fwd": walker_fallback_fwd,
+		"walker_fallback_bwd": walker_fallback_bwd,
 	}
 
 	# in debug mode, capture per-frame agreement records for investigation.
@@ -631,6 +643,97 @@ def solve_interval_analytical(
 		)
 		result["agreement_debug"] = agreement_debug
 	return result
+
+
+#============================================
+def run_stage4_walker_seam(
+	seed_start: dict,
+	seed_end: dict,
+	stage3_interval_score: dict,
+	reader: object,
+	scene_transform: object,
+	fps: float,
+	walker_callable: object,
+) -> dict:
+	"""Stage 4 seam: promote on Stage-3 confidence, then build + run the walker.
+
+	This is the additive Stage 4 integration seam. It is NOT called by the
+	default solve path; only the real wiring and the data-boundary test invoke
+	it. Default solve behavior is therefore unchanged.
+
+	Ordering is Stage-3-first (contract / plan): the promotion decision reads
+	`stage3_interval_score["confidence_tier"]` (computed by the Stage 3
+	Hermite-only pass) BEFORE any walker runs. When the interval is not
+	promoted, the walker is never invoked and no bundle is built. Walker
+	output therefore cannot influence eligibility.
+
+	When promoted, build one WalkerInputBundle per direction (FWD anchored on
+	seed_start, BWD on seed_end) and hand each, in turn, to the injectable
+	`walker_callable`. The bundles carry the seed, frame range, direction,
+	torso-unit scale, and the candidate-lattice source; they do NOT carry the
+	Hermite raw_pred path (Hermite independence, gated by the data-boundary
+	test).
+
+	Args:
+		seed_start: Left interval seed dict (frame_index, cx, cy, w, h).
+		seed_end: Right interval seed dict (same fields).
+		stage3_interval_score: The Stage 3 interval_score dict; must carry
+			'confidence_tier'.
+		reader: Video FrameReader (candidate-lattice source).
+		scene_transform: SceneTransform for coordinate conversion.
+		fps: Video frame rate.
+		walker_callable: Injectable callable taking one WalkerInputBundle and
+			returning a standalone per-direction path. The real walker is
+			wired in Stage 4; tests inject a fake.
+
+	Returns:
+		Dict with keys:
+			- promoted: bool, whether the interval was promoted on Stage-3 tier
+			- confidence_tier: the Stage-3 tier that drove the decision
+			- forward_result / backward_result: walker_callable returns, or
+				None when not promoted (walker not invoked)
+	"""
+	# Stage-3-first: decide eligibility from the Stage 3 confidence tier
+	# BEFORE any walker runs. Reading the tier here (not from walker output)
+	# is what makes the ordering structural.
+	confidence_tier = stage3_interval_score["confidence_tier"]
+	promoted = confidence_tier in PROMOTION_TIERS
+
+	if not promoted:
+		# walker is never invoked for non-promoted intervals; no bundle built
+		not_promoted = {
+			"promoted": False,
+			"confidence_tier": confidence_tier,
+			"forward_result": None,
+			"backward_result": None,
+		}
+		return not_promoted
+
+	# promoted: build both bundles from state already at the seam, then run
+	# the injectable walker once per direction (FWD, then BWD). Stride mirrors
+	# the residual reader's neighbor stride used elsewhere in the solver.
+	stride = residual_motion.resolve_stride(fps)
+	forward_bundle, backward_bundle = walker_bundle.build_walker_bundles_for_interval(
+		seed_start=seed_start,
+		seed_end=seed_end,
+		reader=reader,
+		scene_transform=scene_transform,
+		fps=fps,
+		stride=stride,
+	)
+
+	# FWD and BWD are independent passes (contract C9); each gets its own
+	# bundle and its own walker invocation.
+	forward_result = walker_bundle.run_walker_pass(forward_bundle, walker_callable)
+	backward_result = walker_bundle.run_walker_pass(backward_bundle, walker_callable)
+
+	promoted_result = {
+		"promoted": True,
+		"confidence_tier": confidence_tier,
+		"forward_result": forward_result,
+		"backward_result": backward_result,
+	}
+	return promoted_result
 
 
 #============================================
@@ -1377,6 +1480,7 @@ def _dispatch_blob_pass(
 	run_control: object,
 	on_interval_solved: object,
 	video_path: str,
+	blob_pass: bool = True,
 ) -> None:
 	"""Dispatch a blob-coupled re-solve on selected post-race intervals.
 
@@ -1396,6 +1500,10 @@ def _dispatch_blob_pass(
 		run_control: Run control for quit handling.
 		on_interval_solved: Callback(fingerprint, result) for persistence.
 		video_path: Path to input video for worker pool.
+		blob_pass: Default True. blob_pass flows to both the in-process and
+			pool paths; promoted intervals run the windowed walker with a
+			per-pass Hermite stall fallback in either path. Passing False
+			reverts a stage to the pure-Hermite re-solve.
 	"""
 	if not pair_indices:
 		return
@@ -1405,7 +1513,7 @@ def _dispatch_blob_pass(
 	print(f"\n{stage_name}: blob pass ({len(pair_indices)} of "
 		f"{len(interval_results)} intervals, bin={bin_factor})")
 
-	# build work items: (pair_idx, seed_start, seed_end, blob_snap_enabled=True)
+	# build work items: (pair_idx, seed_start, seed_end)
 	tasks = []
 	for pair_idx in pair_indices:
 		result = interval_results[pair_idx]
@@ -1415,12 +1523,12 @@ def _dispatch_blob_pass(
 		usable_seeds = interval_fingerprint.filter_usable_seeds_sorted(seeds)
 		seed_start = usable_seeds[pair_idx]
 		seed_end = usable_seeds[pair_idx + 1]
-		tasks.append((pair_idx, seed_start, seed_end, True))
+		tasks.append((pair_idx, seed_start, seed_end))
 
 	# capture Stage 3 baseline scores before overwriting with Stage 4 results
 	# so we can compute per-metric deltas in the summary line.
 	baseline_by_pair = {}
-	for pair_idx, _s, _e, _ in tasks:
+	for pair_idx, _s, _e in tasks:
 		stage3_result = interval_results[pair_idx]
 		if stage3_result is not None and "interval_score" in stage3_result:
 			baseline_by_pair[pair_idx] = stage3_result["interval_score"]
@@ -1429,6 +1537,8 @@ def _dispatch_blob_pass(
 
 	# dispatch: in-process if single worker or very few tasks,
 	# pool if multiple workers and enough work to amortize pool setup.
+	# The pool carries blob_pass as run-invariant worker context, so Stage-4
+	# walker intervals use the pool exactly like Stage-3 Hermite intervals.
 	use_pool = num_workers >= 2 and len(tasks) >= 4
 
 	if len(tasks) > 0:
@@ -1439,7 +1549,7 @@ def _dispatch_blob_pass(
 		# FrameETAColumn reads it lock-free in this single-process driver.
 		total_frames_blob = sum(
 			int(seed_end["frame_index"]) - int(seed_start["frame_index"])
-			for _, seed_start, seed_end, _ in tasks
+			for _, seed_start, seed_end in tasks
 		)
 		blob_frame_counter = [0]
 		with make_solve_progress(
@@ -1450,17 +1560,17 @@ def _dispatch_blob_pass(
 			)
 			if not use_pool:
 				# in-process blob pass
-				for pair_idx, seed_start, seed_end, blob_snap_enabled in tasks:
+				for pair_idx, seed_start, seed_end in tasks:
 					if run_control is not None and run_control.quit_requested:
 						break
 					result_blob = solve_interval_analytical(
 						seed_start, seed_end, context.scene_transform,
 						context.all_seeds_scene, context.fps,
-						blob_snap_enabled=True,
 						debug=debug,
 						motion_track=context.motion_track,
 						all_seeds=context.all_seeds,
 						reader=context.reader,
+						blob_pass=blob_pass,
 					)
 					# overwrite Stage 3 result with blob result
 					fingerprint = compute_interval_fingerprint(
@@ -1491,6 +1601,7 @@ def _dispatch_blob_pass(
 					all_seeds=context.all_seeds,
 					fps=context.fps,
 					debug=debug,
+					blob_pass=blob_pass,
 					bin_factor=getattr(context, "bin_factor", 1),
 					total_frames=getattr(context, "video_frame_count", 0),
 				) as pool:
@@ -1499,13 +1610,13 @@ def _dispatch_blob_pass(
 					span_by_pair = {
 						pair_idx: int(seed_end["frame_index"])
 							- int(seed_start["frame_index"])
-						for pair_idx, seed_start, seed_end, _ in tasks
+						for pair_idx, seed_start, seed_end in tasks
 					}
 					futures = {}
-					for pair_idx, seed_start, seed_end, blob_snap_enabled in tasks:
+					for pair_idx, seed_start, seed_end in tasks:
 						fut = pool.submit(
 							solver_workers._solve_interval_worker,
-							(pair_idx, seed_start, seed_end, blob_snap_enabled),
+							(pair_idx, seed_start, seed_end),
 						)
 						futures[fut] = pair_idx
 
@@ -1569,6 +1680,7 @@ def solve_all_intervals(
 	race_start_interval: tuple = None,
 	pre_race_reference: dict = None,
 	bin_factor: int = 1,
+	blob_pass: bool = True,
 ) -> dict:
 	"""Solve all seed-to-seed intervals and stitch into a full trajectory.
 
@@ -1607,6 +1719,14 @@ def solve_all_intervals(
 			and Stage 5. Used for fast diagnostics.
 		full_solve: If True, run Stage 5 (blob pass on every post-race interval).
 			Default False runs Stages 1-4 (blob only on promoted intervals).
+		blob_pass: Default True (on). The Stage 4 promotion pass (and the
+			Stage 5 full pass under --full) runs the windowed walker on its
+			selected intervals, with a per-pass Hermite fallback when a walk
+			stalls (zero accepted frames -> that pass uses its Hermite path).
+			Forces in-process dispatch for the affected stage (the blob_pass
+			flag is not carried across the worker-pool boundary). Stage 3 stays
+			pure Hermite on every interval. Passing False reverts the blob pass
+			to the pure-Hermite re-solve.
 
 	Returns:
 		Dict with keys:
@@ -1690,11 +1810,11 @@ def solve_all_intervals(
 		key_reader=key_reader,
 	)
 
-	# Stage 4 and Stage 5: blob-coupled re-solve
-	# Stage 4 (default): blob promotion pass on low/fair confidence intervals.
-	# Stage 5 (--full): blob pass on every post-race interval.
-	# Both re-run the propagator with blob_snap_enabled=True.
-	# Hermite is recomputed (cheap); expensive blob observer paid once per interval.
+	# Stage 4 and Stage 5: re-solve pass over selected intervals.
+	# Stage 4 (default): promotion pass on low/fair confidence intervals.
+	# Stage 5 (--full): pass on every post-race interval.
+	# By default these run the windowed walker (blob_pass=True); passing
+	# blob_pass=False reverts a stage to the pure-Hermite re-solve.
 	# Results overwrite the Stage 3 entries in interval_results.
 
 	stage_4_promoted_count = 0
@@ -1732,6 +1852,7 @@ def solve_all_intervals(
 				run_control,
 				on_interval_solved,
 				video_path,
+				blob_pass=blob_pass,
 			)
 		else:
 			# Stage 4 (default): blob promotion pass on promoted intervals only.
@@ -1760,6 +1881,7 @@ def solve_all_intervals(
 				run_control,
 				on_interval_solved,
 				video_path,
+				blob_pass=blob_pass,
 			)
 
 	# stitch and finalize

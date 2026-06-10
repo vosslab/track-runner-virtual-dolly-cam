@@ -58,7 +58,7 @@ import draw_utils
 import blob_trace
 import scene_coords
 import walk_palette
-import walk_debug_log
+import blob_walk.walk_debug_log as walk_debug_log
 import walk_draw
 import common_tools.coord_space
 

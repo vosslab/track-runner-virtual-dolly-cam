@@ -4,28 +4,17 @@ For each seed-to-seed interval, fits cubic Hermite splines with separate
 forward and backward curves. Endpoints are hard-anchored at seeds, but slopes
 differ by direction (backward-looking vs forward-looking regression).
 
-Propagation runs in two stages per pass:
-  Stage 1: compute `raw_pred[t]` for every frame from Hermite curves only.
-  Stage 2: optionally consult a stateless blob observer at each non-endpoint
-  frame, apply three gates (proximity, direction, temporal smoothness) that
-  read only `raw_pred`, and blend with a displacement clamp when accepted.
-
-Gates MUST NOT read any prior post-blob output. Blob influence at frame t-1
-leaking into the gating decision at frame t re-creates the cross-frame state
-the design forbids (see plan happy-forging-valiant.md).
+The propagators are pure raw_pred builders: each computes `raw_pred[t]` for
+every frame from the Hermite curves only and returns it as a list of state
+dicts. No blob evidence is consulted here. The optional windowed blob walker
+is a separate, opt-in consumer reached through the Stage-4 walker seam.
 """
 
 # Standard Library
 import math
-import types
 
 # PIP3 modules
 import numpy
-
-# local repo modules
-import blob_trace
-import residual_motion
-import common_tools.coord_space as coord_space
 
 
 #============================================
@@ -523,458 +512,60 @@ def _compute_raw_pred_backward(
 
 
 #============================================
-# Blob-snap configuration. These constants are baked into the solver
-# fingerprint in interval_solver.SOLVER_FINGERPRINT_TAG; any numeric
-# change invalidates the refine cache automatically.
-BLOB_SNAP_ALPHA = 0.6
-"""Proximity gate: accept blob only if `dist <= ALPHA * raw_pred_box_height`."""
-BLOB_SNAP_PATH_SLACK = 0.5
-"""Motion-path gate: how far past |v| along the motion direction counts as
-"on path". `proj` must lie in `[0, |v| * (1 + PATH_SLACK)]`."""
-BLOB_SNAP_PATH_PERP_FRACTION = 0.75
-"""Motion-path gate: perpendicular-distance cap as a fraction of `|v|`.
-Together with PATH_SLACK this defines a thin capsule around the motion
-segment `[raw[i-1], raw[i] + PATH_SLACK * v_prev]`."""
-BLOB_SNAP_VELOCITY_FLOOR = 1.5
-"""Velocity magnitude below which direction and motion-path gates are
-skipped entirely (pixels per frame). Proximity gate still applies."""
-BLOB_SNAP_ALPHA_MAX = 0.5
-"""Upper bound on the per-frame blend weight toward blob observation.
-Effective alpha is `min(blob.confidence, ALPHA_MAX)`."""
-BLOB_SNAP_MAX_SHIFT_FRACTION = 0.5
-"""Per-frame displacement clamp. The blended center can shift by at most
-`ALPHA_MAX * MAX_SHIFT_FRACTION * raw_pred_box_height` relative to raw_pred,
-preventing visible jitter when blob confidence fluctuates frame-to-frame."""
+def _raw_pred_to_states(raw: list) -> list:
+	"""Wrap a frozen raw_pred list as a list of tracking state dicts.
 
-
-#============================================
-def _motion_path_ok(
-	anchor: tuple,
-	motion_vec: tuple,
-	blob_center: tuple,
-	slack: float,
-	perp_fraction: float,
-	velocity_floor: float,
-) -> object:
-	"""Check that a blob lies along the motion segment anchored at `anchor`.
-
-	Decomposes (blob - anchor) into a component along `motion_vec` and a
-	perpendicular component. Accepts when the along-track projection is
-	inside `[0, |motion_vec| * (1 + slack)]` AND the perpendicular
-	distance is at most `perp_fraction * |motion_vec|`.
-
-	This is a true motion-path check -- NOT a velocity-scaled proximity
-	check. A blob at the right distance from raw[t] but off to the side
-	of the motion line fails here even though a pure-distance check would
-	pass it.
-
-	Args:
-		anchor: (x, y) neighbor position (raw_pred only).
-		motion_vec: (dx, dy) local motion vector from anchor toward
-			raw[t]. Caller computes from raw_pred exclusively.
-		blob_center: (bx, by) candidate blob position.
-		slack: Forward-extension fraction past `|motion_vec|`.
-		perp_fraction: Perpendicular cap as fraction of `|motion_vec|`.
-		velocity_floor: Below this magnitude the check is vacuous
-			(returns None). Caller decides what to do with None.
-
-	Returns:
-		True if the blob lies on the motion path.
-		False if it does not.
-		None if motion magnitude is below the floor (check skipped).
+	Each entry carries the pure-Hermite center, size, and confidence with
+	source "propagated". No blob evidence is consulted; the propagators are
+	pure raw_pred builders. The optional blob walker is a separate,
+	opt-in consumer reached through the Stage-4 walker seam, not through
+	this function.
 	"""
-	mag_sq = motion_vec[0] * motion_vec[0] + motion_vec[1] * motion_vec[1]
-	if mag_sq <= velocity_floor * velocity_floor:
-		return None
-	mag = mag_sq ** 0.5
-	dx = blob_center[0] - anchor[0]
-	dy = blob_center[1] - anchor[1]
-	# projection along motion direction, in pixel units (not normalized)
-	proj = (dx * motion_vec[0] + dy * motion_vec[1]) / mag
-	# perpendicular vector and distance
-	# perp = d - proj * (motion / mag) = d - (proj / mag) * motion
-	scale = proj / mag
-	perp_x = dx - scale * motion_vec[0]
-	perp_y = dy - scale * motion_vec[1]
-	perp = (perp_x * perp_x + perp_y * perp_y) ** 0.5
-	forward_ok = 0.0 <= proj <= mag * (1.0 + slack)
-	lateral_ok = perp <= perp_fraction * mag
-	result = forward_ok and lateral_ok
-	return result
-
-
-#============================================
-def _apply_blob_snap(
-	raw: list,
-	reader: object,
-	scene_transform: object,
-	residual_cache: dict,
-	blob_snap_enabled: bool,
-	precomputed_store: "dict | None" = None,
-	trace_sink: object | None = None,
-) -> list:
-	"""Stage 2: produce snap_pred from a frozen raw_pred, reading raw only.
-
-	STRICT separation of raw and snap:
-	  - `raw` is the frozen kinematic trajectory. Never mutated by this
-	    function (tuple elements are immutable; the list is not written).
-	  - `snap_pred` is the returned list of state dicts. Each entry's
-	    `cx` / `cy` is either raw[i]'s center (fall-through) or
-	    raw[i] + alpha_eff * delta (accepted). It is an OUTPUT LAYER,
-	    not a running trajectory state.
-	  - Gating code destructures raw[i-1], raw[i], raw[i+1] into
-	    locally-named `raw_*` variables. The accepted-blob branch writes
-	    to separate `snap_cx` / `snap_cy` locals so nothing in the read
-	    path can accidentally pick up a post-blob value.
-
-	For each non-endpoint frame three gates must all pass for a blob
-	to be accepted:
-	  1. Proximity: `dist(blob, raw[t]) <= ALPHA * h`.
-	  2. Direction: `dot(blob - raw[t], v_pred) >= 0` (skipped when
-	     `|v_pred| <= VELOCITY_FLOOR`).
-	  3. Motion path: the blob lies inside a thin capsule along the
-	     motion segment from each neighbor, i.e. the along-track
-	     projection is within the segment extent and the perpendicular
-	     off-axis distance is small relative to the local motion
-	     magnitude. This is a TRUE motion-path check, not a velocity-
-	     scaled proximity check: a blob at the right distance from
-	     raw[t] but off to the side of the motion line is rejected.
-	     Checked independently against raw[i-1] and raw[i+1]; both must
-	     pass when their motion magnitudes exceed the floor. If neither
-	     neighbor has sufficient motion, the gate is vacuous and only
-	     proximity/direction apply.
-
-	Accepted blobs blend with a displacement clamp:
-	  `delta = blob - raw[t]; |delta| <= max_shift; snap = raw[t] + alpha_eff * delta`.
-
-	Args:
-		raw: Frozen per-frame raw_pred list from _compute_raw_pred_forward
-			or _compute_raw_pred_backward.
-		reader: Video reader supplied by the solver. When None (or
-			missing required attributes) the function falls through to
-			pure Hermite for every frame.
-		scene_transform: SceneTransform for the observer's residual
-			alignment.
-		residual_cache: Per-interval cache dict; contains image-derived
-			raw data only (no accepted blobs, no gate outcomes).
-		blob_snap_enabled: Required bool. When False, skip blob observer
-			entirely and return raw_pred values wrapped as state dicts.
-			When True, behavior is byte-identical to prior code path.
-		precomputed_store: Optional per-interval residual store from
-			residual_pre_pass.precompute_interval_residuals. When non-None,
-			observe_blob_at reads from this store before falling through to
-			the legacy reader path. Keyed by (frame_index, roi_tuple).
-			When None, legacy reader path is used (same as prior behavior).
-		trace_sink: Optional list to collect per-frame BlobGateTrace
-			objects for diagnostics. When None (default) behavior is
-			byte-identical to prior code and no per-frame allocations
-			occur for tracing. When a list is supplied, one
-			BlobGateTrace is appended for every non-endpoint frame
-			(endpoint/skipped frames are not appended). The caller is
-			responsible for annotating each trace's `pass_name` after
-			the call.
-
-	Returns:
-		snap_pred as a list of state dicts, one per entry in `raw`, in
-		the same order. This list is a fresh output; the caller owns it.
-	"""
-	snap_pred = []
-	num = len(raw)
-
-	# guard: treat an incomplete reader (no read_frame / frame_count) as if
-	# the caller passed None. This keeps synthetic-fixture tests working on
-	# minimal reader stubs without forcing them to stub the entire
-	# video-reader API.
-	reader_ok = (
-		reader is not None
-		and hasattr(reader, "read_frame")
-		and hasattr(reader, "frame_count")
-	)
-	effective_reader = reader if reader_ok else None
-
-	# if blob_snap_enabled is False, short-circuit directly to raw_pred
-	# without calling observe_blob_at
-	if not blob_snap_enabled:
-		effective_reader = None
-
-	for i in range(num):
-		frame_index, raw_cx, raw_cy, w, h, conf = raw[i]
-		is_endpoint = (i == 0) or (i == num - 1)
-
-		# default output: pure raw_pred values. Every branch writes
-		# snap_cx / snap_cy before building the state dict.
-		snap_cx = raw_cx
-		snap_cy = raw_cy
-		snap_applied = False
-		gate = "skipped"
-
-		# endpoints and disabled-blob-snap: no snap
-		if effective_reader is None or is_endpoint:
-			# blob_gate is OUTPUT metadata, not a gate input. It is read by
-			# interval_solver._coverage_from_track() for diagnostics only; the
-			# propagator gates themselves read only raw_pred, per contract C5.
-			snap_pred.append({
-				"cx": float(snap_cx),
-				"cy": float(snap_cy),
-				"w": float(w),
-				"h": float(h),
-				"conf": float(conf),
-				"source": "propagated",
-				"blob_gate": gate,
-			})
-			# emit a placeholder trace entry so trace_sink length matches
-			# snap_pred length exactly. Endpoint frames lack neighbors, so
-			# raw_prev/raw_next fall back to raw_curr (self-referential
-			# filler permitted by the dataclass tuple type).
-			if trace_sink is not None:
-				if i == 0:
-					raw_prev_fill = (raw_cx, raw_cy)
-				else:
-					_, p_cx, p_cy, _, _, _ = raw[i - 1]
-					raw_prev_fill = (p_cx, p_cy)
-				if i == num - 1:
-					raw_next_fill = (raw_cx, raw_cy)
-				else:
-					_, n_cx, n_cy, _, _, _ = raw[i + 1]
-					raw_next_fill = (n_cx, n_cy)
-				placeholder_trace = blob_trace.BlobGateTrace(
-					frame_index=int(frame_index),
-					pass_name="",
-					raw_prev=raw_prev_fill,
-					raw_curr=(raw_cx, raw_cy),
-					raw_next=raw_next_fill,
-					raw_box=(raw_cx, raw_cy, w, h),
-					v_pred=(0.0, 0.0),
-					v_pred_mag=0.0,
-					observer_trace=None,
-					winner_dist_px=None,
-					winner_dist_h=None,
-					proximity_threshold=BLOB_SNAP_ALPHA * h,
-					proximity_ok=None,
-					direction_dot=None,
-					direction_ok=None,
-					path_ok_prev=None,
-					blob_gate=gate,
-				)
-				trace_sink.append(placeholder_trace)
-			continue
-
-		# Destructure neighbors from raw ONLY. No reference to snap_pred.
-		_, raw_prev_cx, raw_prev_cy, _, _, _ = raw[i - 1]
-		_, raw_next_cx, raw_next_cy, _, _, _ = raw[i + 1]
-		# local motion vectors in iteration order
-		v_prev = (raw_cx - raw_prev_cx, raw_cy - raw_prev_cy)
-		v_next = (raw_next_cx - raw_cx, raw_next_cy - raw_cy)
-		v_pred = (0.5 * (v_prev[0] + v_next[0]), 0.5 * (v_prev[1] + v_next[1]))
-		v_pred_mag = (v_pred[0] ** 2 + v_pred[1] ** 2) ** 0.5
-
-		# local tangent for the observer (unit-vector frame)
-		if v_pred_mag > 1e-6:
-			t_x = v_pred[0] / v_pred_mag
-			t_y = v_pred[1] / v_pred_mag
-			local_tangent = (t_x, t_y, -t_y, t_x)
-		else:
-			local_tangent = (1.0, 0.0, 0.0, 1.0)
-
-		# When tracing is requested, pass a per-call sink to the observer
-		# so we can read back its trace; otherwise avoid the allocation.
-		if trace_sink is not None:
-			observer_sink = types.SimpleNamespace(observer_trace=None)
-		else:
-			observer_sink = None
-
-		# raw_cx/raw_cy/w/h are in PROCESSED-pixel space (produced by
-		# scene_box_to_pixel, which maps scene coords back to the reader's
-		# decoded-frame pixel space = PROCESSED at any bin_factor).
-		# Wrap them as typed ProcessedPoint / ProcessedBox before passing
-		# to observe_blob_at so the boundary guards do not reject them.
-		# At bin_factor==1, source==processed so this is a numeric no-op.
-		pred_center_typed = coord_space.ProcessedPoint(cx=raw_cx, cy=raw_cy)
-		pred_box_typed = coord_space.ProcessedBox(cx=raw_cx, cy=raw_cy, w=w, h=h)
-		if observer_sink is not None:
-			observation = residual_motion.observe_blob_at(
-				frame_index,
-				pred_center_typed,
-				pred_box_typed,
-				local_tangent,
-				scene_transform,
-				effective_reader,
-				residual_cache,
-				precomputed_store=precomputed_store,
-				trace_sink=observer_sink,
-			)
-		else:
-			observation = residual_motion.observe_blob_at(
-				frame_index,
-				pred_center_typed,
-				pred_box_typed,
-				local_tangent,
-				scene_transform,
-				effective_reader,
-				residual_cache,
-				precomputed_store=precomputed_store,
-			)
-
-		# trace fields default to None until set inside the observation branch
-		trace_winner_dist_px = None
-		trace_winner_dist_h = None
-		trace_proximity_ok = None
-		trace_direction_dot = None
-		trace_direction_ok = None
-		trace_path_ok_prev = None
-
-		if observation is None:
-			gate = "absent"
-		else:
-			# observation.center_pixel is a coord_space.SourcePoint (SOURCE space).
-			# Convert to PROCESSED so dx/dy are in the same space as raw_cx/raw_cy.
-			# At bin_factor==1, source==processed so this is a numeric identity.
-			obs_processed = observation.center_pixel.to_processed(effective_reader.geometry)
-			bx, by = obs_processed.cx, obs_processed.cy
-			dx = bx - raw_cx
-			dy = by - raw_cy
-			dist = (dx * dx + dy * dy) ** 0.5
-
-			# Gate 1: proximity (against raw[t] only)
-			proximity_ok = dist <= BLOB_SNAP_ALPHA * h
-
-			# Gate 2: direction. When v_prev and v_next are both below
-			# the velocity floor, gates 2 and 3 become vacuous and only
-			# proximity applies; this is intentional because near-zero
-			# local velocity makes directional constraints ambiguous.
-			if v_pred_mag > BLOB_SNAP_VELOCITY_FLOOR:
-				direction_ok = (dx * v_pred[0] + dy * v_pred[1]) >= 0.0
-			else:
-				direction_ok = True
-
-			# Gate 3: motion-path consistency. Asymmetric check.
-			# Prev anchor (raw[i-1]) is, in iteration order, the frame
-			# closer to the pass's starting seed -- it has accumulated
-			# fewer Hermite-propagation steps and is the more
-			# trustworthy local reference. The rule is:
-			#   accept if prev does not actively fail
-			#   AND next does not actively fail (None permitted)
-			#   ... but if prev passes and next fails, STILL accept.
-			# Rationale: real footage often has t+1-side noise from
-			# upcoming occlusions, tight curvature, or camera-warp
-			# error. Requiring both anchors to pass rejects valid
-			# blobs in exactly the regimes this feature cares about.
-			# Prev-side noise is rarer because the pass has just come
-			# from a seed anchor, so a prev-fail is strong evidence
-			# the blob is off-path.
-			path_ok_prev = _motion_path_ok(
-				(raw_prev_cx, raw_prev_cy), v_prev, (bx, by),
-				BLOB_SNAP_PATH_SLACK, BLOB_SNAP_PATH_PERP_FRACTION,
-				BLOB_SNAP_VELOCITY_FLOOR,
-			)
-			# Note: path_ok_next is intentionally not computed. Keeping
-			# it absent (not just unused) makes the asymmetry explicit
-			# in the code: future-side disagreement is tolerated by
-			# construction, not by a silent "OR True" combining step
-			# that a future reader could misread as accidental.
-			path_ok = path_ok_prev is not False
-
-			# capture per-frame trace fields before any branch decides gate
-			trace_winner_dist_px = dist
-			trace_winner_dist_h = (dist / h) if h > 0 else None
-			trace_proximity_ok = proximity_ok
-			trace_direction_dot = dx * v_pred[0] + dy * v_pred[1]
-			trace_direction_ok = direction_ok
-			trace_path_ok_prev = path_ok_prev
-
-			if proximity_ok and direction_ok and path_ok:
-				# accept: blend with displacement clamp
-				max_shift = BLOB_SNAP_MAX_SHIFT_FRACTION * h
-				delta_x = dx
-				delta_y = dy
-				if dist > max_shift and dist > 1e-9:
-					scale = max_shift / dist
-					delta_x = delta_x * scale
-					delta_y = delta_y * scale
-				alpha_eff = min(observation.confidence, BLOB_SNAP_ALPHA_MAX)
-				# write to snap_* so the raw_* locals remain unchanged
-				snap_cx = raw_cx + alpha_eff * delta_x
-				snap_cy = raw_cy + alpha_eff * delta_y
-				snap_applied = True
-				gate = "accepted"
-			else:
-				gate = "rejected"
-
-		# emit a per-frame gate trace for non-endpoint frames only
-		if trace_sink is not None:
-			observer_trace_obj = observer_sink.observer_trace
-			gate_trace = blob_trace.BlobGateTrace(
-				frame_index=int(raw[i][0]),
-				pass_name="",
-				raw_prev=(raw_prev_cx, raw_prev_cy),
-				raw_curr=(raw_cx, raw_cy),
-				raw_next=(raw_next_cx, raw_next_cy),
-				raw_box=(raw_cx, raw_cy, w, h),
-				v_pred=v_pred,
-				v_pred_mag=v_pred_mag,
-				observer_trace=observer_trace_obj,
-				winner_dist_px=trace_winner_dist_px,
-				winner_dist_h=trace_winner_dist_h,
-				proximity_threshold=BLOB_SNAP_ALPHA * h,
-				proximity_ok=trace_proximity_ok,
-				direction_dot=trace_direction_dot,
-				direction_ok=trace_direction_ok,
-				path_ok_prev=trace_path_ok_prev,
-				blob_gate=gate,
-			)
-			trace_sink.append(gate_trace)
-
-		snap_pred.append({
-			"cx": float(snap_cx),
-			"cy": float(snap_cy),
+	states = []
+	for frame_index, raw_cx, raw_cy, w, h, conf in raw:
+		states.append({
+			"cx": float(raw_cx),
+			"cy": float(raw_cy),
 			"w": float(w),
 			"h": float(h),
 			"conf": float(conf),
-			"source": "propagated_with_blob_snap" if snap_applied else "propagated",
-			"blob_gate": gate,
+			"source": "propagated",
 		})
-
-	return snap_pred
+	return states
 
 
 #============================================
 def propagate_forward_analytical(
 	interval_curves: dict,
 	scene_transform: object,
-	blob_snap_enabled: bool,
 	reader: object = None,
 	residual_cache: dict = None,
 	precomputed_store: "dict | None" = None,
 ) -> list:
-	"""Propagate forward using FWD Hermite curve plus optional blob snap.
+	"""Propagate forward using the FWD Hermite curve only.
 
-	Stage 1 computes raw_pred[t] from Hermite only. Stage 2 optionally
-	consults a stateless blob observer at each non-endpoint frame,
-	reading from raw_pred exclusively.
+	Builds raw_pred[t] from the forward Hermite curves and returns it as
+	a list of tracking state dicts. This is a pure raw_pred builder; no
+	blob evidence is consulted. The optional blob walker is a separate,
+	opt-in consumer reached through the Stage-4 walker seam.
+
+	The reader, residual_cache, and precomputed_store parameters are
+	accepted for call-site compatibility with the walker seam and are
+	unused by the pure-Hermite propagator.
 
 	Args:
 		interval_curves: Dict from fit_interval_curves().
 		scene_transform: SceneTransform instance.
-		blob_snap_enabled: Required bool. When False, skip blob observer
-			entirely. When True, behavior is byte-identical to prior code.
-		reader: Optional video reader. When None, blob snap is skipped
-			and propagation reduces to pure Hermite (delete-test mode).
-		residual_cache: Optional per-interval cache. When reader is
-			provided, the solver supplies a shared cache for FWD and BWD.
-		precomputed_store: Optional per-interval residual store from
-			residual_pre_pass.precompute_interval_residuals. When non-None,
-			observe_blob_at reads from this store before the legacy reader
-			path, eliminating scattered seeks. When None, legacy path used.
+		reader: Unused. Accepted for call-site compatibility.
+		residual_cache: Unused. Accepted for call-site compatibility.
+		precomputed_store: Unused. Accepted for call-site compatibility.
 
 	Returns:
 		List of tracking state dicts, one per frame from start_frame to
 		end_frame inclusive. Index 0 is at start_frame.
 	"""
 	raw = _compute_raw_pred_forward(interval_curves, scene_transform)
-	states = _apply_blob_snap(
-		raw, reader, scene_transform, residual_cache or {}, blob_snap_enabled,
-		precomputed_store=precomputed_store,
-	)
+	states = _raw_pred_to_states(raw)
 	return states
 
 
@@ -982,39 +573,30 @@ def propagate_forward_analytical(
 def propagate_backward_analytical(
 	interval_curves: dict,
 	scene_transform: object,
-	blob_snap_enabled: bool,
 	reader: object = None,
 	residual_cache: dict = None,
 	precomputed_store: "dict | None" = None,
 ) -> list:
-	"""Propagate backward using BWD Hermite curve plus optional blob snap.
+	"""Propagate backward using the BWD Hermite curve only.
+
+	Builds raw_pred[t] from the backward Hermite curves and returns it as
+	a list of tracking state dicts. Pure raw_pred builder; no blob
+	evidence is consulted. Same ordering convention as
+	propagate_forward_analytical (index 0 at start_frame, chronological).
+	BWD-specific behavior (backward Hermite slopes, end-anchored
+	confidence decay) lives in the Hermite math, not in array ordering.
 
 	Args:
 		interval_curves: Dict from fit_interval_curves().
 		scene_transform: SceneTransform instance.
-		blob_snap_enabled: Required bool. When False, skip blob observer
-			entirely. When True, behavior is byte-identical to prior code.
-		reader: Optional video reader.
-		residual_cache: Optional per-interval cache shared with the FWD
-			pass. Legitimately holds raw residuals and raw blobs only;
-			no per-frame decisions (see residual_motion.observe_blob_at
-			docstring for the cache content boundary).
-		precomputed_store: Optional per-interval residual store from
-			residual_pre_pass.precompute_interval_residuals. When non-None,
-			observe_blob_at reads from this store before the legacy reader
-			path, eliminating scattered seeks. When None, legacy path used.
+		reader: Unused. Accepted for call-site compatibility.
+		residual_cache: Unused. Accepted for call-site compatibility.
+		precomputed_store: Unused. Accepted for call-site compatibility.
 
 	Returns:
 		List of tracking state dicts, one per frame from start_frame to
 		end_frame inclusive. Index 0 is at start_frame (chronological).
-		Same ordering convention as propagate_forward_analytical.
-		BWD-specific behavior (backward Hermite slopes, end-anchored
-		confidence decay) lives in the Hermite math, not in array
-		ordering.
 	"""
 	raw = _compute_raw_pred_backward(interval_curves, scene_transform)
-	states = _apply_blob_snap(
-		raw, reader, scene_transform, residual_cache or {}, blob_snap_enabled,
-		precomputed_store=precomputed_store,
-	)
+	states = _raw_pred_to_states(raw)
 	return states

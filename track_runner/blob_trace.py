@@ -1,4 +1,4 @@
-"""Blob observer and gate trace dataclasses for refinement diagnostics."""
+"""Blob observer trace dataclass for refinement diagnostics."""
 
 import dataclasses
 import numpy
@@ -31,25 +31,3 @@ class BlobObserverTrace:
 	# tools differentiate failure modes without re-instrumenting the
 	# heat-map pipeline.
 	reject_reason: str = ""
-
-
-@dataclasses.dataclass
-class BlobGateTrace:
-	"""Per-frame blob-gate decision trace for FWD and BWD passes."""
-	frame_index: int
-	pass_name: str
-	raw_prev: tuple
-	raw_curr: tuple
-	raw_next: tuple
-	raw_box: tuple
-	v_pred: tuple
-	v_pred_mag: float
-	observer_trace: BlobObserverTrace | None
-	winner_dist_px: float | None
-	winner_dist_h: float | None
-	proximity_threshold: float
-	proximity_ok: bool | None
-	direction_dot: float | None
-	direction_ok: bool | None
-	path_ok_prev: object
-	blob_gate: str

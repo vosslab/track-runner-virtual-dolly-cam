@@ -114,16 +114,28 @@ normative active tracking evidence.
 After 1-2 laps on a track, cyclical priors become available. The runner
 returns to roughly the same image-plane positions every lap period.
 
-Residual-motion blobs are an optional per-frame measurement. The analytical
-FWD/BWD propagator in [velocity_model.py](../track_runner/velocity_model.py)
-consults `residual_motion.observe_blob_at` at each non-endpoint frame and
-blends the blob into the predicted center when three local gates all pass:
-proximity, direction, and temporal smoothness. Gates read the frozen
-`raw_pred` (Hermite-only) array, never any post-blob output, so blob
-influence cannot leak between frames. Blob snap is optional and local: on
-frames with no corridor blob the propagator falls through to pure Hermite
-unchanged. See [CHANGELOG.md](CHANGELOG.md) entries for 2026-04-17
-and the design plan `~/.claude/plans/happy-forging-valiant.md`.
+Residual-motion blobs are consumed by the windowed Viterbi walker
+(`track_runner/blob_walk/`). The walker runs by default on Stage-4-promoted
+intervals (low/fair confidence tier, reader present); `blob_pass=True` for that
+path. Stage 3 stays pure Hermite on
+every interval, and the no-reader test/diagnostic paths stay pure Hermite, so
+the walker is gated to the Stage-4 promotion pass only. The analytical FWD/BWD
+propagator in [velocity_model.py](../track_runner/velocity_model.py) produces a
+pure-Hermite `raw_pred` trajectory and does not apply per-frame blob snap; the
+walker walks its own image-derived candidate lattice independent of `raw_pred`.
+
+Pure-stall Hermite fallback: a known bootstrap-stall bug can make a walker pass
+reject every candidate and emit a degenerate path with zero accepted frames
+(100% interpolated straight line between seeds), which is strictly worse than
+Hermite. To keep default-on "never worse than Hermite" on promoted intervals,
+`solve_interval_analytical` selects output per pass after both producers run: a
+pass with zero accepted frames falls back to its Hermite path, while a pass with
+at least one accepted frame keeps the walker path. The fallback reads the
+walker's own accepted-frame coverage (`WalkSummary.accepted_count`), never
+`raw_pred` and never FWD/BWD agreement (the C9 scoring signal), so the walk
+itself remains Hermite-independent. The underlying bootstrap-stall root cause is
+still open; the fallback masks its worst symptom while Viterbi weight tuning and
+a promoted-only A/B remain follow-up work.
 
 ### Anti-pattern: chained blob state
 
@@ -137,20 +149,25 @@ reviews reject any reintroduction of cross-frame blob state.
 
 Rules:
 
-- Gates read only `raw_pred[t-1]`, `raw_pred[t]`, `raw_pred[t+1]` at frame
-  `t`. If a gate reads `snap_pred[k]`, the design has re-created state
-  one level deeper and fails review.
+- The walker's window buffer holds only image-derived raw candidate lists
+  from `BlobObserverTrace.corridor_blobs`. It never holds accepted
+  positions, filtered-blob lists, or Viterbi decisions from earlier windows.
 - The per-interval residual cache holds image-derived raw data only
   (residual maps, validity masks, raw extracted blobs). Never accepted
-  blobs, filtered-blob lists, gate outcomes, or `snap_pred` values.
-- The propagator has no `last_blob` variable. Missing blobs fall through
-  to the raw Hermite prediction, not a memorized earlier blob.
+  blobs, filtered-blob lists, gate outcomes, or selected-path positions.
+- The propagator produces a pure-Hermite `raw_pred`. Missing blobs in the
+  walker fall back to interpolated/extrapolated status, not a memorized
+  earlier blob position.
 
 ## Windowed path-selection walker
 
-The blob walker under `tools/blob_walk_v2/` selects per-frame blobs by
-window-level trajectory consistency, not by per-frame `integrated_mag`
-argmax. Full spec:
+The blob walker core (modules `walk_walker.py`, `walk_viterbi.py`,
+`walk_motion_gate.py`, `walk_status.py`, `walk_io.py`, `walk_debug_log.py`)
+now lives under `track_runner/blob_walk/`. The walker is the default blob pass
+on Stage-4-promoted intervals (`blob_pass=True`); Stage 3 and non-promoted
+dispatches stay pure Hermite (`blob_pass=False`). It selects per-frame blobs
+by window-level trajectory
+consistency, not by per-frame `integrated_mag` argmax. Full spec:
 [windowed_path_selection_amendment.md](archive/windowed_path_selection_amendment.md).
 
 ### Motivation
@@ -218,8 +235,10 @@ post-window decision.
   under imprecise centroid boundaries, where per-frame argmax did not.
 - C2 (torso-unit scale): the displacement cap and all spatial cost
   terms are expressed in torso-width units, never raw pixels.
-- C10 (unified SCHEMA_VERSION): `walk_debug_log.SCHEMA_VERSION` bumps
-  once for the column-meaning changes.
+- C10 (unified SCHEMA_VERSION): the walker schema version now reads
+  `tr_schema.SCHEMA_VERSION` (not a module-local constant), per C10;
+  see [docs/TR_SCHEMA_VERSION_HISTORY.md](TR_SCHEMA_VERSION_HISTORY.md).
+  The last `walk_debug_log`-local bump is recorded there.
 
 ### What changed in walker state
 

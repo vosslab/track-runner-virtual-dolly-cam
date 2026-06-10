@@ -32,7 +32,7 @@ import walk_paths
 walk_paths.setup()
 
 # local repo modules
-import walk_io
+import blob_walk.walk_io as walk_io
 import walk_util
 import walk_driver
 import walk_html

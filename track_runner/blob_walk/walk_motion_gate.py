@@ -85,7 +85,7 @@ BOOTSTRAP_UNCERTAINTY_W = 0.30
 # ============================================================
 # Tracking-mode three-cap-min constants (post-bootstrap, step > N).
 # These are carried forward from the prior implementation and have not
-# been validated against the M0 corpus.
+# been validated against the baseline acceptance corpus.
 # ============================================================
 
 # Hard ceiling on allowed displacement (multiple of torso width).

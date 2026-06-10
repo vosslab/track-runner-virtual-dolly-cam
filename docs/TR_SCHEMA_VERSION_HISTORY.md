@@ -12,11 +12,31 @@ To bump observer/solver behavior in a way that invalidates geometry caches, incr
 
 When an old cache carries a schema-tagged fingerprint (e.g. `/schema/5`), a pre-unification tail (`/score_schema/4/prerace/4`), or the legacy `blob_snap/v1/...` form, `migrate_legacy_fingerprints` rewrites the key into the unified `geometry_schema_v<N>` namespace at load time. Each entry below marks whether it was geometry-affecting; only geometry-affecting bumps are cache invalidators.
 
+## Walker CSV debug-log constant folded under tr_schema (2026-06-08)
+
+**Verdict-CSV `walk_debug_log.SCHEMA_VERSION` now reads `tr_schema.SCHEMA_VERSION` (C10).** Geometry-affecting: no.
+
+The relocated [walk_debug_log.py](../track_runner/blob_walk/walk_debug_log.py) (moved into
+`track_runner/blob_walk/` by WP-1) previously carried its own `SCHEMA_VERSION = 13`. Once it sits
+inside `track_runner/` beside [tr_schema.py](../track_runner/tr_schema.py), two schema constants
+violate contract C10 (one unified `SCHEMA_VERSION`). WP-4 folds it: the module now defines
+`SCHEMA_VERSION = tr_schema.SCHEMA_VERSION` (currently 11).
+
+- Header-stamp value change: the exported constant value changes from 13 to 11. This is metadata
+  only. `walk_debug_log.SCHEMA_VERSION` is never written into the verdict CSV; the CSV header is the
+  `HEADER` column-name tuple (43 columns), which is unchanged. No CSV cell, no row count, and no
+  column changes. The `e2e_blob_walk_baseline` golden compares CSV columns and cell values, so the
+  fold does not alter the baseline.
+- The torso_box_coords writer in [state_io.py](../track_runner/state_io.py) is untouched (already
+  unified and additive per WS1-C); `GEOMETRY_AFFECTING_SCHEMAS` is unchanged.
+- The CSV column-meaning history (v12 below, v13 below) is retained verbatim for readers parsing
+  older verdict CSVs; only the running stamp source changed.
+
 ## 13 (2026-05-28)
 
 **Walker CSV debug-log schema: window-level path-selection redesign.** Geometry-affecting: no.
 
-This version governs `tools/blob_walk_v2/core/walk_debug_log.py` SCHEMA_VERSION (the blob-walker CSV format),
+This version governs `track_runner/blob_walk/walk_debug_log.py` SCHEMA_VERSION (the blob-walker CSV format),
 not the track_runner on-disk solver artifact schema. It is listed here per contract C10 (one unified
 schema history). The `track_runner/tr_schema.py` SCHEMA_VERSION remains at 11.
 
@@ -60,7 +80,7 @@ is described in
 
 **Walker CSV debug-log schema: provisional-observation anti-freeze columns added.** Geometry-affecting: no.
 
-This version governs `tools/blob_walk_v2/core/walk_debug_log.py` SCHEMA_VERSION (the blob-walker CSV format),
+This version governs `track_runner/blob_walk/walk_debug_log.py` SCHEMA_VERSION (the blob-walker CSV format),
 not the track_runner on-disk solver artifact schema. It is listed here per contract C10 (one unified
 schema history). The `track_runner/tr_schema.py` SCHEMA_VERSION remains at 11; the walker CSV schema
 advances independently because the walker lives in `tools/blob_walk_v2/` and does not write

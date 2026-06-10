@@ -20,7 +20,7 @@ if tools_blob_walk_v2 not in sys.path:
 import walk_paths
 walk_paths.setup()
 
-import walk_walker
+import blob_walk.walk_walker as walk_walker
 import blob_trace
 
 

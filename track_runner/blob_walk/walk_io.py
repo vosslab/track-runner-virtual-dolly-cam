@@ -5,12 +5,10 @@ which seed-to-seed intervals are walkable. Pure orchestration; no compute.
 """
 
 # Standard Library
+import json
+import subprocess
 import dataclasses
 import pathlib
-
-# shared sys.path bootstrap (track_runner, tests, repo root, blob_walk_v2 dirs)
-import walk_paths
-_REPO_ROOT = walk_paths.setup()
 
 # local repo modules
 import state_io
@@ -19,10 +17,16 @@ import common_tools.frame_reader
 import camera_motion
 import scene_coords
 
-# Standard Library continuation
-import json
 
-# _REPO_ROOT already determined above from file location
+# Repo root, used to locate tr_config/ and TRACK_VIDEOS/. Resolved once via
+# git per docs/REPO_STYLE.md (do not derive paths from the current working
+# directory). This replaces the former walk_paths.setup() bootstrap.
+_REPO_ROOT = subprocess.run(
+	["git", "rev-parse", "--show-toplevel"],
+	capture_output=True,
+	text=True,
+	check=True,
+).stdout.strip()
 
 
 #============================================

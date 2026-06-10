@@ -34,7 +34,7 @@ walk_paths.setup()
 
 import numpy
 import blob_trace
-import walk_walker
+import blob_walk.walk_walker as walk_walker
 
 
 #============================================

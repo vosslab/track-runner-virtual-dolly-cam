@@ -323,7 +323,7 @@ def _format_stage4_interval_result(
 
 	Mirrors the column layout of `_format_interval_result` so Stage 3 and
 	Stage 4 lines align when scanned vertically. Adds a per-metric delta
-	vs the Stage 3 baseline and shows real blob coverage fractions.
+	vs the Stage 3 baseline.
 
 	Stage 4 always produces v3 score dicts (confidence_tier present).
 	No v2 fallback is provided here.
@@ -350,12 +350,6 @@ def _format_stage4_interval_result(
 	vel_cons = score["velocity_consistency"]
 	size_cons = score["size_consistency"]
 	reasons = score.get("failure_reasons", [])
-
-	# blob coverage: floats in [0,1] for Stage 4 results
-	fwd_cov = score.get("blob_coverage_fwd")
-	bwd_cov = score.get("blob_coverage_bwd")
-	fwd_str = f"{fwd_cov*100:.0f}%" if fwd_cov is not None else "n/a"
-	bwd_str = f"{bwd_cov*100:.0f}%" if bwd_cov is not None else "n/a"
 
 	# compute deltas vs baseline when baseline is a v3 dict
 	has_baseline = (
@@ -388,7 +382,7 @@ def _format_stage4_interval_result(
 	line = (
 		f"  interval {start_frame:5d}-{end_frame:5d} "
 		f"({duration_s:.1f}s)  "
-		f"{metrics_str}  blob_accept={fwd_str}/{bwd_str}  {label} [stage4]"
+		f"{metrics_str}  {label} [stage4]"
 	)
 	return line
 
@@ -778,14 +772,18 @@ def execute_interval_work(
 							f"  solving interval {pair_idx + 1}/{total_intervals} "
 							f"(frames {start_frame}-{end_frame})"
 						)
+					# Stage 3 in-process path: pure Hermite on every interval.
+					# solve_interval_analytical now defaults blob_pass=True (the
+					# Stage-4 promoted path), so Stage 3 passes it explicitly
+					# False to stay off the walker despite a real reader.
 					result = interval_solver.solve_interval_analytical(
 						seed_start, seed_end, context.scene_transform,
 						context.all_seeds_scene, context.fps,
-						blob_snap_enabled=False,
 						debug=context.debug,
 						motion_track=context.motion_track,
 						all_seeds=context.all_seeds,
 						reader=context.reader,
+						blob_pass=False,
 					)
 					_accept(pair_idx, expected_fingerprints[pair_idx], result)
 			else:
@@ -802,6 +800,7 @@ def execute_interval_work(
 					all_seeds=context.all_seeds,
 					fps=context.fps,
 					debug=context.debug,
+					blob_pass=False,
 					bin_factor=context.bin_factor,
 					total_frames=context.video_frame_count,
 				) as pool:
@@ -811,7 +810,7 @@ def execute_interval_work(
 						seed_end = usable_seeds_sorted[pair_idx + 1]
 						fut = pool.submit(
 							solver_workers._solve_interval_worker,
-							(pair_idx, seed_start, seed_end, False),
+							(pair_idx, seed_start, seed_end),
 						)
 						future_to_idx[fut] = pair_idx
 

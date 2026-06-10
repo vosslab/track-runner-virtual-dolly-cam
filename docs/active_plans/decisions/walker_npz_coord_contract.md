@@ -65,7 +65,7 @@ def processed_to_source_delta(self, dx: float, dy: float) -> tuple[float, float]
 ```
 
 The geometry to use is `reader.geometry` from the walker's open reader
-(`tools/blob_walk_v2/core/walk_io.py` `open_walker_reader` constructs a
+(`track_runner/blob_walk/walk_io.py` `open_walker_reader` constructs a
 `FrameReader` at `select_bin_factor_for_analysis(source_width)`; the
 `SeedsView` is already built against this same geometry in
 `walk_driver.run_interval_walk` via `load_walker_seeds_view` +
@@ -95,7 +95,7 @@ npz preserve-only (reload == round(source)) = True
   - Extension stripped on purpose so a MOV->MKV remux does not orphan the
     artifact (C13 fragile-value avoidance).
   - The walker addresses videos by basename
-    (`tools/blob_walk_v2/core/walk_io.py` `open_walker_reader` resolves
+    (`track_runner/blob_walk/walk_io.py` `open_walker_reader` resolves
     `TRACK_VIDEOS/{video_basename}`); WS1-B passes that same basename/stem to
     `tr_paths.default_intervals_path` so the walker and the main solver write
     the SAME canonical file.

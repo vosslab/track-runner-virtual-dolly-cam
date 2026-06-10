@@ -1,8 +1,5 @@
 """Tests for track_runner.velocity_model module."""
 
-# Standard Library
-import unittest.mock
-
 # PIP3 modules
 import numpy
 
@@ -155,10 +152,10 @@ def test_fwd_bwd_endpoint_alignment():
 	)
 
 	fwd_states = velocity_model.propagate_forward_analytical(
-		curves, transform, blob_snap_enabled=False,
+		curves, transform,
 	)
 	bwd_states = velocity_model.propagate_backward_analytical(
-		curves, transform, blob_snap_enabled=False,
+		curves, transform,
 	)
 
 	# both passes anchor slot 0 at left_seed, slot -1 at right_seed
@@ -206,10 +203,10 @@ def test_seed_roundtrip_endpoints():
 	)
 
 	fwd_states = velocity_model.propagate_forward_analytical(
-		curves, transform, blob_snap_enabled=False,
+		curves, transform,
 	)
 	bwd_states = velocity_model.propagate_backward_analytical(
-		curves, transform, blob_snap_enabled=False,
+		curves, transform,
 	)
 
 	# both passes' endpoints match seeds in center position
@@ -269,7 +266,7 @@ def test_fwd_confidence_decays_from_start():
 	curves, transform = _make_decay_fixture()
 
 	fwd_states = velocity_model.propagate_forward_analytical(
-		curves, transform, blob_snap_enabled=False,
+		curves, transform,
 	)
 
 	confs = [s["conf"] for s in fwd_states]
@@ -292,7 +289,7 @@ def test_bwd_confidence_decays_from_end():
 	curves, transform = _make_decay_fixture()
 
 	bwd_states = velocity_model.propagate_backward_analytical(
-		curves, transform, blob_snap_enabled=False,
+		curves, transform,
 	)
 
 	confs = [s["conf"] for s in bwd_states]
@@ -456,67 +453,4 @@ def test_bwd_raw_pred_confidence_peak_at_end():
 	for i in range(len(confs) - 1):
 		assert confs[i] <= confs[i + 1] + 1e-9
 
-
-#============================================
-def _make_two_seed_interval_fixture():
-	"""Build a minimal two-seed interval for blob_snap_enabled parity tests.
-
-	Local copy (deliberate): avoids cross-test imports per the test-cleanup
-	plan. A near-identical helper lives in test_tr_stage4_parity.
-	"""
-	seed_start = {"frame_index": 0, "cx": 100.0, "cy": 100.0, "w": 50.0, "h": 50.0}
-	seed_end = {"frame_index": 10, "cx": 200.0, "cy": 200.0, "w": 50.0, "h": 50.0}
-	all_seeds_scene = [
-		(0, 100.0, 100.0, 50.0, 50.0),
-		(10, 200.0, 200.0, 50.0, 50.0),
-	]
-	motion_track = camera_motion.MotionTrack(
-		dx=numpy.zeros(11, dtype=numpy.float32),
-		dy=numpy.zeros(11, dtype=numpy.float32),
-		scale=numpy.ones(11, dtype=numpy.float32),
-		quality=numpy.ones(11, dtype=numpy.float32),
-	)
-	transform = scene_coords.SceneTransform(motion_track)
-	curves = velocity_model.fit_interval_curves(
-		seed_start, seed_end, all_seeds_scene, transform,
-	)
-	return transform, curves
-
-
-#============================================
-def test_propagator_skips_blob_observer_when_disabled():
-	"""blob_snap_enabled=False must never call residual_motion.observe_blob_at on either pass."""
-	transform, curves = _make_two_seed_interval_fixture()
-
-	with unittest.mock.patch("residual_motion.observe_blob_at") as mock_observe:
-		mock_observe.side_effect = RuntimeError("observe_blob_at should not be called")
-
-		velocity_model.propagate_forward_analytical(
-			curves, transform, blob_snap_enabled=False, reader=None,
-		)
-		velocity_model.propagate_backward_analytical(
-			curves, transform, blob_snap_enabled=False, reader=None,
-		)
-
-		assert mock_observe.call_count == 0
-
-
-#============================================
-def test_propagator_hermite_only_matches_no_reader_path():
-	"""Round-trip invariant: with reader=None, blob_snap_enabled has no observable effect.
-
-	Blob snap falls through to raw_pred when no video data is available, so
-	both modes must produce trajectories matching frame-by-frame on FWD and BWD.
-	"""
-	transform, curves = _make_two_seed_interval_fixture()
-
-	for direction, propagate in (
-		("fwd", velocity_model.propagate_forward_analytical),
-		("bwd", velocity_model.propagate_backward_analytical),
-	):
-		hermite_only = propagate(curves, transform, blob_snap_enabled=False, reader=None)
-		blob_no_reader = propagate(curves, transform, blob_snap_enabled=True, reader=None)
-		for state_h, state_b in zip(hermite_only, blob_no_reader):
-			assert numpy.isclose(state_h["cx"], state_b["cx"], atol=1e-6), direction
-			assert numpy.isclose(state_h["cy"], state_b["cy"], atol=1e-6), direction
 

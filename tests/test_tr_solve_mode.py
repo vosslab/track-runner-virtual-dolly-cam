@@ -63,7 +63,6 @@ def test_solve_all_modes_produce_valid_results():
 				seed_end = seeds[i + 1]
 				result = interval_solver.solve_interval_analytical(
 					seed_start, seed_end, scene_transform, all_seeds_scene, fps,
-					blob_snap_enabled=False,
 					debug=False,
 					motion_track=None,
 					all_seeds=seeds,
@@ -87,7 +86,6 @@ def test_solve_all_modes_produce_valid_results():
 				seed_end = seeds[pair_idx + 1]
 				result = interval_solver.solve_interval_analytical(
 					seed_start, seed_end, scene_transform, all_seeds_scene, fps,
-					blob_snap_enabled=True,
 					debug=False,
 					motion_track=None,
 					all_seeds=seeds,
@@ -130,7 +128,6 @@ def test_cache_hit_on_rerun_same_mode():
 
 	result_1 = interval_solver.solve_interval_analytical(
 		seed_start, seed_end, scene_transform, all_seeds_scene, fps,
-		blob_snap_enabled=False,
 		debug=False,
 		motion_track=None,
 		all_seeds=seeds,
@@ -138,7 +135,6 @@ def test_cache_hit_on_rerun_same_mode():
 	)
 	result_2 = interval_solver.solve_interval_analytical(
 		seed_start, seed_end, scene_transform, all_seeds_scene, fps,
-		blob_snap_enabled=False,
 		debug=False,
 		motion_track=None,
 		all_seeds=seeds,

@@ -21,7 +21,7 @@ guard. Concrete evidence gathered this session:
   source coordinate therefore converts to a processed coordinate just outside
   the real processed frame.
 - The "Option A" migration (2026-05-29) made the walker
-  (`tools/blob_walk_v2/core/walk_walker.py`) and
+  (`track_runner/blob_walk/walk_walker.py`) and
   `residual_motion.observe_blob_at` operate in PROCESSED pixels. But
   `observe_blob_at` RETURNS its centroid in SOURCE
   (`residual_motion.py:1326-1329`, `processed_to_source`). One function takes

@@ -53,8 +53,18 @@ track-runner-virtual-dolly-cam/
 |   |-- overlay_config.py          overlay style loader
 |   |-- video_io.py                VideoReader and frame utilities
 |   |-- key_input.py               keyboard input handling
+|   |-- walker_bundle.py           Stage-4 walker input-bundle seam
 |   |-- track_runner.config.yaml   default runtime config
 |   |-- overlay_styles.yaml        overlay style definitions
+|   |
+|   +-- blob_walk/                 windowed path-selection walker package
+|   |   |-- __init__.py            package marker (empty)
+|   |   |-- walk_walker.py         window-buffered blob walker
+|   |   |-- walk_viterbi.py        Viterbi DP over candidate lattice
+|   |   |-- walk_motion_gate.py    per-step motion gate predicates
+|   |   |-- walk_status.py         per-frame status enum
+|   |   |-- walk_io.py             walker NPZ reader/writer
+|   |   `-- walk_debug_log.py      debug-log schema and writer
 |   |
 |   +-- ui/                        PySide6 GUI modules
 |       |-- app_shell.py           main window and theme

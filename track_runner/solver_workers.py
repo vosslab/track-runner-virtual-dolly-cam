@@ -3,8 +3,8 @@
 The analytical solver in `interval_solver.solve_interval_analytical` is a
 pure function of its inputs: two seeds, a scene transform, a motion track,
 the seed list, and a video reader for ROI reads. Intervals have no
-cross-talk (per 2026-04-17 blob-snap rework), so they are safe to solve
-concurrently in worker processes.
+cross-talk (each interval is an independent per-process solve), so they
+are safe to solve concurrently in worker processes.
 
 This module owns the execution side:
 
@@ -54,6 +54,7 @@ class WorkerContext:
 	all_seeds: list
 	fps: float
 	debug: bool
+	blob_pass: bool
 
 
 #============================================
@@ -73,6 +74,7 @@ def _worker_init(
 	all_seeds: list,
 	fps: float,
 	debug: bool,
+	blob_pass: bool,
 	bin_factor: int = 1,
 	total_frames: int = 0,
 ) -> None:
@@ -90,6 +92,9 @@ def _worker_init(
 		all_seeds: Original seed list (pixel coords).
 		fps: Video frame rate.
 		debug: Debug flag; constant across all tasks in this run.
+		blob_pass: Run-invariant blob-pass flag; False for Stage-3 (pure
+			Hermite), True for the Stage-4 walker pass. Constant across all
+			tasks in this run.
 	"""
 	global _WORKER_CONTEXT
 	# reopen the video in this process; the main process's reader cannot
@@ -111,6 +116,7 @@ def _worker_init(
 		all_seeds=all_seeds,
 		fps=fps,
 		debug=debug,
+		blob_pass=blob_pass,
 	)
 	# close the reader when the worker shuts down so file handles do not
 	# leak on the normal path. ProcessPoolExecutor also terminates
@@ -142,26 +148,29 @@ def _solve_interval_worker(task: tuple) -> tuple:
 	built once per process by `_worker_init`.
 
 	Args:
-		task: Tuple of (pair_idx, seed_start, seed_end, blob_snap_enabled).
+		task: Tuple of (pair_idx, seed_start, seed_end).
 
 	Returns:
 		Tuple of (pair_idx, fingerprint, result_dict).
 	"""
-	pair_idx, seed_start, seed_end, blob_snap_enabled = task
+	pair_idx, seed_start, seed_end = task
 	ctx = _WORKER_CONTEXT
 	fingerprint = interval_solver.compute_interval_fingerprint(
 		seed_start, seed_end,
 	)
+	# The worker solves with the dispatch's blob_pass: False for Stage-3 (pure
+	# Hermite on every interval) and True for the Stage-4 walker pass. The flag
+	# is run-invariant per dispatch, carried on the frozen WorkerContext.
 	result = interval_solver.solve_interval_analytical(
 		seed_start, seed_end,
 		ctx.scene_transform,
 		ctx.all_seeds_scene,
 		ctx.fps,
-		blob_snap_enabled,
 		debug=ctx.debug,
 		motion_track=ctx.motion_track,
 		all_seeds=ctx.all_seeds,
 		reader=ctx.reader,
+		blob_pass=ctx.blob_pass,
 	)
 	return (pair_idx, fingerprint, result)
 
@@ -176,6 +185,7 @@ def make_pool(
 	all_seeds: list,
 	fps: float,
 	debug: bool,
+	blob_pass: bool,
 	bin_factor: int = 1,
 	total_frames: int = 0,
 ) -> concurrent.futures.ProcessPoolExecutor:
@@ -202,6 +212,8 @@ def make_pool(
 		all_seeds: Seeds in pixel coordinates.
 		fps: Video frame rate.
 		debug: Debug flag.
+		blob_pass: Run-invariant blob-pass flag; False for Stage-3 (pure
+			Hermite), True for the Stage-4 walker pass.
 
 	Returns:
 		A started ProcessPoolExecutor. Caller is responsible for using
@@ -212,7 +224,7 @@ def make_pool(
 		initializer=_worker_init,
 		initargs=(
 			video_path, scene_transform, motion_track,
-			all_seeds_scene, all_seeds, fps, debug,
+			all_seeds_scene, all_seeds, fps, debug, blob_pass,
 			bin_factor, total_frames,
 		),
 		max_tasks_per_child=1,

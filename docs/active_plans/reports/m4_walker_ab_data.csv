@@ -1,0 +1,80 @@
+# M4 walker A/B (held-out-seed accuracy, torso-width units)
+# random_seed=12345 sample_n_per_video=20 per_video_budget_s=240.0
+video,a_frame,b_frame,c_frame,hermite_err,walker_err,delta,classification
+IMG_3830.mkv,247,248,249,0.064,0.744,+0.680,regressed
+IMG_3830.mkv,770,773,776,0.287,1.259,+0.972,regressed
+IMG_3830.mkv,1466,1467,1472,0.167,1.001,+0.834,regressed
+IMG_3830.mkv,1624,1632,1656,0.068,0.245,+0.177,regressed
+IMG_3830.mkv,1702,1703,1704,0.054,0.287,+0.233,regressed
+IMG_3830.mkv,1725,1727,1728,0.140,0.039,-0.101,preserved
+IMG_3830.mkv,1818,1819,1820,0.020,0.219,+0.199,regressed
+IMG_3830.mkv,1827,1828,1829,0.042,0.017,-0.025,preserved
+IMG_3830.mkv,1857,1859,1862,0.189,0.357,+0.168,regressed
+IMG_3830.mkv,2240,2241,2242,0.075,0.669,+0.594,regressed
+IMG_3830.mkv,2400,2401,2404,0.248,0.763,+0.515,regressed
+IMG_3830.mkv,2410,2414,2416,0.104,0.619,+0.514,regressed
+IMG_3830.mkv,2762,2764,2768,0.102,0.176,+0.075,preserved
+IMG_3830.mkv,2955,2957,2960,0.111,0.416,+0.305,regressed
+IMG_3830.mkv,2966,2988,2989,0.010,0.101,+0.092,preserved
+IMG_3830.mkv,3917,3918,3919,0.071,0.117,+0.046,preserved
+IMG_3830.mkv,3926,3927,3928,0.042,0.138,+0.096,preserved
+IMG_3830.mkv,3930,3931,3932,0.021,0.092,+0.071,preserved
+IMG_3830.mkv,4028,4029,4031,0.058,0.334,+0.276,regressed
+IMG_3830.mkv,4080,4081,4089,0.077,0.422,+0.345,regressed
+# [IMG_3830.mkv] done in 17.5s: needs_review=0, preserved=7, regressed=13, rescued=0, skipped_budget=0
+IMG_3823.mkv,134,136,137,0.180,0.214,+0.034,preserved
+IMG_3823.mkv,494,495,496,0.160,0.288,+0.128,preserved
+IMG_3823.mkv,558,559,560,0.058,0.196,+0.138,preserved
+IMG_3823.mkv,621,624,625,0.083,0.500,+0.417,regressed
+IMG_3823.mkv,731,736,741,0.263,1.527,+1.264,regressed
+IMG_3823.mkv,780,781,782,0.162,0.067,-0.095,preserved
+IMG_3823.mkv,806,807,810,0.077,0.372,+0.295,regressed
+IMG_3823.mkv,1047,1053,1066,0.152,1.074,+0.923,regressed
+IMG_3823.mkv,1300,1301,1313,0.080,0.188,+0.109,preserved
+IMG_3823.mkv,1560,1561,1573,0.149,0.468,+0.319,regressed
+IMG_3823.mkv,1717,1720,1729,0.216,0.318,+0.102,preserved
+IMG_3823.mkv,1729,1730,1736,1.789,1.178,-0.611,needs_review
+IMG_3823.mkv,2316,2332,2337,0.051,2.625,+2.573,regressed
+IMG_3823.mkv,2337,2340,2341,0.167,0.606,+0.439,regressed
+IMG_3823.mkv,3158,3166,3170,0.301,1.004,+0.702,regressed
+IMG_3823.mkv,3614,3640,3655,0.236,0.480,+0.245,regressed
+IMG_3823.mkv,3724,3741,3744,0.339,0.318,-0.021,preserved
+IMG_3823.mkv,3745,3746,3747,0.053,0.309,+0.256,regressed
+IMG_3823.mkv,3891,3900,3902,3.611,0.333,-3.277,rescued
+IMG_3823.mkv,3956,3978,3979,0.098,0.311,+0.213,regressed
+# [IMG_3823.mkv] done in 25.8s: needs_review=1, preserved=7, regressed=11, rescued=1, skipped_budget=0
+Jason-3200m-sectionals-IMG_4005.mkv,748,800,836,1.617,2.898,+1.281,needs_review
+Jason-3200m-sectionals-IMG_4005.mkv,7308,7332,7355,0.398,0.614,+0.216,regressed
+Jason-3200m-sectionals-IMG_4005.mkv,9122,9144,9167,0.179,1.255,+1.076,regressed
+Jason-3200m-sectionals-IMG_4005.mkv,10669,10716,10739,0.292,1.144,+0.853,regressed
+# [Jason-3200m-sectionals-IMG_4005.mkv] done in 251.9s: needs_review=1, preserved=0, regressed=3, rescued=0, skipped_budget=16
+Lyra-Hersey-800m-IMG_3882.mkv,840,892,945,0.206,0.778,+0.572,regressed
+Lyra-Hersey-800m-IMG_3882.mkv,1898,1899,1901,0.058,0.432,+0.374,regressed
+Lyra-Hersey-800m-IMG_3882.mkv,1973,1974,1995,0.064,0.082,+0.018,preserved
+Lyra-Hersey-800m-IMG_3882.mkv,2029,2047,2073,0.305,0.056,-0.249,rescued
+Lyra-Hersey-800m-IMG_3882.mkv,2197,2206,2208,0.072,0.489,+0.418,regressed
+Lyra-Hersey-800m-IMG_3882.mkv,3132,3136,3137,0.140,0.740,+0.600,regressed
+Lyra-Hersey-800m-IMG_3882.mkv,3143,3146,3150,0.141,1.994,+1.853,regressed
+Lyra-Hersey-800m-IMG_3882.mkv,3405,3465,3520,1.095,0.609,-0.485,rescued
+# [Lyra-Hersey-800m-IMG_3882.mkv] done in 293.7s: needs_review=0, preserved=1, regressed=5, rescued=2, skipped_budget=12
+Conant-4x400-2026_April_15.mkv,1157,1173,1235,1.175,0.242,-0.933,rescued
+Conant-4x400-2026_April_15.mkv,3211,3218,3226,0.343,1.413,+1.071,regressed
+Conant-4x400-2026_April_15.mkv,3735,3766,3797,0.493,0.326,-0.166,rescued
+Conant-4x400-2026_April_15.mkv,4168,4199,4229,0.478,0.078,-0.400,rescued
+Conant-4x400-2026_April_15.mkv,4352,4384,4415,0.212,0.373,+0.162,regressed
+# [Conant-4x400-2026_April_15.mkv] done in 263.0s: needs_review=0, preserved=0, regressed=2, rescued=3, skipped_budget=15
+Lyra-Wheeling-IMG_3912.mkv,754,867,981,0.069,3.381,+3.312,regressed
+# [Lyra-Wheeling-IMG_3912.mkv] done in 427.6s: needs_review=0, preserved=0, regressed=1, rescued=0, skipped_budget=19
+
+# ===== DISTRIBUTION HEADLINE =====
+# evaluated 58 of 120 attempted during-race visible triples across 6 videos
+# success (rescued+preserved) = 21/58  (rescued=6, preserved=15)
+# regressed = 35/58
+# needs_review = 2/58
+# per-video counts:
+#   IMG_3830.mkv: needs_review=0, preserved=7, regressed=13, rescued=0, skipped_budget=0
+#   IMG_3823.mkv: needs_review=1, preserved=7, regressed=11, rescued=1, skipped_budget=0
+#   Jason-3200m-sectionals-IMG_4005.mkv: needs_review=1, preserved=0, regressed=3, rescued=0, skipped_budget=16
+#   Lyra-Hersey-800m-IMG_3882.mkv: needs_review=0, preserved=1, regressed=5, rescued=2, skipped_budget=12
+#   Conant-4x400-2026_April_15.mkv: needs_review=0, preserved=0, regressed=2, rescued=3, skipped_budget=15
+#   Lyra-Wheeling-IMG_3912.mkv: needs_review=0, preserved=0, regressed=1, rescued=0, skipped_budget=19

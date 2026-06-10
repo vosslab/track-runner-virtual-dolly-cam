@@ -2,14 +2,16 @@
 Debug log CSV writer for blob walker v2 per-frame telemetry.
 
 Exports per-frame walker trace data to a CSV file with a locked header
-(consumed by downstream M3 HTML caption layer). Every frame the walker
+(consumed by the downstream HTML caption layer). Every frame the walker
 visits produces one row.
 
 Public API:
 - DebugLogRow: dataclass with one attribute per CSV column.
 - DebugLogWriter: class with __init__, write_row, __enter__, __exit__, close.
-- HEADER: tuple of column names (44 items as of schema v13).
-- SCHEMA_VERSION: int, current schema version for this debug-log format.
+- HEADER: locked verdict-CSV column tuple (43 columns); see TR_SCHEMA_VERSION_HISTORY.md for version history.
+- SCHEMA_VERSION: int, the unified tr_schema.SCHEMA_VERSION (C10); metadata only,
+  not stamped into the CSV. The column-meaning history (v12/v13) below documents
+  the CSV layout for readers parsing older files.
 
 Unavailable numeric values are BLANK (empty cell), never the string "None".
 This behavior is the natural default of Python's csv.writer when passed None.
@@ -32,16 +34,22 @@ import csv
 import dataclasses
 import pathlib
 
+# local repo modules
+import tr_schema
 
-# Schema version for this debug-log CSV format.
-# v13 (2026-05-28): window-level path-selection redesign; removed torso_w_drift_frac;
-#   added path_cost and candidates_in_window; updated status enum.
-# Per contract C10, this is separate from track_runner/tr_schema.py SCHEMA_VERSION
-# (that governs on-disk solver artifacts); this constant governs the walker CSV schema.
-SCHEMA_VERSION = 13
 
-# Locked CSV header (44 columns in exact order as of SCHEMA_VERSION=13).
-# This tuple is consumed by downstream M3 HTML caption generation.
+# Schema version stamp for this debug-log CSV format.
+# Per contract C10 there is exactly one SCHEMA_VERSION authority in the codebase:
+# track_runner/tr_schema.py. Now that this module lives inside track_runner/ beside
+# tr_schema, it reads that unified constant rather than carrying its own. The verdict
+# CSV is a diagnostic artifact; this value is metadata only and is not written into the
+# CSV (the CSV header is the column-name tuple HEADER below, which is unchanged).
+# The column-meaning history (v12, v13) is retained in the module docstring above for
+# readers parsing older CSVs; the running stamp now tracks tr_schema.SCHEMA_VERSION.
+SCHEMA_VERSION = tr_schema.SCHEMA_VERSION
+
+# Locked verdict-CSV column tuple (43 columns). See TR_SCHEMA_VERSION_HISTORY.md for version history.
+# This tuple is consumed by the downstream HTML caption generation.
 # Changes from v12:
 #   DELETED: torso_w_drift_frac (unused placeholder per scout audit)
 #   NEW: path_cost (Viterbi cost contribution at this frame)

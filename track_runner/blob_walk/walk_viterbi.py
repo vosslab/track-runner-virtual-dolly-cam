@@ -21,7 +21,7 @@ No appearance, color, or template terms enter the cost (C8).
 import math
 
 # local repo modules
-import walk_motion_gate
+import blob_walk.walk_motion_gate as walk_motion_gate
 
 # ============================================================
 # Viterbi cost weights.

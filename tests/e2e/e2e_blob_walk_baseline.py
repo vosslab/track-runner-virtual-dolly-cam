@@ -49,7 +49,7 @@ import walk_paths
 walk_paths.setup()
 
 # local repo modules (blob_walk_v2 + track_runner, imported by bare name)
-import walk_io
+import blob_walk.walk_io as walk_io
 import walk_driver
 
 

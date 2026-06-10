@@ -26,7 +26,7 @@ Contract references:
   C6: interval independence; no shared state across intervals.
   C8: no appearance cues.
   C9: FWD/BWD independence.
-  C10: unified SCHEMA_VERSION (walk_debug_log.SCHEMA_VERSION).
+  C10: unified SCHEMA_VERSION; walk_debug_log reads tr_schema.SCHEMA_VERSION.
   TRACK_RUNNER_DESIGN.md: Anti-pattern: chained blob state -- no last_blob,
     no *_chain_* variable survives past the active window.
 
@@ -40,17 +40,13 @@ import dataclasses
 import json
 import math
 
-# shared sys.path bootstrap (track_runner, tests, repo root, blob_walk_v2 dirs)
-import walk_paths
-walk_paths.setup()
-
 # local repo modules
 import residual_motion
 import blob_trace
 import scene_coords
-import walk_status
-import walk_viterbi
-import walk_debug_log
+import blob_walk.walk_status as walk_status
+import blob_walk.walk_viterbi as walk_viterbi
+import blob_walk.walk_debug_log as walk_debug_log
 import common_tools.coord_space as coord_space
 import common_tools.in_box_heat
 
@@ -209,8 +205,8 @@ def measure_in_box_heat_for_frame(
 	"""Cache the in-box motion-cue heat for one emitted frame at walk time.
 
 	Computes the heat scalars while the residual is still LIVE on the trace,
-	against the FINAL solved box for this frame (M1-G). This replaces the
-	render-time re-derive (M1-F) so no extra decode is paid: the residual was
+	against the FINAL solved box for this frame. This replaces the
+	render-time re-derive so no extra decode is paid: the residual was
 	already computed during the walk and lives on the trace until lightening.
 
 	The single-source threshold is residual_motion.DEFAULT_THRESHOLD, the same
@@ -225,7 +221,7 @@ def measure_in_box_heat_for_frame(
 		h: Final solved box height (PROCESSED pixels).
 
 	Returns:
-		(hot_mean, hot_count): from the frozen M1-A primitive when a live
+		(hot_mean, hot_count): from the frozen heat-measurement primitive when a live
 		residual is present, else (None, 0).
 	"""
 	# No live residual (miss frame or already lightened): nothing to measure.
@@ -424,7 +420,7 @@ def _run_viterbi_and_emit_oldest(
 		frame_w = r["w"]
 		frame_h = r["h"]
 		frame_conf = conf_from_anchor(fi, seed_frame)
-		# M1-G: cache in-box heat NOW, while the live trace's residual is still
+		# cache in-box heat NOW, while the live trace's residual is still
 		# present, measured against the FINAL solved box (the emitted cx/cy/w/h).
 		# The renderer reads these scalars instead of re-deriving the residual.
 		in_box_hot_mean, in_box_hot_count = measure_in_box_heat_for_frame(
@@ -437,6 +433,10 @@ def _run_viterbi_and_emit_oldest(
 			"w": frame_w,
 			"h": frame_h,
 			"conf": frame_conf,
+			# Per-frame five-value walk status, carried alongside the solved box
+			# for diagnostics and the walk debug log. Image-derived per-frame
+			# label only; no cross-frame state and no Hermite reference.
+			"status": r["status"],
 			"in_box_hot_mean": in_box_hot_mean,
 			"in_box_hot_count": in_box_hot_count,
 		})
@@ -682,6 +682,66 @@ def _compute_roi_and_observe(
 
 
 #============================================
+def gather_frame_candidates(
+	obs: object,
+	trace_sink_holder: object,
+) -> list:
+	"""Gather one frame's blob candidate list from a trace sink.
+
+	This is the single per-frame candidate source for the in-pipeline windowed
+	walker. The interval-level gathering is just this helper called once per
+	frame across the interval frame range (see _build_window_entry and
+	_run_windowed_steps); a frame-aligned sequence of these lists is the
+	candidate lattice the Viterbi DP consumes.
+
+	The candidate list is BlobObserverTrace.corridor_blobs, produced by
+	residual_motion.observe_blob_at and read off the trace sink populated by
+	that call. observe_blob_at is unchanged (API Decision 2026-05-28); this
+	helper only reads the trace it already populates. The pipeline's
+	precomputed_store (the per-interval residual store) is passed to
+	observe_blob_at by the caller, not by this helper; these candidates are
+	image-derived observations sourced from that store, not decisions.
+
+	Declared candidate coordinate space (Candidate source contract,
+	docs/COORDINATE_SPACES.md row "observe_blob_at trace corridor_blobs
+	centroids"): each blob's centroid_x / centroid_y are PROCESSED full-frame
+	pixels. The ROI origin is already added back inside observe_blob_at
+	(residual_motion roi_x1/roi_y1 addback), so centroids are full-frame, NOT
+	ROI-relative. This is distinct from observe_blob_at's RETURN centroid
+	(BlobObservation.center_pixel), which is SOURCE space; the corridor_blobs
+	candidate list on the trace stays PROCESSED full-frame. The windowed walker
+	consumes only this declared space.
+
+	Frame alignment is preserved by construction: every frame yields exactly
+	one list. A frame with no observation (obs is None, e.g. an off-frame
+	prediction soft-miss) or no surviving blobs yields an empty list, so the
+	gathered sequence stays index-aligned with the interval frame range.
+
+	Args:
+		obs: observe_blob_at result for this frame (or None on a soft-miss).
+		trace_sink_holder: The trace-sink object passed to observe_blob_at;
+			its observer_trace carries corridor_blobs after the call.
+
+	Returns:
+		The frame's candidate list (PROCESSED full-frame centroids), ordered
+		by integrated_mag descending as observe_blob_at produced it. Empty list
+		when obs is None or the trace has no corridor blobs.
+	"""
+	# No observation this frame (soft-miss): empty, frame-aligned candidate list.
+	if obs is None:
+		return []
+	trace = trace_sink_holder.observer_trace
+	# Trace may be absent even when obs is not None for defensive direct
+	# callers; treat a missing trace as an empty candidate frame.
+	if trace is None:
+		return []
+	# corridor_blobs holds every blob passing the geometric ROI filter, with
+	# PROCESSED full-frame centroids (ROI origin already added back).
+	candidates = list(trace.corridor_blobs)
+	return candidates
+
+
+#============================================
 def _build_window_entry(obs: object, trace_sink_holder: object, frame_f: int,
 	pred_cx: float, pred_cy: float) -> dict:
 	"""Build one rolling-buffer entry from an observation result.
@@ -702,12 +762,11 @@ def _build_window_entry(obs: object, trace_sink_holder: object, frame_f: int,
 	"""
 	trace = trace_sink_holder.observer_trace if obs is not None else None
 
-	# Extract candidate list from trace.corridor_blobs (NOT obs.center_pixel).
-	# corridor_blobs holds every blob passing the geometric ROI filter.
-	if trace is not None:
-		candidates = list(trace.corridor_blobs)
-	else:
-		candidates = []
+	# Extract candidate list from trace.corridor_blobs (NOT obs.center_pixel)
+	# via the single per-frame candidate-source helper. Centroids are PROCESSED
+	# full-frame; an obs-less or blob-less frame yields an empty list, keeping
+	# the per-frame sequence frame-aligned.
+	candidates = gather_frame_candidates(obs, trace_sink_holder)
 
 	# Collect debug fields for this frame.
 	if obs is not None and trace is not None:
@@ -763,7 +822,7 @@ def _build_window_entry(obs: object, trace_sink_holder: object, frame_f: int,
 		"winner_proximity_score": winner_proximity_score,
 		"winner_total_score": winner_total_score,
 		"light_trace": light_trace,
-		# M1-G: also carry the LIVE trace (residual still present) so the emit
+		# also carry the LIVE trace (residual still present) so the emit
 		# step can measure in-box heat against the FINAL solved box before
 		# lightening drops the residual. Bounded: only the <=9 in-buffer window
 		# frames hold a live residual at once; the stored direction_trace_map
@@ -848,7 +907,7 @@ def _run_bootstrap_step(
 
 	# Bootstrap solved box: seed center + seed box (frames_from_anchor == 0,
 	# so conf == CONF_START). The seed frame is the pass anchor.
-	# M1-G: cache in-box heat against the FINAL (seed) box while the bootstrap
+	# cache in-box heat against the FINAL (seed) box while the bootstrap
 	# trace's residual is still live, before lighten_trace drops it below.
 	bootstrap_trace = trace_sink_holder.observer_trace if obs is not None else None
 	in_box_hot_mean, in_box_hot_count = measure_in_box_heat_for_frame(
@@ -861,6 +920,9 @@ def _run_bootstrap_step(
 		"w": seed_w,
 		"h": seed_h,
 		"conf": conf_from_anchor(frame_f, seed_frame),
+		# Bootstrap (seed) frame status, see the steady-state append for why
+		# the walk status rides on the path entry.
+		"status": bootstrap_status,
 		"in_box_hot_mean": in_box_hot_mean,
 		"in_box_hot_count": in_box_hot_count,
 	})

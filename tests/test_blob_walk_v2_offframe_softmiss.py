@@ -29,7 +29,7 @@ walk_paths.setup()
 
 import common_tools.coord_space as coord_space
 import common_tools.frame_reader
-import walk_walker
+import blob_walk.walk_walker as walk_walker
 
 
 # bin_factor=4 origin-preserving geometry; processed frame is 960 x 540.

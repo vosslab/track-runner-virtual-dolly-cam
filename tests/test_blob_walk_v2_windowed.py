@@ -26,8 +26,8 @@ if str(_TOOLS_DIR) not in sys.path:
 import walk_paths
 walk_paths.setup()
 
-import walk_viterbi
-import walk_status
+import blob_walk.walk_viterbi as walk_viterbi
+import blob_walk.walk_status as walk_status
 
 
 #============================================

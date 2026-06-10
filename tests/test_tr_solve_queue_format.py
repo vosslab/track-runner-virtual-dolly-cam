@@ -42,12 +42,10 @@ def _make_stage4_result(
 	agreement: float,
 	velocity_consistency: float,
 	size_consistency: float,
-	blob_coverage_fwd: float,
-	blob_coverage_bwd: float,
 	confidence_tier: str,
 	failure_reasons: list,
 ) -> dict:
-	"""Build a minimal Stage 4 v3 interval result dict (includes blob_coverage)."""
+	"""Build a minimal Stage 4 v3 interval result dict."""
 	return {
 		"start_frame": start_frame,
 		"end_frame": end_frame,
@@ -59,8 +57,6 @@ def _make_stage4_result(
 			"agreement": agreement,
 			"velocity_consistency": velocity_consistency,
 			"size_consistency": size_consistency,
-			"blob_coverage_fwd": blob_coverage_fwd,
-			"blob_coverage_bwd": blob_coverage_bwd,
 			"failure_reasons": failure_reasons,
 		},
 	}
@@ -89,15 +85,13 @@ def test_stage3_line_has_no_blob_accept_and_ends_with_stage3_tag():
 
 #============================================
 def test_stage4_line_format():
-	"""Stage 4 formatter must include delta, blob_accept, confidence label, [stage4] tag."""
+	"""Stage 4 formatter must include delta, confidence label, [stage4] tag."""
 	result = _make_stage4_result(
 		start_frame=16380,
 		end_frame=16800,
 		agreement=0.42,
 		velocity_consistency=1.00,
 		size_consistency=0.71,
-		blob_coverage_fwd=0.83,
-		blob_coverage_bwd=0.77,
 		confidence_tier="good",
 		failure_reasons=[],
 	)
@@ -115,8 +109,6 @@ def test_stage4_line_format():
 	assert line.endswith("[stage4]")
 	# overlap delta: 0.42 - 0.01 = +0.41
 	assert "(+0.41)" in line
-	# real blob coverage values: 83% and 77%
-	assert "blob_accept=83%/77%" in line
 	# confidence label for "good" tier
 	assert "[GOOD]" in line
 
@@ -130,14 +122,11 @@ def test_stage4_line_omits_delta_when_baseline_missing():
 		agreement=0.42,
 		velocity_consistency=1.00,
 		size_consistency=0.71,
-		blob_coverage_fwd=0.83,
-		blob_coverage_bwd=0.77,
 		confidence_tier="good",
 		failure_reasons=[],
 	)
 	line = solve_queue._format_stage4_interval_result(result, None, fps=60.0)
 	# no delta parentheticals when baseline is unavailable
 	assert "(+" not in line and "(-" not in line
-	# tag and blob_accept must still appear
+	# tag must still appear
 	assert line.endswith("[stage4]")
-	assert "blob_accept=83%/77%" in line

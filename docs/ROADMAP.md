@@ -55,30 +55,24 @@ Result serialized in diagnostics JSON.
 Remaining work: parameter tuning on real videos, downstream integration with
 seed recommendation and crop trajectory.
 
-### Per-frame motion-cue observation fusion (implemented and shipped)
+### Residual-motion blob observation (measurement pipeline shipped; consumer is the windowed walker)
 
-Residual motion blob tracking is integrated as a per-frame center-position
-observation channel inside the analytical solver. Implementation lives in
-[residual_motion.py](../track_runner/residual_motion.py)
-(`observe_blob_at`) and is called per non-endpoint frame from inside
-`_apply_blob_snap` in [velocity_model.py](../track_runner/velocity_model.py)
-(NOT at a global stitch step). Hermite owns geometry (path shape, size,
-continuity); blob owns center observation only. Three local gates
-(proximity, direction, temporal smoothness) accept or reject each
-observation; gates read only frozen `raw_pred[t-1..t+1]`, never any
-prior accepted blob.
-
-The Stage 4 hot-path optimization (M3+M4 of plan
-`~/.claude/plans/memoized-percolating-moler.md`) eliminates scattered random-access
-reads via a per-worker per-interval sequential pre-pass owned by
-[residual_pre_pass.py](../track_runner/residual_pre_pass.py);
+The measurement pipeline in [residual_motion.py](../track_runner/residual_motion.py)
+(`observe_blob_at`) is shipped and stable. The Stage 4 hot-path optimization
+(pre-worker per-interval sequential pre-pass in
+[residual_pre_pass.py](../track_runner/residual_pre_pass.py)) is also shipped;
 `observe_blob_at` reads from the precomputed store on hit.
 
-Remaining work: parameter tuning on real videos, user-pain metric
-validation (intervals flagged for review, seeds needed). See
-[CHANGELOG.md](CHANGELOG.md) entries dated 2026-04-17 (initial
-fusion landing) and 2026-05-03 (M3+M4 architectural speedup) for the
-full landing record.
+The v1 per-frame blob-snap consumer inside the propagator (`_apply_blob_snap`)
+has been removed. The current consumer is the windowed Viterbi walker
+(`track_runner/blob_walk/`), which is the DEFAULT blob pass on Stage-4-promoted
+intervals (and Stage-5 `--full`). The `--walker-stage4` flag was removed; the
+walker is on by default. A zero-accepted-frame Hermite fallback is in place so
+the walker never degrades a promoted interval below pure Hermite.
+
+Remaining work: bootstrap-stall root-cause fix, Viterbi weight tuning, and a
+promoted-only A/B validation. See [CHANGELOG.md](CHANGELOG.md) for the landing
+history.
 
 ## Not started
 

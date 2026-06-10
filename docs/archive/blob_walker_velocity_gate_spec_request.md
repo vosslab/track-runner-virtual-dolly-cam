@@ -279,7 +279,7 @@ tracking mode with measured velocity.
 
 Tracking mode (step >= 2) is identical in shape to the existing
 post-bootstrap rolling-velocity recompute in
-[walk_walker.py](../../tools/blob_walk_v2/core/walk_walker.py),
+[walk_walker.py](../../track_runner/blob_walk/walk_walker.py),
 seeded so the rolling window includes the seed entry from frame 0.
 
 ## 3. Jump gate formula
@@ -300,7 +300,7 @@ prediction already absorbs the previously measured displacement; the
 runner can move at most one per-frame envelope plus localization slack
 from the predicted center.
 
-Constants pinned in [walk_motion_gate.py](../../tools/blob_walk_v2/core/walk_motion_gate.py):
+Constants pinned in [walk_motion_gate.py](../../track_runner/blob_walk/walk_motion_gate.py):
 
 - `MAX_RUNNER_SPEED_W_PER_S = 30.0` (W/s). 20 mph upper at 12 inch torso.
 - `MIN_RUNNER_SPEED_W_PER_S = 7.3` (W/s). 5 mph lower at 12 inch torso.

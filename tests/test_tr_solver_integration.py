@@ -105,7 +105,6 @@ def test_analytical_solve_produces_blended_path():
 		scene_transform=scene_transform,
 		all_seeds_scene=all_seeds_scene,
 		fps=30.0,
-		blob_snap_enabled=False,
 	)
 	# endpoints should match seeds within 1px
 	blended = result["blended_path"]

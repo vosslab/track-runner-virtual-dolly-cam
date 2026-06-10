@@ -40,7 +40,7 @@ import matplotlib.pyplot
 # local repo modules
 import walk_util
 import walk_palette
-import walk_motion_gate
+import blob_walk.walk_motion_gate as walk_motion_gate
 
 # Shared walk_overlays palette (trajectory/seed-marker colors + legend swatches).
 _WALK_PALETTE = walk_palette.load_walk_overlays()

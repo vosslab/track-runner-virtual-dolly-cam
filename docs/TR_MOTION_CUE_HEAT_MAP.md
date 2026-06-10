@@ -325,20 +325,23 @@ one interval. Two subkey patterns are legal:
   keyed by frame index alone (reads are ROI-independent).
 
 The normative rules for what the cache MUST NOT hold (accepted
-blobs, gate outcomes, `snap_pred` values, chained counters, etc.)
+blobs, gate outcomes, selected-path positions, chained counters, etc.)
 live in
 `FWD_BWD_MODEL_METHODOLOGY.md` under
 the raw-cache boundary. This doc owns the concrete schema above.
 
 ## Consumption
 
-Both FWD and BWD call `observe_blob_at` independently per
+Both FWD and BWD walker passes call `observe_blob_at` independently per
 non-endpoint frame, each using its own `pred_center`, `pred_box`,
 and `local_tangent`. Everything downstream of the return value --
-the three local gates, accept/reject/absent resolution,
-`snap_pred[t]` blending, seed-endpoint skipping -- is pass-local
-state owned by
-`FWD_BWD_MODEL_METHODOLOGY.md`.
+candidate selection, Viterbi path assignment, and status enum resolution --
+is owned by the windowed walker (`track_runner/blob_walk/`) and documented
+in [TRACK_RUNNER_DESIGN.md](TRACK_RUNNER_DESIGN.md) and
+`FWD_BWD_MODEL_METHODOLOGY.md`. Stage-3 Hermite dispatches (`blob_pass=False`)
+do not call `observe_blob_at`; they return a pure-Hermite `raw_pred` trajectory.
+The Stage-4/5 blob pass (`blob_pass=True`, the default for promoted intervals)
+runs the walker, which consumes `observe_blob_at` per non-endpoint frame.
 
 ## What the heat map is not
 

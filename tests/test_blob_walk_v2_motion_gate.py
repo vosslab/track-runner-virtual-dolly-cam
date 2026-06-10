@@ -23,7 +23,7 @@ if _BLOB_WALK_DIR not in sys.path:
 import walk_paths
 walk_paths.setup()
 
-import walk_motion_gate
+import blob_walk.walk_motion_gate as walk_motion_gate
 
 
 class TestColdStartAccept:

@@ -28,7 +28,7 @@ import walk_paths
 walk_paths.setup()
 
 import walk_util
-from core.walk_io import SeedToSeedInterval
+from blob_walk.walk_io import SeedToSeedInterval
 
 
 #============================================

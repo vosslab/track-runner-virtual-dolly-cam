@@ -7,6 +7,12 @@ the npz, render manifest, and heat summary. The walker IS the solver:
 `run_interval_walk` returns a solved interval entry plus per-tile render
 manifests and a per-frame heat carrier.
 
+Note: this module was relocated from tools/blob_walk_v2/core/ to
+tools/blob_walk_v2/ in WP-2 (the core/ subdir was retired). walk_paths.py
+lives in the same directory; callers (make_walk_html_v2, e2e harness) run
+walk_paths.setup() before importing this module, so bare-name imports resolve
+without a separate sys.path insert here.
+
 Output layout:
   {output_dir}/
     {video_basename}/
@@ -21,32 +27,22 @@ Output layout:
 
 # Standard Library
 import os
-import sys
 import csv
 import json
 import logging
 import pathlib
 import dataclasses
 
-# Import bootstrap: this module lives at tools/blob_walk_v2/core/, but
-# walk_paths.py lives one level up at the package root. A caller (or test) that
-# imports walk_driver before the package root is on sys.path would fail the bare
-# `import walk_paths` below, so put the package root on sys.path first; the
-# `if not in` guard makes it a harmless no-op when the importer (e.g.
-# make_walk_html_v2) has already run walk_paths.setup(). This is a library
-# module with no CLI -- it is never executed directly.
-_PACKAGE_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if _PACKAGE_ROOT not in sys.path:
-	sys.path.insert(0, _PACKAGE_ROOT)
-
 # shared sys.path bootstrap (track_runner, tests, repo root, blob_walk_v2 dirs)
+# walk_paths is a sibling module; the caller has already run walk_paths.setup()
+# so track_runner, render/, and blob_walk.* all resolve.
 import walk_paths
 walk_paths.setup()
 
 # local repo modules
 import walk_util
-import walk_walker
-import walk_debug_log
+import blob_walk.walk_walker as walk_walker
+import blob_walk.walk_debug_log as walk_debug_log
 import walk_render
 import blob_trace
 import interval_fingerprint

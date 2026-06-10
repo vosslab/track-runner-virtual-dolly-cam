@@ -63,6 +63,7 @@ not a degenerate ROI deep inside the observer.
 | Walker stepping / ROI construction | PROCESSED |
 | `residual_motion.observe_blob_at` INPUTS (`pred_center`, `pred_box`, `roi_override`, `dog_diameter_override`, `acceptance_box`) | PROCESSED |
 | `residual_motion.observe_blob_at` RETURN centroid | SOURCE |
+| `observe_blob_at` trace `corridor_blobs` centroids (`centroid_x`, `centroid_y`) | PROCESSED (full-frame, ROI origin already added back) |
 | `common_tools.in_box_heat.measure_in_box_heat` inputs (`residual_dog`, `validity_mask`, `roi_origin`, `box`) | PROCESSED |
 | `SeedsView.source` | SOURCE (original seed dict, unchanged) |
 | `SeedsView.seeds` | PROCESSED (lazy, via held `FrameGeometry`) |
