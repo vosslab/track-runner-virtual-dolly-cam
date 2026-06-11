@@ -103,6 +103,8 @@ EXACT_MATCH_COLUMNS = frozenset({
 	"stop_reason",
 	"roi_anchor_source",
 	"candidates_in_window",
+	# New in v14: window head frame index is a discrete integer label.
+	"window_head_frame",
 })
 
 # Numeric measurement columns: compared with abs(diff) <= NUMERIC_TOLERANCE.
@@ -139,6 +141,8 @@ NUMERIC_COLUMNS = frozenset({
 	"path_cost",
 	"provisional_cx_px",
 	"provisional_cy_px",
+	# New in v14: per-frame Viterbi cost contribution, a continuous value.
+	"path_step_cost",
 })
 
 # accepted_fraction comparison tolerance (per WP0.1).

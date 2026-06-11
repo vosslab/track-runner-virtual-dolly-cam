@@ -354,7 +354,17 @@ def _run_viterbi_and_emit_oldest(
 	# Run Viterbi path selection over the full window.
 	path = walk_viterbi.select_path(window_candidates, seed_w, fps)
 	path_cost_total = walk_viterbi.compute_path_cost(path, seed_w, fps)
+	# Per-node cost contributions along the selected path (telemetry only).
+	# Index-aligned 1:1 with `path` / `results` / window_frames; recording-only,
+	# never feeds back into selection. sum(path_step_costs) == path_cost_total.
+	path_step_costs = walk_viterbi.compute_path_step_costs(path, seed_w, fps)
 	candidates_in_window_count = walk_status.count_candidates_in_window(window_candidates)
+
+	# Window head frame: the newest (highest-step) frame in the window at the
+	# moment this window's decision was finalized. Recorded on every row emitted
+	# from this Viterbi pass so cost telemetry can be tied to its window context.
+	# Telemetry only; does not influence selection or stepping.
+	window_head_frame_val = window_frames[-1] if window_frames else None
 
 	# Determine per-frame statuses (and seed-derived per-frame torso size).
 	results = walk_status.emit_status_from_path(
@@ -474,6 +484,14 @@ def _run_viterbi_and_emit_oldest(
 			roi_anchor_source="accepted",
 			path_cost=path_cost_total,
 			candidates_in_window=candidates_in_window_count,
+			# Per-frame cost contribution of the selected node (telemetry only):
+			# its local node cost plus the transition cost into it, aligned to
+			# this emitted frame via path index k. compute_path_step_costs
+			# returns one entry per path node by construction; a violation
+			# should fail loudly, not silently stamp None. Recording only.
+			path_step_cost=path_step_costs[k],
+			# Source frame index of the window head when this decision was made.
+			window_head_frame=window_head_frame_val,
 		)
 		debug_log.write_row(debug_row)
 		visited_frames.add(fi)
@@ -949,6 +967,34 @@ def _run_bootstrap_step(
 
 
 #============================================
+def _neighbor_reached(frame_f: int, neighbor_seed_frame: int, sign: int) -> bool:
+	"""Return True when the walk has reached or passed the neighbor seed.
+
+	Directional crossing test that replaces a strict equality check. At
+	stride 1 the walk lands exactly on the neighbor seed and this fires
+	identically to equality; at stride > 1 an interval span not divisible
+	by stride would overshoot the seed, and the equality test would miss
+	it. The crossing test fires on reach-or-pass in the direction of
+	travel, so the walk terminates at the seed instead of overrunning into
+	the adjacent interval.
+
+	Args:
+		frame_f: Candidate frame index for the current step.
+		neighbor_seed_frame: Termination-target seed frame index.
+		sign: +1 for the forward pass, -1 for the backward pass.
+
+	Returns:
+		True if frame_f has reached or passed neighbor_seed_frame in the
+		direction given by sign. Predicate only -- the caller clamps frame_f
+		to neighbor_seed_frame on True before using it.
+	"""
+	# sign * (frame_f - neighbor) >= 0 fires when frame_f >= neighbor for
+	# FWD (sign=+1) and when frame_f <= neighbor for BWD (sign=-1).
+	reached = sign * (frame_f - neighbor_seed_frame) >= 0
+	return reached
+
+
+#============================================
 def _run_windowed_steps(
 	seed_frame: int,
 	neighbor_seed_frame: int,
@@ -1023,8 +1069,17 @@ def _run_windowed_steps(
 			stop_reason = "boundary"
 			break
 
-		# Termination: hit neighbor seed.
-		if frame_f == neighbor_seed_frame:
+		# Termination: reached or passed neighbor seed in direction of
+		# travel. Clamp frame_f to the seed so the returned frame and
+		# diagnostic rows report the seed, not an overshot frame. The
+		# clamp is a no-op at stride 1 (the step lands exactly on the
+		# seed) and closes the span < stride degenerate case (the first
+		# computed frame already crosses, so the walk terminates with
+		# zero observed frames and the Hermite fallback covers output).
+		# The seed frame itself is never observed: this check runs before
+		# the observe call, matching seeds-are-anchors semantics.
+		if _neighbor_reached(frame_f, neighbor_seed_frame, sign):
+			frame_f = neighbor_seed_frame
 			stop_reason = "hit_neighbor_seed"
 			break
 

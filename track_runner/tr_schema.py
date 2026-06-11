@@ -20,7 +20,7 @@ Public surface:
 
 #============================================
 # the one and only schema version constant
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 13
 
 #============================================
 # Schema versions that altered solved-geometry semantics. Membership is
@@ -46,7 +46,19 @@ SCHEMA_VERSION = 11
 # residual sampling pattern (neighbor offsets = k * stride instead of k).
 # The on-disk layout is unchanged from v10; v10 files remain readable.
 # Cache invalidation happens naturally via the geometry fingerprint.
-GEOMETRY_AFFECTING_SCHEMAS: set = {3, 6, 7, 8, 9, 10, 11}
+# v12 is intentionally ABSENT: it is a metadata-only bump for the P15 walker
+# debug-log telemetry fix (path_cost documentation corrected, path_step_cost
+# and window_head_frame diagnostic columns added). The verdict CSV is a
+# diagnostic artifact, not solved geometry; no solver output changed, so
+# geometry caches stay valid across the v11 -> v12 line.
+# v13 enters the set because the P12 stride-termination fix changes walk
+# outputs (per-frame statuses, accepted positions, paths) on stride > 1
+# (>= ~90 fps) sources whose interval span is not divisible by stride. At
+# stride 1 (30/60 fps) the walk is byte-identical, but membership is the
+# unified contract: a single SCHEMA_VERSION line cannot be geometry-affecting
+# for some sources and not others, so v13 is marked geometry-affecting to
+# avoid silently mixing pre-fix overrun geometry with post-fix geometry.
+GEOMETRY_AFFECTING_SCHEMAS: set = {3, 6, 7, 8, 9, 10, 11, 13}
 
 
 #============================================
@@ -76,13 +88,17 @@ def latest_geometry_affecting_schema() -> int:
 SUPPORTED_ARTIFACT_SCHEMAS: dict = {
 	# diagnostics JSON: shape was migrated from flat (v2) to nested
 	# (v3+) at load time; v3-v10 share the nested shape.
-	"diagnostics": {2, 3, 4, 5, 6, 7, 8, 9, 10, 11},
+	"diagnostics": {2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13},
 	# torso_box_coords.npz: per-frame coordinate arrays changed dtype
 	# from float32 (v8, v9) to uint16 (v10+) per C12.4. Hard-cut at v10:
 	# v8 and v9 are no longer readable; cache invalidation required.
 	# v11 adds stride-model sampling but on-disk layout is unchanged from
-	# v10; both v10 and v11 files remain readable.
-	"torso_box_coords": {10, 11},
+	# v10; both v10 and v11 files remain readable. v12 is the metadata-only
+	# P15 walker-telemetry bump; the torso_box_coords on-disk layout is
+	# unchanged from v11, so v10, v11, and v12 files all remain readable.
+	# v13 is the P12 stride-termination fix; the torso_box_coords on-disk
+	# layout is unchanged from v12, so v10-v13 files all remain readable.
+	"torso_box_coords": {10, 11, 12, 13},
 }
 
 

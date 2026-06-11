@@ -224,6 +224,14 @@ are removed: the walker never stops on a few bad frames, it always
 traverses to the neighbor seed and emits a per-frame status from the
 post-window decision.
 
+Note: the five values above are the per-frame status enum. Debug-log rows
+also carry walk-level stop and diagnostic markers (`hit_neighbor_seed`,
+`boundary`, `after_walk_terminated`) in the `stop_reason` field or as
+the `status` of diagnostic-only rows emitted after walk termination; these
+are not per-frame tracking statuses -- `hit_neighbor_seed` and `boundary`
+appear only once per walk as stop reasons, and `after_walk_terminated` marks
+post-termination diagnostic rows only.
+
 ### Contract compliance
 
 - C6 (interval independence): each window is scoped within a single

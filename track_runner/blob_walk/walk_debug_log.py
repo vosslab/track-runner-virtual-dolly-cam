@@ -8,7 +8,7 @@ visits produces one row.
 Public API:
 - DebugLogRow: dataclass with one attribute per CSV column.
 - DebugLogWriter: class with __init__, write_row, __enter__, __exit__, close.
-- HEADER: locked verdict-CSV column tuple (43 columns); see TR_SCHEMA_VERSION_HISTORY.md for version history.
+- HEADER: locked verdict-CSV column tuple (45 columns); see TR_SCHEMA_VERSION_HISTORY.md for version history.
 - SCHEMA_VERSION: int, the unified tr_schema.SCHEMA_VERSION (C10); metadata only,
   not stamped into the CSV. The column-meaning history (v12/v13) below documents
   the CSV layout for readers parsing older files.
@@ -22,12 +22,32 @@ Schema history:
     provisional_cy_px columns (provisional-observation anti-freeze fix).
     SCHEMA_VERSION bumped from 11 to 12 per contract C10.
   v13 (2026-05-28): Window-level path-selection redesign. Removed
-    torso_w_drift_frac (unused placeholder). Added path_cost (Viterbi
-    cost contribution at this frame) and candidates_in_window (count of
-    corridor_blobs across the 9-frame window). Status enum updated:
-    added interpolated, extrapolated, soft_miss_no_path; removed
-    rejected_motion_gate (legacy values remain parseable on read).
+    torso_w_drift_frac (unused placeholder). Added path_cost and
+    candidates_in_window (count of corridor_blobs across the 9-frame window).
+    Status enum updated: added interpolated, extrapolated, soft_miss_no_path;
+    removed rejected_motion_gate (legacy values remain parseable on read).
     SCHEMA_VERSION bumped from 12 to 13 per contract C10.
+  v14 (2026-06-10): P15 telemetry-truthfulness fix. The path_cost column was
+    documented as the "Viterbi DP cost contribution at this frame" but the
+    writer stamped the SAME whole-window Viterbi total on every emitted row;
+    its documented meaning was a lie. Two coordinated corrections, telemetry
+    only (no selection, status, position, accepted-count, or fallback change):
+      - path_cost is now documented truthfully as the whole-window Viterbi
+        total for the window that produced this frame's decision (this is what
+        the column has always held). Its semantics are unchanged; only the
+        documentation is corrected.
+      - path_step_cost (NEW): the per-frame Viterbi cost contribution of the
+        selected node (its local node cost plus the transition cost into it),
+        i.e. the value path_cost falsely claimed to be. Summing path_step_cost
+        across a window equals that window's path_cost.
+      - window_head_frame (NEW): source frame index of the window head (newest
+        frame in the rolling buffer) when this frame's decision was finalized,
+        per spec section 7.
+    SCHEMA_VERSION bumped per contract C10 (unified tr_schema constant 11 ->
+    13; P15 (v14 CSV label) and P12 (v13 unified integer) landed together so
+    the on-disk unified constant was never 12 -- v12 is a CSV column-meaning
+    label only; the v12/v13/v14 labels here are the CSV column-meaning history,
+    which advances independently of and faster than the unified integer).
 """
 
 import csv
@@ -48,12 +68,15 @@ import tr_schema
 # readers parsing older CSVs; the running stamp now tracks tr_schema.SCHEMA_VERSION.
 SCHEMA_VERSION = tr_schema.SCHEMA_VERSION
 
-# Locked verdict-CSV column tuple (43 columns). See TR_SCHEMA_VERSION_HISTORY.md for version history.
+# Locked verdict-CSV column tuple (45 columns). See TR_SCHEMA_VERSION_HISTORY.md for version history.
 # This tuple is consumed by the downstream HTML caption generation.
 # Changes from v12:
 #   DELETED: torso_w_drift_frac (unused placeholder per scout audit)
-#   NEW: path_cost (Viterbi cost contribution at this frame)
+#   NEW: path_cost (whole-window Viterbi total for this frame's window)
 #   NEW: candidates_in_window (count of corridor_blobs across the 9-frame window)
+# Changes from v13 (v14, telemetry-truthfulness fix):
+#   NEW: path_step_cost (per-frame Viterbi cost contribution of the selected node)
+#   NEW: window_head_frame (source frame index of the window head at decision time)
 HEADER = (
 	"frame_index",
 	"step",
@@ -110,12 +133,27 @@ HEADER = (
 	"provisional_cy_px",
 	# provisional_cy_px SEMANTIC CHANGE v13: same as provisional_cx_px.
 	"path_cost",
-	# path_cost NEW in v13: Viterbi DP cost contribution at this frame (float).
-	# Blank when no DP path was computed (bootstrap frame, or flush frame).
+	# path_cost (v13; meaning clarified v14): the WHOLE-WINDOW Viterbi total
+	# cost for the window that produced this frame's decision (float). Every row
+	# emitted from one Viterbi pass shares the same value. Despite the v13
+	# comment, this was never a per-frame value; see path_step_cost for that.
+	# Blank when no DP path was computed (bootstrap frame).
 	"candidates_in_window",
 	# candidates_in_window NEW in v13: number of non-empty corridor_blob candidate
 	# lists in the 9-frame window when this frame's decision was finalized (int).
 	# Blank for bootstrap and terminal marker rows.
+	"path_step_cost",
+	# path_step_cost NEW in v14 (P15 fix): per-frame Viterbi cost contribution of
+	# the selected node on the chosen path -- its local node cost (evidence bonus
+	# for a real blob, else SKIP_COST) plus the transition cost into it from the
+	# previous node (float). This is the value path_cost falsely claimed to be.
+	# Summing path_step_cost across one window equals that window's path_cost.
+	# Blank for bootstrap and terminal marker rows.
+	"window_head_frame",
+	# window_head_frame NEW in v14 (P15 / spec section 7): source frame index of
+	# the window head (newest frame in the rolling buffer) at the moment this
+	# frame's window decision was finalized (int). Blank for bootstrap and
+	# terminal marker rows.
 )
 
 #============================================
@@ -204,12 +242,20 @@ class DebugLogRow:
 	# retained for backward CSV-read compat.
 	provisional_cx_px: float | None = None
 	provisional_cy_px: float | None = None
-	# New v13 fields: Viterbi DP diagnostics.
-	# path_cost: Viterbi cost contribution at this frame (float); blank for bootstrap rows.
+	# v13 Viterbi DP diagnostics (path_cost meaning clarified in v14).
+	# path_cost: whole-window Viterbi total for this frame's window (float); blank
+	# for bootstrap rows. Shared across every row emitted from one Viterbi pass.
 	path_cost: float | None = None
 	# candidates_in_window: count of non-empty corridor_blob lists in the 9-frame window
 	# when this frame's decision was finalized; blank for bootstrap/terminal rows.
 	candidates_in_window: int | None = None
+	# New v14 fields (P15 telemetry-truthfulness fix), recording only.
+	# path_step_cost: per-frame Viterbi cost contribution of the selected node
+	# (local node cost + transition cost into it); blank for bootstrap/terminal rows.
+	path_step_cost: float | None = None
+	# window_head_frame: source frame index of the window head at decision time;
+	# blank for bootstrap/terminal rows.
+	window_head_frame: int | None = None
 
 
 #============================================

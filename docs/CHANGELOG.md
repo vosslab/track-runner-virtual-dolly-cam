@@ -1,3 +1,130 @@
+## 2026-06-11
+
+### Fixes and Maintenance
+
+- Validation report clarity edits (documentation only, no code change): (1) Claim
+  C section now states percentages are of 34 classified passes, explaining the 49%
+  vs 50% discrepancy with the source artifact header. (2) Claim B section breaks
+  pooled 44 multi-candidate frames into FWD 26 (ev_match 3/26=11.5%,
+  disp_match 25/26=96.2%) vs BWD 18 (ev_match 16/18=88.9%) to expose the
+  direction asymmetry obscured by the pooled 43.2% figure. (3) Fixed false
+  preamble "No implementation details are provided" in the fixes section --
+  P12 and P10 entries contain exact fix directions verbatim from workstream
+  artifacts; replaced with accurate wording noting they are candidate directions
+  requiring user-approved plans. (4) Added user-directed design-orientation note
+  (2026-06-11): goal is better tracking with LESS gating; prefer removing or
+  softening wrong guards over adding new ones; claim-A caution does not endorse
+  keeping hard exclusion long-term; replacing hard exclusion with soft scoring
+  (claim H direction) remains design-aligned once candidate supply is understood.
+
+- Cost telemetry unified in `track_runner/blob_walk/walk_viterbi.py`: `compute_path_cost`
+  now delegates to `compute_path_step_costs` and returns `sum(step_costs)`, making the
+  sum invariant (sum(steps) == total) structural rather than comment-only. Required blob
+  keys (`integrated_mag`, `centroid_x`, `centroid_y`) in `compute_path_step_costs` now
+  accessed directly per do-not-hide-bugs-with-defaults (was `.get(key, 0.0)`); skip nodes
+  (None) retain explicit handling. Defensive index guard `path_step_costs[k] if k < len(...)`
+  removed from `walk_walker.py` stamping; replaced with direct `path_step_costs[k]` since
+  `compute_path_step_costs` returns one entry per path node by construction. Decision logic
+  (`select_path`, `transition_cost`) unchanged; 8-pass equality harness all PASS.
+
+- Blob walker stride>1 termination overrun fixed (audit P12, observed on 120fps
+  source interval frames 16588-16591). Equality test `frame_f == neighbor_seed_frame`
+  replaced by directional crossing test with clamp in new pure helper
+  `_neighbor_reached` (`track_runner/blob_walk/walk_walker.py`); seed endpoints
+  remain anchors and are never observed. SCHEMA_VERSION bumped 12->13;
+  geometry-affecting for stride>1 (>=~90fps) sources only, byte-identical at
+  stride 1. Validation: 7 new unit tests in `tests/test_walk_neighbor_reached.py`
+  (including interval #164 FWD/BWD exact sequences); 8-pass stride-1 harness EQUAL
+  on all passes. Two caveats: (a) stride-1 preservation rests on analytic predicate
+  equivalence proof plus unit tests plus run-to-run determinism -- no true pre/post
+  empirical snapshot exists because the stored reference walks postdate the fix;
+  (b) the real 120fps interval #164 (Lyra-Wheeling, 4K HEVC) was not re-solved
+  post-fix due to expensive decode cost; unit tests cover the exact frame arithmetic
+  for that interval. Full pytest suite 1578 passed. Plan:
+  [blob_walk_v2_p12_fix_plan.md](active_plans/active/blob_walk_v2_p12_fix_plan.md).
+
+### Developer Tests and Notes
+
+- Claim G offline replay completed (check G workstream). Zero `extrapolated`
+  or `interpolated` frames found in 24 walk debug CSVs (366 `soft_miss_no_blob`,
+  282 `accepted`, 24 `after_walk_terminated`). Audit P6 confirmed: both statuses
+  are flush-only. P9 spec deviation confirmed: `walk_status.py` lines 114-116
+  implement HOLD instead of linear extension for `extrapolated` status. Empirical
+  comparison with available data is indeterminate (reference-line curvature
+  contaminates the replay). Synthetic uniform-motion analysis supports LINEAR
+  BETTER (59/59 scenarios). Verdict: UNDETERMINED -- practical impact zero at
+  current accepted fractions; fix deferred until `extrapolated_count` becomes
+  non-zero. Artifact:
+  [docs/active_plans/workstreams/blob_walk_v2_checkg_extrapolation_replay.md](active_plans/workstreams/blob_walk_v2_checkg_extrapolation_replay.md).
+  Validation report claim G updated from STILL UNKNOWN to UNDETERMINED.
+
+- Blob walk v2 validation complete: all 9 checks (Check 0 through Check 8) executed
+  and synthesized. Final synthesis report:
+  [active_plans/reports/blob_walk_v2_validation_report.md](active_plans/reports/blob_walk_v2_validation_report.md).
+  Claim verdicts:
+  - A REFUTED -- rejected blobs on stall intervals are background athletes, not the runner;
+    widening the acceptance box would not recover runner signal.
+  - B MIXED -- evidence term dominates per-node cost but window-level DP accumulates
+    spatial momentum that attenuates the evidence signal on FWD passes (Jason FWD:
+    0/23 ev_match, 22/23 disp_match); BWD passes behave differently due to fewer
+    competing blobs.
+  - C RANKING-DOMINANT -- of 35 m4 A/B regressed intervals, 17 ranking-driven,
+    10 mixed, 7 starvation-driven, 1 pending (Lyra-Wheeling 120 fps excluded per K).
+  - D REFUTED (conditional) -- limb merging is size-dependent: large runners (Conant,
+    30 px torso) merge to one blob; small runners (Jason, 11 px torso) show 4-6
+    distinct limb-level blobs per frame.
+  - E OBSERVED -- within-body vertical centroid jitter on Jason (11 px torso): Viterbi
+    selection alternates between lower-body (ncy ~ -0.4) and upper-body (ncy ~ +0.2)
+    clusters; alternation rate 0.26 flips/step; 85% of steps stay within 0.10 torso
+    heights.
+  - F CONFIRMED (structural) -- anchor is always 9+ frames stale in steady state
+    (window depth = WALKER_WINDOW_FRAMES = 9); quality impact conditional on image-space
+    drift per standing constraint P8.
+  - G STILL UNKNOWN -- extrapolation-vs-hold-last comparison not exercised in sample.
+  - I CONDITIONALLY CONFIRMED -- anchor staleness is present at every rejection; two
+    distinct stall sub-mechanisms: (a) image-space drift (Conant, 2.35 TW over 31 frames),
+    where anchor-advance would help; (b) near-stationary runner (Jason) where L4 centroid
+    offset + P11 acceptance-box exclusion is operative and anchor-advance alone would not
+    cure it.
+  - J OBSERVED -- bootstrap-accept masking of the pure-stall Hermite fallback occurs in
+    1 of 26 passes (3.8%); the bootstrap frame counts as an accepted frame and prevents
+    the zero-accepted-count fallback from firing even when the remaining frames are all
+    misses.
+  - K OBSERVED FAILURE -- stride-2 stepping/termination bug (audit P12) is live on
+    interval 16588-16591 of Lyra-Wheeling-IMG_3912.mkv (120 fps, stride 2); walker
+    results on that video are suspect until the stepping fix lands.
+  - L NOT EXERCISED in sample -- pooled P99 accepted-to-accepted displacement 0.578 W;
+    zero events exceed the identity-jump threshold (0.878 W); structural hole in Viterbi
+    (no cap on skip-to-blob transitions) confirmed real but not manifesting in this
+    8-pass sample.
+  - H INFORMED, NOT PROVEN -- gate redesign direction (replace hard exclusion with soft
+    scoring) is design-aligned with the user-directed orientation (better quality, less
+    gating); no trial yet.
+  Design orientation (user-directed 2026-06-11): goal is better tracking with less
+  gating; prefer removing or softening wrong guards over adding new ones. Every fix
+  still requires its own user-approved plan.
+  Check 0 (stride-2 overrun, K) and Check 3 (bootstrap-accept masking, J) were
+  completed during the validation but not individually logged in this changelog;
+  their artifacts are at
+  [active_plans/workstreams/blob_walk_v2_check0_stride_overrun.md](active_plans/workstreams/blob_walk_v2_check0_stride_overrun.md)
+  and
+  [active_plans/workstreams/blob_walk_v2_check3_bootstrap_masking.md](active_plans/workstreams/blob_walk_v2_check3_bootstrap_masking.md).
+
+- Validation closeout additions (documentation only): (1) Report restructured
+  with three explicit verdict groups -- PROVEN, REFUTED (see A and D), STILL
+  UNKNOWN (see B, G, H, L) -- as a grouped table above the per-claim sections.
+  (2) Claim G confirmed UNDETERMINED: `extrapolated` status never executes in
+  current corpus; code path dead at current accepted fractions; spec deviation
+  (P9 HOLD vs linear) deferred; see
+  [active_plans/workstreams/blob_walk_v2_checkg_extrapolation_replay.md](active_plans/workstreams/blob_walk_v2_checkg_extrapolation_replay.md).
+  (3) Claim C sharpened with Check 7 addendum 65%/35% effective ranking/starvation
+  split; mixed-bucket diagnosis done (accept_on_nonempty >= 0.88 on all 10 mixed
+  passes; wrong-blob-wins inferred, not position-verified). (4) Open items updated:
+  Lyra-Wheeling 35th interval UNDETERMINED (timeout), mixed-bucket diagnosis marked
+  complete with caveat, Claim G open item updated from pending to measured-but-
+  undetermined. Stray walk process (PID 10595, _temp_check7b_lyra_wheeling.py,
+  67h CPU) confirmed dead after pkill.
+
 ## 2026-06-10
 
 ### Fixes and Maintenance
@@ -5,6 +132,163 @@
 - Stage-4 walker dispatch now uses the worker pool -- `blob_pass` threads
   through the pool initializer as run-invariant worker context, removing the
   in-process-only special case.
+- Validation Check 1 / audit P15: made the walk debug CSV `path_cost` column
+  truthful. It was documented as a per-frame Viterbi contribution but stamped
+  the whole-window total on every row. `path_cost` is now documented as the
+  whole-window total (its actual value, unchanged), and two new telemetry
+  columns are added per spec section 7: `path_step_cost` (per-frame node cost
+  contribution = local node cost + transition into it, via the new pure
+  `walk_viterbi.compute_path_step_costs` helper) and `window_head_frame`
+  (source frame index of the window head at decision time). Telemetry only:
+  field-wise decision equality (selected path, statuses, positions, accepted
+  counts, fallback signal) was confirmed exact on the two diagnosed stall
+  intervals (Conant 1080-1111 FWD, Jason 564-583 FWD) plus steady-state
+  intervals via the `e2e_blob_walk_baseline` golden. The
+  `compute_path_step_costs` helper reads the already-selected path only; the
+  Viterbi DP selection (backpointers, argmin, costs) is unchanged. Unified
+  `SCHEMA_VERSION` bumped 11 -> 12 (metadata-only; not geometry-affecting); see
+  [TR_SCHEMA_VERSION_HISTORY.md](TR_SCHEMA_VERSION_HISTORY.md). Workstream
+  artifact:
+  [active_plans/workstreams/blob_walk_v2_check1_p15_fix.md](active_plans/workstreams/blob_walk_v2_check1_p15_fix.md).
+
+### Developer Tests and Notes
+
+- Check 7 completion addendum: (1) Lyra-Wheeling 754-981 (span 227, 4K 120fps,
+  stride 2) UNDETERMINED -- FWD walk exceeded 45 min budget cap before completing;
+  stride-2 termination bug present on this video. Verdict unaffected: ranking still
+  largest group (17 vs 7 starvation vs 10 mixed). (2) Mixed-bucket per-pass
+  diagnosis: 10 mixed passes re-walked with in-memory per-frame status capture.
+  Key finding: accept_on_nonempty >= 0.88 across all 10 passes -- when candidates
+  are present the walker accepts one; regression is wrong-blob-wins, not path
+  rejection. Sub-class: starvation-leaning=5, selection-leaning=5. Effective
+  ranking-driven fraction (including selection-leaning mixed) is 22/34 = 65%.
+  Effective starvation fraction (including starvation-leaning mixed) is 12/34 = 35%.
+  Workstream doc updated:
+  [docs/active_plans/workstreams/blob_walk_v2_check7_regressed_split.md](active_plans/workstreams/blob_walk_v2_check7_regressed_split.md).
+
+- Check 7 (claim C, regressed-bucket split): re-ran the 35 m4 A/B regressed
+  intervals via `walk_one_direction` with a null log to capture
+  `WalkSummary.soft_miss_no_blob_count` per pass. Result: ranking-driven 17,
+  mixed 10, starvation-driven 7, pending 1 (Lyra-Wheeling, 4K 120fps). Verdict:
+  RANKING-DOMINANT. `soft_miss_no_path` is near zero across all passes; wrong-blob-
+  wins is the failure mode, not displacement-cap rejection. Cost trial (Check 6
+  / claim B) addresses 2-3x more regressions than the box trial (Check 2 / claim A).
+  Artifact:
+  [active_plans/workstreams/blob_walk_v2_check7_regressed_split.md](active_plans/workstreams/blob_walk_v2_check7_regressed_split.md).
+
+- Published read-only implementation audit of the blob_walk v2 walker at
+  [active_plans/audits/blob_walk_v2_implementation_audit.md](active_plans/audits/blob_walk_v2_implementation_audit.md).
+- Validation Check 2 (claim A): rendered rejected-blob overlays on the two
+  diagnosed stall intervals (Conant 1080-1111 FWD, Jason 564-583 FWD) and
+  measured per-blob distance from the frozen-anchor seed reference. Claim A
+  ("rejected blobs are the runner's blobs") is REFUTED: Jason's 195 rejected
+  blobs have median distance 5.97 torso-widths from the runner (0.5% within
+  1W, 5.1% within 2W); Conant's tight ROI yields near-noise residual on 30/31
+  frames. Blobs in wider search areas are from other athletes 7-24W away.
+  Widening the acceptance box would not recover runner signal. Root cause of
+  the stall is below-threshold runner signal (Jason: 3 px wide torso) and
+  background domination, not a misplaced acceptance box. Artifact:
+  [active_plans/workstreams/blob_walk_v2_check2_rejected_overlays.md](active_plans/workstreams/blob_walk_v2_check2_rejected_overlays.md).
+  PNG overlays under `output_smoke/blob_walk_v2_check2/`.
+  Findings are separated into proven / likely / assumption tiers; no behavior
+  changes result from this audit alone.
+  - **Proven findings:** Viterbi evidence term uses raw `integrated_mag` instead
+    of the spec's normalized confidence; spec'd velocity-variance and
+    angle-variance consistency cost terms are defined but never implemented;
+    walker emits the oldest window frame instead of the spec's center frame,
+    making `interpolated`/`extrapolated` statuses structurally unreachable in
+    steady state; candidate lists are pre-filtered by the acceptance box around
+    an anchor stale by the window depth; bootstrap observation counts as an
+    accept and can mask the pure-stall Hermite fallback; walk debug log
+    `path_cost` column stamps the whole-window total while documented as a
+    per-frame contribution; latent stride>1 stepping/termination bug for
+    >=90 fps sources.
+  - **Audited clean:** coordinate handling, FWD/BWD temporal symmetry, pool
+    integration.
+  - All behavior changes are blocked behind the report's assumption table.
+- Corpus FPS probe (audit claim K): `data/outdoor_corpus.txt` videos run at
+  30/30/60/60/60/120 fps. `Lyra-Wheeling-IMG_3912.mkv` is 120 fps (stride 2),
+  so the stride>1 stepping/termination bug (audit P12) is LIVE on 1 of 6
+  corpus videos, not latent. Walker results on that video are suspect until
+  the stepping fix lands.
+- Added [active_plans/active/blob_walk_v2_validation_plan.md](active_plans/active/blob_walk_v2_validation_plan.md):
+  ordered smallest-first checks for the audit's assumption table (P15
+  telemetry truthfulness first as the only code change, then rejected-blob
+  overlays, bootstrap-accept masking counts, anchor-lag telemetry,
+  normalized-cy trace, per-term cost telemetry, regressed-bucket split,
+  identity-jump count). No walker behavior trials until gating claims are
+  proven and each trial is separately approved.
+- Check 4: anchor-lag telemetry (claims F and I) complete. Walk debug CSVs
+  from 4 baseline intervals (Conant bootstrap/steady-state, Jason early/steady-state)
+  used to measure anchor_age_at_observation via the new `window_head_frame` column.
+  Key findings:
+  - Steady-state anchor age is exactly 9 frames (= WALKER_WINDOW_FRAMES), confirming
+    audit P6+P8 predictions. All rejections in all 8 passes have anchor_age >= 7 frames.
+  - Claim F CONFIRMED (structural): anchor is always 9+ frames stale in steady state;
+    quality impact conditional on image-space drift per standing constraint P8.
+  - Claim I CONDITIONALLY CONFIRMED: anchor staleness is present at every rejection.
+    Two stall sub-mechanisms found: (a) Conant 1080-1111 FWD -- runner image-space drift
+    reaches 2.35 TW over 31 frames (24/31 frames outside acceptance half-width); anchor-
+    advance would help. (b) Jason 564-583 FWD -- runner is near-stationary in image space
+    (max drift 0.53 TW), so L4 centroid offset + P11 acceptance-box exclusion is the
+    operative mechanism; anchor-advance alone would NOT cure this case. No
+    production code changes. Workstream artifact:
+    [active_plans/workstreams/blob_walk_v2_check4_anchor_lag.md](active_plans/workstreams/blob_walk_v2_check4_anchor_lag.md).
+- Check 6: per-term cost telemetry (claim B). Measured whether evidence
+  (WEIGHT_EVIDENCE * integrated_mag) or displacement dominates Viterbi path
+  selection on real corpus data. Key numbers from 87 accepted frames across 5
+  usable passes (4 baseline intervals, 7 passes attempted, 3 excluded for zero
+  accepted or missing CSV):
+  - Static dominance confirmed: evidence cost median -559 vs displacement cost
+    median 0.000 (ratio infinite; displacement is near-zero on most accepted
+    frames; max displacement 2.0 W only on bootstrapped pairs).
+  - Dynamic: on 44 multi-candidate distinct frames, selected == max-evidence
+    43.2% pooled (FWD 11.5%, BWD 88.9%); selected == min-displacement 93.2%
+    pooled (FWD 96.2%, BWD 88.9%).
+  - Claim B verdict: MIXED. Evidence dominates the per-node cost but not the
+    path-choice outcome. The window-level DP accumulates transition costs over 9
+    frames; by decision time, accumulated spatial momentum dominates and the path
+    follows the min-displacement candidate rather than the max-evidence candidate
+    on FWD passes (Jason FWD: 0/23 ev_match, 22/23 disp_match). BWD passes
+    behave differently (10/10 ev_match) likely because fewer competing blobs and
+    larger mag ratios leave displacement and evidence co-aligned. Duplicate-blob
+    issue in Conant candidates_json collapses Conant FWD to 3 genuine
+    multi-candidate frames (all trivially co-aligned). No production code changes.
+    Artifact:
+    [active_plans/workstreams/blob_walk_v2_check6_per_term_cost.md](active_plans/workstreams/blob_walk_v2_check6_per_term_cost.md).
+- Check 8: identity-jump count (claim L). Measured per-step accepted-to-accepted
+  displacement in torso-width units across 8 passes (4 baseline intervals, 2 videos).
+  Pooled P99 = 0.578 W; identity-jump threshold (P99 + 0.3 W) = 0.878 W.
+  Zero events exceed the threshold (max observed = 0.614 W). Seven skip-bridging
+  steps exist (accepted frames that cross a skip gap), with max displacement
+  0.231 W -- well below the threshold and well within the ~0.80 W corridor
+  radius. Claim L verdict: NOT EXERCISED in sample. The structural hole
+  (no displacement cap on skip-to-blob Viterbi transitions) is real but does
+  not manifest in this 8-pass sample; the corridor filter acts as a soft outer
+  bound even without the Viterbi cap. Bootstrap-stall intervals produce zero
+  accepted frames and zero steps, so worst-case skip runs are not represented
+  in step terms. No production code changes. Artifact:
+  [active_plans/workstreams/blob_walk_v2_check8_identity_jumps.md](active_plans/workstreams/blob_walk_v2_check8_identity_jumps.md).
+- Check 5: normalized-cy trace (claims D and E). Measured per-frame
+  normalized vertical blob position ncy = (cand_cy - pred_cy) / torso_h
+  for walker-selected blobs across 4 baseline intervals (Conant bootstrap and
+  steady-state, Jason early and steady-state; Lyra-Wheeling excluded, P12
+  live bug). 88 accepted frames with ncy across 6 non-empty pass directions.
+  Claim D (limbs merged into one broad blob): REFUTED for small runners,
+  SUPPORTED for large runners. Conant (30px torso): 97-100% of frames have
+  exactly 1 blob near reference -- DoG merges the runner. Jason (11px torso):
+  every frame with candidates has 4-6 distinct blobs within 1 torso-width;
+  limb-level separation is observed. Limb merging is not universal; it
+  depends on apparent runner size. Claim E (within-body vertical centroid
+  jitter): OBSERVED on Jason. Jason/seed_602_629/FWD has 4-6 competing blobs
+  spanning the full torso vertical extent; Viterbi selection jumps between
+  lower-body (ncy ~ -0.4) and upper-body (ncy ~ +0.2) clusters, with a
+  max single-step |delta ncy| = 0.384 torso heights. Global alternation rate
+  is 0.26 flips/step; 85% of steps stay within 0.10 torso heights. Conant
+  shows mild slow drift (no sharp jitter), consistent with one merged blob
+  tracking center-of-mass through a stride. No production code changes.
+  Artifact:
+  [active_plans/workstreams/blob_walk_v2_check5_normalized_cy.md](active_plans/workstreams/blob_walk_v2_check5_normalized_cy.md).
 
 ## 2026-06-09
 

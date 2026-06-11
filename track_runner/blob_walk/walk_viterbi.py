@@ -212,6 +212,9 @@ def transition_cost(
 def compute_path_cost(path: list, torso_w: float, fps: float) -> float:
 	"""Compute total Viterbi cost for a selected path (for debug logging).
 
+	Delegates to compute_path_step_costs and sums the results so the sum
+	invariant (sum(steps) == total) is structural, not just documented.
+
 	Args:
 		path: List of blob dicts or None, as returned by select_path.
 		torso_w: Torso width in pixels.
@@ -220,26 +223,71 @@ def compute_path_cost(path: list, torso_w: float, fps: float) -> float:
 	Returns:
 		Total cost (float). Lower is better.
 	"""
-	if not path:
-		return 0.0
+	# Delegate to compute_path_step_costs; sum makes the invariant structural.
+	step_costs = compute_path_step_costs(path, torso_w, fps)
+	total = sum(step_costs)
+	return total
 
+
+#============================================
+def compute_path_step_costs(path: list, torso_w: float, fps: float) -> list:
+	"""Compute the per-node Viterbi cost contribution along a selected path.
+
+	Telemetry-only helper. Decomposes the same additive cost that
+	compute_path_cost sums into one float per path node, so the debug log can
+	record a truthful per-frame "cost contribution at this frame" value. The
+	contribution of node t is its local node cost (evidence bonus for a real
+	blob, SKIP_COST for a skip node) plus the transition cost into it from
+	node t-1. By construction sum(compute_path_step_costs(...)) equals
+	compute_path_cost(...) for the same path (node 0 has no inbound edge);
+	compute_path_cost delegates here to make that invariant structural.
+
+	Required blob keys (integrated_mag, centroid_x, centroid_y) are accessed
+	directly per PYTHON_STYLE do-not-hide-bugs-with-defaults. Skip nodes are
+	None and handled explicitly; real blobs must carry these keys.
+
+	This function reads the already-selected path only. It does NOT run the DP,
+	touch backpointers, or change any selection; it carries no cross-pass state
+	(C9). All spatial terms stay in torso-width units (C2) via transition_cost.
+
+	Args:
+		path: List of blob dicts or None, as returned by select_path.
+		torso_w: Torso width in pixels (scale unit per C2).
+		fps: Source video frame rate.
+
+	Returns:
+		List of N floats, one per path node, aligned 1:1 with path. Empty list
+		when path is empty.
+	"""
+	if not path:
+		return []
+
+	# Same displacement cap as select_path / compute_path_cost so the edge
+	# pruning (and any +inf) matches the cost the DP actually used.
 	max_jump_per_frame_w = walk_motion_gate.MAX_RUNNER_SPEED_W_PER_S / fps
 	max_jump_px = (max_jump_per_frame_w + walk_motion_gate.BOOTSTRAP_UNCERTAINTY_W) * torso_w
 
-	total = 0.0
+	step_costs = []
 	for i, blob in enumerate(path):
+		# Local node cost: evidence bonus for a real blob, skip cost otherwise.
+		# Required keys accessed directly per do-not-hide-bugs-with-defaults;
+		# skip nodes are None (handled explicitly below, not via .get defaults).
 		if blob is not None:
-			integrated_mag = blob.get("integrated_mag", 0.0)
-			total += WEIGHT_EVIDENCE * integrated_mag
+			node_cost = WEIGHT_EVIDENCE * blob["integrated_mag"]
 		else:
-			total += SKIP_COST
+			node_cost = SKIP_COST
 
+		# Transition cost into this node from its predecessor (node 0 has none).
 		if i > 0:
 			prev_blob = path[i - 1]
-			cx_i = prev_blob.get("centroid_x", 0.0) if prev_blob is not None else None
-			cy_i = prev_blob.get("centroid_y", 0.0) if prev_blob is not None else None
-			cx_j = blob.get("centroid_x", 0.0) if blob is not None else None
-			cy_j = blob.get("centroid_y", 0.0) if blob is not None else None
-			total += transition_cost(cx_i, cy_i, cx_j, cy_j, max_jump_px, torso_w)
+			# Pass None for skip nodes; extract required centroid keys directly
+			# for real blobs -- malformed blobs fail loudly here.
+			cx_i = None if prev_blob is None else prev_blob["centroid_x"]
+			cy_i = None if prev_blob is None else prev_blob["centroid_y"]
+			cx_j = None if blob is None else blob["centroid_x"]
+			cy_j = None if blob is None else blob["centroid_y"]
+			node_cost += transition_cost(cx_i, cy_i, cx_j, cy_j, max_jump_px, torso_w)
 
-	return total
+		step_costs.append(node_cost)
+
+	return step_costs

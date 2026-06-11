@@ -12,6 +12,95 @@ To bump observer/solver behavior in a way that invalidates geometry caches, incr
 
 When an old cache carries a schema-tagged fingerprint (e.g. `/schema/5`), a pre-unification tail (`/score_schema/4/prerace/4`), or the legacy `blob_snap/v1/...` form, `migrate_legacy_fingerprints` rewrites the key into the unified `geometry_schema_v<N>` namespace at load time. Each entry below marks whether it was geometry-affecting; only geometry-affecting bumps are cache invalidators.
 
+## 13 (2026-06-10)
+
+**Walker P12 stride-termination overrun fix.** Geometry-affecting: yes
+(stride > 1 sources only; byte-identical at stride 1).
+
+This bumps the unified `tr_schema.SCHEMA_VERSION` from 12 to 13 and adds 13
+to `GEOMETRY_AFFECTING_SCHEMAS`. The on-disk layout of both the `diagnostics`
+and `torso_box_coords` artifacts is unchanged from v12, so v10-v13 files all
+remain readable.
+
+Audit finding P12 (see
+[blob_walk_v2_implementation_audit.md](active_plans/audits/blob_walk_v2_implementation_audit.md))
+and its validation
+([blob_walk_v2_check0_stride_overrun.md](active_plans/workstreams/blob_walk_v2_check0_stride_overrun.md))
+proved the walker termination test `frame_f == neighbor_seed_frame` in
+[walk_walker.py](../track_runner/blob_walk/walk_walker.py) `_run_windowed_steps`
+misses when stride > 1 and the interval span is not divisible by stride. The
+stepped frame skips over the seed instead of landing on it, so the equality
+check never fires and the walk overruns into the adjacent interval (observed:
+119.94 fps Lyra-Wheeling interval #164, frames 16588-16591, FWD overran to
+16592+, BWD to 16587). This violated contract C5/C6 interval independence in
+spirit: a walk observed frames belonging to neighbor intervals. The fix
+replaces equality with the directional crossing test
+`sign * (frame_f - neighbor_seed_frame) >= 0` and clamps `frame_f` to the
+neighbor seed, so the walk terminates at the seed with
+`stop_reason = "hit_neighbor_seed"`.
+
+Why geometry-affecting: on stride > 1 (>= ~90 fps) sources whose span is not
+divisible by stride, walk outputs change (per-frame statuses, accepted
+positions, paths). At stride 1 (30/60 fps) the crossing test fires exactly
+when equality fired and the clamp is a no-op, so output is byte-identical.
+
+Honest tradeoff: a single unified `SCHEMA_VERSION` line cannot be
+geometry-affecting for some sources and not others. Marking v13
+geometry-affecting invalidates geometry-derived caches on 30/60 fps videos
+too, where output is unchanged -- a re-solve cost paid for nothing on those
+videos. The alternative (no bump, or metadata-only) risks silently mixing
+pre-fix overrun geometry with post-fix geometry on 120 fps videos, exactly the
+mismatch contract C10 exists to prevent. The bump wins.
+
+## 12 (2026-06-10)
+
+**Walker CSV debug-log P15 telemetry-truthfulness fix.** Geometry-affecting: no.
+
+This bumps the unified `tr_schema.SCHEMA_VERSION` from 11 to 12. It is a
+metadata-only bump: the walker verdict CSV is a diagnostic artifact, no solved
+geometry changed, and `GEOMETRY_AFFECTING_SCHEMAS` is unchanged (12 is
+intentionally absent), so solved-geometry cache entries stay valid across the
+v11 -> v12 line. `walk_debug_log.SCHEMA_VERSION` reads the unified constant, so
+its exported value advances 11 -> 12 with it; that value is never written into
+the CSV (the CSV header is the `HEADER` column-name tuple).
+
+Audit finding P15 (see
+[blob_walk_v2_implementation_audit.md](active_plans/audits/blob_walk_v2_implementation_audit.md))
+proved the `path_cost` column lied about its own meaning: its header doc
+claimed "Viterbi DP cost contribution at this frame," but the writer stamped
+the SAME whole-window Viterbi total on every emitted row. This fix is telemetry
+only -- no change to selected path, statuses, positions, accepted counts, or
+the Hermite fallback. Decision equality was verified field-wise against the
+`e2e_blob_walk_baseline` golden on the two diagnosed stall intervals
+(Conant 1080-1111 FWD, Jason 564-583 FWD) plus steady-state intervals; only the
+new telemetry columns differ. Three coordinated changes to
+[walk_debug_log.py](../track_runner/blob_walk/walk_debug_log.py) HEADER
+(now 45 columns, up from 43):
+
+- `path_cost` documentation corrected to its true meaning: the WHOLE-WINDOW
+  Viterbi total for the window that produced this frame's decision. Column
+  values and behavior are unchanged; only the documentation is fixed.
+- NEW `path_step_cost` (float): the per-frame Viterbi cost contribution of the
+  selected node -- its local node cost (evidence bonus for a real blob, else
+  SKIP_COST) plus the transition cost into it from the previous node. This is
+  the value `path_cost` falsely claimed to be. Summing `path_step_cost` across
+  one window equals that window's `path_cost`. Blank for bootstrap and terminal
+  marker rows. Computed by the new `walk_viterbi.compute_path_step_costs`
+  helper, which reads the already-selected path only and does not run, alter, or
+  re-bias the Viterbi DP (no change to backpointers, argmin, or costs).
+- NEW `window_head_frame` (int): the source frame index of the window head
+  (newest frame in the rolling buffer) at the moment this frame's window
+  decision was finalized, per spec section 7 of
+  [windowed_path_selection_amendment.md](archive/windowed_path_selection_amendment.md).
+  Blank for bootstrap and terminal marker rows.
+
+Pre-v14 CSVs (43 columns) remain readable by tools that iterate `HEADER`
+directly; the two new columns are simply absent and default to blank on read.
+The CSV column-meaning history advances to v14 (v12 added the provisional
+columns, v13 the window-selection redesign, v14 this P15 fix); that
+column-meaning label sequence is independent of and faster than the unified
+integer, which is now 12.
+
 ## Walker CSV debug-log constant folded under tr_schema (2026-06-08)
 
 **Verdict-CSV `walk_debug_log.SCHEMA_VERSION` now reads `tr_schema.SCHEMA_VERSION` (C10).** Geometry-affecting: no.
@@ -32,13 +121,15 @@ violate contract C10 (one unified `SCHEMA_VERSION`). WP-4 folds it: the module n
 - The CSV column-meaning history (v12 below, v13 below) is retained verbatim for readers parsing
   older verdict CSVs; only the running stamp source changed.
 
-## 13 (2026-05-28)
+## Walker-local CSV v13 (2026-05-28, superseded by unified schema)
 
 **Walker CSV debug-log schema: window-level path-selection redesign.** Geometry-affecting: no.
 
-This version governs `track_runner/blob_walk/walk_debug_log.py` SCHEMA_VERSION (the blob-walker CSV format),
-not the track_runner on-disk solver artifact schema. It is listed here per contract C10 (one unified
-schema history). The `track_runner/tr_schema.py` SCHEMA_VERSION remains at 11.
+This version governed `track_runner/blob_walk/walk_debug_log.py` SCHEMA_VERSION before
+the module was relocated into `track_runner/` and folded under the unified `tr_schema.SCHEMA_VERSION`
+constant (see the "Walker CSV debug-log constant folded under tr_schema" entry above). It is a
+walker-local CSV column-meaning label, not a unified schema integer. It is listed here per contract
+C10 (one unified schema history). The `track_runner/tr_schema.py` SCHEMA_VERSION was 11 at this time.
 
 Column changes from v12 (43 columns total, down from 42 in v12 + 2 new - 1 deleted = 43):
 
