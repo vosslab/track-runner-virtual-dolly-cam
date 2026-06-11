@@ -84,6 +84,8 @@ track-runner-virtual-dolly-cam/
 |-- common_tools/                  shared utility modules
 |   |-- frame_filters.py           frame filtering
 |   |-- frame_reader.py            frame reading
+|   |-- goodbox.py                 FFT-friendly crop dimension snap
+|   |-- probe_video.py             mediainfo metadata probe (warns on 4K+ sources)
 |   `-- tools_common.py            shared tool helpers
 |
 |-- data/                          non-Python build-time assets
@@ -158,6 +160,7 @@ track-runner-virtual-dolly-cam/
     |-- AUTHORS.md                 maintainer information
     |-- INSTALL.md                 setup and dependencies
     |-- USAGE.md                   workflow narrative, global options, configuration
+    |-- TROUBLESHOOTING.md         known issues with symptoms, causes, next steps
     |-- MODES.md                   per-mode (subcommand) index pointing to docs/modes/
     |-- modes/                     per-mode reference pages with auto-stamped --help
     |   |-- SETUP.md

@@ -1,5 +1,38 @@
 ## 2026-06-11
 
+### Additions and New Features
+
+- Created `docs/TROUBLESHOOTING.md` (first entry: walker / corpus runs on 4K HEVC sources
+  take hours). Documents cause (HEVC random-access seek cost ~450-550 ms vs 6-14 ms
+  sequential per [common_tools/README.md](../common_tools/README.md) strategy table),
+  notes auto-bin does not reduce seek cost (binning is post-decode), links the access-pattern
+  fix roadmap (P16/P17) parked in
+  [active_plans/active/blob_walk_v2_fix_phase_roadmap.md](active_plans/active/blob_walk_v2_fix_phase_roadmap.md),
+  and confirms runs are slow but not broken.
+
+- Added runtime notice in `tools/blob_walk_v2/make_walk_html_v2.py` `process_video`:
+  when source width >= 3840 or source height >= 2160 (derived from
+  `reader.geometry.source_width` / `reader.geometry.source_height`), emits one
+  `logger.info` line noting the random-access seek cost (~0.5 s single-process,
+  multi-second under parallel load) and pointing at `docs/TROUBLESHOOTING.md`.
+  The same warning now also fires at initial metadata parse in
+  `common_tools/probe_video.py`, covering every production probe consumer.
+  No behavior change; log only. Post-review polish: both messages point at
+  `docs/TROUBLESHOOTING.md` rather than roadmap item tags; the probe comment
+  states the measured mechanism (forward decode from the nearest preceding
+  keyframe in long-GOP HEVC -- the corpus test files carry no B-frames per
+  the `common_tools/README.md` probe) instead of a B-frame claim;
+  `probe_video.py` gains a module-level logger, a docstring `Warns:` section,
+  and a single-f-string message.
+
+- Drafted the M1 fix plan
+  [active_plans/active/blob_walk_v2_p10_fix_plan.md](active_plans/active/blob_walk_v2_p10_fix_plan.md)
+  (P10 bootstrap-accept fallback masking; status awaiting user approval) from
+  the roadmap's M1 section, including the recorded call-site audit of
+  `walk_bundle_to_path_with_coverage` (single production consumer at the
+  `interval_solver` fallback gate; two monkeypatching test modules; the
+  audit-triggered stop condition is not met). No production code changed.
+
 ### Fixes and Maintenance
 
 - Validation report clarity edits (documentation only, no code change): (1) Claim
@@ -58,6 +91,22 @@
   [docs/active_plans/workstreams/blob_walk_v2_checkg_extrapolation_replay.md](active_plans/workstreams/blob_walk_v2_checkg_extrapolation_replay.md).
   Validation report claim G updated from STILL UNKNOWN to UNDETERMINED.
 
+- Corpus-120 walk run completed (post-P12, SCHEMA_VERSION 13, rng_seed=None fresh
+  sample): 6 videos x 20 random visible-both intervals. All 120 intervals completed
+  with stop_reason `hit_neighbor_seed`; all 6 manifest PASS checks passed. Per-video
+  FWD/BWD accepted_fraction (pooled over interval lengths): IMG_3830 83.6%/88.5%,
+  IMG_3823 55.8%/54.5%, Jason 40.2%/39.0%, Lyra-Hersey 82.7%/78.0%, Conant
+  67.9%/76.2%, Lyra-Wheeling 58.0%/62.4%. Corpus: 58.5% FWD / 61.1% BWD. The
+  elevation vs L3 reference (38.7%/39.1% on 120-corpus) is primarily sampling
+  variation from the fresh-sample selection; a fixed-seed A/B (WS-2A) is required
+  before the number is authoritative. Lyra-Wheeling (stride 2, 120 fps): 13 of 20
+  sampled intervals have an odd half-span (prime P12 trigger candidates); all report
+  `hit_neighbor_seed`, consistent with the termination fix. No walk debug CSVs are
+  written by this tool path; per-frame P12 verification remains in unit tests. Elapsed
+  times: IMG_3830 0:28, IMG_3823 0:20, Jason 52:22, Lyra-Hersey 25:48, Conant 31:19,
+  Lyra-Wheeling 6:11:13. Artifact:
+  [active_plans/workstreams/blob_walk_v2_corpus120_run_2026_06_10.md](active_plans/workstreams/blob_walk_v2_corpus120_run_2026_06_10.md).
+
 - Blob walk v2 validation complete: all 9 checks (Check 0 through Check 8) executed
   and synthesized. Final synthesis report:
   [active_plans/reports/blob_walk_v2_validation_report.md](active_plans/reports/blob_walk_v2_validation_report.md).
@@ -80,7 +129,9 @@
   - F CONFIRMED (structural) -- anchor is always 9+ frames stale in steady state
     (window depth = WALKER_WINDOW_FRAMES = 9); quality impact conditional on image-space
     drift per standing constraint P8.
-  - G STILL UNKNOWN -- extrapolation-vs-hold-last comparison not exercised in sample.
+  - G UNDETERMINED -- extrapolation-vs-hold-last comparison not exercised in
+    sample (label updated same-day from STILL UNKNOWN by the check G replay;
+    see the claim G entry above).
   - I CONDITIONALLY CONFIRMED -- anchor staleness is present at every rejection; two
     distinct stall sub-mechanisms: (a) image-space drift (Conant, 2.35 TW over 31 frames),
     where anchor-advance would help; (b) near-stationary runner (Jason) where L4 centroid
@@ -126,6 +177,21 @@
   67h CPU) confirmed dead after pkill.
 
 ## 2026-06-10
+
+### Additions and New Features
+
+- Published blob walk v2 fix-phase roadmap at
+  [active_plans/active/blob_walk_v2_fix_phase_roadmap.md](active_plans/active/blob_walk_v2_fix_phase_roadmap.md)
+  as the fix-phase index. Evidence basis: implementation audit, validation
+  report, and Check 0-8 / Check G workstream docs. The roadmap orders five
+  milestones -- M1 P10 fallback correction, M2 re-baseline and ranking
+  evidence as four parallel workstreams, M3 ranking-quality trial bound to
+  an evidence-keyed decision rule, M4 anchor-advance design phase behind a
+  safety checklist, M5 conditional emission redesign -- with acceptance of
+  the P12 stride termination fix as a baseline precondition, and parks
+  contraindicated items (acceptance-box widening, standalone evidence
+  normalization, skip-cap, extrapolation, P13/P16/P17) with their
+  activation evidence.
 
 ### Fixes and Maintenance
 

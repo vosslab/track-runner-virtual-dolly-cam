@@ -7,7 +7,7 @@ and stand-alone scripts under `tools/`.
 ## Modules
 
 - [`frame_reader.py`](frame_reader.py) - reliable single-frame reader on top of `cv2.VideoCapture` with two seek strategies (sequential fast-path + `CAP_PROP_POS_FRAMES` random-access seek) and optional pre-binning. Source videos must be `.mkv`.
-- [`probe_video.py`](probe_video.py) - video metadata probe via mediainfo CLI.
+- [`probe_video.py`](probe_video.py) - video metadata probe via mediainfo CLI; warns on 4K+ sources about slow random-access decode.
 - [`goodbox.py`](goodbox.py) - "goodbox" sizing helpers (FFT-friendly dimensions; prime factors `<= 11`).
 - [`frame_filters.py`](frame_filters.py) - simple per-frame image filters used by the encoder pipeline.
 - [`tr_video_identity.py`](../track_runner/tr_video_identity.py) - basename + size-bytes fingerprinting used to warn on input-file identity mismatches.
@@ -156,6 +156,8 @@ It does *not* tell the decoder to produce a smaller frame. Implications:
 
 ## See also
 
+- [`docs/TROUBLESHOOTING.md`](../docs/TROUBLESHOOTING.md) for the
+  user-facing symptom writeup of slow 4K HEVC random-access runs.
 - [`docs/CHANGELOG.md`](../docs/CHANGELOG.md) for the cv2/PyAV decode
   history.
 - [`docs/TRACK_RUNNER_DESIGN.md`](../docs/TRACK_RUNNER_DESIGN.md) for the

@@ -1,0 +1,39 @@
+# Troubleshooting
+
+Known symptoms, causes, and next steps for common issues.
+
+## Walker / corpus runs on 4K HEVC sources take hours
+
+**Symptom:** A single video in a corpus walk takes hours to complete
+(for example, Lyra-Wheeling-IMG_3912, 3840 x 2160 at 119.94 fps, HEVC,
+finished in 6 h 11 m on a 20-interval sample).
+
+**Cause:** HEVC encodes with a group-of-pictures (GOP) structure. Decoding
+a random frame requires the decoder to seek back to the nearest preceding
+keyframe and decode forward to the target frame. On a 4K HEVC source with
+a 119-frame GOP, each random-access seek costs approximately 450-550 ms
+single-process, and a median of roughly 2.6 s under 7-way parallel solve
+load, versus 6-14 ms for a sequential read. The walker batch path issues
+scattered seeks across the file -- one per observation site per frame --
+so many small seeks compound into hours. See
+[common_tools/README.md](../common_tools/README.md) for the measured
+strategy table and per-offset cost breakdown.
+
+Auto-bin (bin_factor 4 at 3840 px width) does not reduce decode cost.
+Binning resizes the frame after decode; the seek itself and the keyframe
+decode forward are unchanged by any bin factor.
+
+**Status:** The access-pattern fix (audit P16/P17: sequential pre-pass
+plus cache-guard narrowing in the walker batch path) is parked in
+[active_plans/active/blob_walk_v2_fix_phase_roadmap.md](active_plans/active/blob_walk_v2_fix_phase_roadmap.md)
+with the Lyra-Wheeling corpus-120 run as trigger evidence. Until that fix
+lands, runs on 4K HEVC sources are slow, not broken.
+
+**User action:** None required. The run will complete correctly; it will
+just take a long time.
+
+**Background:** Future recordings in a codec with short keyframe intervals
+(for example H.264 with a 30-frame GOP) seek faster because less forward
+decode work is required per random-access request. This is offered as
+context only; the durable fix is the sequential pre-pass, not a codec
+change.

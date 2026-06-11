@@ -122,6 +122,14 @@ def process_video(
 	"""Walk + render the sampled intervals of one video. Returns counters dict."""
 	logger.info(f'Processing video: {video_basename}')
 	reader, probe_info = walk_io.open_walker_reader(video_basename)
+	# Decode cost is resolution-bound and pre-bin: binning happens after decode so
+	# auto-bin cannot reduce seek cost on 4K HEVC sources (see common_tools/README.md).
+	if reader.geometry.source_width >= 3840 or reader.geometry.source_height >= 2160:
+		logger.info(
+			'4K+ source: random-access decode is slow (~0.5 s/seek '
+			'single-process, multi-second under parallel load); expect long '
+			'runtimes on scattered reads (see docs/TROUBLESHOOTING.md)'
+		)
 	# Load seeds as a SeedsView in processed-pixel coords so run_interval_walk
 	# receives PROCESSED seeds natively (the bug #101 cure). At bin > 1 a
 	# source cx near the right edge built a degenerate ROI clamped against the

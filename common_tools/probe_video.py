@@ -13,7 +13,11 @@ Single source of truth for production probes. Do not re-add bare
 # Standard Library
 import json
 import shutil
+import logging
 import subprocess
+
+# module-level logger, matching the pattern used across the repo
+logger = logging.getLogger(__name__)
 
 
 #============================================
@@ -33,6 +37,10 @@ def probe_video(input_file: str) -> dict:
 	Raises:
 		RuntimeError: If mediainfo is not on PATH, mediainfo fails,
 			the file has no Video track, or fps is not positive.
+
+	Warns:
+		Logs a warning for 4K-or-larger sources (width >= 3840 or
+			height >= 2160) about slow random-access decode cost.
 	"""
 	mediainfo_path = shutil.which("mediainfo")
 	if mediainfo_path is None:
@@ -60,6 +68,8 @@ def probe_video(input_file: str) -> dict:
 	# extract resolution
 	width = int(video_track["Width"])
 	height = int(video_track["Height"])
+	# codec name is genuinely optional; default intentional
+	codec = video_track.get("Format", "")
 	# extract fps (mediainfo provides FrameRate as a decimal string)
 	fps = float(video_track.get("FrameRate", "0"))
 	if fps <= 0:
@@ -88,4 +98,15 @@ def probe_video(input_file: str) -> dict:
 		"frame_count": frame_count,
 		"duration_s": duration_s,
 	}
+	# Decode cost is resolution-bound and pre-bin: a random-access seek must
+	# decode forward from the nearest preceding keyframe (long-GOP HEVC),
+	# ~0.5 s single-process and several seconds under parallel load on 4K
+	# sources; see common_tools/README.md strategy table.
+	if width >= 3840 or height >= 2160:
+		logger.warning(
+			f"4K+ source ({width}x{height}, {codec}): random-access decode is "
+			f"slow (~0.5 s/seek single-process, multi-second under parallel "
+			f"load); expect long runtimes on scattered reads "
+			f"(see docs/TROUBLESHOOTING.md)"
+		)
 	return info

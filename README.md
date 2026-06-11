@@ -48,6 +48,7 @@ python3 track_runner/track_runner.py -i VIDEO.mp4 encode
 - [docs/MODES.md](docs/MODES.md): Per-mode (subcommand) reference. Start here when you want to know what a specific mode does.
 - [docs/USAGE.md](docs/USAGE.md): Workflow narrative, global options, configuration, and keyboard-shortcut pointers.
 - [docs/TRACK_RUNNER_KEYBINDINGS.md](docs/TRACK_RUNNER_KEYBINDINGS.md): Annotation UI keyboard shortcuts.
+- [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md): Known issues with symptoms, causes, and next steps.
 
 ### Understand it
 - [docs/TRACK_RUNNER_DESIGN.md](docs/TRACK_RUNNER_DESIGN.md): Design philosophy and signal hierarchy behind the solver.

@@ -27,7 +27,7 @@ Global options must appear before the subcommand.
 ./track_runner/track_runner.py -i video.mkv solve --bin 4 --debug-blob 2>&1 | tee /tmp/blob_debug.log
 ```
 
-See [README.md](../common_tools/README.md) for read-pattern cost numbers (sequential vs scattered) and how to interpret the per-strategy histogram.
+See [README.md](../common_tools/README.md) for read-pattern cost numbers (sequential vs scattered) and how to interpret the per-strategy histogram. For known slow-run symptoms (for example, hours-long walker runs on 4K HEVC sources), see [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
 
 ## Subcommands
 
