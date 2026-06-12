@@ -9,4 +9,11 @@ output_smoke/
 
 # === UNIVERSAL ===
 _temp*.?*
+# === PYTHON ===
+build/
+dist/
+sdist/
+*.egg
+*.egg-info/
+site/
 
