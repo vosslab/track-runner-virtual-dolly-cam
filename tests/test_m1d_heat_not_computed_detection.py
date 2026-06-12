@@ -21,8 +21,8 @@ import pathlib
 
 # shared sys.path bootstrap
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
-import git_file_utils
-_REPO_ROOT = git_file_utils.get_repo_root()
+import file_utils
+_REPO_ROOT = file_utils.get_repo_root()
 sys.path.insert(0, str(pathlib.Path(_REPO_ROOT) / "tools" / "blob_walk_v2"))
 sys.path.insert(0, str(pathlib.Path(_REPO_ROOT) / "track_runner"))
 sys.path.insert(0, str(pathlib.Path(_REPO_ROOT) / "common_tools"))

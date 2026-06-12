@@ -20,10 +20,10 @@ import re
 
 # local repo modules
 import pytest
-import git_file_utils
+import file_utils
 
 
-REPO_ROOT = git_file_utils.get_repo_root()
+REPO_ROOT = file_utils.get_repo_root()
 PRODUCTION_DIRS = [
 	os.path.join(REPO_ROOT, "track_runner"),
 	os.path.join(REPO_ROOT, "common_tools"),

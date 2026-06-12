@@ -106,7 +106,7 @@ track-runner-virtual-dolly-cam/
 |
 |-- tests/                         pytest suite
 |   |-- conftest.py                pytest configuration
-|   |-- git_file_utils.py          shared test helper
+|   |-- file_utils.py          shared test helper
 |   |-- check_ascii_compliance.py  single-file ASCII checker
 |   |-- fix_ascii_compliance.py    single-file ASCII fixer
 |   |-- fix_whitespace.py          single-file whitespace fixer

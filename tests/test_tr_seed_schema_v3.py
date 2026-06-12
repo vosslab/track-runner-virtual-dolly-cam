@@ -20,12 +20,12 @@ import shutil
 import pytest
 
 # local repo modules
-import git_file_utils
+import file_utils
 import state_io
 import interval_fingerprint
 
 
-REPO_ROOT = git_file_utils.get_repo_root()
+REPO_ROOT = file_utils.get_repo_root()
 FIXTURE_PATH = f"{REPO_ROOT}/tests/fixtures/seeds_v2_legacy.json"
 
 

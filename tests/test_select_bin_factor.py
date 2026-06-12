@@ -9,9 +9,9 @@ import numpy
 
 # repo root on path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-import git_file_utils  # noqa: E402
+import file_utils  # noqa: E402
 
-REPO_ROOT = git_file_utils.get_repo_root()
+REPO_ROOT = file_utils.get_repo_root()
 sys.path.insert(0, os.path.join(REPO_ROOT, "common_tools"))
 
 import frame_reader as fr

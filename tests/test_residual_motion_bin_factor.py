@@ -16,9 +16,9 @@ import unittest.mock
 import numpy
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-import git_file_utils
+import file_utils
 
-REPO_ROOT = git_file_utils.get_repo_root()
+REPO_ROOT = file_utils.get_repo_root()
 sys.path.insert(0, os.path.join(REPO_ROOT, "track_runner"))
 sys.path.insert(0, os.path.join(REPO_ROOT, "common_tools"))
 sys.path.insert(0, os.path.join(REPO_ROOT, "tools", "blob_walk_v2"))
