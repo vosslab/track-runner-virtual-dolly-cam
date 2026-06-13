@@ -353,11 +353,18 @@ def _run_viterbi_and_emit_oldest(
 
 	# Run Viterbi path selection over the full window.
 	path = walk_viterbi.select_path(window_candidates, seed_w, fps)
-	path_cost_total = walk_viterbi.compute_path_cost(path, seed_w, fps)
+	# Pass window_candidates so the telemetry evidence term is normalized exactly
+	# as the DP normalized it (per-frame, against the frame's full candidate
+	# list); this keeps sum(path_step_costs) == path_cost_total == DP path cost.
+	path_cost_total = walk_viterbi.compute_path_cost(
+		path, seed_w, fps, window_candidates,
+	)
 	# Per-node cost contributions along the selected path (telemetry only).
 	# Index-aligned 1:1 with `path` / `results` / window_frames; recording-only,
 	# never feeds back into selection. sum(path_step_costs) == path_cost_total.
-	path_step_costs = walk_viterbi.compute_path_step_costs(path, seed_w, fps)
+	path_step_costs = walk_viterbi.compute_path_step_costs(
+		path, seed_w, fps, window_candidates,
+	)
 	candidates_in_window_count = walk_status.count_candidates_in_window(window_candidates)
 
 	# Window head frame: the newest (highest-step) frame in the window at the

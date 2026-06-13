@@ -874,6 +874,11 @@ def _run_solve(
 		"full_solve": args.full_solve,
 		"upgrade": getattr(args, "upgrade", False),
 		"bin_factor": bin_factor,
+		# Config-resolved Viterbi cost weights threaded to Stage-4 workers.
+		# The resolved config always carries walker_costs after validate_config
+		# (the shipped default includes the full section); direct key access
+		# per do-not-hide-bugs-with-defaults.
+		"walker_costs": cfg["walker_costs"],
 	}
 	if on_interval_complete is not None:
 		solve_kwargs["on_interval_complete"] = on_interval_complete
@@ -2595,13 +2600,12 @@ def main() -> None:
 	# load config: per-video file if it exists, otherwise defaults.
 	# track whether a per-video config already existed so we can gate
 	# modes that need `setup` to have been run first (solve/refine/target).
-	had_config_file = os.path.isfile(config_path)
-	if had_config_file:
-		# per-video config: auto-save legacy-key migrations so the
-		# deprecation notice fires exactly once per file
-		cfg = tr_config.load_config(config_path, auto_save_migration=True)
-	else:
-		cfg = tr_config.read_default_config()
+	# resolve_config centralizes the per-video/default branch (and the
+	# legacy-key auto-migration) shared with the blob_walk_v2 walk driver;
+	# config_path honors any --config-file override resolved above.
+	cfg, had_config_file = tr_config.resolve_config(
+		args.input_file, config_path=config_path,
+	)
 	tr_config.validate_config(cfg)
 
 	# probe video metadata

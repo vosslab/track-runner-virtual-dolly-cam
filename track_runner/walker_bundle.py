@@ -33,6 +33,31 @@ import blob_walk.walk_walker as walk_walker
 
 #============================================
 @dataclasses.dataclass
+class WalkCoverage:
+	"""Named coverage report returned by walk_bundle_to_path_with_coverage.
+
+	Carries two distinct accepted-frame counts so the Stage-4 fallback gate
+	can measure post-seed trajectory evidence separately from total coverage.
+	Using a dataclass (rather than a bare integer) forces the gate to access
+	the intended field by name, making the seed-only vs. zero-accept
+	distinction explicit at the call site.
+
+	Attributes:
+		accepted_count: Total frames the walker marked "accepted" for this
+			pass, including the seed frame if it was observed via bootstrap.
+			Preserved for telemetry and any future consumer; meaning
+			unchanged from the previous bare-integer return.
+		post_seed_accepted: Accepted frames excluding the pass's own seed
+			frame. A pass with post_seed_accepted == 0 carries no
+			post-seed trajectory evidence even if accepted_count == 1
+			(bootstrap-only stall), and must fall back to Hermite.
+	"""
+	accepted_count: int
+	post_seed_accepted: int
+
+
+#============================================
+@dataclasses.dataclass
 class WalkerInputBundle:
 	"""Self-contained input to walk one interval in one direction.
 
@@ -410,6 +435,36 @@ def _box_at(frame_index: object, by_frame: dict, endpoint_states: dict) -> objec
 
 
 #============================================
+def count_post_seed_accepts(accepts: list, seed_frame: int) -> int:
+	"""Count accepted frames that are NOT the pass's own seed frame.
+
+	The bootstrap step in the walker observes the seed frame before any
+	windowed steps and appends it to `accepts` if observed. Windowed steps
+	start at seed_frame +/- stride, so the seed frame appears in `accepts`
+	at most once and only via bootstrap (the neighbor seed frame is never
+	observed; the P12 termination fix ensures the crossing check fires
+	before the observe call).
+
+	"Post-seed accepts" is the count of accepted frames that carry real
+	post-seed trajectory evidence. A pass whose only accepted frame is the
+	seed frame (bootstrap-only stall) has post_seed_accepted == 0 and must
+	fall back to Hermite even though accepted_count == 1.
+
+	Args:
+		accepts: List of accepted frame indices from WalkSummary.accepts.
+		seed_frame: The pass's own anchor seed frame index (left seed for
+			FWD, right seed for BWD).
+
+	Returns:
+		Number of accepted frames in `accepts` that are not equal to
+		`seed_frame`.
+	"""
+	# count non-seed accepted frames; each non-seed frame counts exactly once
+	count = sum(1 for f in accepts if f != seed_frame)
+	return count
+
+
+#============================================
 def walk_bundle_to_path(bundle: WalkerInputBundle) -> list:
 	"""Adapter: run walk_one_direction for one bundle, return a full-span path.
 
@@ -490,19 +545,18 @@ def walk_bundle_to_path(bundle: WalkerInputBundle) -> list:
 
 #============================================
 def walk_bundle_to_path_with_coverage(bundle: WalkerInputBundle) -> tuple:
-	"""Run walk_one_direction for one bundle; return path plus accepted-frame count.
+	"""Run walk_one_direction for one bundle; return path plus WalkCoverage.
 
-	Same projection as `walk_bundle_to_path`, but also surfaces the walker's
-	own accepted-frame coverage for this direction so the Stage 4 seam can
-	detect the pure-stall case (zero accepted frames) and fall back to the
-	Hermite path for that pass. The accepted count is read from the walker's
-	`WalkSummary.accepted_count` (frames whose five-value status is "accepted"),
-	the walker's authoritative per-pass coverage signal.
+	Same projection as `walk_bundle_to_path`, but also surfaces named
+	coverage fields so the Stage 4 fallback gate can distinguish a
+	bootstrap-only stall (accepted_count == 1, post_seed_accepted == 0)
+	from a true zero-accept stall (both == 0) and from a healthy pass
+	(post_seed_accepted >= 1). Both quantities are read from WalkSummary
+	before the path projection discards per-frame status.
 
-	`_build_full_span_path` discards the per-frame `status` field when it
-	projects the walker rows into the aligned solver state list, so coverage
-	must be captured here at the WalkSummary, before projection, rather than
-	re-derived from the returned boxes.
+	The fallback gate reads `post_seed_accepted`, not `accepted_count`.
+	A bootstrap-only stall carries no post-seed trajectory evidence and
+	must fall back to Hermite even though accepted_count is 1.
 
 	Hermite independence (test_blob_walk_v2_no_hermite): this function reads
 	only the walker's own output. The fallback decision lives in the caller
@@ -513,10 +567,10 @@ def walk_bundle_to_path_with_coverage(bundle: WalkerInputBundle) -> tuple:
 		bundle: WalkerInputBundle for one direction (FWD or BWD).
 
 	Returns:
-		Tuple of (full_span_path, accepted_count). full_span_path matches
-		`walk_bundle_to_path`; accepted_count is the integer number of frames
-		the walker marked "accepted" for this direction (0 means the pure
-		stall case).
+		Tuple of (full_span_path, WalkCoverage). full_span_path matches
+		`walk_bundle_to_path`. WalkCoverage carries accepted_count (total
+		"accepted" frames including seed bootstrap) and post_seed_accepted
+		(accepted frames excluding the pass's own seed frame).
 	"""
 	neighbor_seed = bundle.neighbor_seed
 	neighbor_seed_frame = int(neighbor_seed["frame_index"])
@@ -551,5 +605,10 @@ def walk_bundle_to_path_with_coverage(bundle: WalkerInputBundle) -> tuple:
 		seed_start,
 		seed_end,
 	)
-	accepted_count = int(summary.accepted_count)
-	return full_span_path, accepted_count
+	# seed frame is the pass's own anchor: left seed for FWD, right for BWD
+	seed_frame = int(bundle.seed["frame_index"])
+	coverage = WalkCoverage(
+		accepted_count=int(summary.accepted_count),
+		post_seed_accepted=count_post_seed_accepts(summary.accepts, seed_frame),
+	)
+	return full_span_path, coverage

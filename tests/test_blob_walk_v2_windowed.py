@@ -1,12 +1,18 @@
 """
-Pure-function tests for the windowed path-selection internals (v13).
+Pure-function tests for the windowed path-selection internals (v13+).
 
 Covers walk_viterbi.select_path and walk_status.emit_status_from_path on
 hand-built candidate lattices -- behavior the e2e baseline gate exercises only
 on real-blob corridors, not on synthetic edge cases:
-- Viterbi DP selects torso over leg in an oscillation scenario.
-- Displacement cap prunes far candidates in torso-width units.
+- Hard physical-sanity displacement prune (ABSOLUTE_MAX_JUMP_W) prunes far candidates.
 - Status-enum transitions: soft_miss_no_blob, interpolated, extrapolated.
+
+WP-COST-2 note: the old test_window_picks_torso_over_leg_oscillation was
+rewritten to test status/coordinate plumbing rather than the min-displacement
+winner, because the new pairwise velocity-delta cost model (WP-COST-1) selects
+by motion consistency, not by minimum displacement. The scenario that test was
+encoding (stationary blob wins) is the OLD MODEL behavior being replaced. The
+model-flip test lives in tests/test_walk_cost_model.py.
 
 All tests are offline, deterministic, and finish well under one second.
 No real video decode.
@@ -55,51 +61,45 @@ def _make_blob(cx: float, cy: float, integrated_mag: float = 100.0) -> dict:
 class TestViterbiSelectPath:
 	"""Unit tests for _viterbi_select_path."""
 
-	def test_window_picks_torso_over_leg_oscillation(self):
-		"""Viterbi picks torso even when leg has higher integrated_mag on alternating frames.
+	def test_window_output_shape_and_none_consistency(self):
+		"""select_path returns one entry per input frame; None means no candidate selected.
 
-		Scenario: 9 frames. Torso blob at (100, 100), present every frame.
-		Leg blob at (100, 180), present with integrated_mag=500 on frames 1, 3, 5, 7.
-		Per-frame max-integrated_mag selection would pick leg four times.
-		Viterbi path-selection should prefer the torso (closer, more consistent path).
+		Status plumbing: the output list is the same length as the input, and
+		each entry is either a blob dict (has centroid_x/centroid_y keys) or None.
+
+		Rationale for keeping: this covers the output-shape contract and the
+		None-vs-dict type invariant for select_path. No higher-level gate covers
+		the exact output shape. Deleted test (old): test_window_picks_torso_over_leg_
+		oscillation -- it asserted that a stationary blob wins over a high-mag
+		moving blob, which is the OLD MIN-DISPLACEMENT model behavior being replaced
+		by WP-COST-1. The model-flip test now lives in test_walk_cost_model.py.
 		"""
-		torso_cx, torso_cy = 100.0, 100.0
-		leg_cx, leg_cy = 100.0, 180.0
-		torso_mag = 200.0
-		leg_mag = 500.0
+		blob = _make_blob(100.0, 100.0, 200.0)
 
-		window_candidates = []
-		for i in range(9):
-			if i % 2 == 1:
-				# Leg blob has higher magnitude on odd frames.
-				frame_blobs = [
-					_make_blob(torso_cx, torso_cy, torso_mag),
-					_make_blob(leg_cx, leg_cy, leg_mag),
-				]
-			else:
-				frame_blobs = [_make_blob(torso_cx, torso_cy, torso_mag)]
-			window_candidates.append(frame_blobs)
-
-		torso_w = 50.0  # pixels
+		# Mix of populated and empty frames.
+		window_candidates = [
+			[blob],
+			[blob],
+			[],       # empty -> None in path
+			[blob],
+			[blob],
+		]
+		torso_w = 50.0
 		fps = 60.0
 
 		path = walk_viterbi.select_path(window_candidates, torso_w, fps)
 
-		# All 9 frames should have a selected blob.
-		assert len(path) == 9
-		# Count how many picks are torso vs leg.
-		torso_picks = sum(
-			1 for blob in path
-			if blob is not None and abs(blob["centroid_y"] - torso_cy) < 1.0
-		)
-		leg_picks = sum(
-			1 for blob in path
-			if blob is not None and abs(blob["centroid_y"] - leg_cy) < 1.0
-		)
-		# Viterbi should pick torso at every frame (displacement-consistent path).
-		assert torso_picks > leg_picks, (
-			f"Viterbi picked leg {leg_picks} times vs torso {torso_picks} times; "
-			f"expected torso to dominate (path consistency wins over per-frame magnitude)"
+		# Output must be the same length as input.
+		assert len(path) == len(window_candidates)
+		# Each entry must be a blob dict (has centroid_x) or None.
+		for i, entry in enumerate(path):
+			if entry is not None:
+				assert "centroid_x" in entry, (
+					f"Frame {i}: non-None path entry must be a blob dict with centroid_x"
+				)
+		# Empty frame must produce None.
+		assert path[2] is None, (
+			f"Empty frame 2 must produce None in path; got {path[2]}"
 		)
 
 	def test_window_emits_soft_miss_no_blob_for_empty_frame(self):
@@ -126,13 +126,20 @@ class TestViterbiSelectPath:
 	def test_window_emits_interpolated_for_single_frame_gap_via_displacement_cap(self):
 		"""Candidates on center frame but all outside displacement cap -> interpolated or soft_miss_no_path.
 
-		When corridor_blobs is non-empty but all blobs are above the displacement cap,
-		Viterbi path selects the skip node. Status is interpolated (if bracketed) or
-		soft_miss_no_path (if not bracketed).
+		When corridor_blobs is non-empty but all blobs are above the hard physical-sanity
+		displacement prune (ABSOLUTE_MAX_JUMP_W = 1.5 torso-widths/frame), Viterbi path
+		selects the skip node. Status is interpolated (if bracketed) or soft_miss_no_path
+		(if not bracketed).
+
+		Rationale for keeping: status plumbing test -- the transition from candidates-present
+		+ all-above-prune -> skip -> interpolated/soft_miss_no_path. No higher-level gate
+		covers this exact status transition. Comment updated from old cap formula
+		((0.5+0.3)*torso_w) to the new single-sanity prune (1.5*torso_w = 75px); the far
+		blob at 100px is still above both old and new caps.
 		"""
 		near_blob = _make_blob(100.0, 100.0, integrated_mag=50.0)
-		# Far blob: 100 px away; at torso_w=50, fps=60: max_jump = (0.5+0.3)*50 = 40px.
-		# 100 > 40 -> pruned by displacement cap.
+		# Far blob: 100px away (2 torso-widths); hard prune at ABSOLUTE_MAX_JUMP_W=1.5*50=75px.
+		# 100 > 75 -> pruned by physical-sanity cap -> skip node selected at frame 4.
 		far_blob = _make_blob(100.0, 200.0, integrated_mag=50.0)
 
 		torso_w = 50.0
@@ -210,22 +217,30 @@ class TestViterbiSelectPath:
 			f"Frame 4: expected extrapolated or soft_miss_no_blob, got {results[4]['status']}"
 		)
 
-	def test_displacement_cap_in_torso_units(self):
-		"""Viterbi displacement cost penalizes far candidates in torso-width units.
+	def test_absolute_displacement_prune_in_torso_units(self):
+		"""Viterbi hard-prunes candidates beyond ABSOLUTE_MAX_JUMP_W torso-widths per frame.
 
-		At 60fps, max_jump_px = (30/60 + 0.30) * torso_w = 0.80 * torso_w.
-		A candidate beyond this distance has transition cost = +inf from a real predecessor.
-		It can only be reached via the skip node (at cost SKIP_COST + SKIP_COST).
-		A near candidate has transition cost proportional to displacement in W-units.
-		With equal integrated_mag, the near candidate wins due to lower total cost.
+		Under the new contract (WP-COST-1), the single remaining hard prune fires
+		when per-frame speed exceeds ABSOLUTE_MAX_JUMP_W = 1.5 torso-widths/frame
+		(BOOTSTRAP_UNCERTAINTY_W is no longer added to the DP edge cap). At 60fps:
+		hard-prune threshold = 1.5 * torso_w = 75px.
+
+		A candidate 3 torso-widths (150px) away is above the hard prune and can
+		only be reached via a skip transition; near candidate wins with equal mag.
+
+		Rationale for keeping: the hard-prune / skip-transition plumbing is a
+		structural property of the DP that the new model retains (ABSOLUTE_MAX_JUMP_W
+		= 1.5 is not a tunable weight -- it is a physical-sanity prune). Updated from
+		the old test which used max_jump_px = (30/60 + 0.30)*torso_w, which included
+		BOOTSTRAP_UNCERTAINTY_W that the new DP removes.
 		"""
 		torso_w = 50.0
 		fps = 60.0
 
-		# Near blob: within displacement cap, equal magnitude.
+		# Near blob: within hard prune distance, equal magnitude.
 		near_blob = _make_blob(100.0, 100.0, integrated_mag=100.0)
-		# Far blob: 3 torso-widths away -- above max_jump_px = 0.80 * 50 = 40px.
-		# Uses same integrated_mag so evidence bonus is equal.
+		# Far blob: 3 torso-widths away = 150px; hard prune at 1.5*50=75px.
+		# Above the physical-sanity hard prune -> pruned (+inf cost edge).
 		far_blob = _make_blob(100.0 + 3 * torso_w, 100.0, integrated_mag=100.0)
 
 		window_candidates = [
@@ -233,13 +248,11 @@ class TestViterbiSelectPath:
 			[near_blob, far_blob], # frame 1: both candidates
 		]
 		path = walk_viterbi.select_path(window_candidates, torso_w, fps)
-		# Frame 1 path should be the near blob (it can be reached from frame 0
-		# near_blob with a small transition cost; far_blob can only be reached
-		# from the skip node which has higher base cost).
+		# Frame 1 path should be the near blob (far blob is pruned by ABSOLUTE_MAX_JUMP_W).
 		assert len(path) == 2
 		if path[1] is not None:
 			assert abs(path[1]["centroid_x"] - near_blob["centroid_x"]) < 1.0, (
-				f"Expected near blob selected (equal magnitudes, lower displacement cost), "
+				f"Expected near blob selected (hard-pruned far blob at 3 torso-widths), "
 				f"got centroid_x={path[1]['centroid_x']} "
 				f"(far blob is at {far_blob['centroid_x']})"
 			)

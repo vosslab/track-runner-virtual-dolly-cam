@@ -101,11 +101,24 @@ Completed:
   `track_runner/blob_walk/walk_walker.py`); SCHEMA_VERSION 12 -> 13
   (geometry-affecting for stride > 1 sources only); 7 new unit tests;
   8-pass stride-1 harness EQUAL; full suite 1578 passed.
+- **P1/P2/P3/P4/P5 cost-model findings fixed** (WP-COST-1, 2026-06-12):
+  pairwise velocity-delta Viterbi rewrite in `walk_viterbi.py` addresses
+  all five findings: P1 (raw evidence scale now normalized per frame with
+  a bounded tie-breaking bonus), P2 (WEIGHT_SPEED_DELTA and
+  WEIGHT_HEADING_DELTA are now live in the DP), P3 (weights now reside in
+  the `walker_costs` YAML section via tr_config.py), P4 (skip is charged
+  once per skipped frame and geometry bridges across gaps), P5 (bootstrap
+  slack removed; single generous physical-sanity prune replaces the
+  always-on tight hard prune). SCHEMA_VERSION 13 -> 14 (geometry-affecting).
+  Release evidence in
+  [blob_walk_v2_cost_model_ab.md](../workstreams/blob_walk_v2_cost_model_ab.md).
+- **P10 seed-only fallback fix complete** (WP-P10-1, 2026-06-12):
+  `WalkCoverage` dataclass with `post_seed_accepted` field; fallback gate
+  reads `post_seed_accepted == 0`; bootstrap-only stall now correctly
+  selects Hermite. Part of SCHEMA_VERSION 14 bump.
 
 Unresolved:
 
-- P10 (bootstrap fallback masking) is observed and unfixed; it is the last
-  observed concrete bug.
 - The ranking-quality regression class -- the largest quality problem by
   count -- has a verdict but no chosen intervention.
 - The two stall sub-types (drift stall, signal-absence stall) have
@@ -359,7 +372,7 @@ Details:
   call-site audit finding a consumer that needs the total count where the
   plan assumed the post-bootstrap count.
 - **Approval needed**: user approves the M1 fix plan
-  ([blob_walk_v2_p10_fix_plan.md](blob_walk_v2_p10_fix_plan.md), drafted)
+  ([blob_walk_v2_p10_fix_plan.md](../../archive/blob_walk_v2_p10_fix_plan.md), implemented 2026-06-12, archived)
   before implementation.
 
 ### Milestone M2: re-baseline and ranking evidence

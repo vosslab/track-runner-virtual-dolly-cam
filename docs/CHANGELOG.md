@@ -1,3 +1,238 @@
+## 2026-06-12
+
+### Additions and New Features
+
+- New `tests/test_walk_cost_model.py`: synthetic-lattice unit tests for the
+  pairwise velocity-delta Viterbi cost model. Covers: model-flip (constant-
+  velocity runner beats stationary distractor), limb-oscillation (coherent
+  center track beats alternating leg blobs), skip-bridge (gap charged once),
+  boundary cases (all-skip, two-real-pick, skip-prefix), evidence tie-break
+  (stronger mag wins; geometry beats bounded evidence), start-bias (bad high-
+  evidence first blob does not anchor the path), structural invariants via
+  `compute_path_term_breakdown` (zero delta terms before third real node; skip
+  term exact; overspeed zero at limit), and sum-invariant
+  (`sum(step_costs) == path_cost`).
+- New `tests/test_walker_costs_config.py`: config-plumbing integration tests
+  confirming `walker_costs` from the YAML schema reaches `walk_viterbi` module
+  globals via `set_cost_weights`, that a partial section fails loud, and that
+  the default config carries all required weight keys.
+- New `tests/test_walk_io_parity.py`: parity tests for `walk_io.py` after the
+  WP-IO-1 scale-back -- reader-geometry fields (`bin_factor`, processed and
+  source dimensions), seed-path correctness, and the corrected `load_race_start_frame`
+  loud-failure behavior on missing or invalid artifacts.
+
+### Behavior or Interface Changes
+
+- **Viterbi cost-model rewrite (WP-COST-1)** in
+  `track_runner/blob_walk/walk_viterbi.py`. Replaces the first-order
+  displacement cost (penalized motion, causing the walker to prefer stationary
+  distractors over a moving runner -- audit P1-P5 findings) with pairwise
+  velocity-delta scoring. New terms `WEIGHT_SPEED_DELTA` and `WEIGHT_HEADING_DELTA`
+  penalize acceleration and heading changes between consecutive real
+  observations (the DP-compatible form of the window-variance intent: pairwise
+  deltas satisfy optimal substructure; a window mean does not). Dead module
+  constants `WEIGHT_MAG_VAR` and `WEIGHT_ANGLE_VAR` (stubbed and never wired
+  per audit P2) are removed. Evidence is normalized per-frame against the
+  frame's strongest candidate, bounded by `WEIGHT_EVIDENCE_NORM`, making it a
+  tie-breaker rather than a dominator (fixes P1 evidence-scale bug). The tight
+  hard displacement prune is replaced by a soft linear cost plus a quadratic
+  overspeed term above the physical envelope; a single generous hard prune at
+  `ABSOLUTE_MAX_JUMP_W` is the only gate (fixes P5 always-on bootstrap slack).
+  Skip is charged once per skipped frame; geometry bridges gaps via gap-
+  normalized velocity (fixes P4 skip-charge semantics). `BOOTSTRAP_UNCERTAINTY_W`
+  is no longer read by the DP; rename to `SEED_SEARCH_SLACK_W` recorded as a
+  follow-up. Decision: variance-to-pairwise-delta is intentional design, not a
+  simplification -- pairwise form is DP-compatible, and the terms couple the
+  same physical model at the transition level.
+- **walker_costs config section** added to
+  `track_runner/track_runner.config.yaml` and validated by `tr_config.py`.
+  Shipped defaults: `WEIGHT_DISPLACEMENT = 0.25` (lowered from plan's 1.0 per
+  manager resolve -- evidence-forward: displacement as soft cost at this scale
+  lets velocity-delta terms and evidence compete on equal footing),
+  `WEIGHT_SPEED_DELTA = 1.0`, `WEIGHT_HEADING_DELTA = 0.5`,
+  `WEIGHT_OVERSPEED = 4.0`, `WEIGHT_EVIDENCE_NORM = 0.5`, `SKIP_COST = 2.0`.
+  Config resolution uses the existing `tr_config.resolve_config` helper (shared
+  by `cli.py` and `tools/blob_walk_v2/walk_driver.py`); resolved weights flow
+  through the existing frozen `WorkerContext.walker_costs` field and
+  `make_pool` initargs. Decision: weights live in `tr_config`-owned YAML, not
+  in `walk_io.py` (which is tool-layer glue only -- confirmed by WP-IO-1 audit).
+- **Wiring gap fix (spec-review F1)**: `interval_solver._dispatch_blob_pass`
+  now passes `walker_costs=getattr(context, "walker_costs", None)` to its
+  `make_pool` call. Previously the Stage-4 (primary consumer) pool received
+  `None` and fell back to `walk_viterbi` module defaults, ignoring config.
+  `solve_queue.py`'s pool call already wired `walker_costs` correctly; the
+  `interval_solver` site now matches it.
+- **walk_io.py scale-back (WP-IO-1)**: `load_race_start_frame` body replaced --
+  it previously re-derived race start as "end_frame of the last pre_race-tier
+  interval" from `interval_scores.json` with chained `.get()` defaults that
+  silently returned 0 on any shape mismatch. Production authority is
+  `state_io.load_diagnostics` with direct key access on
+  `data["pre_race_reference"]["race_start_frame"]`; a missing artifact, None
+  `pre_race_reference` (legacy file -- re-solve required), or missing key now
+  raises `RuntimeError` naming the artifact path (loud failure per
+  do-not-hide-bugs-with-defaults). `walk_driver.py` basename-normalization
+  mirror deleted; `walk_driver` imports `_normalize_video_basename` from
+  `walk_io` (single definition).
+- `tr_schema.SCHEMA_VERSION` bumped 13 -> 14. Added 14 to
+  `GEOMETRY_AFFECTING_SCHEMAS`. On-disk layout unchanged from v13; v10-v14
+  files remain readable. Both `diagnostics` and `torso_box_coords`
+  `SUPPORTED_ARTIFACT_SCHEMAS` sets gain 14. Geometry-affecting on Stage-4-
+  promoted intervals only; pure-Hermite paths byte-identical to v13. Per
+  contract C10 one unified bump covers both geometry-affecting lane changes
+  (WP-COST-1 and WP-P10-1). Schema history logged in
+  [docs/TR_SCHEMA_VERSION_HISTORY.md](TR_SCHEMA_VERSION_HISTORY.md).
+
+### Fixes and Maintenance
+
+- P10 bootstrap-accept fallback correction (audit M1, plan
+  [docs/archive/blob_walk_v2_p10_fix_plan.md](archive/blob_walk_v2_p10_fix_plan.md)).
+  The Stage-4 Hermite fallback gate in `track_runner/interval_solver.py`
+  previously fired only on zero-accepted-count passes (`accepted_count == 0`).
+  A pass whose only accepted frame is the seed frame via bootstrap
+  (`accepted_count == 1`, all remaining frames `soft_miss_no_blob`) was not
+  gated, producing a path frozen at the seed for all non-seed frames -- strictly
+  worse than Hermite. Observed on Conant-4x400-2026_April_15.mkv
+  `seed_1126_1134` FWD (8-frame interval, 7 frames frozen, 3.8% incidence in
+  the Check 3 sample of 26 passes). Fix: `track_runner/walker_bundle.py` gains
+  `WalkCoverage` dataclass (fields: `accepted_count`, `post_seed_accepted`) and
+  pure helper `count_post_seed_accepts(accepts, seed_frame)`;
+  `walk_bundle_to_path_with_coverage` returns `(path, WalkCoverage)` instead of
+  `(path, int)`; the fallback gate reads `coverage.post_seed_accepted == 0` by
+  name. Behavior change: bootstrap-only stall passes now fall back to Hermite;
+  true-zero-accept stalls and healthy passes are byte-identical. The walker core
+  (`track_runner/blob_walk/`) is untouched. Tests: new
+  `tests/test_walk_coverage.py` (8 unit tests, all 6 Check 3 case shapes);
+  `tests/test_walker_stall_fallback.py` gains
+  `test_seed_only_accepted_pass_falls_back_to_hermite` (Conant gate-decision
+  unit reproduction); both monkeypatch test modules adapted to `WalkCoverage`
+  return. SCHEMA_VERSION bump (13->14) deferred to the integration patch that
+  owns `track_runner/tr_schema.py`. Naming: plan used `post_bootstrap_accepted`;
+  user decision 2026-06-12 changed to `post_seed_accepted` everywhere.
+- **Lazy import micro-fix (spec-review F2)**: `tr_config.py` module-level
+  `import blob_walk.walk_viterbi as walk_viterbi` moved to a lazy import inside
+  `_validate_walker_costs`. Avoids a potential future circular import since
+  `tr_config` loads early in cli startup and `walk_viterbi` imports the full
+  `blob_walk` package.
+- **RuntimeError micro-fix (spec-review F3)**: `walk_viterbi._evaluate_path_terms`
+  now raises `RuntimeError("selected path node not present in window_candidates
+  for frame ...")` with frame index and candidate list when `sel_idx` stays
+  `None` after the identity scan. Previously the code proceeded to index `None`,
+  producing a bare `TypeError` with no diagnostic context.
+- **walker_costs supply chain closed (post-review F1/F2)**:
+  `solve_all_intervals` gains `walker_costs: dict = None` parameter (optional-
+  by-design for diagnostic callers; production supply via cli). `cli._run_solve`
+  passes `cfg["walker_costs"]` (direct key access; default config always carries
+  the section) into `solve_kwargs`, which flows into `ExecutionContext` and then
+  to `make_pool -> _worker_init -> set_cost_weights`. Three `getattr` defensive
+  fallbacks on always-populated `ExecutionContext` fields (`bin_factor`,
+  `video_frame_count`, `walker_costs`) replaced with direct attribute access
+  (do-not-hide-bugs-with-defaults cleanup, N1). Tool chain: `process_video` in
+  `tools/blob_walk_v2/make_walk_html_v2.py` now calls
+  `walk_driver.apply_walker_costs_for_video` once per video before any walks
+  run; the function was previously defined but never called, making YAML weights
+  a no-op in the tool path. Full chain confirmed: cli -> solve_all_intervals ->
+  ExecutionContext -> make_pool -> _worker_init -> set_cost_weights AND
+  walk_driver -> apply_walker_costs_for_video -> set_cost_weights.
+
+- **WS-2B overlay review** of the two flagged A/B regressions (see
+  [docs/active_plans/workstreams/blob_walk_v2_ws2b_overlay_review.md](active_plans/workstreams/blob_walk_v2_ws2b_overlay_review.md)).
+  Lyra-Hersey [840,945]: regression mechanism is per-frame blob centroid cy
+  bias (~9px / 0.65 tw) at frame 892 where the runner passes a vertical pole
+  (partial occlusion reduces mag to 7023 vs ~20k baseline); one corridor blob
+  throughout, no ranking failure, cost model not implicated.
+  Jason [12408,12596]: complete signal absence (187/188 FWD frames and 176/188
+  BWD frames are soft_miss_no_blob); runner is in a dense indoor-meet pack
+  where residual-motion extraction cannot isolate the target from crowd motion;
+  corridor is empty, no candidates to rank, cost model not implicated.
+  Both cases confirm neither regression is caused by the pairwise velocity-delta
+  cost rewrite. Tile output at `corpus_walk/<video>/seed_<L>_<R>/`.
+
+### Developer Tests and Notes
+
+- Add `tests/test_walk_viterbi_brute_force.py`: exhaustive brute-force
+  enumeration vs DP optimality check for `walk_viterbi.select_path` across five
+  lattice shapes (dense, sparse/empty-frame, +inf-edge, near-stationary, zero-
+  mag evidence); 39 fixed-seed parametrized cases, all passing (WP-COST-2
+  extension).
+- `tests/test_walker_costs_config.py` extended with
+  `test_execution_context_carries_walker_costs_to_make_pool`: asserts that the
+  `make_pool` boundary receives the `walker_costs` dict from `ExecutionContext`
+  (mock-captured, no video needed), closing the F1 hole class.
+- **WP-VAL-1 release evidence** (frozen 34-pass + 5-video corpus A/B, 2026-06-12):
+  shipped default weights re-solved all 34 check7 classified passes (22 effective-
+  ranking + 10 mixed + 2 starvation) with the new pairwise Viterbi cost model.
+  Ranking-class passes FWD 66.7-100%, mostly >= 83%. 5-video corpus subset: IMG_3830
+  FWD 82.0% / BWD 88.5% vs before 83.6% / 88.5% (delta -1.6 pp / 0.0 pp, no
+  regression). Lyra-Hersey partial 16/20 FWD 78.0%. Identity spot check across
+  18 intervals: PASS, no cross-athlete captures. Tuning evaluation: 4 weight configs
+  (including mandatory evidence-forward config with WEIGHT_EVIDENCE_NORM = 1.0)
+  all produced identical results on the fast subset -- default weights are the
+  winning config. `e2e_blob_walk_baseline`: exit code 0, golden snapshot passed.
+  `e2e_walker_ab`: IMG_3830 preserved=2, regressed=3; IMG_3823 preserved=2,
+  regressed=3 (Jason in progress). Artifact:
+  [docs/active_plans/workstreams/blob_walk_v2_cost_model_ab.md](active_plans/workstreams/blob_walk_v2_cost_model_ab.md).
+  Roadmap: P1/P2/P3/P4/P5 and P10 marked fixed in
+  [docs/active_plans/active/blob_walk_v2_fix_phase_roadmap.md](active_plans/active/blob_walk_v2_fix_phase_roadmap.md).
+  **Completion (2026-06-12)**: all 5 corpus videos complete (20/20 intervals each); no
+  regression on any video (max delta -2.1 pp Conant FWD/BWD vs -2.1 pp baseline shift);
+  identity check extended to 39 intervals, PASS; e2e_walker_ab 4/6 complete (Lyra-Hersey
+  preserved=4/regressed=1, Conant rescued=3/preserved=2; Jason and Lyra-Wheeling pending
+  due to concurrent process log collision). Release-review summary (governance package for
+  human accept/reject) inserted at top of
+  [docs/active_plans/workstreams/blob_walk_v2_cost_model_ab.md](active_plans/workstreams/blob_walk_v2_cost_model_ab.md).
+
+### Decisions and Failures
+
+- `WEIGHT_DISPLACEMENT = 0.25` (lowered from plan's 1.0): manager resolved
+  evidence-forward after WP-COST-1 landed. At 1.0, displacement cost dominated
+  evidence for slow-moving runners in pre-race intervals; 0.25 lets the
+  velocity-delta terms and normalized evidence compete on honest scale.
+- Variance-to-pairwise-delta design: the plan's window-variance intent is
+  implemented as pairwise velocity deltas (penalize acceleration, not deviation
+  from a window mean) because the pairwise form is additive and satisfies
+  optimal substructure. A window mean requires global rollback and is not
+  DP-compatible. Code comment cites audit P2.
+- `SEED_SEARCH_SLACK_W` rename deferred: the legacy `BOOTSTRAP_UNCERTAINTY_W`
+  constant exists in `walk_motion_gate.py` but is no longer read by the DP
+  (the DP reads no bootstrap slack after WP-COST-1). The rename to
+  `SEED_SEARCH_SLACK_W` is recorded as a follow-up; it does not expand this
+  patch's scope.
+- `walker_costs` config residence confirmed in `tr_config.py` (not in
+  `walk_io.py`): the WP-IO-1 audit confirmed `walk_io.py` is tool-layer glue
+  that delegates to established owners; adding config parsing there would
+  re-implement the pipeline boundary the existing `tr_config/resolve_config`
+  path already provides.
+
+### Developer Tests and Notes
+
+- New artifact
+  [docs/active_plans/reports/blob_walk_v2_starvation_characterization.md](active_plans/reports/blob_walk_v2_starvation_characterization.md):
+  read-only characterization of the 12 starvation-class passes (7 pure starvation
+  + 5 starvation-leaning mixed from check7). Per-pass table with baseline empty
+  fractions, post-rewrite accepted fractions, and seed-cold status. Key findings:
+  (a) cost-model rewrite did not touch starvation (structurally upstream of
+  Viterbi -- empty lattice before the cost model runs; all 4 weight configs
+  produced identical results on starvation passes); (b) physical condition is
+  small apparent runner size (torso ~11 px proc), where DoG resolves limb-level
+  blobs or falls below detection threshold (claim D crossover 11-30 px, plus
+  drift-stall sub-type for Conant); (c) frequency: 10.8% of all corpus
+  interval-directions show seed-cold symptoms (corpus120 proxy), 35% of the m4
+  regressed bucket has starvation as primary or significant factor (check7).
+  Jason is the dominant contributor at 35% of its interval-directions. No fix
+  proposals; mechanism, frequency, and impact only.
+
+- Short-span interval frequency study completed. Measured span distribution
+  across all 12 corpus videos via `_temp_span_study.py` (deleted after run).
+  Corpus: 6274 intervals, 170372 frames. Short-span (1-13 frames): 57.3% of
+  intervals by count but only 8.8% of frames by weight. Among those, only 3.4%
+  are Stage-4-promoted (low/fair tier), yielding ~0.3% of corpus frames in
+  short-span Stage-4 intervals -- the Viterbi cost-model degenerate bucket is
+  tiny by frame-weighted impact. Distribution is bimodal: four densely-seeded
+  videos (IMG_3830, IMG_3823, Hononega-Orion_600m, Hononega-Varsity_4x400m)
+  dominate short-span counts; five coarsely-seeded videos have almost none.
+  Artifact:
+  [docs/active_plans/reports/blob_walk_v2_short_span_frequency.md](active_plans/reports/blob_walk_v2_short_span_frequency.md).
+
 ## 2026-06-11
 
 ### Additions and New Features
@@ -26,8 +261,8 @@
   and a single-f-string message.
 
 - Drafted the M1 fix plan
-  [active_plans/active/blob_walk_v2_p10_fix_plan.md](active_plans/active/blob_walk_v2_p10_fix_plan.md)
-  (P10 bootstrap-accept fallback masking; status awaiting user approval) from
+  [docs/archive/blob_walk_v2_p10_fix_plan.md](archive/blob_walk_v2_p10_fix_plan.md)
+  (P10 bootstrap-accept fallback masking; implemented 2026-06-12, archived) from
   the roadmap's M1 section, including the recorded call-site audit of
   `walk_bundle_to_path_with_coverage` (single production consumer at the
   `interval_solver` fallback gate; two monkeypatching test modules; the

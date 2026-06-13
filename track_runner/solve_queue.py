@@ -118,6 +118,9 @@ class ExecutionContext:
 		pre_race_reference: Dict from compute_pre_race_reference or None.
 			Initially None; populated by execute_interval_work after the
 			interval is solved and Stage 2 fine detection runs.
+		walker_costs: Optional config-driven Viterbi cost weights dict
+			(walk_viterbi.COST_WEIGHT_NAMES keys) threaded to the worker pool.
+			None keeps the walk_viterbi module-constant defaults.
 	"""
 	reader: object
 	scene_transform: object
@@ -132,6 +135,11 @@ class ExecutionContext:
 	race_start_interval: tuple = None
 	pre_race_reference: dict = None
 	bin_factor: int = 1
+	# Config-driven Viterbi cost weights for the Stage-4 walker pass, threaded
+	# to workers via solver_workers.make_pool. None keeps the walk_viterbi
+	# module-constant defaults (the Stage-3 pool below ships blob_pass=False, so
+	# the walker never runs there and the value is unused on that dispatch).
+	walker_costs: dict = None
 
 
 #============================================
@@ -803,6 +811,7 @@ def execute_interval_work(
 					blob_pass=False,
 					bin_factor=context.bin_factor,
 					total_frames=context.video_frame_count,
+					walker_costs=context.walker_costs,
 				) as pool:
 					future_to_idx = {}
 					for pair_idx in pending_normal:

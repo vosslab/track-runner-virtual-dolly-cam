@@ -31,6 +31,7 @@ import concurrent.futures
 # local repo modules
 import interval_solver
 import common_tools.frame_reader
+import blob_walk.walk_viterbi as walk_viterbi
 # residual_motion is imported lazily inside _worker_init and _worker_atexit
 # to avoid a circular import (track_runner.py -> cli -> ... -> solver_workers
 # -> track_runner.residual_motion -> track_runner -> circular). The lazy
@@ -55,6 +56,10 @@ class WorkerContext:
 	fps: float
 	debug: bool
 	blob_pass: bool
+	# Config-driven Viterbi cost weights for the Stage-4 walker pass. None means
+	# "use the walk_viterbi module-constant defaults" (the Stage-3 pure-Hermite
+	# path never runs the walker, so it ships None).
+	walker_costs: dict | None = None
 
 
 #============================================
@@ -77,6 +82,7 @@ def _worker_init(
 	blob_pass: bool,
 	bin_factor: int = 1,
 	total_frames: int = 0,
+	walker_costs: dict | None = None,
 ) -> None:
 	"""Initialize per-process solver state for a pool worker.
 
@@ -95,8 +101,17 @@ def _worker_init(
 		blob_pass: Run-invariant blob-pass flag; False for Stage-3 (pure
 			Hermite), True for the Stage-4 walker pass. Constant across all
 			tasks in this run.
+		walker_costs: Optional config-driven Viterbi cost weights. When
+			provided, installed once here via walk_viterbi.set_cost_weights so
+			every interval this worker solves uses the config weights. None
+			keeps the walk_viterbi module-constant defaults.
 	"""
 	global _WORKER_CONTEXT
+	# Install config cost weights once at process startup. Write-once is safe:
+	# make_pool sets max_tasks_per_child=1, so every interval runs in a fresh
+	# process (same lifecycle as the _WORKER_CONTEXT assignment below).
+	if walker_costs is not None:
+		walk_viterbi.set_cost_weights(walker_costs)
 	# reopen the video in this process; the main process's reader cannot
 	# cross the fork/spawn boundary. Always use FrameReader so every
 	# worker exposes the same `.geometry` interface regardless of
@@ -117,6 +132,7 @@ def _worker_init(
 		fps=fps,
 		debug=debug,
 		blob_pass=blob_pass,
+		walker_costs=walker_costs,
 	)
 	# close the reader when the worker shuts down so file handles do not
 	# leak on the normal path. ProcessPoolExecutor also terminates
@@ -188,6 +204,7 @@ def make_pool(
 	blob_pass: bool,
 	bin_factor: int = 1,
 	total_frames: int = 0,
+	walker_costs: dict | None = None,
 ) -> concurrent.futures.ProcessPoolExecutor:
 	"""Create a ProcessPoolExecutor configured with `_worker_init`.
 
@@ -214,6 +231,8 @@ def make_pool(
 		debug: Debug flag.
 		blob_pass: Run-invariant blob-pass flag; False for Stage-3 (pure
 			Hermite), True for the Stage-4 walker pass.
+		walker_costs: Optional config-driven Viterbi cost weights shipped to
+			each worker; None keeps the walk_viterbi module-constant defaults.
 
 	Returns:
 		A started ProcessPoolExecutor. Caller is responsible for using
@@ -225,7 +244,7 @@ def make_pool(
 		initargs=(
 			video_path, scene_transform, motion_track,
 			all_seeds_scene, all_seeds, fps, debug, blob_pass,
-			bin_factor, total_frames,
+			bin_factor, total_frames, walker_costs,
 		),
 		max_tasks_per_child=1,
 	)

@@ -12,6 +12,9 @@ import os
 # PIP3 modules
 import yaml
 
+# local repo modules
+import tr_paths
+
 #============================================
 
 TOOL_CONFIG_HEADER_KEY = "track_runner"
@@ -132,6 +135,55 @@ def _validate_processing(config: dict) -> None:
 
 #============================================
 
+def _validate_walker_costs(config: dict) -> None:
+	"""Validate the walker_costs section when present.
+
+	The walker_costs section carries the six Viterbi cost weights consumed by
+	blob_walk.walk_viterbi. The section is optional at the schema level (callers
+	without it keep the walk_viterbi module-constant defaults), but when present
+	all six weight keys are required and accessed directly so a partial section
+	fails loud rather than silently mixing config weights with defaults. The
+	shipped default config always carries the full section.
+
+	Args:
+		config: Full configuration dictionary.
+
+	Raises:
+		RuntimeError: If walker_costs is present but missing a required weight,
+			or holds a non-numeric weight value.
+	"""
+	# walker_costs is optional; absence means "use walk_viterbi defaults".
+	if "walker_costs" not in config:
+		return
+	walker_costs = config["walker_costs"]
+	if not isinstance(walker_costs, dict):
+		raise RuntimeError(
+			"config walker_costs section must be a mapping of weight names "
+			"to numeric values"
+		)
+	# Lazy import: avoids a future circular import since tr_config loads
+	# early in cli startup and walk_viterbi pulls in the blob_walk package.
+	import blob_walk.walk_viterbi as walk_viterbi
+	# Every required weight must be present; direct access fails loud on a
+	# partial section (do-not-hide-bugs-with-defaults).
+	for name in walk_viterbi.COST_WEIGHT_NAMES:
+		if name not in walker_costs:
+			raise RuntimeError(
+				f"config walker_costs section missing required weight: {name} "
+				f"(all of {list(walk_viterbi.COST_WEIGHT_NAMES)} are required "
+				"when walker_costs is present)"
+			)
+		# Each weight must be numeric; reject strings or other junk early.
+		value = walker_costs[name]
+		if not isinstance(value, (int, float)):
+			raise RuntimeError(
+				f"config walker_costs.{name} must be numeric, got "
+				f"{type(value).__name__}"
+			)
+
+
+#============================================
+
 def validate_config(config: dict) -> None:
 	"""
 	Validate that required keys are present in the config.
@@ -165,6 +217,8 @@ def validate_config(config: dict) -> None:
 		config["camera"] = _get_default_camera_config()
 	# validate processing keys (torso_height_multiple contract)
 	_validate_processing(config)
+	# validate walker_costs section when present (all six weights required)
+	_validate_walker_costs(config)
 
 #============================================
 
@@ -211,6 +265,43 @@ def load_config(path: str, auto_save_migration: bool = False) -> dict:
 			f"crop_fill_ratio -> torso_height_multiple={multiple:.3f}"
 		)
 	return config
+
+#============================================
+
+def resolve_config(input_file: str, config_path: str | None = None) -> tuple:
+	"""Resolve the config for a video: per-video file if present, else default.
+
+	Centralizes the resolution previously inlined at the cli call site: when a
+	per-video config file exists it is loaded with legacy-key auto-migration;
+	otherwise the read-only built-in default is returned. Both the cli site and
+	the blob_walk_v2 walk driver call this so the two cannot drift on resolution
+	semantics.
+
+	Args:
+		input_file: Input video path; used to derive the default per-video
+			config path when config_path is not supplied.
+		config_path: Optional explicit config path (the cli honors an
+			--config-file override here). None derives the default per-video
+			path from input_file via tr_paths.default_config_path.
+
+	Returns:
+		Tuple (config_dict, had_config_file): the loaded/merged config and a
+		bool that is True when a per-video config file existed on disk. The
+		caller validates the returned config (validate_config is not called
+		here to preserve the existing call ordering at each site).
+	"""
+	# Default per-video path unless the caller supplied an explicit override.
+	if config_path is None:
+		config_path = tr_paths.default_config_path(input_file)
+	had_config_file = os.path.isfile(config_path)
+	if had_config_file:
+		# per-video config: auto-save legacy-key migrations so the deprecation
+		# notice fires exactly once per file (matches the prior cli behavior).
+		config = load_config(config_path, auto_save_migration=True)
+	else:
+		config = read_default_config()
+	return config, had_config_file
+
 
 #============================================
 

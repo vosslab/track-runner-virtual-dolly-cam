@@ -12,6 +12,67 @@ To bump observer/solver behavior in a way that invalidates geometry caches, incr
 
 When an old cache carries a schema-tagged fingerprint (e.g. `/schema/5`), a pre-unification tail (`/score_schema/4/prerace/4`), or the legacy `blob_snap/v1/...` form, `migrate_legacy_fingerprints` rewrites the key into the unified `geometry_schema_v<N>` namespace at load time. Each entry below marks whether it was geometry-affecting; only geometry-affecting bumps are cache invalidators.
 
+## 14 (2026-06-12)
+
+**Viterbi cost-model rewrite (WP-COST-1) and seed-only Hermite fallback (P10/WP-P10-1).**
+Geometry-affecting: yes (Stage-4-promoted intervals only; byte-identical for pure-Hermite paths).
+
+This bumps the unified `tr_schema.SCHEMA_VERSION` from 13 to 14 and adds 14
+to `GEOMETRY_AFFECTING_SCHEMAS`. Per contract C10, one unified bump covers both
+geometry-affecting changes. The on-disk layout of both the `diagnostics` and
+`torso_box_coords` artifacts is unchanged from v13, so v10-v14 files all remain
+readable.
+
+**WP-COST-1 -- Viterbi cost-model rewrite.**
+Replaces the first-order `WEIGHT_DISPLACEMENT * disp` cost (which penalized
+motion itself, causing the walker to prefer stationary distractors over a
+moving runner) with pairwise velocity-delta scoring: two new terms
+`WEIGHT_SPEED_DELTA` and `WEIGHT_HEADING_DELTA` penalize acceleration and
+heading changes between consecutive real observations. The dead module constants
+`WEIGHT_MAG_VAR` and `WEIGHT_ANGLE_VAR` (specified but never wired into the DP
+per audit P2) are removed. Evidence is normalized per-frame against the strongest
+candidate in that frame (bounded by `WEIGHT_EVIDENCE_NORM = 0.5`) so it acts as
+a tie-breaker rather than a dominator. The tight hard displacement prune is
+replaced by a soft linear cost plus a quadratic overspeed penalty above the
+physical envelope, with a single generous hard prune at `ABSOLUTE_MAX_JUMP_W =
+1.5` torso-widths/frame. Skip is charged once per skipped frame and geometry
+bridges across gaps via gap-normalized velocity.
+Cost weights now live in the `walker_costs` section of
+`track_runner/track_runner.config.yaml` (resolving the P3 doc-code conflict
+in favor of `docs/TRACK_RUNNER_DESIGN.md`). Defaults: `WEIGHT_DISPLACEMENT =
+0.25` (lowered from the plan's 1.0 per manager resolve -- evidence-forward),
+`WEIGHT_SPEED_DELTA = 1.0`, `WEIGHT_HEADING_DELTA = 0.5`, `WEIGHT_OVERSPEED =
+4.0`, `WEIGHT_EVIDENCE_NORM = 0.5`, `SKIP_COST = 2.0`. The variance-to-
+pairwise-delta design choice is intentional: pairwise deltas penalize
+acceleration, are additive, and satisfy optimal-substructure; variance over a
+window mean is not DP-compatible without global rollback. The legacy constant
+`BOOTSTRAP_UNCERTAINTY_W` is no longer read by the DP (the DP reads no bootstrap
+slack); rename to `SEED_SEARCH_SLACK_W` is recorded as a follow-up, not done
+here. Weights are threaded to Stage-4 workers through the existing frozen
+`WorkerContext.walker_costs` field and `make_pool` initargs, resolving a wiring
+gap where `interval_solver._dispatch_blob_pass` omitted `walker_costs` from its
+`make_pool` call (spec-review F1 fix).
+
+**WP-P10-1 -- seed-only Hermite fallback (P10 fix).**
+The Stage-4 Hermite fallback gate previously fired only when
+`accepted_count == 0`. A pass with exactly one accepted frame at the bootstrap
+(seed) position and all remaining frames `soft_miss_no_blob` was not gated,
+producing a path frozen at the seed for all non-seed frames -- strictly worse
+than Hermite. The `WalkCoverage` dataclass (`accepted_count`,
+`post_seed_accepted`) and helper `count_post_seed_accepts` make the distinction
+explicit; the gate now reads `coverage.post_seed_accepted == 0` (the seed-only
+fallback). Terminology: "seed" replaces "bootstrap" in all new code and docs per
+user decision 2026-06-12; the legacy `BOOTSTRAP_UNCERTAINTY_W` identifier
+appears only in existing code pending the follow-up rename.
+
+Why geometry-affecting: both changes alter walk outputs (accepted positions,
+statuses, path) on Stage-4-promoted intervals where blobs are present. On
+pure-Hermite paths (Stage 3, `blob_pass=False`) no walker code runs and output
+is byte-identical to v13. A single `SCHEMA_VERSION` line cannot be
+geometry-affecting for some dispatch paths and not others per the unified
+contract; v14 enters `GEOMETRY_AFFECTING_SCHEMAS` to prevent silently mixing
+pre-fix and post-fix geometry in cached artifacts.
+
 ## 13 (2026-06-10)
 
 **Walker P12 stride-termination overrun fix.** Geometry-affecting: yes

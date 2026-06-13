@@ -28,3 +28,13 @@ camera:
   camera_height: elevated
   camera_position: side
   track_size: 400
+walker_costs:
+  # Viterbi path-selection cost weights (pairwise velocity-delta scoring; WP-COST-1).
+  # All spatial terms are in torso-width units (contract C2). Tune these to trade
+  # smooth-trajectory preference against residual-motion evidence and skip cost.
+  WEIGHT_DISPLACEMENT: 0.25
+  WEIGHT_SPEED_DELTA: 1.0
+  WEIGHT_HEADING_DELTA: 0.5
+  WEIGHT_OVERSPEED: 4.0
+  WEIGHT_EVIDENCE_NORM: 0.5
+  SKIP_COST: 2.0

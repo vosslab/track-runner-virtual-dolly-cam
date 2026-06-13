@@ -5,7 +5,6 @@ which seed-to-seed intervals are walkable. Pure orchestration; no compute.
 """
 
 # Standard Library
-import json
 import subprocess
 import dataclasses
 import pathlib
@@ -158,40 +157,55 @@ def load_walker_scene_transform(video_basename: str) -> scene_coords.SceneTransf
 
 #============================================
 def load_race_start_frame(video_basename: str) -> int:
-	"""Load race_start_frame for walker from interval_scores.json.
+	"""Load race_start_frame from the authoritative state_io diagnostics artifact.
 
-	The race_start_frame is the end_frame of the last interval with
-	confidence_tier == 'pre_race'. All intervals before this frame are
-	pre-race (stationary).
+	The authoritative value is stored by state_io via race_start.pick_race_start_frame_midpoint
+	into pre_race_reference.race_start_frame inside the interval_scores.json artifact.
+	state_io.load_diagnostics is the sole owner of that file.
 
 	Args:
-		video_basename: Video base name.
+		video_basename: Video base name (accepts .mkv or .track_runner suffixes).
 
 	Returns:
 		int: Frame index where the race starts.
 
 	Raises:
-		RuntimeError: If the interval scores file is missing.
+		RuntimeError: If the interval_scores artifact is missing, if pre_race_reference
+			is None (legacy file -- re-solve required), or if race_start_frame key
+			is absent. The artifact path is included in all error messages.
 	"""
 	base_name = _normalize_video_basename(video_basename)
-	iscores_path = pathlib.Path(_REPO_ROOT) / "tr_config" / f"{base_name}.track_runner.interval_scores.json"
-	if not iscores_path.exists():
+	# Build path to the authoritative interval_scores artifact
+	iscores_path = str(
+		pathlib.Path(_REPO_ROOT) / "tr_config" / f"{base_name}.track_runner.interval_scores.json"
+	)
+	# state_io.load_diagnostics returns an empty structure when file does not exist;
+	# we must detect that case and raise loudly rather than silently return 0.
+	if not pathlib.Path(iscores_path).exists():
 		raise RuntimeError(
-			f"Interval scores file not found: {iscores_path}. "
-			f"Run solve first."
+			f"Interval scores artifact not found: {iscores_path}. "
+			f"Run solve first to populate pre_race_reference."
 		)
-	with open(iscores_path) as f:
-		iscores = json.load(f)
-
-	# Find the last interval with confidence_tier == 'pre_race'
-	race_start = 0
-	if 'intervals' in iscores:
-		for interval in iscores['intervals']:
-			interval_score = interval.get('interval_score', {})
-			if interval_score.get('confidence_tier') == 'pre_race':
-				race_start = interval.get('end_frame', 0)
-
-	return race_start
+	# Delegate all JSON parsing to state_io -- the established owner
+	data = state_io.load_diagnostics(iscores_path)
+	# pre_race_reference is None for legacy files (state_io synthesizes None for
+	# v2/v3 files that predate the pre_race_reference field). A missing or None
+	# pre_race_reference is not recoverable without re-solving.
+	pre_race_reference = data["pre_race_reference"]
+	if pre_race_reference is None:
+		raise RuntimeError(
+			f"pre_race_reference is absent in {iscores_path}. "
+			f"This is a legacy file written before race-start detection; "
+			f"re-solve to populate it."
+		)
+	# race_start_frame is required; a missing key raises RuntimeError naming the
+	# artifact path, consistent with the missing-artifact cases above.
+	if "race_start_frame" not in pre_race_reference:
+		raise RuntimeError(
+			f"pre_race_reference missing race_start_frame in {iscores_path}; re-run solve"
+		)
+	race_start_frame = int(pre_race_reference["race_start_frame"])
+	return race_start_frame
 
 
 #============================================

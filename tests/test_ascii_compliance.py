@@ -275,7 +275,10 @@ def scan_file(
 
 	Returns:
 		tuple[int, list[str], bool]: Status code (0=clean, 1=errors, 2=fixed),
-			list of error lines, and whether a fix was applied.
+			list of error lines, and whether a fix was applied. Status 1 also
+			covers two fixer-outcome cases: an unexpected fixer exit code
+			(not 0/1/2, re-check skipped), and fixer exit 1 where the re-check
+			finds no remaining violations (recorded as an inconsistency line).
 	"""
 	if is_ascii_bytes(file_path):
 		return 0, [], False
@@ -288,17 +291,26 @@ def scan_file(
 	if not issues:
 		return 0, [], False
 
-	# Run the shared fixer script in-place; raises AssertionError on failure.
+	# Run the shared fixer script in-place; returns (returncode, stderr), never raises.
 	changed = False
 	if apply_fix:
-		file_utils.run_fixer_script("fix_ascii_compliance.py", file_path)
+		returncode, stderr = file_utils.run_fixer_script("fix_ascii_compliance.py", file_path)
+		# Unexpected exit code: fixer itself is broken; skip re-check to avoid stale output.
+		if returncode not in (0, 1, 2):
+			violation = f"{file_path}:0:0: fixer failed (exit {returncode}): {stderr}"
+			return 1, [violation], False
 		changed = True
 		# Re-read and re-check the file after the fixer has written it.
+		# The re-check is the source of truth for violation lines; fixer stderr is ignored.
 		content, read_error = check_module.read_text(file_path)
 		if read_error:
 			return 1, [read_error], True
 		issues = check_module.find_non_latin1_chars(content)
 		if not issues:
+			# Fixer exited 1 but re-check found no violations: record inconsistency.
+			if returncode == 1:
+				inconsistency = f"{file_path}:0:0: fixer exited 1 but re-check found no violations"
+				return 1, [inconsistency], True
 			return 2, [], True
 
 	error_lines = []
@@ -385,6 +397,8 @@ def collect_report(pytestconfig: pytest.Config) -> None:
 	Autouse fixture: scan files, apply fixer if needed, populate VIOLATIONS_BY_FILE.
 
 	Fixer logic runs here so it NEVER runs inside a parametrized test case.
+	A fixer failure on one file becomes that file's violation entry, never a
+	fixture exception, so a single bad file cannot error the whole module.
 	Builds VIOLATIONS_BY_FILE from the post-fix re-scan. Writes the report only
 	when violations remain after fixing. Dict is built directly (not via
 	collect_file_violations) because the fixer interplay requires a custom

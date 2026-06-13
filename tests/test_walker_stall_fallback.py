@@ -1,18 +1,22 @@
 """Per-pass walker stall fallback in solve_interval_analytical.
 
 The Stage-4 walker is default-on for promoted intervals (reader present). A
-known bootstrap-stall bug makes the walker reject every candidate on some
-intervals and emit a degenerate path with ZERO accepted frames. On those the
-walker output is strictly worse than Hermite, so solve_interval_analytical
-falls back per pass: a pass with zero accepted frames uses its Hermite path,
-while a pass with >=1 accepted frame keeps the walker path. This guarantees
-"never worse than Hermite" on promoted intervals.
+stall occurs when a pass has zero post-seed accepted frames. Two stall shapes:
+- Pure stall: accepted_count == 0 (every frame missed).
+- Seed-only stall: accepted_count == 1, post_seed_accepted == 0 (only the
+  seed frame was observed via bootstrap; all remaining frames missed).
+
+Both produce a degenerate path strictly worse than Hermite. solve_interval_analytical
+falls back per pass when post_seed_accepted == 0, reading the WalkCoverage
+named field so the seed-only case cannot silently bypass the gate. A pass with
+post_seed_accepted >= 1 keeps the walker path. This guarantees "never worse
+than Hermite" on promoted intervals.
 
 These tests inject a fake walk_bundle_to_path_with_coverage that returns a
-controlled (path, accepted_count) for each direction, and stub the Hermite
+controlled (path, WalkCoverage) for each direction, and stub the Hermite
 propagators with tagged outputs, so the test sees which producer drove each
 pass without decoding any video. The fallback is output selection: it reads
-the walker's own accepted-frame coverage, never raw_pred and never FWD/BWD
+the walker's own post-seed coverage, never raw_pred and never FWD/BWD
 agreement.
 """
 
@@ -76,9 +80,10 @@ def test_zero_accepted_pass_falls_back_to_hermite(monkeypatch):
 	"""A pass with zero accepted walker frames uses its Hermite path."""
 	_stub_collaborators(monkeypatch)
 
-	# both passes stall: accepted_count == 0 for each direction
+	# both passes pure-stall: accepted_count == 0, post_seed_accepted == 0
 	def fake_coverage(bundle):
-		return [_state("walker")], 0
+		coverage = walker_bundle.WalkCoverage(accepted_count=0, post_seed_accepted=0)
+		return [_state("walker")], coverage
 
 	monkeypatch.setattr(
 		walker_bundle, "walk_bundle_to_path_with_coverage", fake_coverage,
@@ -103,13 +108,54 @@ def test_zero_accepted_pass_falls_back_to_hermite(monkeypatch):
 
 
 #============================================
-def test_accepted_pass_keeps_walker_path(monkeypatch):
-	"""A pass with >=1 accepted walker frame keeps the walker path."""
+def test_seed_only_accepted_pass_falls_back_to_hermite(monkeypatch):
+	"""A bootstrap-only pass (seed frame accepted, all others missed) falls back.
+
+	This is the P10 case: accepted_count == 1 but post_seed_accepted == 0.
+	The previous gate (accepted_count == 0) did not fire; this case proves
+	the corrected gate (post_seed_accepted == 0) does fire.
+
+	Reproduces the Conant seed_1126_1134 FWD failure at unit level: 8-frame
+	interval, seed accepted at bootstrap, 7 remaining frames soft_miss_no_blob.
+	"""
 	_stub_collaborators(monkeypatch)
 
-	# both passes have real coverage: accepted_count >= 1
+	# bootstrap-only stall: seed frame accepted, nothing else
 	def fake_coverage(bundle):
-		return [_state("walker")], 3
+		coverage = walker_bundle.WalkCoverage(accepted_count=1, post_seed_accepted=0)
+		return [_state("walker")], coverage
+
+	monkeypatch.setattr(
+		walker_bundle, "walk_bundle_to_path_with_coverage", fake_coverage,
+	)
+
+	result = interval_solver.solve_interval_analytical(
+		_seed(0, 0.0, 0.0, 1.0, 1.0),
+		_seed(2, 2.0, 0.0, 1.0, 1.0),
+		scene_transform=object(),
+		all_seeds_scene=[],
+		fps=30.0,
+		reader=object(),
+		blob_pass=True,
+	)
+
+	# bootstrap-only stall must trigger the fallback (gate on post_seed_accepted)
+	assert result["walker_fallback_fwd"] is True
+	assert result["walker_fallback_bwd"] is True
+	assert result["forward_path"][0]["source"] == "hermite_fwd"
+	assert result["backward_path"][0]["source"] == "hermite_bwd"
+	assert result["propagator_path"] == "hermite"
+
+
+#============================================
+def test_accepted_pass_keeps_walker_path(monkeypatch):
+	"""A pass with post_seed_accepted >= 1 keeps the walker path."""
+	_stub_collaborators(monkeypatch)
+
+	# both passes have real post-seed coverage
+	def fake_coverage(bundle):
+		coverage = walker_bundle.WalkCoverage(accepted_count=3, post_seed_accepted=3)
+		return [_state("walker")], coverage
 
 	monkeypatch.setattr(
 		walker_bundle, "walk_bundle_to_path_with_coverage", fake_coverage,

@@ -208,8 +208,13 @@ Shared helpers that complement `discover_files`:
   parametrize ids and assertion messages (for example `tests/foo.py`).
 - `rel_id(abs_path: str) -> str` -- thin wrapper around `rel_to_root` for use as
   `ids=file_utils.rel_id` in `@pytest.mark.parametrize`.
-- `run_fixer_script(name, target)` -- shared subprocess wrapper: runs `tests/<name> -i target`
-  and raises on failure. Used by the ASCII and whitespace auto-fix tests.
+- `run_fixer_script(script_name, target)` -- shared subprocess wrapper: runs
+  `tests/<script_name> -i target` and returns `(returncode, stderr)` for every subprocess
+  completion; it never raises on a fixer exit code. Callers convert bad outcomes into per-file
+  violation data. Raises `RuntimeError` only for environment preconditions (missing script file,
+  missing python3 interpreter). Fixer exit codes: `fix_ascii_compliance.py` 0=clean,
+  1=issues remain, 2=fixed; `fix_whitespace.py` 0=clean-or-fixed, 1=missing input. Used by the
+  ASCII and whitespace auto-fix tests.
 - `collect_file_violations(files, check)` -- iterate `files`, call `check(rel)` per file,
   return `dict[str, list[str]]` keyed by repo-relative POSIX path. Use when the checker handles
   its own parsing (for example pyflakes).

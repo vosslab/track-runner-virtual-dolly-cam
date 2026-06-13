@@ -19,6 +19,15 @@ The dump-time filter `has_valid_seed_roi` and the render-time ROI clamp disagree
 on what counts as off-frame at seed boxes near image boundaries. Tracked as a
 separate task; does not affect the closed amendment's primary acceptance bars.
 
+Note (2026-06-12, SCHEMA_VERSION 14): the Viterbi cost model specified in this
+amendment was subsequently redesigned. The variance terms (`velocity_consistency_cost`,
+`angle_consistency_cost`) shipped as pairwise velocity-delta scoring
+(`WEIGHT_SPEED_DELTA` / `WEIGHT_HEADING_DELTA`) rather than window-variance
+terms. All six cost weights now live in `track_runner/track_runner.config.yaml`
+under the `walker_costs` section, not in `overlay_styles.yaml` as the amendment
+proposed. See [docs/TRACK_RUNNER_YAML_CONFIG.md](../TRACK_RUNNER_YAML_CONFIG.md)
+for the full key reference.
+
 ---
 
 # Windowed path-selection amendment for the blob walker

@@ -20,7 +20,7 @@ Public surface:
 
 #============================================
 # the one and only schema version constant
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 
 #============================================
 # Schema versions that altered solved-geometry semantics. Membership is
@@ -58,7 +58,16 @@ SCHEMA_VERSION = 13
 # unified contract: a single SCHEMA_VERSION line cannot be geometry-affecting
 # for some sources and not others, so v13 is marked geometry-affecting to
 # avoid silently mixing pre-fix overrun geometry with post-fix geometry.
-GEOMETRY_AFFECTING_SCHEMAS: set = {3, 6, 7, 8, 9, 10, 11, 13}
+# v14 enters the set because two geometry-affecting changes landed together
+# per contract C10 (one unified bump covers both): (1) the Viterbi DP cost
+# model rewrite from first-order displacement to pairwise velocity-delta
+# scoring (WP-COST-1) changes walk outputs on every Stage-4-promoted interval
+# where blobs are present; (2) the P10 seed-only Hermite fallback fix
+# (WP-P10-1) changes the fallback gate from zero-accept to zero-post-seed-
+# accept, so bootstrap-only stall passes now fall back to Hermite. Both
+# changes affect geometry only on Stage-4-promoted intervals; pure-Hermite
+# paths (Stage 3, blob_pass=False) are byte-identical to v13.
+GEOMETRY_AFFECTING_SCHEMAS: set = {3, 6, 7, 8, 9, 10, 11, 13, 14}
 
 
 #============================================
@@ -88,7 +97,7 @@ def latest_geometry_affecting_schema() -> int:
 SUPPORTED_ARTIFACT_SCHEMAS: dict = {
 	# diagnostics JSON: shape was migrated from flat (v2) to nested
 	# (v3+) at load time; v3-v10 share the nested shape.
-	"diagnostics": {2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13},
+	"diagnostics": {2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14},
 	# torso_box_coords.npz: per-frame coordinate arrays changed dtype
 	# from float32 (v8, v9) to uint16 (v10+) per C12.4. Hard-cut at v10:
 	# v8 and v9 are no longer readable; cache invalidation required.
@@ -98,7 +107,11 @@ SUPPORTED_ARTIFACT_SCHEMAS: dict = {
 	# unchanged from v11, so v10, v11, and v12 files all remain readable.
 	# v13 is the P12 stride-termination fix; the torso_box_coords on-disk
 	# layout is unchanged from v12, so v10-v13 files all remain readable.
-	"torso_box_coords": {10, 11, 12, 13},
+	# v14 is the cost-model rewrite + P10 seed-only fallback fix; the on-disk
+	# layout is unchanged from v13, so v10-v14 files all remain readable.
+	# Walk geometry changes on Stage-4-promoted intervals but the on-disk
+	# coordinate representation is the same uint16 layout.
+	"torso_box_coords": {10, 11, 12, 13, 14},
 }
 
 

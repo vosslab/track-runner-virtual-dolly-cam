@@ -67,12 +67,14 @@ The v1 per-frame blob-snap consumer inside the propagator (`_apply_blob_snap`)
 has been removed. The current consumer is the windowed Viterbi walker
 (`track_runner/blob_walk/`), which is the DEFAULT blob pass on Stage-4-promoted
 intervals (and Stage-5 `--full`). The `--walker-stage4` flag was removed; the
-walker is on by default. A zero-accepted-frame Hermite fallback is in place so
-the walker never degrades a promoted interval below pure Hermite.
+walker is on by default. A `post_seed_accepted == 0` Hermite fallback is in
+place (covers zero-accept stall and seed-only stall; reads
+`WalkCoverage.post_seed_accepted`) so the walker never degrades a promoted
+interval below pure Hermite. Viterbi weight tuning and the promoted-only A/B
+shipped 2026-06-12 (pairwise velocity-delta cost model, schema 14).
 
-Remaining work: bootstrap-stall root-cause fix, Viterbi weight tuning, and a
-promoted-only A/B validation. See [CHANGELOG.md](CHANGELOG.md) for the landing
-history.
+Remaining work: seed-frame stall root-cause fix. See [CHANGELOG.md](CHANGELOG.md)
+for the landing history.
 
 ## Not started
 

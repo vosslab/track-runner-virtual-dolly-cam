@@ -120,9 +120,15 @@ def collect_report(pytestconfig: pytest.Config) -> None:
 		# For each violating file, run the fixer then re-scan.
 		for rel, _lines in initial_violations.items():
 			abs_path = os.path.join(file_utils.get_repo_root(), rel)
-			# run_fixer_script runs tests/fix_whitespace.py -i <path> and raises on failure.
-			file_utils.run_fixer_script("fix_whitespace.py", abs_path)
-			# Re-scan the file after the fixer has written it.
+			# run_fixer_script returns (returncode, stderr); never raises on fixer outcome.
+			returncode, stderr = file_utils.run_fixer_script("fix_whitespace.py", abs_path)
+			if returncode != 0:
+				# Non-zero exit: fixer failed; record as violation and skip re-scan.
+				VIOLATIONS_BY_FILE[rel] = [
+					f"{rel}:0:0: fixer failed (exit {returncode}): {stderr}"
+				]
+				continue
+			# Re-scan the file after the fixer has written it (exit 0 only).
 			remaining = check_file(rel)
 			if remaining:
 				# Violations persist after fix; record them.

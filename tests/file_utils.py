@@ -421,34 +421,49 @@ def rel_id(path: str) -> str:
 
 
 #============================================
-def run_fixer_script(script_name: str, target: str) -> None:
+def run_fixer_script(script_name: str, target: str) -> tuple[int, str]:
 	"""
 	Run a fixer script that lives in the tests directory.
 
 	Resolves the script under tests/ relative to the repo root and runs it with
-	the target as its -i argument. Raises AssertionError on a non-zero exit so
-	callers fail loudly. The script lives in tests/; there is no fallback path
-	lookup by design.
+	the target as its -i argument. Returns (returncode, stderr) for every
+	subprocess completion; never raises on a fixer exit code.
+
+	Fixer exit code contracts:
+	- fix_ascii_compliance.py: 0=already clean, 1=unfixable characters remain, 2=fixed
+	- fix_whitespace.py: 0=already clean or fixed, 1=missing or no-input file, never 2
+
+	Raises RuntimeError only for environment preconditions:
+	- script_path does not exist on disk (checked before launch)
+	- python3 interpreter not found (FileNotFoundError from subprocess.run)
+
+	These are test environment failures, not per-file fixer outcomes.
 
 	Args:
 		script_name: Filename of the fixer script under tests/.
 		target: Path passed to the fixer script via its -i flag.
+
+	Returns:
+		tuple[int, str]: (returncode, stderr) from the fixer subprocess.
 	"""
 	# Compute the repo root once; used for both script_path and cwd.
 	root = get_repo_root()
-	# The fixer scripts live in tests/ relative to the repo root, period.
+	# The fixer scripts live in tests/ relative to the repo root; no fallback path lookup.
 	script_path = os.path.join(root, "tests", script_name)
+	# Verify the script exists before attempting to launch it.
+	if not os.path.isfile(script_path):
+		raise RuntimeError(
+			f"Fixer script not found: {script_path}; test environment is broken."
+		)
 	# Run the fixer in the repo root so its own path resolution is consistent.
-	result = subprocess.run(
-		["python3", script_path, "-i", target],
-		capture_output=True,
-		text=True,
-		cwd=root,
-	)
-	# A non-zero exit means the fix failed; surface stderr to the caller.
-	if result.returncode != 0:
-		message = result.stderr.strip() or f"{script_name} failed."
-		raise AssertionError(message)
+	# Build the command first so the try body stays a single line per style.
+	command = ["python3", script_path, "-i", target]
+	try:
+		result = subprocess.run(command, capture_output=True, text=True, cwd=root)
+	except FileNotFoundError as exc:
+		raise RuntimeError("python3 interpreter not found; test environment is broken.") from exc
+	# Return the raw outcome; callers interpret the exit code.
+	return result.returncode, result.stderr
 
 
 #============================================

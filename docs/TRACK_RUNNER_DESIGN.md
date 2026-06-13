@@ -124,18 +124,20 @@ propagator in [velocity_model.py](../track_runner/velocity_model.py) produces a
 pure-Hermite `raw_pred` trajectory and does not apply per-frame blob snap; the
 walker walks its own image-derived candidate lattice independent of `raw_pred`.
 
-Pure-stall Hermite fallback: a known bootstrap-stall bug can make a walker pass
-reject every candidate and emit a degenerate path with zero accepted frames
-(100% interpolated straight line between seeds), which is strictly worse than
-Hermite. To keep default-on "never worse than Hermite" on promoted intervals,
-`solve_interval_analytical` selects output per pass after both producers run: a
-pass with zero accepted frames falls back to its Hermite path, while a pass with
-at least one accepted frame keeps the walker path. The fallback reads the
-walker's own accepted-frame coverage (`WalkSummary.accepted_count`), never
+Pure-stall Hermite fallback: a known bootstrap-stall class of bugs can produce
+a degenerate walker pass: either zero accepted frames (path is a straight
+interpolation between seeds) or only the seed frame accepted via bootstrap (all
+remaining frames frozen at the seed position). Both outcomes are strictly worse
+than Hermite. To keep default-on "never worse than Hermite" on promoted
+intervals, `solve_interval_analytical` selects output per pass after both
+producers run: a pass with `post_seed_accepted == 0` (no accepted frame beyond
+the seed) falls back to its Hermite path, while a pass with
+`post_seed_accepted >= 1` keeps the walker path. The fallback reads
+`WalkCoverage.post_seed_accepted` from the walker's own coverage report, never
 `raw_pred` and never FWD/BWD agreement (the C9 scoring signal), so the walk
 itself remains Hermite-independent. The underlying bootstrap-stall root cause is
-still open; the fallback masks its worst symptom while Viterbi weight tuning and
-a promoted-only A/B remain follow-up work.
+still open; the fallback masks its worst symptom while further Viterbi weight
+tuning remains follow-up work.
 
 ### Anti-pattern: chained blob state
 
@@ -192,17 +194,25 @@ list, not the per-frame winner). A Viterbi-style dynamic program over
 the candidate lattice picks the globally optimal path under additive
 costs:
 
-- per-step displacement cap expressed in torso-width units per contract
-  C2, with edges above the cap pruned to `+inf`;
-- velocity-magnitude variance across the window path;
-- velocity-angle spread across the window path;
-- a small evidence bonus scaled by candidate `integrated_mag` to break
-  ties toward stronger residual-motion strength;
-- a skip cost charged when the path crosses a frame with no surviving
-  candidate.
+- soft displacement cost (linear in per-frame torso-widths/frame,
+  gap-normalized across skips) plus quadratic overspeed above the
+  physical envelope; a single hard prune at `ABSOLUTE_MAX_JUMP_W`
+  (1.5 torso-widths/frame) rejects physically impossible edges;
+- pairwise velocity-delta scoring: `WEIGHT_SPEED_DELTA` on speed changes
+  and `WEIGHT_HEADING_DELTA` on heading changes between consecutive real
+  steps -- the DP-compatible form of the window trajectory-consistency
+  intent (pairwise deltas penalize acceleration; heading is suppressed
+  near zero speed via `SPEED_EPSILON_W`);
+- per-frame normalized evidence tie-breaker: each candidate's
+  `integrated_mag` normalized against the frame's strongest candidate,
+  bounded by `WEIGHT_EVIDENCE_NORM` so evidence cannot dominate geometry;
+- a skip cost (`SKIP_COST`) charged once per skipped frame; geometry
+  bridges across gaps via gap-normalized velocity.
 
-Weights live in YAML so they can be tuned without code edits. No
-appearance, color, or template-matching term enters the cost (C8).
+All weights live in the `walker_costs` section of
+`track_runner/track_runner.config.yaml` so they can be tuned without
+code edits. No appearance, color, or template-matching term enters the
+cost (C8).
 
 ### Status enum
 

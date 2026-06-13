@@ -140,6 +140,37 @@ active, the resizing interpolation upgrades from bilinear to Lanczos.
 | --- | --- | --- |
 | `output_resolution` | `[1920, 1080]` | Explicit `[width, height]` for output. Must match `crop_aspect`. If omitted, uses the median of all crop rectangles. |
 
+## Walker costs section
+
+Controls Viterbi cost-model weights for the windowed blob walker on
+Stage-4-promoted intervals. The section lives in
+`track_runner/track_runner.config.yaml` and is merged into per-video configs
+via the standard per-video config merge.
+
+All six keys are required when the `walker_costs` section is present;
+omitting any key raises a configuration error at solve startup.
+
+| Key | Default | Description |
+| --- | --- | --- |
+| `WEIGHT_DISPLACEMENT` | `0.25` | Linear cost per torso-width/frame of motion along the selected path edge |
+| `WEIGHT_SPEED_DELTA` | `1.0` | Cost per torso-width/frame of speed change between consecutive steps (pairwise velocity-delta) |
+| `WEIGHT_HEADING_DELTA` | `0.5` | Cost per radian of heading change between consecutive steps (pairwise velocity-delta) |
+| `WEIGHT_OVERSPEED` | `4.0` | Quadratic penalty applied when candidate motion exceeds the physical speed envelope |
+| `WEIGHT_EVIDENCE_NORM` | `0.5` | Maximum tie-break cost for a candidate weaker than the strongest residual evidence on that frame |
+| `SKIP_COST` | `2.0` | Cost per frame where no candidate survives to the selected path |
+
+Example per-video override (add to the video's `tr_config/*.config.yaml`):
+
+```yaml
+walker_costs:
+  WEIGHT_DISPLACEMENT: 0.25
+  WEIGHT_SPEED_DELTA: 1.0
+  WEIGHT_HEADING_DELTA: 0.5
+  WEIGHT_OVERSPEED: 4.0
+  WEIGHT_EVIDENCE_NORM: 0.5
+  SKIP_COST: 2.0
+```
+
 ## Migrating from v2
 
 Schema v2 used `crop_fill_ratio`, the inverted reciprocal of the new

@@ -69,12 +69,13 @@ def _stub_heavy(monkeypatch, calls):
 
 	def fake_adapter(bundle):
 		calls.append("walker")
-		# coverage-returning adapter: (full_span_path, accepted_count). A
-		# nonzero accepted_count keeps the walker path (no stall fallback) so
-		# this test isolates the OFF-vs-ON branch, not the fallback.
+		# coverage-returning adapter: (full_span_path, WalkCoverage). A
+		# nonzero post_seed_accepted keeps the walker path (no stall fallback)
+		# so this test isolates the OFF-vs-ON branch, not the fallback.
 		path = [{"cx": 0.0, "cy": 0.0, "w": 1.0, "h": 1.0, "conf": 1.0,
 			"source": "propagated"}]
-		return path, 1
+		coverage = walker_bundle.WalkCoverage(accepted_count=1, post_seed_accepted=1)
+		return path, coverage
 
 	monkeypatch.setattr(
 		walker_bundle, "walk_bundle_to_path_with_coverage", fake_adapter,

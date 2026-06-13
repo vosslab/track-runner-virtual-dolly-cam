@@ -1,13 +1,13 @@
 # Blob walk v2 P10 fix plan: bootstrap-accept fallback correction
 
 Narrow fix plan for audit finding P10
-([blob_walk_v2_implementation_audit.md](../audits/blob_walk_v2_implementation_audit.md)),
+([blob_walk_v2_implementation_audit.md](../active_plans/audits/blob_walk_v2_implementation_audit.md)),
 validated as an observed failure in
-[blob_walk_v2_check3_bootstrap_masking.md](../workstreams/blob_walk_v2_check3_bootstrap_masking.md)
+[blob_walk_v2_check3_bootstrap_masking.md](../active_plans/workstreams/blob_walk_v2_check3_bootstrap_masking.md)
 (claim J in
-[blob_walk_v2_validation_report.md](../reports/blob_walk_v2_validation_report.md)).
+[blob_walk_v2_validation_report.md](../active_plans/reports/blob_walk_v2_validation_report.md)).
 This is Milestone M1 of the fix-phase roadmap
-([blob_walk_v2_fix_phase_roadmap.md](blob_walk_v2_fix_phase_roadmap.md),
+([blob_walk_v2_fix_phase_roadmap.md](../active_plans/active/blob_walk_v2_fix_phase_roadmap.md),
 workstreams WS-1A/WS-1B, work packages WP-1A/WP-1B). Scope is the
 Stage-4 coverage seam and fallback gate only; the walker core is not
 touched. Status: awaiting user approval. The human reviewer handles all
@@ -48,7 +48,7 @@ bootstrap accept can mask that fallback too.
 Three loci, observed at current line numbers:
 
 Bootstrap accept --
-[track_runner/blob_walk/walk_walker.py](../../../track_runner/blob_walk/walk_walker.py),
+[track_runner/blob_walk/walk_walker.py](../../track_runner/blob_walk/walk_walker.py),
 `_run_bootstrap_step` (lines 919-924): the seed-frame observation
 increments the same `accepts` list and `accepted` status count as
 windowed-step accepts:
@@ -64,14 +64,14 @@ windowed-step accepts:
 so a bootstrap-only stall reports 1, not 0.
 
 Coverage return --
-[track_runner/walker_bundle.py](../../../track_runner/walker_bundle.py),
+[track_runner/walker_bundle.py](../../track_runner/walker_bundle.py),
 `walk_bundle_to_path_with_coverage` (lines 492-555): returns
 `(full_span_path, int(summary.accepted_count))`. The docstring states
 the second value is the count of frames marked "accepted"; it does not
 distinguish the bootstrap frame.
 
 Fallback gate --
-[track_runner/interval_solver.py](../../../track_runner/interval_solver.py),
+[track_runner/interval_solver.py](../../track_runner/interval_solver.py),
 `solve_interval_analytical` (fallback block lines 529-564; gate at
 551-552):
 
@@ -290,7 +290,7 @@ NOT included:
   fix changes shipped geometry on masked passes (frozen-at-seed walker
   output replaced by Hermite). Per contract C10 there is one unified
   `SCHEMA_VERSION`; record the bump in
-  [TR_SCHEMA_VERSION_HISTORY.md](../../TR_SCHEMA_VERSION_HISTORY.md)
+  [TR_SCHEMA_VERSION_HISTORY.md](../TR_SCHEMA_VERSION_HISTORY.md)
   annotated as "geometry-affecting only for bootstrap-only-masked
   walker passes; byte-identical for all other passes", and add 14 to
   `GEOMETRY_AFFECTING_SCHEMAS`. Honest tradeoff, same as the P12 bump:

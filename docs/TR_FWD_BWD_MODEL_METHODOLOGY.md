@@ -70,9 +70,10 @@ default the propagator emits a pure-Hermite interval path on Stage 3 and on
 non-promoted intervals. On Stage-4-promoted intervals (low/fair confidence,
 reader present) the windowed Viterbi walker (`track_runner/blob_walk/`) runs by
 default and produces a blob-coupled interval path; the `blob_pass` seam is True
-for that path. A pass that stalls (zero
-accepted walker frames) falls back to its Hermite path so default-on stays
-never-worse-than-Hermite; the underlying bootstrap-stall root cause is still
+for that path. A pass with `post_seed_accepted == 0` (no accepted frame beyond
+the seed, covering both zero-accept stall and seed-only stall) falls back to
+its Hermite path so default-on stays never-worse-than-Hermite; the gate reads
+`WalkCoverage.post_seed_accepted` and the seed-frame stall root cause remains
 open. The resulting
 forward interval path and backward interval path are ONLY combined at two
 clearly separated points: by
@@ -223,10 +224,13 @@ On Stage-4-promoted intervals the windowed Viterbi walker
 (`track_runner/blob_walk/`) runs by default (`blob_pass=True` for that path).
 The walker calls `observe_blob_at` at each
 non-endpoint frame, retrieves `corridor_blobs` candidates from the trace, and
-runs a window-level Viterbi DP to select a globally consistent path. A pass that
-stalls (zero accepted frames) falls back to its Hermite path, keeping default-on
-never-worse-than-Hermite; the bootstrap-stall root cause is still open and
-Viterbi weight tuning plus a promoted-only A/B remain follow-up work. Full
+runs a window-level Viterbi DP to select a globally consistent path. A pass with
+`post_seed_accepted == 0` (no accepted frame beyond the seed, covering both
+zero-accept stall and seed-only stall) falls back to its Hermite path, keeping
+default-on never-worse-than-Hermite; the gate reads `WalkCoverage.post_seed_accepted`.
+Viterbi weight tuning and the promoted-only A/B shipped 2026-06-12 (pairwise
+velocity-delta cost model, schema 14); only the seed-frame stall root cause
+remains open. Full
 walker mechanics are in the Windowed path-selection
 walker section of [TRACK_RUNNER_DESIGN.md](TRACK_RUNNER_DESIGN.md) and in
 [windowed_path_selection_amendment.md](archive/windowed_path_selection_amendment.md).

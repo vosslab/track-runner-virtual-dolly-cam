@@ -526,30 +526,35 @@ def solve_interval_analytical(
 				precomputed_store=precomputed_store,
 			)
 		)
-		# capture each pass's own accepted-frame coverage alongside its path.
-		# coverage is the walker's "accepted" status count, read from the
-		# WalkSummary before the path projection discards per-frame status.
-		forward_path_scene, fwd_accepted = (
+		# capture each pass's own named coverage alongside its path.
+		# coverage is a WalkCoverage with accepted_count (total accepted
+		# frames) and post_seed_accepted (accepted frames after the seed),
+		# read from WalkSummary before path projection discards per-frame
+		# status. The gate reads post_seed_accepted, not accepted_count, so
+		# a bootstrap-only stall (seed frame accepted, all others missed)
+		# correctly triggers the fallback.
+		forward_path_scene, fwd_coverage = (
 			walker_bundle.walk_bundle_to_path_with_coverage(forward_bundle)
 		)
-		backward_path_scene, bwd_accepted = (
+		backward_path_scene, bwd_coverage = (
 			walker_bundle.walk_bundle_to_path_with_coverage(backward_bundle)
 		)
 
 		# Per-pass Hermite stall fallback (guarantees "never worse than
-		# Hermite" on promoted intervals). A pure stall is ZERO accepted
-		# frames: the walker rejected every candidate and emitted a degenerate
-		# straight line (100% interpolated) between the seeds, which is strictly
-		# worse than Hermite. The fallback is applied per pass, not per
-		# interval, so FWD and BWD stay independent (contract C9): a stalled
-		# FWD is replaced by the Hermite FWD path while a healthy BWD keeps the
-		# walker path. If both stall, both fall back and the interval is pure
-		# Hermite. This is OUTPUT SELECTION after both producers have run; it
-		# reads the walker's own coverage, never raw_pred and never FWD/BWD
-		# agreement (the C9 scoring signal), so Hermite independence of the
-		# walk itself is preserved.
-		walker_fallback_fwd = (fwd_accepted == 0)
-		walker_fallback_bwd = (bwd_accepted == 0)
+		# Hermite" on promoted intervals). A pass with zero post-seed accepted
+		# frames has no real post-seed trajectory evidence: this covers both
+		# the pure-stall case (accepted_count == 0, all frames missed) and the
+		# bootstrap-only case (accepted_count == 1, only the seed frame was
+		# observed, all remaining frames missed). Both produce a degenerate
+		# frozen or interpolated path strictly worse than Hermite. The gate
+		# reads post_seed_accepted by name so the seed-only case cannot
+		# silently bypass it. The fallback is applied per pass (contract C9):
+		# a stalled FWD is replaced by the Hermite FWD path while a healthy
+		# BWD keeps the walker path. This is OUTPUT SELECTION after both
+		# producers have run; it reads the walker's own coverage, never
+		# raw_pred and never FWD/BWD agreement (the C9 scoring signal).
+		walker_fallback_fwd = (fwd_coverage.post_seed_accepted == 0)
+		walker_fallback_bwd = (bwd_coverage.post_seed_accepted == 0)
 		if walker_fallback_fwd:
 			forward_path_scene = velocity_model.propagate_forward_analytical(
 				interval_curves, scene_transform,
@@ -1509,7 +1514,9 @@ def _dispatch_blob_pass(
 		return
 
 	stage_start = time.time()
-	bin_factor = int(getattr(context, "bin_factor", 1))
+	# context.bin_factor and context.video_frame_count are always populated
+	# (set at ExecutionContext construction); direct access per do-not-hide-bugs.
+	bin_factor = int(context.bin_factor)
 	print(f"\n{stage_name}: blob pass ({len(pair_indices)} of "
 		f"{len(interval_results)} intervals, bin={bin_factor})")
 
@@ -1602,8 +1609,15 @@ def _dispatch_blob_pass(
 					fps=context.fps,
 					debug=debug,
 					blob_pass=blob_pass,
-					bin_factor=getattr(context, "bin_factor", 1),
-					total_frames=getattr(context, "video_frame_count", 0),
+					# Direct attribute access: both fields are always populated
+					# at ExecutionContext construction (do-not-hide-bugs-with-defaults).
+					bin_factor=context.bin_factor,
+					total_frames=context.video_frame_count,
+					# Thread config-resolved walker costs so Stage-4 workers see
+					# the same weights as solve_queue's Stage-3/blob pool; the
+					# value originates from context.walker_costs (set by cli via
+					# tr_config.resolve_config), matching solve_queue's wiring.
+					walker_costs=context.walker_costs,
 				) as pool:
 					# Frame span lookup keyed by pair_idx so the pool's
 					# completion order doesn't matter for ETA accuracy.
@@ -1681,6 +1695,7 @@ def solve_all_intervals(
 	pre_race_reference: dict = None,
 	bin_factor: int = 1,
 	blob_pass: bool = True,
+	walker_costs: dict = None,
 ) -> dict:
 	"""Solve all seed-to-seed intervals and stitch into a full trajectory.
 
@@ -1727,6 +1742,12 @@ def solve_all_intervals(
 			flag is not carried across the worker-pool boundary). Stage 3 stays
 			pure Hermite on every interval. Passing False reverts the blob pass
 			to the pure-Hermite re-solve.
+		walker_costs: Optional dict of Viterbi cost weights (walk_viterbi
+			COST_WEIGHT_NAMES keys) threaded to Stage-4 workers via
+			ExecutionContext. None keeps walk_viterbi module-constant defaults.
+			Optional-by-design: diagnostic callers that omit it get defaults.
+			Production callers (cli._run_solve) supply cfg["walker_costs"] so
+			YAML config weights reach the walker pool.
 
 	Returns:
 		Dict with keys:
@@ -1801,6 +1822,9 @@ def solve_all_intervals(
 		race_start_interval=race_start_interval,
 		pre_race_reference=pre_race_reference,
 		bin_factor=bin_factor,
+		# Config-resolved Viterbi cost weights; None keeps walk_viterbi defaults.
+		# cli._run_solve supplies cfg["walker_costs"] so YAML weights reach workers.
+		walker_costs=walker_costs,
 	)
 	interval_results = solve_queue.execute_interval_work(
 		plan, context,
