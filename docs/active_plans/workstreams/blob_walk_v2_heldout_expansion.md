@@ -7,6 +7,32 @@ Artifact: `docs/active_plans/workstreams/blob_walk_v2_heldout_expansion.md`
 Date: 2026-06-12. Lane: measurement-only (WS-G). The schema-14 cost-model
 bundle stays frozen; this artifact adds evidence only and edits no staged file.
 
+## Framing correction (added post-run by the review manager)
+
+The comparative conclusion below ("walker worse than Hermite on 11/13") is
+MISFRAMED and must not be read as a quality verdict against the walker. The
+running agent did not carry the documented domain prior: the walker is the
+trusted solver for its intervals and is more accurate than Hermite; Hermite is
+the cheap incumbent, acceptable but not great, kept only as the Stage-3 / cost
+floor. See the absorption record and the design doc.
+
+Two consequences for reading this artifact:
+
+- The single held-out human seed is a weak truth proxy. A small `hermite_err`
+  means the held-out frame was EASY (M landed near Hermite's L-to-R cubic), not
+  that Hermite tracked well. Scoring the trusted tracker by closeness to a
+  yardstick the mediocre incumbent passes trivially is the wrong axis. The
+  comparative "regressed 11/13" therefore does not show the walker is a worse
+  tracker, and does not undercut the bundle.
+- What this data IS still good for: the ABSOLUTE walker outliers. A walker box
+  2 to 3 torso-widths off the runner (IMG_3830 [1288,1308] 3.279; IMG_3823
+  [2316,2337] 2.625; IMG_3823 [1014,1036] 1.457; Conant [3218,3241] 1.885) is
+  the walker failing at its own job regardless of Hermite, and those specific
+  rows are worth an eyes-on tile check. Small deltas are noise; multi-torso
+  absolute misses are real leads.
+
+The original agent text is preserved below unchanged for provenance.
+
 ## Headline
 
 On 13 newly sampled held-out triples across 4 corpus videos, the schema-14

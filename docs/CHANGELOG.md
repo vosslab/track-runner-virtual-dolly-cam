@@ -147,6 +147,40 @@
   Both cases confirm neither regression is caused by the pairwise velocity-delta
   cost rewrite. Tile output at `corpus_walk/<video>/seed_<L>_<R>/`.
 
+### Decisions and Failures
+
+- `WEIGHT_DISPLACEMENT = 0.25` (lowered from plan's 1.0): manager resolved
+  evidence-forward after WP-COST-1 landed. At 1.0, displacement cost dominated
+  evidence for slow-moving runners in pre-race intervals; 0.25 lets the
+  velocity-delta terms and normalized evidence compete on honest scale.
+- Variance-to-pairwise-delta design: the plan's window-variance intent is
+  implemented as pairwise velocity deltas (penalize acceleration, not deviation
+  from a window mean) because the pairwise form is additive and satisfies
+  optimal substructure. A window mean requires global rollback and is not
+  DP-compatible. Code comment cites audit P2.
+- `SEED_SEARCH_SLACK_W` rename deferred: the legacy `BOOTSTRAP_UNCERTAINTY_W`
+  constant exists in `walk_motion_gate.py` but is no longer read by the DP
+  (the DP reads no bootstrap slack after WP-COST-1). The rename to
+  `SEED_SEARCH_SLACK_W` is recorded as a follow-up; it does not expand this
+  patch's scope.
+- `walker_costs` config residence confirmed in `tr_config.py` (not in
+  `walk_io.py`): the WP-IO-1 audit confirmed `walk_io.py` is tool-layer glue
+  that delegates to established owners; adding config parsing there would
+  re-implement the pipeline boundary the existing `tr_config/resolve_config`
+  path already provides.
+- Walker-vs-Hermite interpretation rule recorded (user-confirmed, well
+  documented): the walker is the trusted, more-accurate solver; Hermite is the
+  cheap floor, gated to Stage-4-promoted intervals by CPU cost, not by quality.
+  Held-out-single-seed error (`e2e_walker_ab`) is therefore NOT a
+  walker-vs-Hermite quality ranking: it under-samples the interval (one frame)
+  and is biased toward Hermite on smooth motion, where a small `hermite_err`
+  means the held-out frame was easy, not that Hermite tracked well. Durable rule
+  added to
+  [docs/TRACK_RUNNER_DESIGN.md](TRACK_RUNNER_DESIGN.md) ("Interpreting
+  walker-vs-Hermite and held-out-seed error"). The held-out expansion's
+  "regressed 11/13" headline is reframed accordingly; its valid signal is
+  absolute multi-torso walker outliers, not the Hermite comparison.
+
 ### Developer Tests and Notes
 
 - Add `tests/test_walk_viterbi_brute_force.py`: exhaustive brute-force
@@ -180,30 +214,36 @@
   due to concurrent process log collision). Release-review summary (governance package for
   human accept/reject) inserted at top of
   [docs/active_plans/workstreams/blob_walk_v2_cost_model_ab.md](active_plans/workstreams/blob_walk_v2_cost_model_ab.md).
-
-### Decisions and Failures
-
-- `WEIGHT_DISPLACEMENT = 0.25` (lowered from plan's 1.0): manager resolved
-  evidence-forward after WP-COST-1 landed. At 1.0, displacement cost dominated
-  evidence for slow-moving runners in pre-race intervals; 0.25 lets the
-  velocity-delta terms and normalized evidence compete on honest scale.
-- Variance-to-pairwise-delta design: the plan's window-variance intent is
-  implemented as pairwise velocity deltas (penalize acceleration, not deviation
-  from a window mean) because the pairwise form is additive and satisfies
-  optimal substructure. A window mean requires global rollback and is not
-  DP-compatible. Code comment cites audit P2.
-- `SEED_SEARCH_SLACK_W` rename deferred: the legacy `BOOTSTRAP_UNCERTAINTY_W`
-  constant exists in `walk_motion_gate.py` but is no longer read by the DP
-  (the DP reads no bootstrap slack after WP-COST-1). The rename to
-  `SEED_SEARCH_SLACK_W` is recorded as a follow-up; it does not expand this
-  patch's scope.
-- `walker_costs` config residence confirmed in `tr_config.py` (not in
-  `walk_io.py`): the WP-IO-1 audit confirmed `walk_io.py` is tool-layer glue
-  that delegates to established owners; adding config parsing there would
-  re-implement the pipeline boundary the existing `tr_config/resolve_config`
-  path already provides.
-
-### Developer Tests and Notes
+- Held-out error expansion
+  [docs/active_plans/workstreams/blob_walk_v2_heldout_expansion.md](active_plans/workstreams/blob_walk_v2_heldout_expansion.md):
+  13 mid-span held-out triples (spans 15-45, 4 videos), blended-path error.
+  Raw numbers walker median 1.105 vs Hermite 0.100 torso-widths; reframed per
+  the walker-vs-Hermite interpretation rule above (the instrument is
+  Hermite-biased on easy frames, so this is not a quality ranking). Valid
+  signal: absolute walker outliers of 2-3 torso-widths (IMG_3830 [1288,1308],
+  IMG_3823 [2316,2337]) flagged for eyes-on tile review. Every row drove the
+  walker; the P10 fallback fired on zero rows.
+- Corpus-120 schema-14 control run
+  [docs/active_plans/workstreams/blob_walk_v2_corpus120_schema14.md](active_plans/workstreams/blob_walk_v2_corpus120_schema14.md):
+  same 100 intervals across 5 videos as the schema-13 baseline (Lyra-Wheeling
+  skipped, 6 h decode). FWD 59.7% vs 58.9% (+0.8), BWD 60.8% vs 59.8% (+1.0);
+  every video and direction at or above baseline, max delta +1.2; all 100
+  intervals stop on `hit_neighbor_seed`. Accepted-fraction is a coverage metric,
+  not positional accuracy.
+- Weight-sensitivity sweep (SIDE QUEST)
+  [docs/active_plans/workstreams/blob_walk_v2_weight_sensitivity.md](active_plans/workstreams/blob_walk_v2_weight_sensitivity.md):
+  6 extreme configs on the 24-pass subset. SKIP_COST is the only load-bearing
+  weight (halving it drops accepted fraction 9.8 pp); delta and evidence terms
+  near-inert on short high-confidence intervals; multi-candidate fraction 82%.
+  Explains why the original 4-config tuning was flat -- 2x nudges were
+  insufficient to flip rankings.
+- Second pre-merge audit (six independent reviewers, read-only on the frozen
+  bundle): no code-correctness blocker. Findings are packaging and hygiene --
+  the CHANGELOG ordering blocker in this 2026-06-12 block (now fixed: the two
+  `Developer Tests and Notes` sub-blocks merged into one placed last), five
+  planning-tag rewords in code comments, four unstaged doc-truth fixes required
+  to ride with the bundle, and fragile-test pruning. Artifact:
+  [docs/active_plans/audits/blob_walk_v2_bundle_audit_run2.md](active_plans/audits/blob_walk_v2_bundle_audit_run2.md).
 
 - New artifact
   [docs/active_plans/reports/blob_walk_v2_starvation_characterization.md](active_plans/reports/blob_walk_v2_starvation_characterization.md):

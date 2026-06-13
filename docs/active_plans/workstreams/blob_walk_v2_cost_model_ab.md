@@ -90,6 +90,17 @@ the schema bump.
 
 ### Quality evidence (review-priority order)
 
+Caveat (added post-run): held-out-single-seed error is a WEAK and
+Hermite-biased instrument, not a clean "quality authority." Read it only for
+absolute multi-torso walker outliers and for rescues on hard non-smooth
+intervals; do NOT read "walker farther from the held-out seed than Hermite" as
+a quality ranking, because the walker is the trusted more-accurate solver and a
+small hermite_err means the held-out frame was easy, not well-tracked. See the
+standing rule in
+[docs/TRACK_RUNNER_DESIGN.md](../../TRACK_RUNNER_DESIGN.md) "Interpreting
+walker-vs-Hermite and held-out-seed error" and the WS-G expansion
+[blob_walk_v2_heldout_expansion.md](blob_walk_v2_heldout_expansion.md).
+
 Priority ordering is deliberate: quality authority first (held-out error
 measures whether the fix improves tracking), identity second (safety gate),
 controls third (regression floor), then coverage breadth and gate count.

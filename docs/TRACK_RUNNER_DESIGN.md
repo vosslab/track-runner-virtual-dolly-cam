@@ -289,6 +289,51 @@ of any refinement step.
 Rule: scoring uses first-pass signal; output uses the blended interval
 path (and any refined geometry layered on top of it).
 
+## Interpreting walker-vs-Hermite and held-out-seed error
+
+This subsection is a standing rule for reading any walker-vs-Hermite
+measurement. It exists because the held-out-seed instrument is repeatedly
+misread as a quality ranking and the wrong conclusion ("walker worse than
+Hermite") keeps getting re-derived.
+
+Trust ordering (well documented, not up for re-derivation): the walker is
+the trusted, more-accurate solver for its intervals. Hermite is the cheap
+incumbent -- acceptable, not great. Hermite runs first on every interval
+because it is cheap; the walker is spent ONLY on Stage-4-promoted intervals
+because the walker is significantly more CPU expensive. The gating is cost,
+not quality. When the walker and Hermite disagree, the prior is that the
+walker is closer to the runner, not Hermite.
+
+Consequence for the held-out-seed instrument (`e2e_walker_ab`, which holds
+out an interior human seed M and measures the solved box at M against M):
+it must NOT be read as a quality ranking of walker against Hermite. Two
+structural biases push it toward Hermite:
+
+- A single interior held-out seed under-samples the interval. It scores one
+  frame, not the trajectory; Hermite can be mediocre across the whole span
+  yet score well at one held-out midpoint.
+- On smooth motion the held-out frame lies near Hermite's L-to-R cubic, so a
+  small `hermite_err` means the held-out frame was EASY (the runner moved
+  where interpolation predicted), not that Hermite tracked well. Scoring the
+  trusted tracker by closeness to a yardstick the cheap floor passes
+  trivially is the wrong axis.
+
+Correct uses of held-out-seed error:
+
+- ABSOLUTE walker outliers. A walker box two or more torso-widths off the
+  runner is the walker failing at its own job regardless of Hermite, and is
+  a real eyes-on-tiles lead. Small deltas on easy frames are noise.
+- Rescues on hard, non-smooth intervals where Hermite visibly fails (the
+  walker's design domain, e.g. drift-stall and long-run intervals). A walker
+  win there is real signal because the instrument is informative there.
+
+The proper quality truth is a dense per-frame human trace over a few full
+promoted intervals, comparing both full trajectories integrated over the
+interval -- not a single held-out point. Until that exists, the strongest
+quality evidence for a walker change is its effect on the promoted /
+ranking-failure bucket (intervals where Hermite already failed), not
+held-out single-seed distance on ordinary intervals.
+
 ## Separation of concerns
 
 Four distinct jobs, four distinct systems:
