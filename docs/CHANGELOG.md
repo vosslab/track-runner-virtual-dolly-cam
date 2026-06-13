@@ -1,3 +1,49 @@
+## 2026-06-13
+
+### Behavior or Interface Changes
+
+- **Prepare mode live ffmpeg progress** (`track_runner/fastread_video.py`): the
+  transcode step now streams ffmpeg's native progress stats line (`frame=...
+  fps=... time=... speed=...`) live to the terminal, overwriting a single line
+  via carriage return. Replaced the fake heartbeat line
+  `[ ... ] ffmpeg running, elapsed MM:SS` with real per-second progress from
+  ffmpeg stderr. The success summary (`ffmpeg summary:`) filters out progress
+  stats lines so it shows only ffmpeg's encode-completion lines.
+  Verbose mode (`-v`) still streams every stderr segment on its own line.
+
+- **Prepare mode always rebuilds fast-read** (`track_runner/fastread_video.py`,
+  `track_runner/cli.py`): prepare now always deletes any existing fast-read
+  video and rebuilds from scratch. The validate-and-skip resume path was removed
+  because it crashed with a `cv2 decode failure` on partial or stale fast-read
+  files. The `force` parameter on `create_fastread_video`, the
+  `skipped_transcode` parameter on `_print_status_summary`, and the
+  `skipped_transcode` summary branch were removed. `_mode_prepare` in cli.py
+  no longer passes `force` to `create_fastread_video`, and the now-dead
+  `-f`/`--force` flag was removed from the prepare subparser in `cli_args.py`.
+  Secondary audit fixes
+  applied: stdlib import block reordered to shortest-name-first then
+  alphabetical (`os, shutil, logging, subprocess, collections, dataclasses`);
+  bare `collections.deque` annotations tightened to `collections.deque[str]`;
+  two self-evident comments trimmed from `_stream_ffmpeg_stderr`.
+
+### Fixes and Maintenance
+
+- **Fast-read smoke read skips the exact last frame** (`track_runner/fastread_video.py`):
+  `_smoke_read_fastread` now probes frames 0 / mid / `frame_count - 2` instead of
+  the final frame. cv2 random-access seek to the exact last frame fails on a
+  healthy file (terminal-seek imprecision) and crashed post-transcode validation
+  with `cv2 decode failure at frame N`; the production pipeline never random-seeks
+  the last frame, and truncation is still caught by the exact `frame_count` match.
+
+### Removals and Deprecations
+
+- **Removed heartbeat scaffolding** (`track_runner/fastread_video.py`): deleted
+  `HEARTBEAT_INTERVAL_S` constant, `_format_elapsed` helper, and
+  `_collect_stderr_lines` helper; removed the `import time` that existed only to
+  support them. ffmpeg stderr is now read incrementally via `os.read` in chunks,
+  split on `\r` and `\n`, into a `collections.deque(maxlen=64)` tail buffer used
+  for the error tail and success summary.
+
 ## 2026-06-12
 
 ### Additions and New Features

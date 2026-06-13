@@ -88,7 +88,7 @@ video; it is not required before `encode`. Run either when you need it.
 - Fast-read absent: working modes use original; no warning.
 - Fast-read present and structurally valid: working modes use fast-read.
 - Fast-read present and structurally invalid: the run raises loudly with the
-  remedy. Re-run `prepare --force` or delete the fast-read video.
+  remedy. Re-run `prepare` (it always rebuilds) or delete the fast-read video.
 
 Rollback: delete `VIDEO.fastread.mkv`. All modes revert to the original on
 the next run automatically. No other cleanup is needed.

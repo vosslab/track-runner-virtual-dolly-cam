@@ -9,8 +9,8 @@ for 4K HEVC sources.
 
 - Before `setup` on 4K HEVC Main-10 HDR sources, where scattered OpenCV frame
   reads cost 130-575 ms per call (see [../TROUBLESHOOTING.md](../TROUBLESHOOTING.md)).
-- Once per video file; re-run with `--force` only if the source changes or you
-  want to recreate the fast-read artifact.
+- Once per video file. `prepare` always rebuilds from scratch; re-run whenever
+  the source changes or you want a fresh fast-read artifact.
 - Optional for H.264 or lower-resolution sources; working modes fall back to the
   original with no warning when the fast-read video is absent.
 
@@ -18,13 +18,10 @@ for 4K HEVC sources.
 
 <!-- BEGIN AUTO HELP: prepare -->
 ```text
-usage: track_runner.py prepare [-h] [-f] [-v]
+usage: track_runner.py prepare [-h] [-v]
 
 options:
   -h, --help     show this help message and exit
-  -f, --force    Delete any existing fast-read video and recreate
-                 unconditionally. Without --force, an existing valid fast-read
-                 is kept; an invalid one raises an error.
   -v, --verbose  Stream full ffmpeg command and stderr to the terminal.
 ```
 <!-- END AUTO HELP: prepare -->
@@ -48,8 +45,8 @@ The fast-read video is:
 - Same resolution, same frame count, equivalent frame timing as the original.
 
 The settings are fixed constants in `track_runner/fastread_video.py`; there is
-no per-video settings file. If the defaults change later, the user re-runs
-`prepare --force` to recreate.
+no per-video settings file. If the defaults change later, re-run `prepare` to
+recreate.
 
 ## Role policy
 
@@ -97,20 +94,18 @@ raises immediately with:
 
 - The fast-read path.
 - The specific failed check.
-- The remedy: "re-run prepare --force, or delete the fast-read video to use
+- The remedy: "re-run prepare, or delete the fast-read video to use
   the original."
 
 This is intentional: a present-but-mismatched fast-read file means the source
 changed after `prepare` was run (re-remux, trim, or file replacement). Silent
 fallback to the original would hide the mismatch.
 
-## Idempotency
+## Always rebuilds
 
-- Fast-read absent: `prepare` creates it.
-- Fast-read present and structurally valid: `prepare` skips transcode and
-  reports the existing file. Use `--force` to recreate.
-- Fast-read present and structurally invalid: `prepare` raises with the remedy.
-  Pass `--force` to delete and recreate.
+`prepare` always deletes any existing fast-read video and rebuilds from
+scratch. There is no resume or skip path; a stale or partial fast-read is
+never validated and kept.
 
 ## Progress and status summary
 
@@ -125,18 +120,22 @@ settings:        crf 23, gop 30, filter hqdn3d,format=yuv420p
 [  0%] probing source video
 [  5%] checking existing fast-read video
 [ 10%] creating fast-read video with ffmpeg
-[ ... ] ffmpeg running, elapsed 00:30
+frame= 1419 fps= 85 q=31.0 size=66816KiB time=00:00:23.66 bitrate=23127.7kbits/s speed=1.42x
 ffmpeg summary:
   frame=27372 fps=351 q=-1.0 Lsize=...
 [ 90%] validating fast-read video
 [100%] prepare complete
 
 fast-read video: Lyra-Wheeling-IMG_3912.fastread.mkv
-structural validity: OK
-timestamp alignment: fallback used (frame count + duration)
+transcode:            completed
+structural validity:  OK
+timestamp alignment:  fallback used (frame count + duration)
 next: all working modes will now decode from the fast-read video
       encode will still use the original video
 ```
+
+During transcode, the live ffmpeg stats line (`frame=... fps=... time=... speed=...`)
+overwrites a single terminal line in place via carriage return.
 
 Use `--verbose` to stream the full ffmpeg command and all stderr output.
 

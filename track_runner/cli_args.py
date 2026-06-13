@@ -461,18 +461,10 @@ def _build_parser() -> argparse.ArgumentParser:
 		),
 	)
 	prepare_parser.add_argument(
-		"-f", "--force", dest="force", action="store_true",
-		help=(
-			"Delete any existing fast-read video and recreate unconditionally. "
-			"Without --force, an existing valid fast-read is kept; an invalid "
-			"one raises an error."
-		),
-	)
-	prepare_parser.add_argument(
 		"-v", "--verbose", dest="verbose", action="store_true",
 		help="Stream full ffmpeg command and stderr to the terminal.",
 	)
-	prepare_parser.set_defaults(force=False, verbose=False)
+	prepare_parser.set_defaults(verbose=False)
 
 	return parser
 

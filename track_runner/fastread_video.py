@@ -29,10 +29,10 @@ Example:
 
 # Standard Library
 import os
-import time
 import shutil
 import logging
 import subprocess
+import collections
 import dataclasses
 
 # local repo modules
@@ -61,19 +61,16 @@ FPS_REL_TOLERANCE = 1e-3
 # Remedy text appended to every raised validation error. The user either
 # recreates the fast-read video or removes it so modes fall back to the
 # original.
-REMEDY = "re-run prepare --force, or delete the fast-read video to use the original"
+REMEDY = "re-run prepare to rebuild, or delete the fast-read video to use the original"
 
 # Fixed transcode settings for the fast-read video. These are immutable: if the
 # defaults change in the future, structural validation still governs and the user
-# recreates with --force. No per-video settings storage (contract C13).
+# re-runs prepare to rebuild. No per-video settings storage (contract C13).
 TRANSCODE_CRF = 23
 TRANSCODE_GOP = 30
 TRANSCODE_PRESET = "veryfast"
 TRANSCODE_FILTER = "hqdn3d,format=yuv420p"
 TRANSCODE_CODEC = "libx264"
-
-# Heartbeat interval: print a progress line every N seconds while ffmpeg is running.
-HEARTBEAT_INTERVAL_S = 30
 
 #============================================
 
@@ -408,7 +405,15 @@ def _check_timestamp_alignment(
 #============================================
 
 def _smoke_read_fastread(fastread_path: str, fastread_info: dict) -> None:
-	"""Open the fast-read video and read frames 0 / mid / last.
+	"""Open the fast-read video and read frames 0 / mid / near-last.
+
+	The near-last probe targets frame_count - 2, not the final frame.
+	cv2 random-access seek to the exact last frame is unreliable even on
+	a healthy file (terminal-seek imprecision), and the production
+	pipeline never random-seeks the last frame. Truncation is already
+	caught by the exact frame_count match in _check_geometry_and_count,
+	so probing one frame short still smoke-tests the tail of the file
+	without the terminal-seek flake.
 
 	Args:
 		fastread_path: Fast-read video path.
@@ -420,8 +425,9 @@ def _smoke_read_fastread(fastread_path: str, fastread_info: dict) -> None:
 	"""
 	frame_count = fastread_info["frame_count"]
 	fps = fastread_info["fps"]
-	# first / middle / last frame indices; deduplicated for very short clips
-	sample_indices = sorted({0, frame_count // 2, frame_count - 1})
+	# first / middle / near-last indices; max() clamps a negative index on
+	# tiny clips, the set deduplicates collisions on very short clips
+	sample_indices = sorted({0, frame_count // 2, max(0, frame_count - 2)})
 	# FrameReader requires .mkv; the fast-read suffix guarantees that. A
 	# failed open or read raises RuntimeError, which we re-wrap so the
 	# message carries the failed-check name and remedy.
@@ -447,15 +453,16 @@ def validate_fastread_structural(
 	compares live-probed geometry and timing only (no basename, no
 	size_bytes, no stored metadata -- contract C13). Then opens the
 	fast-read video with `common_tools.frame_reader.FrameReader` and reads
-	frames 0, frame_count // 2, and frame_count - 1.
+	frames 0, frame_count // 2, and frame_count - 2 (near-last; the exact
+	final frame is skipped due to cv2 terminal-seek imprecision).
 
 	Checks, in order:
 		1. width / height / frame_count exact match.
 		2. fps within probe-precision relative tolerance.
 		3. duration within a small absolute tolerance.
-		4. best-effort first/middle/last frame timestamp alignment
+		4. best-effort first/middle/near-last frame timestamp alignment
 		   (falls back to frame-count + duration and notes the fallback).
-		5. FrameReader open + smoke reads at 0 / mid / last.
+		5. FrameReader open + smoke reads at 0 / mid / near-last.
 
 	Any failed check raises a `RuntimeError` naming the fast-read path, the
 	failed check, and the remedy. A successful return authorizes fast-read
@@ -537,36 +544,93 @@ def _build_ffmpeg_transcode_cmd(
 
 #============================================
 
-def _format_elapsed(elapsed_s: float) -> str:
-	"""Format elapsed seconds as MM:SS for heartbeat display.
+def _is_stats_line(segment: str) -> bool:
+	"""Return True when a decoded ffmpeg stderr segment is a progress stats line.
+
+	ffmpeg writes its stats line ending with \\r (carriage return), containing
+	fields like "frame=", "fps=", "time=", "speed=". Detecting either "frame="
+	at the start or "time=" anywhere is sufficient to identify these lines.
 
 	Args:
-		elapsed_s: Elapsed seconds (non-negative).
+		segment: A single decoded text segment split on \\r or \\n.
 
 	Returns:
-		str: Zero-padded MM:SS string.
+		bool: True when the segment looks like an ffmpeg stats line.
 	"""
-	total_s = int(elapsed_s)
-	minutes = total_s // 60
-	seconds = total_s % 60
-	return f"{minutes:02d}:{seconds:02d}"
+	stripped = segment.strip()
+	# stats lines start with "frame=" or contain "time=" for progress reporting
+	is_stats = stripped.startswith("frame=") or "time=" in stripped
+	return is_stats
 
 #============================================
 
-def _collect_stderr_lines(stderr_bytes: bytes) -> list[str]:
-	"""Decode ffmpeg stderr bytes and return non-empty lines.
+def _stream_ffmpeg_stderr(
+	process: subprocess.Popen[bytes],
+	verbose: bool,
+	tail: collections.deque[str],
+) -> None:
+	"""Read ffmpeg stderr incrementally and print live progress stats.
+
+	ffmpeg writes its stats line terminated by \\r (not \\n), so readline()
+	blocks until process exit. This function reads raw bytes in chunks, splits
+	on both \\r and \\n, and prints each stats line in-place by overwriting
+	one terminal line with a carriage return.
+
+	All completed segments (non-empty, stripped) are stored in the deque for
+	later error tail / success summary use.
 
 	Args:
-		stderr_bytes: Raw bytes from the ffmpeg stderr pipe.
-
-	Returns:
-		list: Non-empty decoded lines (trailing whitespace stripped).
+		process: Running ffmpeg subprocess with stderr=PIPE.
+		verbose: When True print every segment on its own newline-terminated
+			line instead of the single overwriting stats line, so no output
+			is lost.
+		tail: Deque (maxlen=64) accumulating stripped non-empty stderr
+			segments; populated in place.
 	"""
-	text = stderr_bytes.decode("utf-8", errors="replace")
-	lines = [ln.rstrip() for ln in text.splitlines()]
-	# return only non-empty lines
-	nonempty = [ln for ln in lines if ln]
-	return nonempty
+	# raw fd for the stderr pipe; os.read returns up to 4096 bytes per call
+	stderr_fd = process.stderr.fileno()
+	# accumulate partial bytes between chunk reads
+	accumulator = b""
+	while True:
+		chunk = os.read(stderr_fd, 4096)
+		if not chunk:
+			# EOF: process has closed its stderr end
+			break
+		accumulator += chunk
+		# normalize Windows-style \r\n to \n so a \r\n pair is treated as a
+		# single line break rather than splitting into a segment plus an empty
+		# leading segment on the next split, then split on remaining \r
+		parts = accumulator.replace(b"\r\n", b"\n").split(b"\r")
+		# also split on \n within each part to handle newline-terminated lines
+		segments = []
+		for part in parts:
+			for sub in part.split(b"\n"):
+				segments.append(sub)
+		# the last segment may be incomplete (no terminator yet); keep it
+		accumulator = segments[-1]
+		complete_segments = segments[:-1]
+		for raw_seg in complete_segments:
+			segment = raw_seg.decode("utf-8", errors="replace").rstrip()
+			if not segment:
+				continue
+			tail.append(segment)
+			if verbose:
+				# verbose: print every segment on its own line, nothing hidden
+				print(segment)
+			elif _is_stats_line(segment):
+				# overwrite the current terminal line with the latest stats
+				print(f"\r{segment}", end="", flush=True)
+	# flush any remaining bytes in the accumulator (no terminator reached EOF)
+	if accumulator:
+		segment = accumulator.decode("utf-8", errors="replace").rstrip()
+		if segment:
+			tail.append(segment)
+			if verbose:
+				print(segment)
+	# after EOF, ensure the cursor moves to a fresh line so summary/error
+	# output does not overwrite the last stats line
+	if not verbose:
+		print()
 
 #============================================
 
@@ -577,16 +641,17 @@ def _run_ffmpeg_transcode(
 ) -> None:
 	"""Launch ffmpeg and transcode original_video_path to fastread_path.
 
-	Suppresses raw ffmpeg output unless verbose=True. Prints a heartbeat
-	line every HEARTBEAT_INTERVAL_S seconds while ffmpeg is running and the
-	elapsed time exceeds that threshold. On success prints final 5-10
-	non-empty stderr lines. On failure raises RuntimeError with the final
-	30-60 stderr lines and deletes the partial output.
+	Streams ffmpeg's native progress stats line live to the terminal,
+	overwriting one line via carriage return so the display stays compact.
+	On success prints the final 5-10 non-empty stderr lines as a summary.
+	On failure raises RuntimeError with the final 60 stderr lines and
+	deletes the partial output.
 
 	Args:
 		original_video_path: Path to the original source video.
 		fastread_path: Destination path for the fast-read output.
-		verbose: When True, stream full ffmpeg command + stderr to terminal.
+		verbose: When True, stream full ffmpeg command + stderr to terminal
+			with each segment on its own newline-terminated line.
 
 	Raises:
 		RuntimeError: If ffmpeg is not in PATH or returns non-zero exit code.
@@ -603,7 +668,7 @@ def _run_ffmpeg_transcode(
 		cmd_str = " ".join(cmd)
 		print(f"  ffmpeg command: {cmd_str}")
 
-	# launch ffmpeg; capture stderr to buffer; stdin/stdout not used
+	# launch ffmpeg; capture stderr incrementally; stdin/stdout not used
 	process = subprocess.Popen(
 		cmd,
 		stdin=subprocess.DEVNULL,
@@ -611,37 +676,17 @@ def _run_ffmpeg_transcode(
 		stderr=subprocess.PIPE,
 	)
 
-	t_start = time.monotonic()
-	last_heartbeat = t_start
+	# tail deque accumulates all stderr segments for error/success reporting
+	tail: collections.deque[str] = collections.deque(maxlen=64)
+	# stream stderr live, printing native stats lines in place
+	_stream_ffmpeg_stderr(process, verbose, tail)
 
-	# poll process until it exits; print heartbeat lines while waiting
-	while True:
-		# check if process has exited
-		returncode = process.poll()
-		if returncode is not None:
-			break
-		now = time.monotonic()
-		elapsed = now - t_start
-		# print a heartbeat every HEARTBEAT_INTERVAL_S once past threshold
-		if elapsed >= HEARTBEAT_INTERVAL_S and (now - last_heartbeat) >= HEARTBEAT_INTERVAL_S:
-			elapsed_str = _format_elapsed(elapsed)
-			print(f"[ ... ] ffmpeg running, elapsed {elapsed_str}")
-			last_heartbeat = now
-		# sleep briefly to avoid busy-wait
-		time.sleep(0.5)
-
-	# read all remaining stderr after process exits
-	stderr_bytes = process.stderr.read()
-
-	if verbose:
-		# stream full stderr when verbose
-		stderr_text = stderr_bytes.decode("utf-8", errors="replace")
-		print(stderr_text, end="")
+	# wait for process to finish and collect its exit code
+	returncode = process.wait()
 
 	if returncode != 0:
-		# on failure: print 30-60 stderr lines and delete partial output
-		stderr_lines = _collect_stderr_lines(stderr_bytes)
-		tail_lines = stderr_lines[-60:]
+		# on failure: build tail from deque and delete the partial output
+		tail_lines = list(tail)[-60:]
 		tail_text = "\n".join(tail_lines)
 		# delete partial output before raising (guard with existence check)
 		if os.path.exists(fastread_path):
@@ -651,9 +696,11 @@ def _run_ffmpeg_transcode(
 			f"ffmpeg stderr (last {len(tail_lines)} lines):\n{tail_text}"
 		)
 
-	# success: print final 5-10 non-empty stderr lines as a summary
-	stderr_lines = _collect_stderr_lines(stderr_bytes)
-	summary_lines = stderr_lines[-10:]
+	# success: print final 5-10 non-stats stderr lines as a summary;
+	# exclude progress stats lines so the summary shows ffmpeg's actual
+	# encode-completion output, not repetitive frame=/time= progress lines
+	non_stats = [ln for ln in tail if not _is_stats_line(ln)]
+	summary_lines = non_stats[-10:]
 	print("ffmpeg summary:")
 	for ln in summary_lines:
 		print(f"  {ln}")
@@ -663,37 +710,28 @@ def _run_ffmpeg_transcode(
 def create_fastread_video(
 	original_video_path: str,
 	fastread_path: str,
-	force: bool = False,
 	verbose: bool = False,
 ) -> FastreadValidation:
-	"""Create (or verify) the fast-read working video beside the original.
+	"""Create the fast-read working video beside the original.
 
-	Implements the idempotency contract:
-	- Existing fast-read that validates: skip transcode; return validation.
-	- Existing fast-read that fails validation: raise RuntimeError with
-	  suggestion to re-run with --force.
-	- force=True: delete any existing fast-read and recreate unconditionally.
-	- No existing fast-read: run transcode, then validate.
-
-	Progress is printed to stdout at coarse steps. A heartbeat line is
-	printed every HEARTBEAT_INTERVAL_S while ffmpeg is running past the first
-	threshold. After a successful transcode the final 5-10 non-empty ffmpeg
-	stderr lines are printed as a summary. After validation the status summary
-	is printed.
+	Always rebuilds from scratch: any existing fast-read at fastread_path is
+	deleted before transcode begins. Progress is printed to stdout at coarse
+	steps. Native ffmpeg stats lines are streamed live to the terminal,
+	overwriting one line via carriage return. After a successful transcode the
+	final 5-10 non-empty ffmpeg stderr lines are printed as a summary. After
+	validation the status summary is printed.
 
 	Args:
 		original_video_path: Path to the original source video.
 		fastread_path: Destination path for the fast-read video
 			(from `tr_paths.fastread_video_path`).
-		force: When True, delete any existing fast-read and recreate.
 		verbose: When True, stream full ffmpeg command + stderr to terminal.
 
 	Returns:
 		FastreadValidation: Structural validation result for the status summary.
 
 	Raises:
-		RuntimeError: If ffmpeg fails, validation fails after transcode, or
-			an existing fast-read fails validation without --force.
+		RuntimeError: If ffmpeg fails or validation fails after transcode.
 	"""
 	source_name = os.path.basename(original_video_path)
 	fastread_name = os.path.basename(fastread_path)
@@ -710,25 +748,11 @@ def create_fastread_video(
 	print("[  0%] probing source video")
 	common_tools.probe_video.probe_video(original_video_path)
 
-	# step 5%: check existing fast-read
+	# step 5%: check for existing fast-read and delete it unconditionally
 	print("[  5%] checking existing fast-read video")
-	fastread_exists = os.path.exists(fastread_path)
-
-	if fastread_exists and force:
-		# --force: delete existing and recreate unconditionally
-		print(f"  --force: deleting existing fast-read video: {fastread_path}")
+	if os.path.exists(fastread_path):
+		print(f"  existing fast-read found; deleting and rebuilding from scratch: {fastread_path}")
 		os.unlink(fastread_path)
-		fastread_exists = False
-
-	if fastread_exists:
-		# existing fast-read: validate it; skip transcode if valid
-		print("  existing fast-read found; validating...")
-		# validate raises RuntimeError on failure; on success returns validation
-		validation = validate_fastread_structural(original_video_path, fastread_path)
-		# idempotent: already valid, print status and return
-		print("[100%] prepare complete (existing fast-read is valid; skipped transcode)")
-		_print_status_summary(validation, skipped_transcode=True)
-		return validation
 
 	# step 10%: create fast-read with ffmpeg
 	print("[ 10%] creating fast-read video with ffmpeg")
@@ -739,19 +763,18 @@ def create_fastread_video(
 	validation = validate_fastread_structural(original_video_path, fastread_path)
 
 	print("[100%] prepare complete")
-	_print_status_summary(validation, skipped_transcode=False)
+	_print_status_summary(validation)
 	return validation
 
 #============================================
 
 def _print_status_summary(
-	validation: FastreadValidation, skipped_transcode: bool
+	validation: FastreadValidation,
 ) -> None:
 	"""Print the required end-of-run status summary.
 
 	Args:
 		validation: Successful FastreadValidation from validate_fastread_structural.
-		skipped_transcode: True when transcode was skipped (idempotent path).
 	"""
 	print()
 	print("Status:")
@@ -759,10 +782,7 @@ def _print_status_summary(
 	print(f"  structural validity:  OK ({validation.width}x{validation.height}"
 		f", {validation.frame_count} frames)")
 	print(f"  timestamp alignment:  {validation.timestamp_fallback_note}")
-	if skipped_transcode:
-		print("  transcode:            skipped (existing fast-read is valid)")
-	else:
-		print("  transcode:            completed")
+	print("  transcode:            completed")
 	print()
 	print("  all working modes will now decode from the fast-read video")
 	print("  encode will still use the original video")
