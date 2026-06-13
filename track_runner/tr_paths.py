@@ -185,6 +185,36 @@ def default_output_path(input_file: str) -> str:
 
 #============================================
 
+def fastread_video_path(original_video_path: str) -> str:
+	"""Return the deterministic fast-read video path for an original video.
+
+	The fast-read video is a derived H.264 8-bit working copy created by
+	`prepare` mode. It sits beside the original source video (not in
+	tr_config) and is discovered by this deterministic path alone: the
+	filename IS the registration, so there is no sidecar or stored
+	bookkeeping (contract C13).
+
+	The original-video extension is replaced with the literal suffix
+	`.fastread.mkv`. The fast-read video is always Matroska so the
+	`.mkv`-only `common_tools.frame_reader.FrameReader` can open it.
+
+	This function is the ONLY source of the fast-read video path. Every
+	caller computes the path from the ORIGINAL video path, never from a
+	fast-read or decode path, so all Track Runner state stays keyed to the
+	original video.
+
+	Args:
+		original_video_path: Full path to the original source video.
+
+	Returns:
+		str: Path like {original_dir}/{original_stem}.fastread.mkv.
+	"""
+	stem, _ = os.path.splitext(original_video_path)
+	fastread_path = f"{stem}.fastread.mkv"
+	return fastread_path
+
+#============================================
+
 def default_camera_motion_path(input_file: str) -> str:
 	"""Return the canonical single-file camera-motion artifact path.
 

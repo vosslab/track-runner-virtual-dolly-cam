@@ -23,17 +23,27 @@ Auto-bin (bin_factor 4 at 3840 px width) does not reduce decode cost.
 Binning resizes the frame after decode; the seek itself and the keyframe
 decode forward are unchanged by any bin factor.
 
-**Status:** The access-pattern fix (audit P16/P17: sequential pre-pass
-plus cache-guard narrowing in the walker batch path) is parked in
-[active_plans/active/blob_walk_v2_fix_phase_roadmap.md](active_plans/active/blob_walk_v2_fix_phase_roadmap.md)
-with the Lyra-Wheeling corpus-120 run as trigger evidence. Until that fix
-lands, runs on 4K HEVC sources are slow, not broken.
+**Mitigation (available now):** Run `prepare` before `setup` to create a fast-read
+H.264 working copy beside the original. All working modes then decode from the
+fast-read video automatically, reducing per-frame cost to 6-14 ms. See
+[docs/modes/PREPARE.md](modes/PREPARE.md) for the full procedure, role policy,
+and rollback instructions.
 
-**User action:** None required. The run will complete correctly; it will
-just take a long time.
+```bash
+python3 track_runner.py prepare   # one-time per source file
+python3 track_runner.py setup ...
+```
+
+**Status (sequential pre-pass fix):** The longer-term access-pattern fix (audit
+P16/P17: sequential pre-pass plus cache-guard narrowing in the walker batch path)
+is parked in
+[active_plans/active/blob_walk_v2_fix_phase_roadmap.md](active_plans/active/blob_walk_v2_fix_phase_roadmap.md)
+with the Lyra-Wheeling corpus-120 run as trigger evidence.
+
+**User action:** Run `prepare` first (see above). Runs on 4K HEVC sources without
+the fast-read video are slow but will complete correctly.
 
 **Background:** Future recordings in a codec with short keyframe intervals
 (for example H.264 with a 30-frame GOP) seek faster because less forward
 decode work is required per random-access request. This is offered as
-context only; the durable fix is the sequential pre-pass, not a codec
-change.
+context only; the durable fix is `prepare`, not a recording codec change.

@@ -7,6 +7,9 @@ For the typical workflow (which mode to run when), see [USAGE.md](USAGE.md).
 ## Canonical workflow
 
 ```text
+  [prepare]  (optional but recommended for 4K HEVC sources)
+      |
+      v
                        +----------------------+
                        |   target + refine    |
                        |  (repeat N times)    |
@@ -21,12 +24,15 @@ For the typical workflow (which mode to run when), see [USAGE.md](USAGE.md).
   side trips: edit (fix bad seeds), analyze (pre-encode diagnostic)
 ```
 
-Run order in one line: `setup` -> `seed` -> `solve` -> (`target` -> `refine`) x N -> `encode`. `edit` and `analyze` are optional detours, not part of the main path.
+Run order in one line: `prepare` (optional) -> `setup` -> `seed` -> `solve` ->
+(`target` -> `refine`) x N -> `encode`. `edit` and `analyze` are optional
+detours, not part of the main path.
 
 ## Mode reference
 
 | Step | Mode | Purpose | Page |
 | --- | --- | --- | --- |
+| 0 | `prepare` | Create a fast-read working video for 4K HEVC sources (optional). | [modes/PREPARE.md](modes/PREPARE.md) |
 | 1 | `setup` | One-time per-video camera configuration. | [modes/SETUP.md](modes/SETUP.md) |
 | 2 | `seed` | Place anchor seed annotations on the runner. | [modes/SEED.md](modes/SEED.md) |
 | 3 | `solve` | Full re-solve from the current seed set. | [modes/SOLVE.md](modes/SOLVE.md) |

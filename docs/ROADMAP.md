@@ -45,6 +45,17 @@ Depends on: race start/end detection (above).
 
 ## In progress
 
+### Fast-read video working-mode routing (M2 pending)
+
+`prepare` mode and fast-read video creation are shipped (WP-P1, WP-P2).
+See [docs/modes/PREPARE.md](modes/PREPARE.md) for the full procedure and
+role policy. The mitigation for slow 4K HEVC random reads is available now
+via `python3 track_runner.py prepare`.
+
+Working-mode automatic routing through the fast-read video (milestone M2)
+has not yet merged. Until M2 lands, working modes read the original video;
+`prepare` creates the artifact but it is not consumed automatically.
+
 ### Race start detection (implemented)
 
 Race start detection is implemented in `track_runner/race_phases.py`. Uses

@@ -26,6 +26,7 @@ symbols.
 """
 
 # Standard Library
+import os
 import dataclasses
 import concurrent.futures
 
@@ -106,8 +107,15 @@ class ExecutionContext:
 		fps: Video frame rate.
 		num_workers: Requested worker count. Runtime may still fall back
 			to in-process if pending_count is tiny.
-		video_path: Input video path; workers use it to reopen their own
-			readers across the process boundary.
+		decode_video_path: DECODE video path (resolved working-decode: fast-read
+			when valid, else original). Used only for frame decoding:
+			workers reopen their own readers from it across the process
+			boundary, and the contact-sheet renderer reads frames from it.
+			Never used to name an on-disk artifact.
+		original_video_path: ORIGINAL video path (args.input_file). Every
+			artifact-output-name and identity decision keys off this path,
+			never the decode path, so artifacts stay keyed to the original
+			video regardless of fast-read selection (contract C13).
 		video_frame_count: Total frame count from mediainfo (for correct
 			frame clamping in contact sheet rendering). Must be the
 			authoritative value from cli._probe_video(), not OpenCV.
@@ -129,7 +137,8 @@ class ExecutionContext:
 	all_seeds_scene: list
 	fps: float
 	num_workers: int
-	video_path: str
+	decode_video_path: str
+	original_video_path: str
 	video_frame_count: int
 	debug: bool
 	race_start_interval: tuple = None
@@ -648,17 +657,29 @@ def execute_interval_work(
 		tiles = race_start.choose_race_start_confirmation_frames(
 			final_race_start_frame, context.fps, context.video_frame_count
 		)
+		# Artifact path keys off the ORIGINAL video stem (contract C13): the
+		# contact sheet must be named for the source video, never the
+		# fast-read decode stem. Frame rendering below still reads from the
+		# decode path (context.decode_video_path).
 		contact_sheet_path = tr_paths.default_race_start_contact_sheet_path(
-			context.video_path
+			context.original_video_path
 		)
+		# Provenance marker: when the decode video differs from the original
+		# (fast-read in use), record the decode basename in the contact-sheet
+		# title so the debug artifact states which pixels it sampled.
+		if context.decode_video_path != context.original_video_path:
+			decode_source = os.path.basename(context.decode_video_path)
+		else:
+			decode_source = None
 		race_start_contact_sheet.render_race_start_contact_sheet(
-			context.video_path,
+			context.decode_video_path,
 			context.fps,
 			context.video_frame_count,
 			tiles,
 			pre_race_reference,
 			context.scene_transform,
 			contact_sheet_path,
+			decode_source=decode_source,
 		)
 		print(f"  race-start confirmation: {contact_sheet_path}")
 
@@ -715,7 +736,7 @@ def execute_interval_work(
 		if progress is not None and task is not None:
 			progress.update(task, advance=1)
 
-		# M4 early pre-race fast-path: fire pre-race synthesis as soon as
+		# early pre-race fast-path: fire pre-race synthesis as soon as
 		# the race-start interval result lands (phase="interval"), not after
 		# the entire pool completes. This runs in the driver process, avoiding
 		# worker-pool race conditions (per R4 risk mitigation).
@@ -801,7 +822,7 @@ def execute_interval_work(
 				# Pre-race intervals are handled separately after this completes.
 				with solver_workers.make_pool(
 					num_workers=context.num_workers,
-					video_path=context.video_path,
+					decode_video_path=context.decode_video_path,
 					scene_transform=context.scene_transform,
 					motion_track=context.motion_track,
 					all_seeds_scene=context.all_seeds_scene,
@@ -857,7 +878,7 @@ def execute_interval_work(
 							_accept(pair_idx, fingerprint, result)
 
 	# ============ Pre-race synthesis was moved earlier ============
-	# M4 change: pre-race synthesis now fires as soon as the race-start
+	# pre-race synthesis now fires as soon as the race-start
 	# interval result lands (in _accept, phase="interval"), not after the
 	# entire pool completes. The old post-pool code path has been removed.
 	# This runs in the driver process, avoiding worker-pool race conditions.

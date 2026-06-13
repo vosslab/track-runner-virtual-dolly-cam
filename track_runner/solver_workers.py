@@ -72,7 +72,7 @@ _WORKER_CONTEXT: WorkerContext | None = None
 
 #============================================
 def _worker_init(
-	video_path: str,
+	decode_video_path: str,
 	scene_transform: object,
 	motion_track: object,
 	all_seeds_scene: list,
@@ -91,7 +91,10 @@ def _worker_init(
 	and builds the frozen WorkerContext consumed by every task.
 
 	Args:
-		video_path: Path to the video file (reopened in this process).
+		decode_video_path: Path to the decode video reopened in this
+			process (the resolved working-decode video: fast-read when
+			valid, else original). The main process already validated the
+			fast-read once; workers do not re-validate.
 		scene_transform: SceneTransform instance.
 		motion_track: Motion track object for scoring.
 		all_seeds_scene: Precomputed list of all seeds in scene coords.
@@ -118,7 +121,7 @@ def _worker_init(
 	# bin_factor; bin_factor=1 short-circuits the resize and is
 	# byte-identical to the legacy VideoReader path.
 	reader = common_tools.frame_reader.FrameReader(
-		video_path=video_path,
+		video_path=decode_video_path,
 		fps=fps,
 		total_frames=total_frames,
 		bin_factor=bin_factor,
@@ -194,7 +197,7 @@ def _solve_interval_worker(task: tuple) -> tuple:
 #============================================
 def make_pool(
 	num_workers: int,
-	video_path: str,
+	decode_video_path: str,
 	scene_transform: object,
 	motion_track: object,
 	all_seeds_scene: list,
@@ -222,7 +225,9 @@ def make_pool(
 
 	Args:
 		num_workers: Number of worker processes.
-		video_path: Path to the video file.
+		decode_video_path: Path to the decode video reopened per worker (the
+			resolved working-decode video: fast-read when valid, else
+			original). Forwarded to `_worker_init` as `decode_video_path`.
 		scene_transform: SceneTransform instance.
 		motion_track: Motion track object.
 		all_seeds_scene: Seeds in scene coordinates.
@@ -242,7 +247,7 @@ def make_pool(
 		max_workers=num_workers,
 		initializer=_worker_init,
 		initargs=(
-			video_path, scene_transform, motion_track,
+			decode_video_path, scene_transform, motion_track,
 			all_seeds_scene, all_seeds, fps, debug, blob_pass,
 			bin_factor, total_frames, walker_costs,
 		),

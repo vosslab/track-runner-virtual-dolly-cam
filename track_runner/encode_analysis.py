@@ -942,6 +942,8 @@ def format_analysis_report(
 	solver_context: dict,
 	output_yaml_path: str,
 	regime_summary_line: str = "",
+	canonical_source: str | None = None,
+	decode_source: str | None = None,
 ) -> str:
 	"""Format the analysis results as a human-readable console report.
 
@@ -950,6 +952,10 @@ def format_analysis_report(
 		solver_context: Dict from analyze_solver_context().
 		output_yaml_path: Path where the YAML report was written.
 		regime_summary_line: Optional one-line regime summary string.
+		canonical_source: Original-video basename recorded as the canonical
+			source. When None the line is omitted.
+		decode_source: Decode-video label (fast-read basename, or "original"
+			when no fast-read is in use). When None the line is omitted.
 
 	Returns:
 		Formatted multi-line string for console output.
@@ -962,6 +968,11 @@ def format_analysis_report(
 	seeds_suggested = analysis["seed_suggestions"]
 	lines = []
 	lines.append("=== crop path analysis ===")
+	# video provenance: canonical source (original) + decode source label
+	if canonical_source is not None:
+		lines.append(f"  canonical source:   {canonical_source}")
+	if decode_source is not None:
+		lines.append(f"  decode source:      {decode_source}")
 	lines.append(f"  frames:             {summary['frames']}"
 		+ f" ({summary['duration_s']:.1f}s at {summary['fps']:.0f}fps)")
 	lines.append(f"  output size:        {summary['output_size'][0]}x{summary['output_size'][1]}")
@@ -1239,6 +1250,8 @@ def write_analysis_yaml(
 	solver_context: dict,
 	output_path: str,
 	regime_spans: list = None,
+	canonical_source: str | None = None,
+	decode_source: str | None = None,
 ) -> None:
 	"""Write the analysis results as a diagnostic YAML file.
 
@@ -1247,10 +1260,21 @@ def write_analysis_yaml(
 		solver_context: Dict from analyze_solver_context().
 		output_path: File path for the YAML output.
 		regime_spans: Optional list of regime span dicts to include.
+		canonical_source: Original-video basename recorded as the canonical
+			source. When None the field is omitted.
+		decode_source: Decode-video label (fast-read basename, or "original"
+			when no fast-read is in use). When None the field is omitted.
 	"""
-	# build output dict
+	# build output dict; record video provenance first so report consumers
+	# see both the canonical source (original) and the decode source.
 	doc = {
 		"track_runner_encode_analysis": 1,
+	}
+	if canonical_source is not None:
+		doc["canonical_source"] = canonical_source
+	if decode_source is not None:
+		doc["decode_source"] = decode_source
+	doc.update({
 		"summary": analysis["summary"],
 		"motion_stability": analysis["motion_stability"],
 		"confidence": analysis["confidence"],
@@ -1258,7 +1282,7 @@ def write_analysis_yaml(
 		"dominant_symptom": analysis["dominant_symptom"],
 		"solver_context": solver_context,
 		"seed_suggestions": analysis["seed_suggestions"],
-	}
+	})
 	# build diagnosis section
 	regions = analysis["instability_regions"]
 	diagnosis = {}

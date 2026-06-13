@@ -214,7 +214,8 @@ def test_execution_context_carries_walker_costs_to_make_pool(monkeypatch):
 		],
 		fps=30.0,
 		num_workers=2,
-		video_path="/fake/video.mkv",
+		decode_video_path="/fake/video.mkv",
+		original_video_path="/fake/video.mkv",
 		video_frame_count=100,
 		debug=False,
 		walker_costs=injected_costs,
@@ -258,7 +259,7 @@ def test_execution_context_carries_walker_costs_to_make_pool(monkeypatch):
 			debug=False,
 			run_control=None,
 			on_interval_solved=None,
-			video_path="/fake/video.mkv",
+			decode_video_path="/fake/video.mkv",
 			blob_pass=True,
 		)
 

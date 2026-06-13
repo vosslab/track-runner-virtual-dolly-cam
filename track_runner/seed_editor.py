@@ -324,7 +324,7 @@ def _draw_preview_box(
 
 #============================================
 def edit_seeds(
-	video_path: str,
+	decode_video_path: str,
 	seeds: list,
 	config: dict,
 	predictions: dict | None = None,
@@ -340,7 +340,9 @@ def edit_seeds(
 	The user can keep, delete, change status, or redraw each seed.
 
 	Args:
-		video_path: Path to the input video file.
+		decode_video_path: Path to decode frames from. This is the run's
+			working_decode path (fast-read when present and valid, else the
+			original). Seed identity/state keys off the original elsewhere.
 		seeds: List of seed dicts to review (will not be mutated).
 		config: Configuration dict.
 		predictions: Optional dict mapping frame_index to prediction dicts.
@@ -376,13 +378,13 @@ def edit_seeds(
 	else:
 		filtered_indices = list(range(len(work_seeds)))
 
-	# probe the video to get metadata
-	probe_info = probe_video.probe_video(video_path)
+	# probe the decode video to get metadata
+	probe_info = probe_video.probe_video(decode_video_path)
 	fps = probe_info["fps"]
 	total_frames = probe_info["frame_count"]
 
 	# create reliable frame reader
-	reader = frame_reader.FrameReader(video_path, fps, total_frames, debug=debug)
+	reader = frame_reader.FrameReader(decode_video_path, fps, total_frames, debug=debug)
 
 	# lazy YOLO detector for bbox polish (created on first y-key press)
 	yolo_detector = [None]

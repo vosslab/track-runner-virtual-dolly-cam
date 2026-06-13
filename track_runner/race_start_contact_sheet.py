@@ -41,11 +41,13 @@ def render_race_start_contact_sheet(
 	pre_race_reference: dict,
 	scene_transform,
 	output_path: str,
+	decode_source: str = None,
 ) -> None:
 	"""Render an 11-tile race-start contact sheet and write to PNG.
 
 	Args:
-		video_path: Path to the source video file.
+		video_path: Path to the video the frames are decoded from. May be a
+			fast-read decode video distinct from the original source.
 		fps: Frame rate (frames per second) for title text.
 		total_frames: Total frame count for clamping.
 		tiles: List of tile dicts from choose_race_start_confirmation_frames.
@@ -53,6 +55,11 @@ def render_race_start_contact_sheet(
 			race_start_frame, torso_w, torso_h, scene_anchor_x, scene_anchor_y.
 		scene_transform: SceneTransform for pixel-to-scene mapping.
 		output_path: Output PNG file path.
+		decode_source: Optional basename of the decode video the tiles were
+			rendered from. When the frames come from a fast-read decode video
+			rather than the original, pass its basename so the title strip
+			records which video the pixels were sampled from (debug-artifact
+			provenance marker). None omits the marker.
 
 	Raises:
 		RuntimeError: If any frame read fails, write fails, or malformed input.
@@ -274,6 +281,10 @@ def render_race_start_contact_sheet(
 		f"{video_filename} | race_start_frame={race_start_frame} | "
 		f"time={race_start_s:.2f}s"
 	)
+	# Provenance marker: record which video the pixels were decoded from when
+	# the caller routed a fast-read decode video distinct from the original.
+	if decode_source is not None:
+		title_text += f" | decode_source={decode_source}"
 
 	# Add title strip (thin row at top)
 	title_height = 30

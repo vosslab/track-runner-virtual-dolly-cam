@@ -12,7 +12,6 @@ track-runner-virtual-dolly-cam/
 |-- re-solve.sh                    convenience wrapper for re-solving
 |-- pip_requirements.txt           runtime Python dependencies
 |-- pip_requirements-dev.txt       developer Python dependencies
-|-- pip_extras.txt                 optional extras
 |-- Brewfile                       Homebrew system packages
 |-- tr_config                      symlink into per-video config store
 |
@@ -54,6 +53,7 @@ track-runner-virtual-dolly-cam/
 |   |-- video_io.py                VideoReader and frame utilities
 |   |-- key_input.py               keyboard input handling
 |   |-- walker_bundle.py           Stage-4 walker input-bundle seam
+|   |-- fastread_video.py          fast-read video creation and live structural validation
 |   |-- track_runner.config.yaml   default runtime config
 |   |-- overlay_styles.yaml        overlay style definitions
 |   |
@@ -94,15 +94,14 @@ track-runner-virtual-dolly-cam/
 |                                        analyze --plot HTML reports
 |
 |-- tools/                         analysis and batch scripts
-|   |-- analyze_crop_path_stability.py
-|   |-- analyze_track_runner_json.py
-|   |-- assess_pixel_zoom.py
-|   |-- batch_encode_experiment.py
-|   |-- batch_smart_experiment.py
-|   |-- benchmark_solver_gates.py
-|   |-- diagnose_residual_motion.py
-|   |-- inspect_score_distribution.py
-|   `-- refresh_mode_docs.py          regenerate `--help` blocks in docs/modes/
+|   |-- dump_cli_help.py           dump argparse help text for all subcommands
+|   |-- refresh_mode_docs.py       regenerate --help blocks in docs/modes/
+|   `-- blob_walk_v2/              walker diagnostics and HTML visualizer
+|       |-- walk_driver.py         batch walker run driver
+|       |-- walk_paths.py          output path helpers
+|       |-- walk_util.py           shared walker utilities
+|       |-- make_walk_html_v2.py   per-interval HTML tile generator
+|       `-- check_render_manifest.py  render manifest validator
 |
 |-- tests/                         pytest suite
 |   |-- conftest.py                pytest configuration
@@ -124,36 +123,36 @@ track-runner-virtual-dolly-cam/
 |   |   |-- test_import_star.py
 |   |   `-- test_import_requirements.py
 |   |
-|   `-- unit and integration
-|       |-- test_blob_snap.py
-|       |-- test_camera_motion.py
-|       |-- test_cli_args_encode.py
-|       |-- test_heat_map_overlay_smoke.py
-|       |-- test_interval_fingerprint.py
-|       |-- test_race_phases.py
-|       |-- test_residual_heat_map.py
-|       |-- test_tr_residual_pre_pass.py
-|       |-- test_tr_debug_blob_flag.py
-|       |-- test_tr_debug_blob_instrumentation.py
-|       |-- test_review.py
-|       |-- test_scene_coords.py
-|       |-- test_scoring.py
-|       |-- test_seed_controller.py
-|       |-- test_seed_schema_v3.py
-|       |-- test_solve_queue.py
-|       |-- test_solver_integration.py
-|       |-- test_solver_parallelism.py
-|       |-- test_tr_analyze_report.py
-|       |-- test_tr_config_migration.py
-|       |-- test_tr_detection.py
-|       |-- test_velocity_model.py
+|   `-- unit and integration (selected)
+|       |-- test_fastread_video.py
+|       |-- test_tr_camera_motion.py
+|       |-- test_tr_interval_fingerprint.py
+|       |-- test_tr_race_phases.py
+|       |-- test_tr_residual_heat_map.py
+|       |-- test_tr_scene_coords.py
+|       |-- test_tr_scoring.py
+|       |-- test_tr_seed_schema_v3.py
+|       |-- test_tr_solve_queue.py
+|       |-- test_tr_solver_integration.py
+|       |-- test_tr_velocity_model.py
+|       |-- test_walk_cost_model.py
+|       |-- test_walk_viterbi_brute_force.py
+|       |-- test_walker_costs_config.py
+|       |-- test_walker_flag.py
+|       |-- test_walker_stall_fallback.py
+|       |-- test_blob_walk_v2_windowed.py
 |       `-- analyze_report_fixtures.py    shared fixtures for analyze_report tests
 |
 |-- devel/                         developer tooling
+|   |-- bump_version.py            version bump helper
+|   |-- changelog_lib.py           shared changelog parser and git helpers
 |   |-- commit_changelog.py        changelog commit automation
+|   |-- query_changelog.py         changelog search by date/category/keyword
+|   |-- rotate_changelog.py        changelog rotation enforcer
 |   `-- submit_to_pypi.py          PyPI submission tool
 |
 |-- TRACK_VIDEOS/                  sample / working videos (gitignored content)
+|-- corpus_walk/                   per-video walker output artifacts (gitignored)
 |
 `-- docs/                          documentation
     |-- CHANGELOG.md               chronological change history
@@ -163,6 +162,7 @@ track-runner-virtual-dolly-cam/
     |-- TROUBLESHOOTING.md         known issues with symptoms, causes, next steps
     |-- MODES.md                   per-mode (subcommand) index pointing to docs/modes/
     |-- modes/                     per-mode reference pages with auto-stamped --help
+    |   |-- PREPARE.md
     |   |-- SETUP.md
     |   |-- SEED.md
     |   |-- SOLVE.md
@@ -181,9 +181,8 @@ track-runner-virtual-dolly-cam/
     |-- TRACK_RUNNER_YAML_CONFIG.md    YAML config reference
     |-- TRACK_RUNNER_ANALYZE_AND_ENCODE.md   analyze and encode guide
     |-- TR_CONFIG_FILES.md         per-video state file reference
-    |-- FWD_BWD_MODEL_METHODOLOGY.md   coupled FWD/BWD model mechanics
-    |-- MOTION_CUE_HEAT_MAP.md     heat-map mechanism technical doc
-    |-- RESIDUAL_MOTION_OBSERVATIONS.md   per-frame measurement summary
+    |-- TR_FWD_BWD_MODEL_METHODOLOGY.md   coupled FWD/BWD model mechanics
+    |-- TR_MOTION_CUE_HEAT_MAP.md  heat-map mechanism technical doc
     |-- ROADMAP.md                 planned work
     |-- TODO.md                    backlog scratchpad
     |-- CLAUDE_HOOK_USAGE_GUIDE.md permissions-hook reference

@@ -21,7 +21,7 @@ TargetController = target_controller_module.TargetController
 
 #============================================
 def collect_seeds(
-	video_path: str,
+	decode_video_path: str,
 	interval_seconds: float,
 	config: dict,
 	pass_number: int = 1,
@@ -43,7 +43,9 @@ def collect_seeds(
 	or automated testing.
 
 	Args:
-		video_path: Path to the input video file.
+		decode_video_path: Path to decode frames from. This is the run's
+			working_decode path (fast-read when present and valid, else the
+			original). Seed identity/state keys off the original elsewhere.
 		interval_seconds: Time between seed frames in seconds.
 		config: Configuration dict.
 		pass_number: Which collection pass this is (default 1 = initial).
@@ -71,8 +73,8 @@ def collect_seeds(
 	# start with a copy of any existing seeds
 	all_seeds = list(existing_seeds) if existing_seeds else []
 
-	# probe the video file to get metadata
-	probe_info = probe_video.probe_video(video_path)
+	# probe the decode video file to get metadata
+	probe_info = probe_video.probe_video(decode_video_path)
 	fps = probe_info["fps"]
 	# use caller-supplied frame count when provided; otherwise the
 	# value probed via mediainfo
@@ -81,7 +83,7 @@ def collect_seeds(
 	else:
 		total_frames = probe_info["frame_count"]
 	# create reliable frame reader with sequential fallback
-	reader = frame_reader.FrameReader(video_path, fps, total_frames, debug=debug)
+	reader = frame_reader.FrameReader(decode_video_path, fps, total_frames, debug=debug)
 
 	# compute frame interval for the requested seed spacing
 	frame_interval = int(round(fps * interval_seconds))
@@ -161,7 +163,7 @@ def collect_seeds(
 
 #============================================
 def collect_seeds_at_frames(
-	video_path: str,
+	decode_video_path: str,
 	target_frames: list,
 	config: dict,
 	pass_number: int = 2,
@@ -179,7 +181,9 @@ def collect_seeds_at_frames(
 	append to existing_seeds; never overwrites.
 
 	Args:
-		video_path: Path to the input video file.
+		decode_video_path: Path to decode frames from. This is the run's
+			working_decode path (fast-read when present and valid, else the
+			original). Seed identity/state keys off the original elsewhere.
 		target_frames: List of frame indices to seed at.
 		config: Configuration dict.
 		pass_number: Which collection pass this is (default 2 = first refinement).
@@ -202,12 +206,12 @@ def collect_seeds_at_frames(
 	# start with a copy of any existing seeds
 	all_seeds = list(existing_seeds) if existing_seeds else []
 
-	# probe the video file to get metadata
-	probe_info = probe_video.probe_video(video_path)
+	# probe the decode video file to get metadata
+	probe_info = probe_video.probe_video(decode_video_path)
 	fps = probe_info["fps"]
 	total_frames = probe_info["frame_count"]
 	# create reliable frame reader with sequential fallback
-	reader = frame_reader.FrameReader(video_path, fps, total_frames, debug=debug)
+	reader = frame_reader.FrameReader(decode_video_path, fps, total_frames, debug=debug)
 
 	sorted_targets = sorted(target_frames)
 	# filter out frames that already have seeds to prevent duplicates

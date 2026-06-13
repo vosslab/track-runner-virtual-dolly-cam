@@ -5,7 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-MODES = ["setup", "seed", "solve", "target", "refine", "edit", "encode", "analyze"]
+MODES = ["prepare", "setup", "seed", "solve", "target", "refine", "edit", "encode", "analyze"]
 
 def get_repo_root():
 	"""Get repository root using git."""

@@ -1484,7 +1484,7 @@ def _dispatch_blob_pass(
 	debug: bool,
 	run_control: object,
 	on_interval_solved: object,
-	video_path: str,
+	decode_video_path: str,
 	blob_pass: bool = True,
 ) -> None:
 	"""Dispatch a blob-coupled re-solve on selected post-race intervals.
@@ -1504,7 +1504,8 @@ def _dispatch_blob_pass(
 		debug: Debug flag.
 		run_control: Run control for quit handling.
 		on_interval_solved: Callback(fingerprint, result) for persistence.
-		video_path: Path to input video for worker pool.
+		decode_video_path: Path to the decode video for the worker pool
+			(resolved working-decode: fast-read when valid, else original).
 		blob_pass: Default True. blob_pass flows to both the in-process and
 			pool paths; promoted intervals run the windowed walker with a
 			per-pass Hermite stall fallback in either path. Passing False
@@ -1601,7 +1602,7 @@ def _dispatch_blob_pass(
 				import solver_workers
 				with solver_workers.make_pool(
 					num_workers=num_workers,
-					video_path=video_path,
+					decode_video_path=decode_video_path,
 					scene_transform=context.scene_transform,
 					motion_track=context.motion_track,
 					all_seeds_scene=context.all_seeds_scene,
@@ -1686,7 +1687,8 @@ def solve_all_intervals(
 	key_reader: object = None,
 	scene_transform: object = None,
 	motion_track: object = None,
-	video_path: str = None,
+	decode_video_path: str = None,
+	original_video_path: str = None,
 	video_frame_count: int = None,
 	hermite_only: bool = False,
 	full_solve: bool = False,
@@ -1714,8 +1716,16 @@ def solve_all_intervals(
 			>= 2 opens a ProcessPoolExecutor and dispatches pending
 			intervals across workers; completions are aggregated into
 			seed order by the main process.
-		video_path: Path to the input video. Required when num_workers >= 2
-			so each worker can open its own VideoReader.
+		decode_video_path: Path to the decode video (resolved working-decode:
+			fast-read when valid, else original). Required when
+			num_workers >= 2 so each worker can open its own VideoReader.
+			State paths and identity continue to key off the original video.
+		original_video_path: Path to the ORIGINAL video (args.input_file).
+			Threaded into ExecutionContext.original_video_path so every
+			artifact-output-name decision in the solve queue keys off the
+			original, never the fast-read decode path (contract C13).
+			Defaults to decode_video_path when omitted so non-routed
+			diagnostic callers that pass a single path behave as before.
 		debug: If True, show per-frame debug output and progress bars.
 		on_interval_complete: Optional callback called with each interval result
 			dict as intervals finish. Used for interactive seed requesting.
@@ -1808,6 +1818,11 @@ def solve_all_intervals(
 	# progress bar, the per-completion callback fire-order, and the
 	# quit/drain path. It returns a seed-ordered list with quit holes
 	# already dropped on the interrupted path.
+	# Artifact-name path keys off the original video. Diagnostic callers that
+	# omit original_video_path get the decode path, preserving single-path
+	# behavior; routed production callers (cli._run_solve) pass the original.
+	if original_video_path is None:
+		original_video_path = decode_video_path
 	context = solve_queue.ExecutionContext(
 		reader=reader,
 		scene_transform=scene_transform,
@@ -1816,7 +1831,8 @@ def solve_all_intervals(
 		all_seeds_scene=all_seeds_scene,
 		fps=fps,
 		num_workers=num_workers,
-		video_path=video_path,
+		decode_video_path=decode_video_path,
+		original_video_path=original_video_path,
 		video_frame_count=video_frame_count,
 		debug=debug,
 		race_start_interval=race_start_interval,
@@ -1875,7 +1891,7 @@ def solve_all_intervals(
 				debug,
 				run_control,
 				on_interval_solved,
-				video_path,
+				decode_video_path,
 				blob_pass=blob_pass,
 			)
 		else:
@@ -1904,7 +1920,7 @@ def solve_all_intervals(
 				debug,
 				run_control,
 				on_interval_solved,
-				video_path,
+				decode_video_path,
 				blob_pass=blob_pass,
 			)
 

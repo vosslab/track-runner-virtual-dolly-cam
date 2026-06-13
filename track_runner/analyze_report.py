@@ -466,6 +466,8 @@ def _build_analyze_report_data(
 	fps: float | None,
 	config: dict | None,
 	erased_frames: set | None = None,
+	canonical_source: str | None = None,
+	decode_source: str | None = None,
 ) -> dict:
 	"""Build the JSON-serializable data payload for the report.
 
@@ -521,6 +523,10 @@ def _build_analyze_report_data(
 
 	report_data = {
 		'video_stem': video_stem,
+		# video provenance: canonical source (original) + decode source
+		# label. Both may be None for diagnostic callers.
+		'canonical_source': canonical_source,
+		'decode_source': decode_source,
 		'fps': fps_value,
 		'frames': frames,
 		'frames_erased': frames_erased,
@@ -611,6 +617,28 @@ def _write_analyze_report_html(
 	lines.append('</head><body>')
 	lines.append(f'<h1>Analyze diagnostic report: {safe_stem}</h1>')
 
+	# video provenance section: name the canonical source (original) and
+	# the decode source (fast-read basename, or "original"). Both fields are
+	# optional; the section is emitted only when at least one is present.
+	canonical_source = report_data['canonical_source']
+	decode_source = report_data['decode_source']
+	if canonical_source is not None or decode_source is not None:
+		lines.append('<section class="references">')
+		lines.append('<h2>Video source</h2>')
+		lines.append('<ul>')
+		if canonical_source is not None:
+			safe_canonical = html.escape(canonical_source)
+			lines.append(
+				f'<li>canonical source: <code>{safe_canonical}</code></li>'
+			)
+		if decode_source is not None:
+			safe_decode = html.escape(decode_source)
+			lines.append(
+				f'<li>decode source: <code>{safe_decode}</code></li>'
+			)
+		lines.append('</ul>')
+		lines.append('</section>')
+
 	# warnings section: only emitted when warnings list is non-empty
 	if warnings:
 		lines.append('<section class="warnings"><ul>')
@@ -695,6 +723,8 @@ def write_analyze_report(
 	config: dict | None,
 	warnings: list,
 	erased_frames: set | None = None,
+	canonical_source: str | None = None,
+	decode_source: str | None = None,
 ) -> pathlib.Path:
 	"""Write one HTML diagnostic report; return the path written.
 
@@ -710,11 +740,15 @@ def write_analyze_report(
 		fps: Frames-per-second float, or None when not available.
 		config: Solve/encode config dict, or None.
 		warnings: List of warning strings to surface in the report.
+		canonical_source: Original-video basename recorded as the canonical
+			source. When None the field is omitted from the report.
+		decode_source: Decode-video label (fast-read basename, or "original"
+			when no fast-read is in use). When None the field is omitted.
 
 	Returns:
 		pathlib.Path pointing at the written HTML file.
 	"""
-	# build the data payload (panels empty in M1)
+	# build the data payload from the trajectory, crop, and motion inputs
 	report_data = _build_analyze_report_data(
 		video_stem=video_stem,
 		trajectory=trajectory,
@@ -724,6 +758,8 @@ def write_analyze_report(
 		fps=fps,
 		config=config,
 		erased_frames=erased_frames,
+		canonical_source=canonical_source,
+		decode_source=decode_source,
 	)
 
 	# write HTML to disk, threading in the caller-supplied warnings

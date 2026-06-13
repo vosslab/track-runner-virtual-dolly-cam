@@ -1,6 +1,6 @@
 # Track runner virtual dolly cam
 
-Track runner is a Python tool for track meet video. Users seed annotations on key frames; the solver propagates tracking between seeds and produces a cropped, stabilized "virtual dolly camera" output that follows one athlete.
+A Python tool for track-meet videographers that produces a cropped, stabilized virtual-dolly output following a single athlete. Users place a handful of seed annotations; the solver propagates geometry between seeds across the full race.
 
 **Status:** v26.05, active development.
 
@@ -23,13 +23,15 @@ Prerequisites: install system and Python dependencies first -- see [docs/INSTALL
 The canonical run order:
 
 ```text
-setup -> seed -> solve -> ( target -> refine ) x N -> encode
-                                ^________|
-                          repeat until scores OK
+[ prepare ] -> setup -> seed -> solve -> ( target -> refine ) x N -> encode
+                                               ^________|
+                                         repeat until scores OK
 ```
 
 ```bash
 source source_me.sh
+# Optional but recommended for 4K HEVC sources -- creates a fast-read working video.
+python3 track_runner/track_runner.py -i VIDEO.mp4 prepare
 python3 track_runner/track_runner.py -i VIDEO.mp4 setup
 python3 track_runner/track_runner.py -i VIDEO.mp4 seed
 python3 track_runner/track_runner.py -i VIDEO.mp4 solve
@@ -39,13 +41,14 @@ python3 track_runner/track_runner.py -i VIDEO.mp4 refine
 python3 track_runner/track_runner.py -i VIDEO.mp4 encode
 ```
 
-`setup` runs once per video and is required before `solve`, `refine`, or `target`. To see flags for any subcommand, append `-h` (for example `python3 track_runner/track_runner.py -i VIDEO.mp4 encode -h`). For the per-mode reference, see [docs/MODES.md](docs/MODES.md); for the workflow narrative, see [docs/USAGE.md](docs/USAGE.md).
+`setup` runs once per video and is required before `solve`, `refine`, or `target`. `prepare` is optional but recommended for 4K HEVC sources; see [docs/modes/PREPARE.md](docs/modes/PREPARE.md). To see flags for any subcommand, append `-h` (for example `python3 track_runner/track_runner.py -i VIDEO.mp4 encode -h`). For the per-mode reference, see [docs/MODES.md](docs/MODES.md); for the workflow narrative, see [docs/USAGE.md](docs/USAGE.md).
 
 ## Documentation
 
 ### Run it
 - [docs/INSTALL.md](docs/INSTALL.md): Setup steps, system dependencies, and pip requirements.
 - [docs/MODES.md](docs/MODES.md): Per-mode (subcommand) reference. Start here when you want to know what a specific mode does.
+- [docs/modes/PREPARE.md](docs/modes/PREPARE.md): Optional first step for 4K HEVC sources; creates a fast-read working video for lower decode latency.
 - [docs/USAGE.md](docs/USAGE.md): Workflow narrative, global options, configuration, and keyboard-shortcut pointers.
 - [docs/TRACK_RUNNER_KEYBINDINGS.md](docs/TRACK_RUNNER_KEYBINDINGS.md): Annotation UI keyboard shortcuts.
 - [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md): Known issues with symptoms, causes, and next steps.

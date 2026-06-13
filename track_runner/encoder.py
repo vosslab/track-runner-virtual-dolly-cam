@@ -722,7 +722,7 @@ def draw_debug_overlay_cropped(
 
 #============================================
 def _encode_segment(
-	video_path: str,
+	original_video_path: str,
 	crop_rects_chunk: list,
 	output_path: str,
 	crop_width: int,
@@ -745,7 +745,9 @@ def _encode_segment(
 	function so it is picklable for ProcessPoolExecutor.
 
 	Args:
-		video_path: Path to input video file.
+		original_video_path: Path to the original source video (encode
+			always reads the original for final quality, never the
+			fast-read working video).
 		crop_rects_chunk: Crop rects for this segment's frames.
 		output_path: Output path for the segment file.
 		crop_width: Output frame width.
@@ -765,10 +767,10 @@ def _encode_segment(
 	Returns:
 		Path to the encoded segment file.
 	"""
-	probe_info = common_tools.probe_video.probe_video(video_path)
+	probe_info = common_tools.probe_video.probe_video(original_video_path)
 	fps = probe_info["fps"]
 	reader = common_tools.frame_reader.FrameReader(
-		video_path, fps, probe_info["frame_count"],
+		original_video_path, fps, probe_info["frame_count"],
 	)
 	# build ffmpeg vf string from encode filters
 	vf_string = ""
@@ -831,7 +833,7 @@ def _encode_segment(
 
 #============================================
 def encode_cropped_video_parallel(
-	video_path: str,
+	original_video_path: str,
 	crop_rects: list,
 	output_path: str,
 	crop_width: int,
@@ -857,7 +859,9 @@ def encode_cropped_video_parallel(
 	Falls back to single-threaded encoding if workers <= 1.
 
 	Args:
-		video_path: Path to input video file.
+		original_video_path: Path to the original source video (encode
+			always reads the original for final quality, never the
+			fast-read working video).
 		crop_rects: List of (x, y, w, h) tuples, one per frame.
 		output_path: Path for the output video file.
 		crop_width: Output frame width after resize.
@@ -876,9 +880,9 @@ def encode_cropped_video_parallel(
 	"""
 	# fall back to sequential if only 1 worker
 	if workers <= 1:
-		probe_info = common_tools.probe_video.probe_video(video_path)
+		probe_info = common_tools.probe_video.probe_video(original_video_path)
 		with common_tools.frame_reader.FrameReader(
-			video_path, probe_info["fps"], probe_info["frame_count"],
+			original_video_path, probe_info["fps"], probe_info["frame_count"],
 		) as reader:
 			encode_cropped_video(
 				reader, crop_rects, output_path,
@@ -930,7 +934,7 @@ def encode_cropped_video_parallel(
 		for seg in segments:
 			future = pool.submit(
 				_encode_segment,
-				video_path,
+				original_video_path,
 				seg["rects"],
 				seg["path"],
 				crop_width, crop_height,

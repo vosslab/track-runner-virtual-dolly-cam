@@ -57,13 +57,23 @@ method.
 ## Pipeline overview
 
 ```
-setup --> seed --> solve --> (target --> refine)* --> encode
-  ^          ^         |              |
-  |          |         v              v
-  |          +----- interval scoring and review
-  +--- camera config questionnaire (one-time)
+[prepare] --> setup --> seed --> solve --> (target --> refine)* --> encode
+                ^          ^         |              |
+                |          |         v              v
+                |          +----- interval scoring and review
+                +--- camera config questionnaire (one-time)
 ```
 
+0. **Prepare** (optional) -- transcodes the original source video to an
+   H.264 8-bit fast-read working copy beside the original
+   (`<stem>.fastread.mkv`). Recommended for 4K HEVC sources where
+   random-access OpenCV reads are expensive. `fastread_video.create_fastread_video`
+   owns the transcode; `validate_fastread_structural` validates the copy
+   live on every subsequent run. `prepare` dispatches before config/data-path
+   setup so it does not require `setup` to have been run first. The fast-read
+   path is the only decode path for working modes when the validated copy
+   exists; `encode` always uses the original. See
+   [modes/PREPARE.md](modes/PREPARE.md).
 1. **Setup** -- interactive CLI questionnaire collects camera properties
    (zoom type, height, position, track size). Stored in per-video config YAML.
    `setup_mode.run_setup` owns this step; `cli.py` gates `solve`, `refine`,
@@ -103,10 +113,11 @@ setup --> seed --> solve --> (target --> refine)* --> encode
 - [track_runner.py](../track_runner/track_runner.py) -- entry
   point shim.
 - [cli.py](../track_runner/cli.py) -- subcommand dispatch, solve
-  and refine orchestration, diagnostics writers.
+  and refine orchestration, diagnostics writers. The `prepare` arm
+  (`_mode_prepare`) dispatches before config/data-path setup.
 - [cli_args.py](../track_runner/cli_args.py) -- argparse
-  configuration for all subcommands (`seed`, `edit`, `target`, `solve`,
-  `refine`, `encode`, `analyze`, `setup`).
+  configuration for all subcommands (`prepare`, `seed`, `edit`,
+  `target`, `solve`, `refine`, `encode`, `analyze`, `setup`).
 - [setup_mode.py](../track_runner/setup_mode.py) -- interactive
   camera configuration questionnaire.
 
@@ -179,6 +190,14 @@ setup --> seed --> solve --> (target --> refine)* --> encode
   with embedded JSON and an inlined vanilla-JS canvas renderer.
 - [video_io.py](../track_runner/video_io.py) -- `VideoReader`
   and frame decode utilities.
+- [fastread_video.py](../track_runner/fastread_video.py) --
+  fast-read working video creation (`create_fastread_video`) and live
+  structural validation (`validate_fastread_structural`). Returns a
+  frozen `FastreadValidation` dataclass on success; raises
+  `RuntimeError` naming the failed check and remedy on any mismatch.
+  Path helper lives in [tr_paths.py](../track_runner/tr_paths.py)
+  (`fastread_video_path`). Consumed by `prepare` mode (`_mode_prepare`
+  in `cli.py`).
 
 ### Detection and annotation support
 

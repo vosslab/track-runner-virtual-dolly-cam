@@ -77,7 +77,8 @@ one-time install. Each video then needs its own `setup` pass before
 `solve`, `refine`, or `target` will run:
 
 ```bash
-python track_runner/track_runner.py -i VIDEO.mp4 setup
+source source_me.sh
+python track_runner/track_runner.py -i VIDEO.mkv setup
 ```
 
 `setup` is an interactive questionnaire that captures camera zoom type,
@@ -85,7 +86,30 @@ height, position, and track size for this specific video. Those answers
 are written to the per-video config YAML. `setup` is required before
 `solve`, `refine`, or `target`, and should ideally run before `seed` as
 well so the annotation UI has the correct camera/track context from the
-first seed. For the full file layout (config YAML, seeds, geometry
-cache, diagnostics, contact sheet, debug paths, encoded output), see
+first seed.
+
+For 4K HEVC sources, run `prepare` before `setup` to create a fast-read
+working video that avoids slow random-access seeks:
+
+```bash
+python track_runner/track_runner.py -i VIDEO.mkv prepare
+```
+
+See [modes/PREPARE.md](modes/PREPARE.md) for details and
+[TROUBLESHOOTING.md](TROUBLESHOOTING.md) for slow-run symptoms.
+
+For the full file layout (config YAML, seeds, geometry cache,
+diagnostics, contact sheet, debug paths, encoded output), see
 [TR_CONFIG_FILES.md](TR_CONFIG_FILES.md). For the full subcommand
 reference and workflow, see [USAGE.md](USAGE.md).
+
+## Verify install
+
+```bash
+source source_me.sh
+python track_runner/track_runner.py --help
+```
+
+Expected: usage line listing the nine subcommands (`prepare`, `setup`,
+`seed`, `solve`, `target`, `refine`, `edit`, `encode`, `analyze`) with
+no import errors.

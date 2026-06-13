@@ -5,6 +5,7 @@ Multi-pass orchestration: seed collection, interval solving, refinement,
 crop trajectory computation, and video encoding.
 
 Subcommands:
+  prepare Create the fast-read working video beside the original
   seed    Collect/add seeds, save, exit
   edit    Review/fix/delete existing seeds interactively
   target  Add seeds at weak interval frames with FWD/BWD overlays
@@ -52,6 +53,7 @@ import off_frame_geometry
 import race_start
 import scene_coords
 import tr_schema
+import fastread_video
 
 # module-level video identity, set once in main() and treated as read-only
 VIDEO_IDENTITY = None
@@ -806,6 +808,7 @@ def _run_solve(
 	num_workers: int,
 	on_interval_complete: object = None,
 	is_refine: bool = False,
+	decode_video_path: str = None,
 ) -> dict:
 	"""Run the interval solver and write diagnostics.
 
@@ -818,10 +821,19 @@ def _run_solve(
 		diag_path: Path to write diagnostics.
 		num_workers: Number of parallel workers.
 		on_interval_complete: Optional callback for each solved interval.
+		decode_video_path: Path the solver decodes frames from (the
+			resolved working-decode video: fast-read when valid, else the
+			original). State paths and identity continue to key off
+			args.input_file (the original). Defaults to args.input_file
+			when not supplied so non-routed callers behave as before.
 
 	Returns:
 		Diagnostics dict from solve_all_intervals().
 	"""
+	# decode path defaults to the original when a caller does not route a
+	# resolved working-decode path through.
+	if decode_video_path is None:
+		decode_video_path = args.input_file
 	fps = video_info["fps"]
 	usable_seeds, _, _ = _validate_usable_seeds(seeds)
 
@@ -901,9 +913,11 @@ def _run_solve(
 	else:
 		print("precomputing camera motion...")
 		# Stage 1 reader honors --bin via FrameReader. bin_factor=1
-		# returns byte-identical frames.
+		# returns byte-identical frames. Decodes from the routed
+		# decode_video_path; the artifact path/identity below stay keyed to
+		# args.input_file (the original).
 		stage1_reader = common_tools.frame_reader.FrameReader(
-			video_path=args.input_file,
+			video_path=decode_video_path,
 			fps=float(video_info["fps"]),
 			total_frames=int(video_info["frame_count"]),
 			bin_factor=bin_factor,
@@ -916,9 +930,15 @@ def _run_solve(
 			stage1_reader.close()
 	motion_track_data = motion_track
 	scene_transform = scene_coords.SceneTransform(motion_track)
-	# pass the video path through so workers can reopen it in their own
-	# process; VideoReader instances cannot cross the process boundary.
-	solve_kwargs["video_path"] = args.input_file
+	# pass the decode video path through so workers can reopen it in their
+	# own process; VideoReader instances cannot cross the process boundary.
+	# Workers receive the resolved decode path (no per-worker re-validation).
+	solve_kwargs["decode_video_path"] = decode_video_path
+	# Original video path threads through so every artifact-output-name and
+	# identity decision in the solve queue keys off the original, never the
+	# fast-read decode path (contract C13). decode_video_path is for frame
+	# decoding only.
+	solve_kwargs["original_video_path"] = args.input_file
 	t_stage1_elapsed = time.time() - t_stage1_start
 	print(f"  (Stage 1 complete, {t_stage1_elapsed:.1f}s)")
 
@@ -958,7 +978,7 @@ def _run_solve(
 		print(f"  race_start_frame: {final_race_start_frame}")
 		print(f"  pre-race reference: torso {pre_race_reference['torso_w']:.0f}x{pre_race_reference['torso_h']:.0f} "
 			f"at scene ({pre_race_reference['scene_anchor_x']:.0f}, {pre_race_reference['scene_anchor_y']:.0f})")
-		# Store in solve_kwargs so M4 fast-path can reuse it
+		# Store in solve_kwargs so the early pre-race fast-path can reuse it
 		solve_kwargs["pre_race_reference"] = pre_race_reference
 
 	# Stage 3: Hermite-only analytical solve on all post-race intervals
@@ -978,7 +998,7 @@ def _run_solve(
 		# analytical solver does not use YOLO detector
 		detector = None
 		stage3_reader = common_tools.frame_reader.FrameReader(
-			video_path=args.input_file,
+			video_path=decode_video_path,
 			fps=float(video_info["fps"]),
 			total_frames=int(video_info["frame_count"]),
 			bin_factor=bin_factor,
@@ -1076,6 +1096,7 @@ def _mode_seed(
 	cfg: dict,
 	video_info: dict,
 	seeds_path: str,
+	video_context: fastread_video.VideoContext,
 ) -> None:
 	"""Seed collection mode: collect seeds and save.
 
@@ -1084,7 +1105,15 @@ def _mode_seed(
 		cfg: Configuration dict.
 		video_info: Video metadata dict.
 		seeds_path: Path to the seeds JSON file.
+		video_context: Resolved per-run routing; the seeding UI decodes
+			from video_context.working_decode.path while seed state keys
+			off video_context.original_video_path.
 	"""
+	# show which physical video frames decode from for this run
+	fastread_video.print_video_routing_banner(
+		video_context.original_video_path,
+		video_context.working_decode.path,
+	)
 	# parse optional time range
 	time_range = _parse_time_range(args.time_range)
 	# load existing seeds
@@ -1116,7 +1145,7 @@ def _mode_seed(
 	# seed collection
 	print(f"launching seed collection (pass {pass_number})...")
 	seeds = seeding.collect_seeds(
-		args.input_file,
+		video_context.working_decode.path,
 		args.seed_interval,
 		cfg,
 		pass_number=pass_number,
@@ -1142,6 +1171,7 @@ def _mode_edit(
 	seeds_path: str,
 	diag_path: str,
 	intervals_path: str,
+	video_context: fastread_video.VideoContext,
 ) -> None:
 	"""Seed editor mode: review/fix/delete existing seeds interactively.
 
@@ -1152,7 +1182,15 @@ def _mode_edit(
 		seeds_path: Path to the seeds JSON file.
 		diag_path: Path to diagnostics JSON file.
 		intervals_path: Path to solved-intervals JSON file.
+		video_context: Resolved per-run routing; the editor UI decodes
+			from video_context.working_decode.path while seed state keys
+			off video_context.original_video_path.
 	"""
+	# show which physical video frames decode from for this run
+	fastread_video.print_video_routing_banner(
+		video_context.original_video_path,
+		video_context.working_decode.path,
+	)
 	seeds = _load_and_deduplicate_seeds(seeds_path)
 	if not seeds:
 		raise RuntimeError(f"no seeds to edit in {seeds_path}")
@@ -1240,7 +1278,7 @@ def _mode_edit(
 
 	# run the editor
 	edited_seeds, summary = seed_editor.edit_seeds(
-		args.input_file, seeds, cfg,
+		video_context.working_decode.path, seeds, cfg,
 		predictions=predictions,
 		frame_filter=frame_filter,
 		seed_confidences=seed_confidences,
@@ -1365,6 +1403,7 @@ def _mode_target(
 	seeds_path: str,
 	diag_path: str,
 	intervals_path: str,
+	video_context: fastread_video.VideoContext,
 ) -> None:
 	"""Target mode: add seeds at weak interval frames with FWD/BWD overlays.
 
@@ -1379,7 +1418,15 @@ def _mode_target(
 		seeds_path: Path to the seeds JSON file.
 		diag_path: Path to diagnostics JSON file.
 		intervals_path: Path to solved-intervals JSON file.
+		video_context: Resolved per-run routing; the target UI decodes
+			from video_context.working_decode.path while seed state keys
+			off video_context.original_video_path.
 	"""
+	# show which physical video frames decode from for this run
+	fastread_video.print_video_routing_banner(
+		video_context.original_video_path,
+		video_context.working_decode.path,
+	)
 	# load seeds
 	seeds = _load_and_deduplicate_seeds(seeds_path)
 	if not seeds:
@@ -1533,7 +1580,7 @@ def _mode_target(
 	print(f"  target frame list: {frame_list}")
 	print(f"  collecting seeds at {len(target_frames)} weak interval frames...")
 	updated_seeds = seeding.collect_seeds_at_frames(
-		args.input_file,
+		video_context.working_decode.path,
 		target_frames,
 		cfg,
 		pass_number=next_pass,
@@ -1559,6 +1606,7 @@ def _mode_solve(
 	seeds_path: str,
 	diag_path: str,
 	intervals_path: str,
+	video_context: fastread_video.VideoContext,
 ) -> None:
 	"""Solve mode: run interval solver, write diagnostics, exit.
 
@@ -1571,7 +1619,13 @@ def _mode_solve(
 		seeds_path: Path to the seeds JSON file.
 		diag_path: Path to diagnostics JSON file.
 		intervals_path: Path to solved-intervals JSON file.
+		video_context: Resolved per-run routing; solve decodes from
+			video_context.working_decode.path.
 	"""
+	fastread_video.print_video_routing_banner(
+		video_context.original_video_path,
+		video_context.working_decode.path,
+	)
 	seeds = _load_and_deduplicate_seeds(seeds_path)
 	if not seeds:
 		raise RuntimeError(f"no seeds found in {seeds_path}")
@@ -1620,6 +1674,7 @@ def _mode_solve(
 	_run_solve(
 		args, cfg, seeds, video_info,
 		intervals_path, diag_path, num_workers,
+		decode_video_path=video_context.working_decode.path,
 	)
 
 
@@ -1631,6 +1686,7 @@ def _mode_refine(
 	seeds_path: str,
 	diag_path: str,
 	intervals_path: str,
+	video_context: fastread_video.VideoContext,
 ) -> None:
 	"""Refine mode: re-solve only changed intervals, reuse prior results.
 
@@ -1645,7 +1701,13 @@ def _mode_refine(
 		seeds_path: Path to the seeds JSON file.
 		diag_path: Path to diagnostics JSON file.
 		intervals_path: Path to solved-intervals JSON file.
+		video_context: Resolved per-run routing; refine decodes from
+			video_context.working_decode.path.
 	"""
+	fastread_video.print_video_routing_banner(
+		video_context.original_video_path,
+		video_context.working_decode.path,
+	)
 	seeds = _load_and_deduplicate_seeds(seeds_path)
 	if not seeds:
 		raise RuntimeError(f"no seeds found in {seeds_path}")
@@ -1757,6 +1819,7 @@ def _mode_refine(
 		args, cfg, seeds, video_info,
 		intervals_path, diag_path, num_workers,
 		is_refine=True,
+		decode_video_path=video_context.working_decode.path,
 	)
 
 
@@ -1899,6 +1962,7 @@ def _mode_analyze(
 	video_info: dict,
 	diag_path: str,
 	intervals_path: str | None = None,
+	video_context: fastread_video.VideoContext | None = None,
 ) -> None:
 	"""Analyze mode: compute crop-path stability metrics before encoding.
 
@@ -1907,6 +1971,12 @@ def _mode_analyze(
 	and solver context analysis. Prints a formatted console report and
 	writes a diagnostic YAML file.
 
+	Reports name BOTH the canonical source (the original video) and the
+	decode source (the fast-read working video basename, or the literal
+	"original" when no fast-read is in use). Analyze reads solved-interval
+	artifacts and does not decode frames itself, but it carries the routing
+	labels so report consumers see the same provenance as decode modes.
+
 	Args:
 		args: Parsed argparse namespace.
 		cfg: Configuration dict.
@@ -1914,7 +1984,29 @@ def _mode_analyze(
 		diag_path: Path to diagnostics JSON file.
 		intervals_path: Path to solved-intervals JSON file.
 			If None, derived from input_file.
+		video_context: Resolved per-run routing. Supplies canonical_source
+			(original) and decode_source labels for the reports. When None
+			(diagnostic/test callers), labels default to the input file as
+			canonical and "original" as decode.
 	"""
+	# resolve the canonical source (original) and decode-source label. The
+	# decode label is the fast-read basename when a valid fast-read is in
+	# use, otherwise the literal "original".
+	if video_context is None:
+		canonical_source = os.path.basename(args.input_file)
+		decode_source = "original"
+	else:
+		canonical_source = os.path.basename(video_context.original_video_path)
+		if video_context.working_decode.using_fastread:
+			decode_source = os.path.basename(video_context.working_decode.path)
+		else:
+			decode_source = "original"
+		# show the routing banner; analyze itself does not decode frames,
+		# so the decode line reflects what working modes would use.
+		fastread_video.print_video_routing_banner(
+			video_context.original_video_path,
+			video_context.working_decode.path,
+		)
 	# apply aspect override
 	if getattr(args, "aspect", None) is not None:
 		cfg.setdefault("processing", {})
@@ -2025,12 +2117,16 @@ def _mode_analyze(
 	encode_analysis.write_analysis_yaml(
 		analysis, solver_context, analysis_path,
 		regime_spans=regime_spans,
+		canonical_source=canonical_source,
+		decode_source=decode_source,
 	)
 
 	# print console report
 	report = encode_analysis.format_analysis_report(
 		analysis, solver_context, analysis_path,
 		regime_summary_line=regime_summary_line,
+		canonical_source=canonical_source,
+		decode_source=decode_source,
 	)
 	print(report)
 
@@ -2097,6 +2193,8 @@ def _mode_analyze(
 			config=cfg,
 			warnings=report_warnings,
 			erased_frames=erased_frames,
+			canonical_source=canonical_source,
+			decode_source=decode_source,
 		)
 		print(f"wrote diagnostic report: {out}")
 
@@ -2108,6 +2206,7 @@ def _mode_encode(
 	video_info: dict,
 	diag_path: str,
 	intervals_path: str | None = None,
+	video_context: fastread_video.VideoContext | None = None,
 ) -> None:
 	"""Encode mode: encode cropped video from existing diagnostics.
 
@@ -2122,7 +2221,20 @@ def _mode_encode(
 		diag_path: Path to diagnostics JSON file.
 		intervals_path: Path to solved-intervals JSON file.
 			If None, derived from input_file.
+		video_context: Resolved per-run routing. Encode always reads
+			video_context.final_encode.path (the original) for final
+			quality. None falls back to args.input_file.
 	"""
+	# Encode always decodes the original for final quality. final_encode.path
+	# equals the original by construction; fall back to args.input_file when
+	# no context is threaded (non-routed callers).
+	if video_context is None:
+		encode_video_path = args.input_file
+	else:
+		encode_video_path = video_context.final_encode.path
+		fastread_video.print_video_routing_banner(
+			video_context.original_video_path, encode_video_path,
+		)
 	# Import encoder lazily so non-encode commands do not load OpenCV.
 	import encoder
 
@@ -2470,7 +2582,7 @@ def _mode_encode(
 	with key_input.KeyInputReader() as enc_kreader:
 		if num_workers > 1:
 			encoder.encode_cropped_video_parallel(
-				args.input_file, crop_rects, temp_video,
+				encode_video_path, crop_rects, temp_video,
 				crop_w, crop_h,
 				codec=video_codec, crf=crf_value,
 				frame_states=frame_states_for_debug,
@@ -2484,9 +2596,9 @@ def _mode_encode(
 				nif_frames=nif_frames,
 			)
 		else:
-			probe_info = common_tools.probe_video.probe_video(args.input_file)
+			probe_info = common_tools.probe_video.probe_video(encode_video_path)
 			with common_tools.frame_reader.FrameReader(
-				args.input_file, probe_info["fps"], probe_info["frame_count"],
+				encode_video_path, probe_info["fps"], probe_info["frame_count"],
 			) as reader:
 				encoder.encode_cropped_video(
 					reader, crop_rects, temp_video,
@@ -2530,6 +2642,7 @@ def _mode_setup(
 	cfg: dict,
 	video_info: dict,
 	config_path: str,
+	video_context: fastread_video.VideoContext,
 ) -> None:
 	"""Setup mode: interactive questionnaire for camera configuration.
 
@@ -2537,13 +2650,56 @@ def _mode_setup(
 	settings (zoom type, camera height, position, track size) and stores
 	them in the configuration file.
 
+	Setup may decode the fast-read working video for any display, but the
+	configuration it writes always keys off the original video: config_path
+	is derived from the original and video_context.metadata_identity (the
+	original) is the recorded source. The fast-read video must never be
+	recorded as the configured source.
+
 	Args:
 		args: Parsed argparse namespace.
 		cfg: Configuration dict (may be modified).
 		video_info: Video metadata dict.
-		config_path: Path to the configuration file.
+		config_path: Path to the configuration file (keyed off the original).
+		video_context: Resolved per-run routing. Config/state writes use
+			video_context.original_video_path; only frame decode for display
+			may use video_context.working_decode.path.
 	"""
+	# show which physical video frames decode from for this run; the config
+	# written by run_setup still keys off the original (config_path).
+	fastread_video.print_video_routing_banner(
+		video_context.original_video_path,
+		video_context.working_decode.path,
+	)
 	setup_mode.run_setup(config_path, cfg)
+
+
+#============================================
+def _mode_prepare(args: argparse.Namespace, video_info: dict) -> None:
+	"""Prepare mode: create or verify the fast-read working video.
+
+	Implements the idempotency contract: skips transcode when an existing
+	valid fast-read is found; raises when the existing fast-read fails
+	validation (unless --force); --force recreates unconditionally.
+
+	prepare uses the ORIGINAL video only (it is the creator). No config,
+	seeds, or diagnostics are read. This mode does not require setup to have
+	been run first.
+
+	Args:
+		args: Parsed argparse namespace (expects force, verbose).
+		video_info: Video metadata dict from _probe_video (not used directly;
+			kept for signature consistency with other mode functions).
+	"""
+	fastread_path = tr_paths.fastread_video_path(args.input_file)
+	force = args.force
+	verbose = args.verbose
+	fastread_video.create_fastread_video(
+		args.input_file,
+		fastread_path,
+		force=force,
+		verbose=verbose,
+	)
 
 
 #============================================
@@ -2573,6 +2729,24 @@ def main() -> None:
 	for tool in ("mediainfo", "ffprobe", "ffmpeg"):
 		if shutil.which(tool) is None:
 			raise RuntimeError(f"{tool} not found in PATH")
+
+	# prepare mode: dispatch early before config/data-path setup; it uses
+	# only the original video and ffmpeg and does not need config, seeds,
+	# diagnostics, or data directory.
+	if args.mode == "prepare":
+		# probe to provide the status summary geometry; video_info is the
+		# only context prepare needs beyond the input path.
+		print(f"probing video: {args.input_file}")
+		video_info = _probe_video(args.input_file)
+		fps = video_info["fps"]
+		print(f"  resolution: {video_info['width']}x{video_info['height']}")
+		print(f"  fps:        {fps:.4f}")
+		print(f"  frames:     {video_info['frame_count']}")
+		print(f"  duration:   {video_info['duration_s']:.2f}s")
+		_mode_prepare(args, video_info)
+		t_total_elapsed = time.time() - t_total_start
+		print(f"total time: {t_total_elapsed:.1f}s")
+		return
 
 	# ensure tr_config/ data directory exists
 	tr_paths.ensure_data_dir()
@@ -2628,6 +2802,13 @@ def main() -> None:
 	_check_identity_mismatch("diagnostics", diag_path)
 	_check_identity_mismatch("intervals", intervals_path)
 
+	# Resolve original-vs-fast-read routing ONCE for this run (prepare
+	# already early-returned above; it is its own creator). A valid context
+	# is the authorization for working-mode FrameReaders to decode from
+	# working_decode.path. A present-but-invalid fast-read raises here with
+	# the remedy. Modes receive this context and never re-run discovery.
+	video_context = fastread_video.resolve_video_context(args.input_file)
+
 	# dispatch to mode function
 	mode = args.mode
 
@@ -2654,21 +2835,37 @@ def main() -> None:
 		)
 
 	if mode == "seed":
-		_mode_seed(args, cfg, video_info, seeds_path)
+		_mode_seed(args, cfg, video_info, seeds_path, video_context)
 	elif mode == "edit":
-		_mode_edit(args, cfg, video_info, seeds_path, diag_path, intervals_path)
+		_mode_edit(
+			args, cfg, video_info, seeds_path, diag_path, intervals_path,
+			video_context,
+		)
 	elif mode == "target":
-		_mode_target(args, cfg, video_info, seeds_path, diag_path, intervals_path)
+		_mode_target(
+			args, cfg, video_info, seeds_path, diag_path, intervals_path,
+			video_context,
+		)
 	elif mode == "solve":
-		_mode_solve(args, cfg, video_info, seeds_path, diag_path, intervals_path)
+		_mode_solve(
+			args, cfg, video_info, seeds_path, diag_path, intervals_path,
+			video_context,
+		)
 	elif mode == "refine":
-		_mode_refine(args, cfg, video_info, seeds_path, diag_path, intervals_path)
+		_mode_refine(
+			args, cfg, video_info, seeds_path, diag_path, intervals_path,
+			video_context,
+		)
 	elif mode == "setup":
-		_mode_setup(args, cfg, video_info, config_path)
+		_mode_setup(args, cfg, video_info, config_path, video_context)
 	elif mode == "encode":
-		_mode_encode(args, cfg, video_info, diag_path, intervals_path)
+		_mode_encode(
+			args, cfg, video_info, diag_path, intervals_path, video_context,
+		)
 	elif mode == "analyze":
-		_mode_analyze(args, cfg, video_info, diag_path, intervals_path)
+		_mode_analyze(
+			args, cfg, video_info, diag_path, intervals_path, video_context,
+		)
 		# --seed shortcut: hand off to target's --from-analyze path so
 		# the user goes from analyze report -> seeding UI in one command.
 		# `-t N` and `-g N` also trigger this path -- supplying either
@@ -2699,6 +2896,7 @@ def main() -> None:
 					setattr(args, field, default)
 			_mode_target(
 				args, cfg, video_info, seeds_path, diag_path, intervals_path,
+				video_context,
 			)
 	else:
 		raise RuntimeError(f"unknown mode: {mode}")

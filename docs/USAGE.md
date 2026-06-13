@@ -15,7 +15,7 @@ Global options must appear before the subcommand.
 | --- | --- |
 | `-i`, `--input` | Input video file path (required). |
 | `-c`, `--config` | Config YAML file path (default: auto-detected). |
-| `-d`, `--debug` | Enable debug video output with tracking overlays. |
+| `-d`, `--debug` | Enable verbose diagnostic output for developers (logging and side-channel debug artifacts). Does not affect rendered overlays in encoded video; see `encode --draw-tracking-overlay` for those. |
 | `-w`, `--workers` | Number of parallel workers (default: half of CPU cores). |
 | `--time-range` | Limit processing to a time range in seconds. Format: `START:END`, `START:`, or `:END`. |
 
@@ -31,8 +31,11 @@ See [README.md](../common_tools/README.md) for read-pattern cost numbers (sequen
 
 ## Subcommands
 
-The eight subcommands -- `setup`, `seed`, `solve`, `target`, `refine`, `edit`, `encode`, `analyze` -- each have a dedicated reference page. See [MODES.md](MODES.md) for the index, or jump directly:
+The nine subcommands -- `prepare`, `setup`, `seed`, `solve`, `target`, `refine`,
+`edit`, `encode`, `analyze` -- each have a dedicated reference page. See
+[MODES.md](MODES.md) for the index, or jump directly:
 
+- [modes/PREPARE.md](modes/PREPARE.md) -- create a fast-read working video (optional, 4K HEVC).
 - [modes/SETUP.md](modes/SETUP.md) -- per-video camera configuration.
 - [modes/SEED.md](modes/SEED.md) -- place anchor seeds.
 - [modes/SOLVE.md](modes/SOLVE.md) -- full re-solve from scratch.
@@ -46,18 +49,52 @@ The flag tables on those pages are auto-regenerated from `--help` by `tools/refr
 
 ## Typical workflow
 
-1. **setup** -- one-time camera configuration for the video.
-2. **seed** -- place anchor seeds on the runner.
-3. **solve** -- full solve from the seed set.
-4. **target** -- add corrective seeds at weak intervals.
-5. **refine** -- incremental re-solve picking up the new seeds.
-6. Repeat `target` + `refine` until interval scores are acceptable.
-7. **encode** -- produce the final cropped output video.
+For 4K HEVC sources, run `prepare` first. Working modes (`setup` through
+`analyze`) will then decode from the fast-read video, which makes scattered
+OpenCV frame reads dramatically faster. `encode` always uses the original for
+final output quality.
+
+```bash
+# Optional but recommended for 4K HEVC sources
+python track_runner/track_runner.py -i VIDEO.mkv prepare
+```
+
+1. **prepare** (optional, recommended for 4K HEVC) -- create a fast-read
+   working video beside the original. See [modes/PREPARE.md](modes/PREPARE.md).
+2. **setup** -- one-time camera configuration for the video.
+3. **seed** -- place anchor seeds on the runner.
+4. **solve** -- full solve from the seed set.
+5. **target** -- add corrective seeds at weak intervals.
+6. **refine** -- incremental re-solve picking up the new seeds.
+7. Repeat `target` + `refine` until interval scores are acceptable.
+8. **encode** -- produce the final cropped output video.
 
 `edit` is for fixing bad seeds or double-checking ones the scorer flagged.
 `analyze` is a pre-encode diagnostic that reports crop-path stability,
 solver context, and motion-regime classification without producing a
 video; it is not required before `encode`. Run either when you need it.
+
+### prepare role policy summary
+
+- Working modes `setup`, `seed`, `edit`, `target`, `solve` (all stages),
+  `refine`, `analyze`: decode from the fast-read video when it is present
+  and structurally valid; otherwise decode from the original with no warning.
+- `encode`: always uses the original for final output quality.
+- All state (seeds, geometry, scores, caches) stays keyed to the original
+  video path.
+
+### prepare selection semantics
+
+- Fast-read absent: working modes use original; no warning.
+- Fast-read present and structurally valid: working modes use fast-read.
+- Fast-read present and structurally invalid: the run raises loudly with the
+  remedy. Re-run `prepare --force` or delete the fast-read video.
+
+Rollback: delete `VIDEO.fastread.mkv`. All modes revert to the original on
+the next run automatically. No other cleanup is needed.
+
+Working modes decode from the fast-read video when it is present and structurally
+valid; the final encode always uses the original.
 
 ## Heat movie diagnostic (blob_walk_v2)
 
