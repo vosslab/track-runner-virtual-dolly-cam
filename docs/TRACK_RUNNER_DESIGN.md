@@ -255,10 +255,11 @@ post-termination diagnostic rows only.
   under imprecise centroid boundaries, where per-frame argmax did not.
 - C2 (torso-unit scale): the displacement cap and all spatial cost
   terms are expressed in torso-width units, never raw pixels.
-- C10 (unified SCHEMA_VERSION): the walker schema version now reads
-  `tr_schema.SCHEMA_VERSION` (not a module-local constant), per C10;
-  see [docs/TR_SCHEMA_VERSION_HISTORY.md](TR_SCHEMA_VERSION_HISTORY.md).
-  The last `walk_debug_log`-local bump is recorded there.
+- C10 (unified SCHEMA_VERSION): the walker carries no schema constant of its
+  own; the solver `SCHEMA_VERSION` lives only in `tr_schema.py`. The
+  `walk_debug_log` verdict CSV is a diagnostic artifact and does not carry or
+  bump the solver schema; see
+  [docs/TR_SCHEMA_VERSION_HISTORY.md](TR_SCHEMA_VERSION_HISTORY.md).
 
 ### What changed in walker state
 

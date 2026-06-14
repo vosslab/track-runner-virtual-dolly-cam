@@ -26,7 +26,8 @@ Contract references:
   C6: interval independence; no shared state across intervals.
   C8: no appearance cues.
   C9: FWD/BWD independence.
-  C10: unified SCHEMA_VERSION; walk_debug_log reads tr_schema.SCHEMA_VERSION.
+  C10: unified SCHEMA_VERSION in tr_schema.py; the walk_debug_log verdict CSV
+    is a diagnostic artifact and does not carry the solver SCHEMA_VERSION.
   TRACK_RUNNER_DESIGN.md: Anti-pattern: chained blob state -- no last_blob,
     no *_chain_* variable survives past the active window.
 

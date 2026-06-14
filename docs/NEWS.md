@@ -16,7 +16,7 @@ see [CHANGELOG.md](CHANGELOG.md).
   penalise acceleration, keeping a moving runner preferred over a stationary
   distractor. Walker is now the default blob pass on Stage-4-promoted intervals;
   Hermite fallback in place when the walker produces zero post-seed accepted
-  frames. Schema version bumped to 14.
+  frames.
 
 - **Stage-4 worker pool**: Stage-4 blob-promoted intervals now dispatch through
   the same worker pool as Stage 3 (previously ran in the main process). Parallel

@@ -1,4 +1,4 @@
-"""Drift gate for contract C9: single source of truth for SCHEMA_VERSION.
+"""Drift gate for contract C10: single source of truth for SCHEMA_VERSION.
 
 The unified `SCHEMA_VERSION` lives in `track_runner/tr_schema.py`. Other
 modules may re-export it (e.g. `state_io.SCHEMA_VERSION = tr_schema.SCHEMA_VERSION`)
@@ -21,9 +21,24 @@ import re
 # local repo modules
 import pytest
 import file_utils
+import tr_schema
 
 
 REPO_ROOT = file_utils.get_repo_root()
+
+# Governance tripwire: the expected, human-approved schema version. This pin is
+# the one deliberate exception to the "do not assert tunable constants" pytest
+# rule (see docs/PYTEST_STYLE.md): its whole purpose is to force a reviewed
+# update so an accidental SCHEMA_VERSION bump cannot merge unnoticed. Four
+# unnecessary bumps (v11-v14) landed in 30 days because nothing failed on a
+# bump; this test is that failure. Step 9 of the schema-change checklist updates
+# this pin intentionally on a real, approved bump.
+EXPECTED_SCHEMA_VERSION = 10
+
+_CHECKLIST_ANCHOR = (
+	"docs/TR_SCHEMA_VERSION_HISTORY.md"
+	"#checklist-before-changing-schema_version"
+)
 PRODUCTION_DIRS = [
 	os.path.join(REPO_ROOT, "track_runner"),
 	os.path.join(REPO_ROOT, "common_tools"),
@@ -63,7 +78,7 @@ _ALLOWED_RHS = {
 # Each entry is `(filename_basename, constant_name): "rationale"`. Add
 # here only when the constant genuinely is not a schema authority and
 # the name pattern accidentally collides. Empty by default; review every
-# addition against C9.
+# addition against C10.
 EXPLICIT_NON_SCHEMA_VERSION_EXEMPTIONS: dict = {}
 
 
@@ -108,7 +123,7 @@ def test_legacy_aliases_equal_schema_version():
 						f"(must be SCHEMA_VERSION)"
 					)
 	if failures:
-		msg = "C9 alias drift detected:\n" + "\n".join(failures)
+		msg = "C10 alias drift detected:\n" + "\n".join(failures)
 		pytest.fail(msg)
 
 
@@ -145,11 +160,38 @@ def test_no_shadow_schema_authority_constants():
 			continue
 		failures.append(
 			f"{filepath}:{line_no}: {name} = {rhs} "
-			f"(parallel schema-authority constants are forbidden by C9; "
+			f"(parallel schema-authority constants are forbidden by C10; "
 			f"either re-export tr_schema.SCHEMA_VERSION or add "
 			f"({basename!r}, {name!r}) to "
 			f"EXPLICIT_NON_SCHEMA_VERSION_EXEMPTIONS in this test with a rationale)"
 		)
 	if failures:
-		msg = "C9 shadow-authority drift detected:\n" + "\n".join(failures)
+		msg = "C10 shadow-authority drift detected:\n" + "\n".join(failures)
+		pytest.fail(msg)
+
+
+#============================================
+def test_schema_version_pinned_to_expected() -> None:
+	"""Governance tripwire: SCHEMA_VERSION must match the approved pin.
+
+	Changing SCHEMA_VERSION without updating EXPECTED_SCHEMA_VERSION here
+	fails loudly and routes the author to the schema-change checklist. A bump
+	is valid only with explicit human approval and a matching history entry
+	naming the stored-contract change that earned the bump.
+	"""
+	if tr_schema.SCHEMA_VERSION != EXPECTED_SCHEMA_VERSION:
+		msg = (
+			f"SCHEMA_VERSION is {tr_schema.SCHEMA_VERSION} but the approved pin "
+			f"is {EXPECTED_SCHEMA_VERSION}.\n"
+			f"A SCHEMA_VERSION change needs EXPLICIT HUMAN APPROVAL plus a "
+			f"history entry in docs/TR_SCHEMA_VERSION_HISTORY.md that names the "
+			f"stored-contract change (field/layout/dtype/encoding/coordinate "
+			f"meaning/required metadata/approved per-video variable).\n"
+			f"Method-only changes (walker DP, cost weights, residual stride) "
+			f"are NOT schema changes: run `solve` to refresh stale values and "
+			f"keep SCHEMA_VERSION fixed.\n"
+			f"Follow the checklist before changing this value: "
+			f"{_CHECKLIST_ANCHOR}\n"
+			f"Then update EXPECTED_SCHEMA_VERSION in this test (checklist step 9)."
+		)
 		pytest.fail(msg)

@@ -82,7 +82,7 @@ walker is on by default. A `post_seed_accepted == 0` Hermite fallback is in
 place (covers zero-accept stall and seed-only stall; reads
 `WalkCoverage.post_seed_accepted`) so the walker never degrades a promoted
 interval below pure Hermite. Viterbi weight tuning and the promoted-only A/B
-shipped 2026-06-12 (pairwise velocity-delta cost model, schema 14).
+shipped 2026-06-12 (pairwise velocity-delta cost model).
 
 Remaining work: seed-frame stall root-cause fix. See [CHANGELOG.md](CHANGELOG.md)
 for the landing history.

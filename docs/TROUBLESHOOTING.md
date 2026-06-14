@@ -2,6 +2,21 @@
 
 Known symptoms, causes, and next steps for common issues.
 
+## Solve or refine rejects an existing schema v11-v14 artifact
+
+**Symptom:** After the `SCHEMA_VERSION` rollback to 10, a command reports an
+existing schema v11/v12/v13/v14 artifact as stale, or `refine`/loaders raise an
+unsupported-schema error pointing to a torso-box artifact.
+
+**Cause:** v11-v14 were method-only or diagnostic bumps that stored nothing new
+(see [docs/TR_SCHEMA_VERSION_HISTORY.md](TR_SCHEMA_VERSION_HISTORY.md)). They are
+no longer accepted as current solver artifacts. Artifacts stamped v11-v14 must be
+regenerated under the current method.
+
+**Mitigation:** Run `solve`. It clears the stale artifact and re-solves from
+seeds; no manual deletion is needed. Run `solve` before `refine` after the
+rollback, since `refine` does not force a full re-solve (contract C7).
+
 ## Walker / corpus runs on 4K HEVC sources take hours
 
 **Symptom:** A single video in a corpus walk takes hours to complete

@@ -1,3 +1,78 @@
+## 2026-06-14
+
+### Additions and New Features
+
+- **Schema-change rule and checklist added to `docs/TR_SCHEMA_VERSION_HISTORY.md`
+  (Patch 1)**: a `## When to change SCHEMA_VERSION` section now leads the document
+  with an affirmative rule (use `SCHEMA_VERSION` for approved persisted artifact
+  contract changes; use `solve` for method-derived stale values; document
+  diagnostic telemetry without changing the solver schema), a YES/NO decision
+  table from real v10-v14 history, and a numbered `## Checklist before changing
+  SCHEMA_VERSION` section that routes each change type to the correct path and
+  requires explicit human approval before any `SCHEMA_VERSION` edit. A `## What
+  the schema owns` section carries the governing sentence, the two-step
+  persistence gate, the schema-owned vs method-owned field split, and the boundary
+  classification table so the anti-drift guardrail lives in the doc, not only in
+  the plan.
+
+### Behavior or Interface Changes
+
+- **`SCHEMA_VERSION` rolled back to 10 (Patch 1)**: v11, v12, v13, and v14 are
+  rolled back because none of those changes altered the stored solver artifact
+  format or any per-video variable. v11 was a residual-stride method change
+  (runtime-computed, never persisted); v12 versioned diagnostic CSV telemetry
+  columns (not a solver artifact); v13/v14 changed walker DP method and cost
+  model (computed values, format unchanged). Current schema is 10 -- the last
+  change that actually altered the stored format (float32->uint16 dtype). The
+  `GEOMETRY_AFFECTING_SCHEMAS` set is `{3,6,7,8,9,10}`; supported
+  `torso_box_coords` is `{10}`; supported `diagnostics` is `{2..10}`. The
+  tripwire test in `tests/test_tr_schema_version_single_source.py` pins version
+  10 and routes any future change attempt to
+  `docs/TR_SCHEMA_VERSION_HISTORY.md#checklist-before-changing-schema_version`.
+  Pre-existing v10 artifacts stay readable; run `solve` for current-method values.
+  Human approver: user decision 2026-06-14.
+
+### Fixes and Maintenance
+
+- **Stale schema-14 references corrected across docs (Patch 2)**: the rollback
+  made several docs wrong. `docs/TR_CONFIG_FILES.md` no longer claims the writer
+  emits v11 with `{10,11}` supported; `docs/NEWS.md`, `docs/RELEASE_HISTORY.md`,
+  `docs/ROADMAP.md`, and `docs/TR_FWD_BWD_MODEL_METHODOLOGY.md` drop the "schema
+  14" attribution from the walker cost-model entries; `docs/TRACK_RUNNER_DESIGN.md`
+  C10 bullet now states the walker carries no schema constant. The
+  `docs/TR_SCHEMA_VERSION_HISTORY.md` intro and solved-geometry-cache section no
+  longer instruct bumping `SCHEMA_VERSION` for observer/solver method changes
+  (route to `solve`), the contract reference is corrected from C9 to C10, and a
+  supersession note marks older entries as historical. `docs/TROUBLESHOOTING.md`
+  gains a "solve/refine rejects a v11-v14 artifact" entry. Planning-tag `P15`
+  comments removed from `track_runner/blob_walk/walk_debug_log.py`.
+
+- **Test cleanup (Patch 2)**: removed the misplaced `tests/test_bug_101_degenerate_roi.py`
+  (a real-video, slower-than-budget duplicate of the canonical e2e gate
+  `tests/e2e/e2e_bug_101_degenerate_roi.py`) and the two scratch rollback-mechanics
+  test files. Dropped the fragile `test_history_doc_mentions_current_schema_version`
+  doc-substring check; the version pin in `test_schema_version_pinned_to_expected`
+  is the governance gate. Added `-> None` to the kept tripwire test and corrected
+  its C9->C10 contract references.
+
+### Removals and Deprecations
+
+- **Dead `walk_debug_log.SCHEMA_VERSION` export removed (Patch 1)**: the
+  `SCHEMA_VERSION = tr_schema.SCHEMA_VERSION` alias in
+  `track_runner/blob_walk/walk_debug_log.py` is removed. Nothing read it as a
+  value; consumers use `DebugLogWriter`, `DebugLogRow`, and `HEADER`. Removing
+  it eliminates the exact mechanism that let v12 ride the solver schema integer
+  for a diagnostic CSV change.
+
+### Decisions and Failures
+
+- **v11-v14 bumps were avoidable (Patch 1)**: four unnecessary schema bumps
+  landed in 30 days because the rule was buried in cache-invalidation jargon.
+  The durable fix is the crystal-clear written rule plus the checklist above,
+  not a separate method-code fingerprint (which would add a second version
+  surface and invite the same drift). The governance tripwire test makes an
+  accidental bump impossible to merge unnoticed.
+
 ## 2026-06-13
 
 ### Behavior or Interface Changes

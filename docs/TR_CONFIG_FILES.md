@@ -131,7 +131,7 @@ the encoder consume.** Reader `state_io.load_torso_box_coords`, writer
 
 | Key | Type | Notes |
 | --- | --- | --- |
-| `schema_version` | int32 | Current writer emits `11`; readers also accept `10` (per `tr_schema.SUPPORTED_ARTIFACT_SCHEMAS["torso_box_coords"] = {10, 11}`). The on-disk uint16 layout is identical between v10 and v11; v11 differs only in the residual sampling pattern used to compute the stored coordinates. |
+| `schema_version` | int32 | Current writer emits `10`; readers accept `{10}` (per `tr_schema.SUPPORTED_ARTIFACT_SCHEMAS["torso_box_coords"]`). The uint16 coordinate layout has been fixed since v10. Method-only changes (residual sampling, walker DP) keep this number fixed and refresh stale values with `solve`. |
 | `manifest` | bytes (JSON-encoded) | List of per-interval entries mapping fingerprint to an `array_index` plus `start_frame`/`end_frame`. |
 | `i<k>_cx`, `i<k>_cy`, `i<k>_w`, `i<k>_h` | uint16 arrays | Per-interval blended-interval-path arrays (the combined FWD+BWD output trajectory); `<k>` is the manifest's `array_index` for that interval. Array length equals `end_frame - start_frame + 1`. Pixel-snapped integers, range [0, 65535]. |
 | `video_identity` | bytes (JSON-encoded) | Optional; same shape as elsewhere. |

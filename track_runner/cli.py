@@ -1594,6 +1594,38 @@ def _mode_target(
 
 
 #============================================
+def _clear_stale_torso_artifact(intervals_path: str) -> bool:
+	"""Remove a torso_box_coords artifact stamped under an unsupported schema.
+
+	Solve is the full re-solve path. A prior artifact stamped under a
+	rolled-back schema (for example v11-v14) is no longer a supported solver
+	artifact, and `load_torso_box_coords` raises on it before any clear runs.
+	Peek the stamped schema without paying the rejection cost; if it is not a
+	supported `torso_box_coords` schema, warn and delete the file so solve
+	treats it as absent and regenerates it fresh at the current schema. This
+	leniency is scoped to solve only; loaders and refine keep rejecting stale
+	artifacts clearly.
+
+	Args:
+		intervals_path: Path to the torso_box_coords.npz artifact.
+
+	Returns:
+		True if a stale artifact was found and removed, otherwise False.
+	"""
+	if not os.path.isfile(intervals_path):
+		return False
+	prior_schema = state_io.peek_torso_box_coords_schema(intervals_path)
+	if prior_schema is None:
+		return False
+	if tr_schema.is_supported_artifact_schema("torso_box_coords", prior_schema):
+		return False
+	print(f"  existing schema v{prior_schema} artifact is stale; "
+		f"solve will regenerate it")
+	os.remove(intervals_path)
+	return True
+
+
+#============================================
 def _mode_solve(
 	args: argparse.Namespace,
 	cfg: dict,
@@ -1625,6 +1657,12 @@ def _mode_solve(
 	if not seeds:
 		raise RuntimeError(f"no seeds found in {seeds_path}")
 	print(f"loaded {len(seeds)} seeds from {seeds_path}")
+
+	# Stale-schema guard, scoped to the solve operator path only. Solve is the
+	# full re-solve path, so a prior artifact under a rolled-back schema is
+	# cleared and regenerated fresh; loaders and refine keep rejecting stale
+	# artifacts clearly.
+	_clear_stale_torso_artifact(intervals_path)
 
 	# only clear intervals if a prior solve completed successfully;
 	# if the prior solve was interrupted, resume from saved intervals

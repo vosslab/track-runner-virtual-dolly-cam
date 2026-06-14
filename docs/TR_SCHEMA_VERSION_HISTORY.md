@@ -2,15 +2,106 @@
 
 This document logs the evolution of `SCHEMA_VERSION` across releases. The version controls on-disk format changes to diagnostics files, interval scores, pre-race references, and solver diagnostic headers.
 
-Per contract C9, there is one unified `SCHEMA_VERSION` for the entire track_runner project, defined in [tr_schema.py](../track_runner/tr_schema.py). All schema references must use this constant; independent versions are forbidden. This file records the versioning history specifically, separate from the changelog which records code changes. Even when on-disk format is byte-identical, a new version number is issued to avoid mixed numbers across outputs; this prevents silent schema mismatches that propagate through cached and derived artifacts.
+Per contract C10, there is one unified `SCHEMA_VERSION` for the entire track_runner project, defined in [tr_schema.py](../track_runner/tr_schema.py). All schema references must use this constant; independent versions are forbidden. This file records the versioning history specifically, separate from the changelog which records code changes. A new version number is issued when the persisted artifact contract changes. Use `solve` for method-derived stale values and diagnostic history for telemetry.
 
-Any and all schema changes REQUIRE EXPLICIT HUMAN APPROVAL, no hiding it in a larger plan. The human user cannot be expected to read all details. Schema versions should not be changed unless it is completely necessary to store a variable on a per video basis and not a static constant. Many of the recent schema changes should NOT have been made.
+## When to change SCHEMA_VERSION
+
+Use `SCHEMA_VERSION` for approved persisted artifact contract changes (field names, layout, dtype/encoding, coordinate meaning, required metadata, approved per-video variables). Use `solve` to refresh method-derived stale values. Document diagnostic telemetry without changing the solver schema.
+
+When a method change makes old cached values stale, run `solve` for a full re-solve and keep `SCHEMA_VERSION` fixed. `solve` is the cache-invalidation path for method changes.
+
+Get explicit human approval before changing the persisted artifact contract or `SCHEMA_VERSION`.
+
+| Change | Bump schema? | Why |
+| --- | --- | --- |
+| Add a necessary persisted per-video variable (after human approval; confirmed it cannot stay a constant, runtime-derived value, or diagnostic) | YES | The artifact contract changed; the bump is the consequence, not the approval |
+| Change a stored dtype/number type (v10 uint16) | YES | Readers must decode the bytes differently |
+| Change a computation method (v11 residual stride, v13/v14 walker) | Use `solve`; keep schema fixed | The stored format is the same; `solve` refreshes values |
+| Add a diagnostic-only CSV column (v12) | Use diagnostic history; keep solver schema fixed | The verdict CSV is a diagnostic artifact |
+| Change a stored value for a new video | Use existing contract; keep schema fixed | Values change per video; the contract does not |
+
+## Checklist before changing SCHEMA_VERSION
+
+Choose the correct path first: use schema review for persisted artifact contract changes, use `solve` for method-derived stale values, and use the diagnostic history for telemetry changes.
+
+Get explicit human approval before changing the persisted artifact contract or `SCHEMA_VERSION`.
+
+Every schema-history entry must answer this checklist: what stored field/contract changed, geometry-affecting yes/no, and the human approver.
+
+A manager proposing any `SCHEMA_VERSION` change completes these affirmative steps in order:
+
+1. Name the persisted artifact you are changing (`torso_box_coords.npz` or the
+   interval-scores JSON). For changes that leave every persisted artifact identical,
+   route to `solve` or diagnostic history and keep `SCHEMA_VERSION` fixed.
+2. Route computation-method changes (walker DP, cost weights, residual stride,
+   heat-map sampling) to `solve`: run `solve` to refresh stale values and keep
+   `SCHEMA_VERSION` fixed. `solve` is the cache-invalidation path.
+3. Route diagnostic telemetry changes (verdict-CSV columns) to the diagnostic
+   history: document the column history and keep the solver `SCHEMA_VERSION` fixed.
+4. For a genuine persisted-contract change, confirm the data earns persistence: it
+   is human-approved and belongs in the artifact rather than staying a static
+   constant, a runtime-derived value (residual stride comes from fps), or
+   diagnostic output. Keep artifacts minimal.
+5. Confirm the stored read/validate contract changed: a field added, removed, or
+   renamed; dtype/encoding; layout; coordinate meaning; required metadata; or an
+   approved per-video persisted variable.
+6. Get explicit human approval for the stored-contract change before editing
+   `SCHEMA_VERSION` (C10). State it in its own request so the approver sees it.
+7. Bump `SCHEMA_VERSION` by one in `tr_schema.py` (the single authority); add it to
+   `GEOMETRY_AFFECTING_SCHEMAS` when the stored geometry artifact contract or
+   coordinate semantics changed; update `SUPPORTED_ARTIFACT_SCHEMAS` (drop older
+   versions when the on-disk layout genuinely changed).
+8. Add a one-line `TR_SCHEMA_VERSION_HISTORY.md` entry that answers this checklist:
+   version, date, the stored field/contract that changed, geometry-affecting
+   yes/no, and the human approver.
+9. Update the governance tripwire test's expected version in the same change, so
+   the bump stays intentional and reviewed.
+
+## What the schema owns
+
+`SCHEMA_VERSION` tracks the contract needed to read and validate persisted artifacts -- field names, layout, dtype/encoding, coordinate meaning, required metadata, and per-video persisted variables. It does not track the runtime values stored under that contract, nor the algorithms that produced those values; runtime values and method-derived stale outputs are refreshed with `solve`.
+
+Two-step gate, in order. First decide whether the data earns persistence: it needs explicit human approval and belongs in the artifact only when it must survive a run as something other than a static constant, a runtime-derived value, or diagnostic output. After persistence is approved, ask whether the stored-artifact contract changed and let the bump follow. Keep artifacts minimal: persist values that must survive, and route recomputable values to runtime computation.
+
+Schema-owned (justifies a bump when the field/meaning/encoding changes):
+
+| Stored item | Artifact | Why it is schema-owned |
+| --- | --- | --- |
+| `blended` cx/cy/w/h per interval | torso_box_coords.npz | The solved geometry readers consume; its presence and key names are the read contract |
+| `fwd`/`bwd` cx/cy/w/h per interval (post-race only) | torso_box_coords.npz | Optional independent-pass arrays; readers must know they exist and when they are absent |
+| dtype/encoding (uint16, pixel-snapped) | torso_box_coords.npz | Readers must decode the bytes correctly; the v10 float32->uint16 change was exactly this |
+| coordinate semantics (SOURCE-space cx/cy/w/h) | torso_box_coords.npz | The same bytes would mean different geometry if the space or meaning changed |
+| manifest (fingerprint, start/end frame, array_index) | torso_box_coords.npz | Readers reassemble per-interval arrays and map frames from it |
+| `schema_version` | torso_box_coords.npz | The validate contract itself |
+| `video_identity` | torso_box_coords.npz | Guards artifact-to-video compatibility; the field/meaning is schema-owned (its per-video value is not) |
+| `solve_complete` | torso_box_coords.npz | Determines whether the artifact is complete output or a partial resume |
+| `interval_score` fields (agreement, velocity/size consistency, confidence_tier, severity, failure_reasons, warning_flags) | interval-scores JSON | Persisted score contract that downstream review/target reads |
+| `pre_race_reference` fields (race_start_frame, torso dims, scene anchor, race_start_interval, warnings) | interval-scores JSON | Persisted pre-race reference contract |
+
+Method-owned (changes computed values; use `solve` when the stored contract is unchanged):
+
+- residual stride / `REFERENCE_FPS` / `resolve_stride` (runtime-computed from fps, never persisted) -- v11.
+- walker Viterbi DP, cost weights, stride-termination, heat-map sampling -- v13/v14.
+- walker verdict debug-CSV telemetry columns (diagnostic artifact, not loaded as solver state) -- v12.
+- pass-local temporary solve state.
+
+Boundary classification (a reviewer must classify each correctly):
+
+| Example change | Verdict |
+| --- | --- |
+| Change cx/cy/w/h dtype, scale, or decode semantics (after approval) | Schema review; likely bump |
+| Add a necessary persisted per-video variable (after approval; confirmed it cannot stay a constant, runtime-derived value, or diagnostic) | Schema review; likely bump |
+| Change `video_identity` field semantics | Schema review; likely bump |
+| Change Viterbi weights | Use `solve` to refresh stale values; keep schema fixed |
+| Change residual stride logic | Use `solve` to refresh stale values; keep schema fixed |
+| Add a debug-CSV telemetry column | Use diagnostic history; keep solver schema fixed |
+| Change actual coordinate values for a new video | Use existing contract; keep schema fixed |
 
 ## Schema bumps and the solved-geometry cache
 
 Schema bumps are metadata-only by default: they do NOT invalidate solved-geometry cache entries. The solver cache key lives in `track_runner/interval_fingerprint.py` as `GEOMETRY_TAG`, which embeds the highest member of `tr_schema.GEOMETRY_AFFECTING_SCHEMAS` <= `SCHEMA_VERSION` as a `geometry_schema_v<N>` token. A separate informational tag, `SOLVER_FINGERPRINT_TAG`, includes `/schema/<SCHEMA_VERSION>` and is used for diagnostics headers only.
 
-To bump observer/solver behavior in a way that invalidates geometry caches, increment `SCHEMA_VERSION` and add the new version to `GEOMETRY_AFFECTING_SCHEMAS`. Loaders consult `tr_schema.SUPPORTED_ARTIFACT_SCHEMAS` to decide which on-disk versions remain readable, so a schema bump does not automatically reject older artifacts.
+Use `solve` to refresh geometry caches after observer/solver method changes. Add to `GEOMETRY_AFFECTING_SCHEMAS` only when an approved schema change alters the stored geometry artifact contract or coordinate semantics. Loaders consult `tr_schema.SUPPORTED_ARTIFACT_SCHEMAS` to decide which on-disk versions remain readable, so a schema bump does not automatically reject older artifacts.
 
 When an old cache carries a schema-tagged fingerprint (e.g. `/schema/5`), a pre-unification tail (`/score_schema/4/prerace/4`), or the legacy `blob_snap/v1/...` form, `migrate_legacy_fingerprints` rewrites the key into the unified `geometry_schema_v<N>` namespace at load time. Each entry below marks whether it was geometry-affecting; only geometry-affecting bumps are cache invalidators.
 
@@ -56,282 +147,24 @@ any level are silently ignored. No per-video migration is needed.
 `crop_displacement_alpha`) was investigated and proven reachable. It was not
 removed.
 
-## 14 (2026-06-12)
+## Rolled back: 11, 12, 13, 14 (2026-06-14)
 
-**Viterbi cost-model rewrite (WP-COST-1) and seed-only Hermite fallback (P10/WP-P10-1).**
-Geometry-affecting: yes (Stage-4-promoted intervals only; byte-identical for pure-Hermite paths).
+Rolled back because these changes did not alter the stored solver artifact format or any per-video variable. Current schema is 10.
 
-This bumps the unified `tr_schema.SCHEMA_VERSION` from 13 to 14 and adds 14
-to `GEOMETRY_AFFECTING_SCHEMAS`. Per contract C10, one unified bump covers both
-geometry-affecting changes. The on-disk layout of both the `diagnostics` and
-`torso_box_coords` artifacts is unchanged from v13, so v10-v14 files all remain
-readable.
+- v11: changed the residual-sampling computation method (fps-invariant stride). The on-disk layout was unchanged from v10; the stride is runtime-computed from fps and was never persisted. This was a method change; the correct path is `solve`.
+- v12: versioned walker debug verdict-CSV telemetry columns. The verdict CSV is a diagnostic artifact; it stores no solver geometry. This was a diagnostic telemetry change; the correct path is the diagnostic history.
+- v13: fixed the walker stride-termination overrun. The on-disk layout was unchanged; only computed walk outputs changed on high-fps sources. This was a method change; the correct path is `solve`.
+- v14: rewrote the Viterbi cost model and added the seed-only Hermite fallback gate. The on-disk layout was unchanged; only computed values on Stage-4-promoted intervals changed. This was a method change; the correct path is `solve`.
 
-**WP-COST-1 -- Viterbi cost-model rewrite.**
-Replaces the first-order `WEIGHT_DISPLACEMENT * disp` cost (which penalized
-motion itself, causing the walker to prefer stationary distractors over a
-moving runner) with pairwise velocity-delta scoring: two new terms
-`WEIGHT_SPEED_DELTA` and `WEIGHT_HEADING_DELTA` penalize acceleration and
-heading changes between consecutive real observations. The dead module constants
-`WEIGHT_MAG_VAR` and `WEIGHT_ANGLE_VAR` (specified but never wired into the DP
-per audit P2) are removed. Evidence is normalized per-frame against the strongest
-candidate in that frame (bounded by `WEIGHT_EVIDENCE_NORM = 0.5`) so it acts as
-a tie-breaker rather than a dominator. The tight hard displacement prune is
-replaced by a soft linear cost plus a quadratic overspeed penalty above the
-physical envelope, with a single generous hard prune at `ABSOLUTE_MAX_JUMP_W =
-1.5` torso-widths/frame. Skip is charged once per skipped frame and geometry
-bridges across gaps via gap-normalized velocity.
-Cost weights now live in the `walker_costs` section of
-`track_runner/track_runner.config.yaml` (resolving the P3 doc-code conflict
-in favor of `docs/TRACK_RUNNER_DESIGN.md`). Defaults: `WEIGHT_DISPLACEMENT =
-0.25` (lowered from the plan's 1.0 per manager resolve -- evidence-forward),
-`WEIGHT_SPEED_DELTA = 1.0`, `WEIGHT_HEADING_DELTA = 0.5`, `WEIGHT_OVERSPEED =
-4.0`, `WEIGHT_EVIDENCE_NORM = 0.5`, `SKIP_COST = 2.0`. The variance-to-
-pairwise-delta design choice is intentional: pairwise deltas penalize
-acceleration, are additive, and satisfy optimal-substructure; variance over a
-window mean is not DP-compatible without global rollback. The legacy constant
-`BOOTSTRAP_UNCERTAINTY_W` is no longer read by the DP (the DP reads no bootstrap
-slack); rename to `SEED_SEARCH_SLACK_W` is recorded as a follow-up, not done
-here. Weights are threaded to Stage-4 workers through the existing frozen
-`WorkerContext.walker_costs` field and `make_pool` initargs, resolving a wiring
-gap where `interval_solver._dispatch_blob_pass` omitted `walker_costs` from its
-`make_pool` call (spec-review F1 fix).
+These bumps were avoidable mistakes. The rule above -- "use `solve` for method-derived stale values; use `SCHEMA_VERSION` only for approved persisted artifact contract changes" -- now makes the correct decision visible on first read.
 
-**WP-P10-1 -- seed-only Hermite fallback (P10 fix).**
-The Stage-4 Hermite fallback gate previously fired only when
-`accepted_count == 0`. A pass with exactly one accepted frame at the bootstrap
-(seed) position and all remaining frames `soft_miss_no_blob` was not gated,
-producing a path frozen at the seed for all non-seed frames -- strictly worse
-than Hermite. The `WalkCoverage` dataclass (`accepted_count`,
-`post_seed_accepted`) and helper `count_post_seed_accepts` make the distinction
-explicit; the gate now reads `coverage.post_seed_accepted == 0` (the seed-only
-fallback). Terminology: "seed" replaces "bootstrap" in all new code and docs per
-user decision 2026-06-12; the legacy `BOOTSTRAP_UNCERTAINTY_W` identifier
-appears only in existing code pending the follow-up rename.
+Pre-existing v10 artifacts stay readable but may hold older-method boxes; run `solve` for current-method values.
 
-Why geometry-affecting: both changes alter walk outputs (accepted positions,
-statuses, path) on Stage-4-promoted intervals where blobs are present. On
-pure-Hermite paths (Stage 3, `blob_pass=False`) no walker code runs and output
-is byte-identical to v13. A single `SCHEMA_VERSION` line cannot be
-geometry-affecting for some dispatch paths and not others per the unified
-contract; v14 enters `GEOMETRY_AFFECTING_SCHEMAS` to prevent silently mixing
-pre-fix and post-fix geometry in cached artifacts.
+Human approver: user decision 2026-06-14 (rollback floor v10; full re-solve via `solve`).
 
-## 13 (2026-06-10)
+## Historical entries
 
-**Walker P12 stride-termination overrun fix.** Geometry-affecting: yes
-(stride > 1 sources only; byte-identical at stride 1).
-
-This bumps the unified `tr_schema.SCHEMA_VERSION` from 12 to 13 and adds 13
-to `GEOMETRY_AFFECTING_SCHEMAS`. The on-disk layout of both the `diagnostics`
-and `torso_box_coords` artifacts is unchanged from v12, so v10-v13 files all
-remain readable.
-
-Audit finding P12 (see
-[blob_walk_v2_implementation_audit.md](active_plans/audits/blob_walk_v2_implementation_audit.md))
-and its validation
-([blob_walk_v2_check0_stride_overrun.md](active_plans/workstreams/blob_walk_v2_check0_stride_overrun.md))
-proved the walker termination test `frame_f == neighbor_seed_frame` in
-[walk_walker.py](../track_runner/blob_walk/walk_walker.py) `_run_windowed_steps`
-misses when stride > 1 and the interval span is not divisible by stride. The
-stepped frame skips over the seed instead of landing on it, so the equality
-check never fires and the walk overruns into the adjacent interval (observed:
-119.94 fps Lyra-Wheeling interval #164, frames 16588-16591, FWD overran to
-16592+, BWD to 16587). This violated contract C5/C6 interval independence in
-spirit: a walk observed frames belonging to neighbor intervals. The fix
-replaces equality with the directional crossing test
-`sign * (frame_f - neighbor_seed_frame) >= 0` and clamps `frame_f` to the
-neighbor seed, so the walk terminates at the seed with
-`stop_reason = "hit_neighbor_seed"`.
-
-Why geometry-affecting: on stride > 1 (>= ~90 fps) sources whose span is not
-divisible by stride, walk outputs change (per-frame statuses, accepted
-positions, paths). At stride 1 (30/60 fps) the crossing test fires exactly
-when equality fired and the clamp is a no-op, so output is byte-identical.
-
-Honest tradeoff: a single unified `SCHEMA_VERSION` line cannot be
-geometry-affecting for some sources and not others. Marking v13
-geometry-affecting invalidates geometry-derived caches on 30/60 fps videos
-too, where output is unchanged -- a re-solve cost paid for nothing on those
-videos. The alternative (no bump, or metadata-only) risks silently mixing
-pre-fix overrun geometry with post-fix geometry on 120 fps videos, exactly the
-mismatch contract C10 exists to prevent. The bump wins.
-
-## 12 (2026-06-10)
-
-**Walker CSV debug-log P15 telemetry-truthfulness fix.** Geometry-affecting: no.
-
-This bumps the unified `tr_schema.SCHEMA_VERSION` from 11 to 12. It is a
-metadata-only bump: the walker verdict CSV is a diagnostic artifact, no solved
-geometry changed, and `GEOMETRY_AFFECTING_SCHEMAS` is unchanged (12 is
-intentionally absent), so solved-geometry cache entries stay valid across the
-v11 -> v12 line. `walk_debug_log.SCHEMA_VERSION` reads the unified constant, so
-its exported value advances 11 -> 12 with it; that value is never written into
-the CSV (the CSV header is the `HEADER` column-name tuple).
-
-Audit finding P15 (see
-[blob_walk_v2_implementation_audit.md](active_plans/audits/blob_walk_v2_implementation_audit.md))
-proved the `path_cost` column lied about its own meaning: its header doc
-claimed "Viterbi DP cost contribution at this frame," but the writer stamped
-the SAME whole-window Viterbi total on every emitted row. This fix is telemetry
-only -- no change to selected path, statuses, positions, accepted counts, or
-the Hermite fallback. Decision equality was verified field-wise against the
-`e2e_blob_walk_baseline` golden on the two diagnosed stall intervals
-(Conant 1080-1111 FWD, Jason 564-583 FWD) plus steady-state intervals; only the
-new telemetry columns differ. Three coordinated changes to
-[walk_debug_log.py](../track_runner/blob_walk/walk_debug_log.py) HEADER
-(now 45 columns, up from 43):
-
-- `path_cost` documentation corrected to its true meaning: the WHOLE-WINDOW
-  Viterbi total for the window that produced this frame's decision. Column
-  values and behavior are unchanged; only the documentation is fixed.
-- NEW `path_step_cost` (float): the per-frame Viterbi cost contribution of the
-  selected node -- its local node cost (evidence bonus for a real blob, else
-  SKIP_COST) plus the transition cost into it from the previous node. This is
-  the value `path_cost` falsely claimed to be. Summing `path_step_cost` across
-  one window equals that window's `path_cost`. Blank for bootstrap and terminal
-  marker rows. Computed by the new `walk_viterbi.compute_path_step_costs`
-  helper, which reads the already-selected path only and does not run, alter, or
-  re-bias the Viterbi DP (no change to backpointers, argmin, or costs).
-- NEW `window_head_frame` (int): the source frame index of the window head
-  (newest frame in the rolling buffer) at the moment this frame's window
-  decision was finalized, per spec section 7 of
-  [windowed_path_selection_amendment.md](archive/windowed_path_selection_amendment.md).
-  Blank for bootstrap and terminal marker rows.
-
-Pre-v14 CSVs (43 columns) remain readable by tools that iterate `HEADER`
-directly; the two new columns are simply absent and default to blank on read.
-The CSV column-meaning history advances to v14 (v12 added the provisional
-columns, v13 the window-selection redesign, v14 this P15 fix); that
-column-meaning label sequence is independent of and faster than the unified
-integer, which is now 12.
-
-## Walker CSV debug-log constant folded under tr_schema (2026-06-08)
-
-**Verdict-CSV `walk_debug_log.SCHEMA_VERSION` now reads `tr_schema.SCHEMA_VERSION` (C10).** Geometry-affecting: no.
-
-The relocated [walk_debug_log.py](../track_runner/blob_walk/walk_debug_log.py) (moved into
-`track_runner/blob_walk/` by WP-1) previously carried its own `SCHEMA_VERSION = 13`. Once it sits
-inside `track_runner/` beside [tr_schema.py](../track_runner/tr_schema.py), two schema constants
-violate contract C10 (one unified `SCHEMA_VERSION`). WP-4 folds it: the module now defines
-`SCHEMA_VERSION = tr_schema.SCHEMA_VERSION` (currently 11).
-
-- Header-stamp value change: the exported constant value changes from 13 to 11. This is metadata
-  only. `walk_debug_log.SCHEMA_VERSION` is never written into the verdict CSV; the CSV header is the
-  `HEADER` column-name tuple (43 columns), which is unchanged. No CSV cell, no row count, and no
-  column changes. The `e2e_blob_walk_baseline` golden compares CSV columns and cell values, so the
-  fold does not alter the baseline.
-- The torso_box_coords writer in [state_io.py](../track_runner/state_io.py) is untouched (already
-  unified and additive per WS1-C); `GEOMETRY_AFFECTING_SCHEMAS` is unchanged.
-- The CSV column-meaning history (v12 below, v13 below) is retained verbatim for readers parsing
-  older verdict CSVs; only the running stamp source changed.
-
-## Walker-local CSV v13 (2026-05-28, superseded by unified schema)
-
-**Walker CSV debug-log schema: window-level path-selection redesign.** Geometry-affecting: no.
-
-This version governed `track_runner/blob_walk/walk_debug_log.py` SCHEMA_VERSION before
-the module was relocated into `track_runner/` and folded under the unified `tr_schema.SCHEMA_VERSION`
-constant (see the "Walker CSV debug-log constant folded under tr_schema" entry above). It is a
-walker-local CSV column-meaning label, not a unified schema integer. It is listed here per contract
-C10 (one unified schema history). The `track_runner/tr_schema.py` SCHEMA_VERSION was 11 at this time.
-
-Column changes from v12 (43 columns total, down from 42 in v12 + 2 new - 1 deleted = 43):
-
-- DELETED: `torso_w_drift_frac` (unused placeholder per scout audit in
-  [window_level_touchpoint_map.md](archive/window_level_touchpoint_map.md)).
-- NEW: `path_cost` (float) -- Viterbi DP cost contribution at the frame when this
-  decision was finalized. Blank for bootstrap and terminal marker rows.
-- NEW: `candidates_in_window` (int) -- count of non-empty corridor_blob candidate
-  lists in the 9-frame window when this frame's decision was finalized.
-
-Status enum changes:
-
-- ADDED: `interpolated` -- frame has candidates-present path gap; position is linearly
-  interpolated between bracketing accepted frames.
-- ADDED: `extrapolated` -- past last accepted in window but within EXTRAP_MAX=2 frames.
-- ADDED: `soft_miss_no_path` -- candidates existed but Viterbi assigned skip at this
-  frame because no plausible path through them.
-- NO LONGER EMITTED: `rejected_motion_gate` -- per-frame gate removed; replaced by
-  9-frame Viterbi DP. Legacy value remains parseable via `ALL_KNOWN_STATUS`.
-
-Semantic changes (columns retained but meaning changed):
-
-- `status`: value set updated as described above.
-- `pred_cx` / `pred_cy`: now the last-accepted position used for ROI anchoring
-  (no velocity-projection model in the windowed walker).
-- `reject_reason`: always blank in new walker (no per-step gate).
-- `roi_anchor_source`: always `"accepted"` in new walker (no provisional state).
-- `provisional_cx_px` / `provisional_cy_px`: always blank in new walker; retained
-  for backward CSV-read compat.
-
-Rationale: the per-frame single-winner model (v12) was causing leg/torso blob
-oscillation that destroyed lock even when the torso blob was present every frame.
-Per-frame max(integrated_mag) selection is replaced by 9-frame rolling buffer +
-Viterbi DP path selection over `trace.corridor_blobs` candidate lists. The design
-is described in
-[windowed_path_selection_amendment.md](archive/windowed_path_selection_amendment.md).
-
-## 12 (2026-05-28)
-
-**Walker CSV debug-log schema: provisional-observation anti-freeze columns added.** Geometry-affecting: no.
-
-This version governs `track_runner/blob_walk/walk_debug_log.py` SCHEMA_VERSION (the blob-walker CSV format),
-not the track_runner on-disk solver artifact schema. It is listed here per contract C10 (one unified
-schema history). The `track_runner/tr_schema.py` SCHEMA_VERSION remains at 11; the walker CSV schema
-advances independently because the walker lives in `tools/blob_walk_v2/` and does not write
-track_runner solver artifacts.
-
-- Three new columns added to `walk_debug_log.HEADER` (now 42 columns, up from 39 in v11):
-  - `roi_anchor_source`: string recording which recent position anchored the ROI and
-    acceptance-box for this step. Values: `"accepted"` (anchored to last accepted position),
-    `"provisional"` (anchored to the most recent gate-rejected candidate position),
-    `"extrapolated"` (anchored to velocity-projected prediction with no provisional available).
-  - `provisional_cx_px`: float, the provisional candidate x-coordinate (pixels) used when
-    `roi_anchor_source == "provisional"`; blank otherwise.
-  - `provisional_cy_px`: float, the provisional candidate y-coordinate (pixels) used when
-    `roi_anchor_source == "provisional"`; blank otherwise.
-- Mechanism: after a motion-gate rejection where a visible candidate was found, the walker
-  records the candidate's position as `last_provisional_cx/cy/frame`. On the following step,
-  if `last_provisional_frame > last_accepted_frame`, the provisional position anchors the
-  ROI/acceptance-box instead of the stale last-accepted position. This breaks the H4
-  velocity-freeze cascade: 28+ consecutive `soft_miss_no_blob` frames after one `rejected_gate`
-  (Conant 1389-1420 BWD) are caused by the acceptance-box drifting away from the runner;
-  the provisional anchor keeps the acceptance-box near the visible runner.
-- Velocity history and accepted-state are unchanged: `last_provisional_*` never feeds into
-  `accept_frames_and_scenes`, `vx_recent_scene`, or `vy_recent_scene`.
-- Pre-v12 CSVs with 39 columns remain readable by tools that iterate `HEADER` directly; the
-  three new columns are simply absent and default to blank on read.
-
-## 11 (2026-05-03)
-
-**M2 fps-invariant stride model replaces adaptive-count window.** Geometry-affecting: yes.
-
-- `DEFAULT_BACKGROUND_WINDOW_SECONDS` and `resolve_half_window()` removed from
-  [residual_motion.py](../track_runner/residual_motion.py). Replaced by
-  `REFERENCE_FPS = 60` and `resolve_stride(fps)` which computes
-  `stride = max(1, round(fps / REFERENCE_FPS))`.
-- Neighbor offsets in `compute_residual_for_frame` and `_compute_residual_with_extras` are
-  now `k * stride` for `k in range(-DEFAULT_HALF_WINDOW, DEFAULT_HALF_WINDOW + 1) if k != 0`.
-  At 60 fps stride=1, offsets `[-4, -3, -2, -1, 1, 2, 3, 4]` -- byte-identical to the
-  legacy behavior. At 119.94 fps stride=2, offsets `[-8, -6, -4, -2, 2, 4, 6, 8]` --
-  same ~133 ms time span, half the I/O vs the 17-sample window the old model produced.
-  At 240 fps stride=4, quarter the I/O.
-- `precompute_interval_residuals` in [residual_pre_pass.py](../track_runner/residual_pre_pass.py)
-  gains a `stride` parameter; padding is `half_window * stride` so the BGR cache covers
-  the wider time-span window at high fps.
-- `observe_blob_at` signature updated: `window_seconds` parameter removed, `stride`
-  parameter added (default None, resolved from `reader.fps` automatically).
-- `compute_heat_map_roi` in [residual_heat_map.py](../track_runner/residual_heat_map.py)
-  migrated to stride model; `window_seconds` parameter removed.
-- `tools/diagnose_residual_motion.py` argparse migrated: `--window-seconds` removed,
-  `--stride` added (default: resolved from video fps).
-- `GEOMETRY_AFFECTING_SCHEMAS` now includes 11 (was {3, 6, 7, 8, 9, 10}).
-- `SUPPORTED_ARTIFACT_SCHEMAS["torso_box_coords"]` is `{10, 11}`. On-disk layout is
-  unchanged from v10; v10 files remain readable. Only the residual-sampling semantics
-  changed, so cache invalidation happens naturally via the geometry fingerprint.
-- `SUPPORTED_ARTIFACT_SCHEMAS["diagnostics"]` adds 11 (stable metadata JSON shape).
-- Plan: `~/.claude/plans/memoized-percolating-moler.md` M2.
+The checklist above is the current rule. Older entries preserve historical rationale and may describe cache-invalidation practices no longer used for method-only changes.
 
 ## 10 (2026-05-03)
 

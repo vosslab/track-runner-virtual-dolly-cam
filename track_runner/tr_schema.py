@@ -19,15 +19,28 @@ Public surface:
 """
 
 #============================================
-# the one and only schema version constant
-SCHEMA_VERSION = 14
+# the one and only schema version constant.
+# Schema 10 is current. Method-only changes (residual stride, walker DP, cost
+# weights) keep this number and use the `solve` full re-solve; see the decision
+# rule in docs/TR_SCHEMA_VERSION_HISTORY.md.
+SCHEMA_VERSION = 10
 
 #============================================
-# Schema versions that altered solved-geometry semantics. Membership is
-# the contract: present = a bump that requires invalidating geometry
-# from before this version; absent = metadata-only bump, geometry caches
-# stay valid across this version line. v4 and v5 are intentionally
-# absent because they were metadata-only (see TR_SCHEMA_VERSION_HISTORY).
+# This set tracks schema versions that changed the STORED geometry artifact
+# contract (field names, layout, dtype/encoding, coordinate meaning, required
+# metadata). Membership is the contract: present = a bump that changed how the
+# persisted geometry is read/decoded, requiring invalidation of geometry from
+# before this version; absent = a bump that did not change the stored contract.
+#
+# Method/algorithm changes (walker Viterbi DP, cost weights, residual sampling
+# stride, heat-map sampling) do NOT enter this set. They change computed values
+# under the SAME stored contract, so they refresh stale values via the `solve`
+# full re-solve and keep SCHEMA_VERSION fixed. The schema number is reserved for
+# the stored read/validate contract, never for the algorithm that produced the
+# stored values.
+#
+# v4 and v5 are intentionally absent because they were metadata-only (see
+# TR_SCHEMA_VERSION_HISTORY).
 # v6 enters the set because the DoG band-pass added to observe_blob_at
 # changes the magnitude landscape extract_frame_blobs sees.
 # v7 enters the set because the cache namespace split by stage
@@ -42,32 +55,9 @@ SCHEMA_VERSION = 14
 # v10 enters the set because per-frame torso-box coordinate arrays switched
 # from float32 to uint16 dtype per contract C12.4; the pixel-snapped int
 # representation changes how the persisted data is decoded and reconstructed.
-# v11 enters the set because the M2 fps-invariant stride model changes the
-# residual sampling pattern (neighbor offsets = k * stride instead of k).
-# The on-disk layout is unchanged from v10; v10 files remain readable.
-# Cache invalidation happens naturally via the geometry fingerprint.
-# v12 is intentionally ABSENT: it is a metadata-only bump for the P15 walker
-# debug-log telemetry fix (path_cost documentation corrected, path_step_cost
-# and window_head_frame diagnostic columns added). The verdict CSV is a
-# diagnostic artifact, not solved geometry; no solver output changed, so
-# geometry caches stay valid across the v11 -> v12 line.
-# v13 enters the set because the P12 stride-termination fix changes walk
-# outputs (per-frame statuses, accepted positions, paths) on stride > 1
-# (>= ~90 fps) sources whose interval span is not divisible by stride. At
-# stride 1 (30/60 fps) the walk is byte-identical, but membership is the
-# unified contract: a single SCHEMA_VERSION line cannot be geometry-affecting
-# for some sources and not others, so v13 is marked geometry-affecting to
-# avoid silently mixing pre-fix overrun geometry with post-fix geometry.
-# v14 enters the set because two geometry-affecting changes landed together
-# per contract C10 (one unified bump covers both): (1) the Viterbi DP cost
-# model rewrite from first-order displacement to pairwise velocity-delta
-# scoring (WP-COST-1) changes walk outputs on every Stage-4-promoted interval
-# where blobs are present; (2) the P10 seed-only Hermite fallback fix
-# (WP-P10-1) changes the fallback gate from zero-accept to zero-post-seed-
-# accept, so bootstrap-only stall passes now fall back to Hermite. Both
-# changes affect geometry only on Stage-4-promoted intervals; pure-Hermite
-# paths (Stage 3, blob_pass=False) are byte-identical to v13.
-GEOMETRY_AFFECTING_SCHEMAS: set = {3, 6, 7, 8, 9, 10, 11, 13, 14}
+# This is the last change that altered the stored format, so it is the
+# rule-consistent floor.
+GEOMETRY_AFFECTING_SCHEMAS: set = {3, 6, 7, 8, 9, 10}
 
 
 #============================================
@@ -97,21 +87,15 @@ def latest_geometry_affecting_schema() -> int:
 SUPPORTED_ARTIFACT_SCHEMAS: dict = {
 	# diagnostics JSON: shape was migrated from flat (v2) to nested
 	# (v3+) at load time; v3-v10 share the nested shape.
-	"diagnostics": {2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14},
+	"diagnostics": {2, 3, 4, 5, 6, 7, 8, 9, 10},
 	# torso_box_coords.npz: per-frame coordinate arrays changed dtype
-	# from float32 (v8, v9) to uint16 (v10+) per C12.4. Hard-cut at v10:
-	# v8 and v9 are no longer readable; cache invalidation required.
-	# v11 adds stride-model sampling but on-disk layout is unchanged from
-	# v10; both v10 and v11 files remain readable. v12 is the metadata-only
-	# P15 walker-telemetry bump; the torso_box_coords on-disk layout is
-	# unchanged from v11, so v10, v11, and v12 files all remain readable.
-	# v13 is the P12 stride-termination fix; the torso_box_coords on-disk
-	# layout is unchanged from v12, so v10-v13 files all remain readable.
-	# v14 is the cost-model rewrite + P10 seed-only fallback fix; the on-disk
-	# layout is unchanged from v13, so v10-v14 files all remain readable.
-	# Walk geometry changes on Stage-4-promoted intervals but the on-disk
-	# coordinate representation is the same uint16 layout.
-	"torso_box_coords": {10, 11, 12, 13, 14},
+	# from float32 (v8, v9) to uint16 (v10) per C12.4. Hard-cut at v10:
+	# v8 and v9 are no longer readable; cache invalidation required. v10 is
+	# the current floor and the last change that altered the stored format.
+	# Artifacts stamped v11-v14 (method-only bumps that were rolled back) are
+	# intentionally not accepted as current solver artifacts; `solve`
+	# regenerates them fresh at v10. See TR_SCHEMA_VERSION_HISTORY.md.
+	"torso_box_coords": {10},
 }
 
 

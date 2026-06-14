@@ -13,7 +13,7 @@ Notable shipped qualities:
   re-solve on low/fair-confidence intervals), Stage 5 (optional full blob pass
   via `--full`).
 - **Windowed Viterbi walker** as the default Stage-4 blob pass. Pairwise
-  velocity-delta cost model (schema 14). Hermite fallback for zero-accept
+  velocity-delta cost model. Hermite fallback for zero-accept
   stall.
 - **prepare mode** for fast-read video creation. Reduces 4K HEVC random-read
   cost from 450-575 ms to 6-14 ms per frame. See

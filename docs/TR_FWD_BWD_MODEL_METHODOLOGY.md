@@ -229,7 +229,7 @@ runs a window-level Viterbi DP to select a globally consistent path. A pass with
 zero-accept stall and seed-only stall) falls back to its Hermite path, keeping
 default-on never-worse-than-Hermite; the gate reads `WalkCoverage.post_seed_accepted`.
 Viterbi weight tuning and the promoted-only A/B shipped 2026-06-12 (pairwise
-velocity-delta cost model, schema 14); only the seed-frame stall root cause
+velocity-delta cost model); only the seed-frame stall root cause
 remains open. Full
 walker mechanics are in the Windowed path-selection
 walker section of [TRACK_RUNNER_DESIGN.md](TRACK_RUNNER_DESIGN.md) and in

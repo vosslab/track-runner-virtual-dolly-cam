@@ -5,29 +5,32 @@ Exports per-frame walker trace data to a CSV file with a locked header
 (consumed by the downstream HTML caption layer). Every frame the walker
 visits produces one row.
 
+This verdict CSV is a DIAGNOSTIC artifact. Its column layout has its own
+documented history (below) for readers parsing older files, but it does NOT
+define, carry, or bump the solver SCHEMA_VERSION. The solver schema lives only
+in track_runner/tr_schema.py; a telemetry-column change here uses the diagnostic
+history and never touches the solver schema integer.
+
 Public API:
 - DebugLogRow: dataclass with one attribute per CSV column.
 - DebugLogWriter: class with __init__, write_row, __enter__, __exit__, close.
 - HEADER: locked verdict-CSV column tuple (45 columns); see TR_SCHEMA_VERSION_HISTORY.md for version history.
-- SCHEMA_VERSION: int, the unified tr_schema.SCHEMA_VERSION (C10); metadata only,
-  not stamped into the CSV. The column-meaning history (v12/v13) below documents
-  the CSV layout for readers parsing older files.
 
 Unavailable numeric values are BLANK (empty cell), never the string "None".
 This behavior is the natural default of Python's csv.writer when passed None.
 
-Schema history:
+Diagnostic CSV column history (independent of the solver SCHEMA_VERSION):
+  These version labels are CSV-column-meaning labels only. They advance
+  independently of the solver SCHEMA_VERSION and never bump it.
   v11 and earlier: 39 columns (frame_index..stop_reason).
   v12 (2026-05-28): Added roi_anchor_source, provisional_cx_px,
     provisional_cy_px columns (provisional-observation anti-freeze fix).
-    SCHEMA_VERSION bumped from 11 to 12 per contract C10.
   v13 (2026-05-28): Window-level path-selection redesign. Removed
     torso_w_drift_frac (unused placeholder). Added path_cost and
     candidates_in_window (count of corridor_blobs across the 9-frame window).
     Status enum updated: added interpolated, extrapolated, soft_miss_no_path;
     removed rejected_motion_gate (legacy values remain parseable on read).
-    SCHEMA_VERSION bumped from 12 to 13 per contract C10.
-  v14 (2026-06-10): P15 telemetry-truthfulness fix. The path_cost column was
+  v14 (2026-06-10): telemetry-truthfulness fix. The path_cost column was
     documented as the "Viterbi DP cost contribution at this frame" but the
     writer stamped the SAME whole-window Viterbi total on every emitted row;
     its documented meaning was a lie. Two coordinated corrections, telemetry
@@ -43,30 +46,15 @@ Schema history:
       - window_head_frame (NEW): source frame index of the window head (newest
         frame in the rolling buffer) when this frame's decision was finalized,
         per spec section 7.
-    SCHEMA_VERSION bumped per contract C10 (unified tr_schema constant 11 ->
-    13; P15 (v14 CSV label) and P12 (v13 unified integer) landed together so
-    the on-disk unified constant was never 12 -- v12 is a CSV column-meaning
-    label only; the v12/v13/v14 labels here are the CSV column-meaning history,
-    which advances independently of and faster than the unified integer).
+    This is a CSV column-meaning label only; it does not change the solver
+    SCHEMA_VERSION. The diagnostic CSV column history advances independently of
+    and faster than the solver schema integer in track_runner/tr_schema.py.
 """
 
 import csv
 import dataclasses
 import pathlib
 
-# local repo modules
-import tr_schema
-
-
-# Schema version stamp for this debug-log CSV format.
-# Per contract C10 there is exactly one SCHEMA_VERSION authority in the codebase:
-# track_runner/tr_schema.py. Now that this module lives inside track_runner/ beside
-# tr_schema, it reads that unified constant rather than carrying its own. The verdict
-# CSV is a diagnostic artifact; this value is metadata only and is not written into the
-# CSV (the CSV header is the column-name tuple HEADER below, which is unchanged).
-# The column-meaning history (v12, v13) is retained in the module docstring above for
-# readers parsing older CSVs; the running stamp now tracks tr_schema.SCHEMA_VERSION.
-SCHEMA_VERSION = tr_schema.SCHEMA_VERSION
 
 # Locked verdict-CSV column tuple (45 columns). See TR_SCHEMA_VERSION_HISTORY.md for version history.
 # This tuple is consumed by the downstream HTML caption generation.
@@ -143,14 +131,14 @@ HEADER = (
 	# lists in the 9-frame window when this frame's decision was finalized (int).
 	# Blank for bootstrap and terminal marker rows.
 	"path_step_cost",
-	# path_step_cost NEW in v14 (P15 fix): per-frame Viterbi cost contribution of
+	# path_step_cost NEW in v14 (telemetry fix): per-frame Viterbi cost contribution of
 	# the selected node on the chosen path -- its local node cost (evidence bonus
 	# for a real blob, else SKIP_COST) plus the transition cost into it from the
 	# previous node (float). This is the value path_cost falsely claimed to be.
 	# Summing path_step_cost across one window equals that window's path_cost.
 	# Blank for bootstrap and terminal marker rows.
 	"window_head_frame",
-	# window_head_frame NEW in v14 (P15 / spec section 7): source frame index of
+	# window_head_frame NEW in v14 (spec section 7): source frame index of
 	# the window head (newest frame in the rolling buffer) at the moment this
 	# frame's window decision was finalized (int). Blank for bootstrap and
 	# terminal marker rows.
@@ -249,7 +237,7 @@ class DebugLogRow:
 	# candidates_in_window: count of non-empty corridor_blob lists in the 9-frame window
 	# when this frame's decision was finalized; blank for bootstrap/terminal rows.
 	candidates_in_window: int | None = None
-	# New v14 fields (P15 telemetry-truthfulness fix), recording only.
+	# New v14 fields (telemetry-truthfulness fix), recording only.
 	# path_step_cost: per-frame Viterbi cost contribution of the selected node
 	# (local node cost + transition cost into it); blank for bootstrap/terminal rows.
 	path_step_cost: float | None = None
