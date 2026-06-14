@@ -135,55 +135,6 @@ def _validate_processing(config: dict) -> None:
 
 #============================================
 
-def _validate_walker_costs(config: dict) -> None:
-	"""Validate the walker_costs section when present.
-
-	The walker_costs section carries the six Viterbi cost weights consumed by
-	blob_walk.walk_viterbi. The section is optional at the schema level (callers
-	without it keep the walk_viterbi module-constant defaults), but when present
-	all six weight keys are required and accessed directly so a partial section
-	fails loud rather than silently mixing config weights with defaults. The
-	shipped default config always carries the full section.
-
-	Args:
-		config: Full configuration dictionary.
-
-	Raises:
-		RuntimeError: If walker_costs is present but missing a required weight,
-			or holds a non-numeric weight value.
-	"""
-	# walker_costs is optional; absence means "use walk_viterbi defaults".
-	if "walker_costs" not in config:
-		return
-	walker_costs = config["walker_costs"]
-	if not isinstance(walker_costs, dict):
-		raise RuntimeError(
-			"config walker_costs section must be a mapping of weight names "
-			"to numeric values"
-		)
-	# Lazy import: avoids a future circular import since tr_config loads
-	# early in cli startup and walk_viterbi pulls in the blob_walk package.
-	import blob_walk.walk_viterbi as walk_viterbi
-	# Every required weight must be present; direct access fails loud on a
-	# partial section (do-not-hide-bugs-with-defaults).
-	for name in walk_viterbi.COST_WEIGHT_NAMES:
-		if name not in walker_costs:
-			raise RuntimeError(
-				f"config walker_costs section missing required weight: {name} "
-				f"(all of {list(walk_viterbi.COST_WEIGHT_NAMES)} are required "
-				"when walker_costs is present)"
-			)
-		# Each weight must be numeric; reject strings or other junk early.
-		value = walker_costs[name]
-		if not isinstance(value, (int, float)):
-			raise RuntimeError(
-				f"config walker_costs.{name} must be numeric, got "
-				f"{type(value).__name__}"
-			)
-
-
-#============================================
-
 def validate_config(config: dict) -> None:
 	"""
 	Validate that required keys are present in the config.
@@ -217,8 +168,6 @@ def validate_config(config: dict) -> None:
 		config["camera"] = _get_default_camera_config()
 	# validate processing keys (torso_height_multiple contract)
 	_validate_processing(config)
-	# validate walker_costs section when present (all six weights required)
-	_validate_walker_costs(config)
 
 #============================================
 

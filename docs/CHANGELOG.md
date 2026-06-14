@@ -26,6 +26,14 @@
   bare `collections.deque` annotations tightened to `collections.deque[str]`;
   two self-evident comments trimmed from `_stream_ffmpeg_stderr`.
 
+- **Solve KeyError crash fixed** (`track_runner/cli.py`): `solve` and
+  `solve --full` crashed with `KeyError: 'walker_costs'` on any per-video
+  config predating the `walker_costs` section. Root cause was a direct
+  `cfg["walker_costs"]` read at cli.py:893. Durable fix: the entire
+  config-to-worker supply chain for walker costs was removed (M1);
+  Viterbi cost weights are now fixed constants in
+  `track_runner/blob_walk/walk_viterbi.py` with no per-video config read.
+
 ### Fixes and Maintenance
 
 - **Fast-read smoke read skips the exact last frame** (`track_runner/fastread_video.py`):
@@ -37,12 +45,63 @@
 
 ### Removals and Deprecations
 
+- **Removed walker_costs config plumbing (M1)**: deleted the `walker_costs`
+  section from `track_runner/track_runner.config.yaml`, the
+  `_validate_walker_costs` validator from `tr_config.py`, and the
+  config-to-worker supply chain (`cli.py` -> `solve_kwargs` ->
+  `ExecutionContext.walker_costs` -> `make_pool` initargs ->
+  `walk_viterbi.set_cost_weights` -> `_COST_WEIGHT_OVERRIDES`). The
+  six Viterbi cost constants (`WEIGHT_DISPLACEMENT`, `WEIGHT_SPEED_DELTA`,
+  `WEIGHT_HEADING_DELTA`, `WEIGHT_OVERSPEED`, `WEIGHT_EVIDENCE_NORM`,
+  `SKIP_COST`) are now the sole source of truth in `walk_viterbi.py`.
+
+- **Removed detection threshold config keys (M2)**: `detection.confidence_threshold`
+  (0.25) and `detection.nms_threshold` (0.45) removed from
+  `track_runner.config.yaml`. Both are now fixed constants in `tr_detection.py`.
+  The dead `detection.model` key (`yolov8n`) was also removed; no production
+  code read it.
+
+- **Removed crop direct-center smoothing keys (M2)**: `processing.crop_post_smooth_strength`,
+  `processing.crop_post_smooth_size_strength`, and
+  `processing.crop_post_smooth_max_velocity` removed from `track_runner.config.yaml`.
+  All three are now fixed constants in `tr_crop.py` with identical effective
+  values. `processing.crop_min_size` was already absent from the default config
+  (removed 2026-05-02); stale doc references were corrected.
+
 - **Removed heartbeat scaffolding** (`track_runner/fastread_video.py`): deleted
   `HEARTBEAT_INTERVAL_S` constant, `_format_elapsed` helper, and
   `_collect_stderr_lines` helper; removed the `import time` that existed only to
   support them. ffmpeg stderr is now read incrementally via `os.read` in chunks,
   split on `\r` and `\n`, into a `collections.deque(maxlen=64)` tail buffer used
   for the error tail and success summary.
+
+### Decisions and Failures
+
+- **Walker costs, detection thresholds, crop alphas are fixed constants
+  (human-approved 2026-06-13)**: walker Viterbi cost weights, detection
+  `confidence_threshold` / `nms_threshold`, and crop direct-center smoothing
+  alphas (`crop_post_smooth_strength`, `crop_post_smooth_size_strength`,
+  `crop_post_smooth_max_velocity`) are too obscure for per-video user config.
+  They are now fixed constants in their respective modules
+  (`walk_viterbi.py`, `tr_detection.py`, `tr_crop.py`). The prior
+  `docs/TRACK_RUNNER_DESIGN.md` statement that walker weights could be "tuned
+  without code edits" was unapproved doc drift, not a human-approved decision;
+  correcting it restores the intended design.
+
+- **Crop smooth path was investigated and kept**: `crop_mode == "smooth"`,
+  `CropController`, `smooth_crop_trajectory`, and the five smooth-only config
+  knobs (`crop_smoothing_attack`, `crop_smoothing_release`, `crop_max_velocity`,
+  `crop_velocity_scale`, `crop_displacement_alpha`) were audited for
+  reachability. The path is reachable: `crop_mode` defaults to `"smooth"` in
+  the default config, the `CropController` branch executes on that default, and
+  several tests exercise it. The smooth path was not removed.
+
+- **Config-key removals do not trigger a SCHEMA_VERSION bump**: `SCHEMA_VERSION`
+  governs on-disk solver artifacts (diagnostics JSON, `torso_box_coords.npz`,
+  and the geometry fingerprint cache key), not the YAML config schema. Removing
+  config keys does not change any on-disk artifact layout. No bump was applied.
+  This decision is recorded in `docs/TR_SCHEMA_VERSION_HISTORY.md` under the
+  2026-06-13 entry.
 
 ## 2026-06-12
 

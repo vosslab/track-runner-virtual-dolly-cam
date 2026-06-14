@@ -130,14 +130,6 @@ def process_video(
 			'single-process, multi-second under parallel load); expect long '
 			'runtimes on scattered reads (see docs/TROUBLESHOOTING.md)'
 		)
-	# Resolve this video's config and install Viterbi cost weights before any
-	# walks run. apply_walker_costs_for_video resolves the same way as production
-	# (per-video config when present, else the default) and calls
-	# walk_viterbi.set_cost_weights so in-process walks use YAML weights, not
-	# module-constant defaults. Per F2 of the post-review fix scope: without this
-	# call the function was defined but never invoked, making walker_costs a no-op
-	# in the tool chain.
-	walk_driver.apply_walker_costs_for_video(video_basename)
 	# Load seeds as a SeedsView in processed-pixel coords so run_interval_walk
 	# receives PROCESSED seeds natively (the bug #101 cure). At bin > 1 a
 	# source cx near the right edge built a degenerate ROI clamped against the

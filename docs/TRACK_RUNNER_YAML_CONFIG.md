@@ -9,8 +9,6 @@ for the crop-and-follow pipeline. It is auto-created at
 ```yaml
 track_runner: 3
 detection:
-  model: yolov8n
-  confidence_threshold: 0.25
 processing:
   crop_aspect: '16:9'
   torso_height_multiple: 8
@@ -32,10 +30,11 @@ processing:
 
 ## Detection section
 
-| Key | Default | Description |
-| --- | --- | --- |
-| `model` | `yolov8n` | YOLO model name for person detection |
-| `confidence_threshold` | `0.25` | Minimum detection confidence (0.0-1.0) |
+The `detection` section is required but currently has no user-tunable keys.
+Detection model (`yolov8n`), confidence threshold (0.25), and NMS threshold
+(0.45) are fixed constants in `tr_detection.py` (human decision 2026-06-13:
+too obscure for per-video config). Include the empty section header in your
+config YAML to satisfy the schema validator.
 
 ## Processing section
 
@@ -82,30 +81,16 @@ These keys only apply when `crop_mode: smooth`.
 | `crop_max_velocity` | `30.0` | Hard cap on crop center movement per frame (pixels) |
 | `crop_velocity_scale` | `2.0` | Adaptive velocity multiplier based on subject speed |
 | `crop_displacement_alpha` | `0.1` | EMA alpha for tracking subject displacement |
-| `crop_min_size` | `480` | Minimum crop height in pixels. Raising this lets `torso_height_multiple` control zoom instead of silently clamping. |
-
-#### Post-smoothing (optional, applied after smooth mode)
-
-These apply an offline forward-backward EMA pass on top of the smooth controller
-output. This sees future frames and produces much more stable results.
-
-| Key | Default | Description |
-| --- | --- | --- |
-| `crop_post_smooth_strength` | `0.0` | Position smoothing alpha (0 = off, try 0.05-0.15) |
-| `crop_post_smooth_size_strength` | `0.0` | Size smoothing alpha (0 = defaults to half of position) |
-| `crop_post_smooth_max_velocity` | `0.0` | Velocity cap after post-smoothing (0 = no cap) |
 
 ### Direct center mode tuning
 
-These keys only apply when `crop_mode: direct_center`. The direct center
-algorithm reuses `crop_post_smooth_*` keys for its smoothing pass.
-
-| Key | Default | Description |
-| --- | --- | --- |
-| `crop_post_smooth_strength` | `0.0` | Position smoothing alpha (0 = no smoothing) |
-| `crop_post_smooth_size_strength` | `0.0` | Size smoothing alpha (0 = defaults to half of position) |
-| `crop_post_smooth_max_velocity` | `0.0` | Velocity cap on center per frame (0 = no cap) |
-| `crop_min_size` | `480` | Minimum crop height in pixels. Raising this lets `torso_height_multiple` control zoom instead of silently clamping. |
+`crop_mode: direct_center` has no user-tunable smoothing keys. The
+forward-backward EMA position smoothing and velocity cap are fixed constants
+in `tr_crop.py` (human decision 2026-06-13: too obscure for per-video config).
+The `crop_post_smooth_strength`, `crop_post_smooth_size_strength`,
+`crop_post_smooth_max_velocity`, and `crop_min_size` keys were removed from
+the config schema. Old configs that still carry these keys load without errors;
+the keys are silently ignored.
 
 ### Encode filters
 
@@ -140,36 +125,13 @@ active, the resizing interpolation upgrades from bilinear to Lanczos.
 | --- | --- | --- |
 | `output_resolution` | `[1920, 1080]` | Explicit `[width, height]` for output. Must match `crop_aspect`. If omitted, uses the median of all crop rectangles. |
 
-## Walker costs section
+## Walker costs section (removed)
 
-Controls Viterbi cost-model weights for the windowed blob walker on
-Stage-4-promoted intervals. The section lives in
-`track_runner/track_runner.config.yaml` and is merged into per-video configs
-via the standard per-video config merge.
-
-All six keys are required when the `walker_costs` section is present;
-omitting any key raises a configuration error at solve startup.
-
-| Key | Default | Description |
-| --- | --- | --- |
-| `WEIGHT_DISPLACEMENT` | `0.25` | Linear cost per torso-width/frame of motion along the selected path edge |
-| `WEIGHT_SPEED_DELTA` | `1.0` | Cost per torso-width/frame of speed change between consecutive steps (pairwise velocity-delta) |
-| `WEIGHT_HEADING_DELTA` | `0.5` | Cost per radian of heading change between consecutive steps (pairwise velocity-delta) |
-| `WEIGHT_OVERSPEED` | `4.0` | Quadratic penalty applied when candidate motion exceeds the physical speed envelope |
-| `WEIGHT_EVIDENCE_NORM` | `0.5` | Maximum tie-break cost for a candidate weaker than the strongest residual evidence on that frame |
-| `SKIP_COST` | `2.0` | Cost per frame where no candidate survives to the selected path |
-
-Example per-video override (add to the video's `tr_config/*.config.yaml`):
-
-```yaml
-walker_costs:
-  WEIGHT_DISPLACEMENT: 0.25
-  WEIGHT_SPEED_DELTA: 1.0
-  WEIGHT_HEADING_DELTA: 0.5
-  WEIGHT_OVERSPEED: 4.0
-  WEIGHT_EVIDENCE_NORM: 0.5
-  SKIP_COST: 2.0
-```
+The `walker_costs` config section was removed (2026-06-13). Viterbi cost-model
+weights for the windowed blob walker are now fixed constants in
+`track_runner/blob_walk/walk_viterbi.py` (human decision 2026-06-13: too
+obscure for per-video user config). Old configs that still carry a
+`walker_costs` section load without errors; the section is silently ignored.
 
 ## Migrating from v2
 
@@ -204,8 +166,6 @@ processing:
   crop_mode: direct_center
   crop_aspect: '16:9'
   torso_height_multiple: 8
-  crop_post_smooth_strength: 0.03
-  crop_post_smooth_max_velocity: 15.0
   video_codec: libx264
   crf: 18
   encode_filters:
@@ -235,8 +195,6 @@ processing:
   crop_mode: direct_center
   crop_aspect: '16:9'
   torso_height_multiple: 8
-  crop_post_smooth_strength: 0.02
-  crop_post_smooth_max_velocity: 10.0
   video_codec: libx264
   crf: 18
   encode_filters:

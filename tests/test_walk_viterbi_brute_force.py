@@ -374,9 +374,6 @@ def _assert_dp_equals_brute_force_min(
 		fps: source video frame rate.
 		label: human-readable label for failure messages.
 	"""
-	# Reset weights to module defaults before each check so no prior test leaks.
-	walk_viterbi.reset_cost_weights_for_tests()
-
 	dp_cost = _dp_cost(window_candidates, torso_w, fps)
 	min_cost = _brute_force_min_cost(window_candidates, torso_w, fps)
 
@@ -510,8 +507,6 @@ def test_select_path_determinism() -> None:
 	construction (documented tie-break: first state in iteration order), this
 	must hold unconditionally.
 	"""
-	walk_viterbi.reset_cost_weights_for_tests()
-
 	rng = random.Random(42)
 	window = _build_dense_lattice(rng, 5, 2)
 

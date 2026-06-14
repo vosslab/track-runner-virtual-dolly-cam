@@ -886,11 +886,6 @@ def _run_solve(
 		"full_solve": args.full_solve,
 		"upgrade": getattr(args, "upgrade", False),
 		"bin_factor": bin_factor,
-		# Config-resolved Viterbi cost weights threaded to Stage-4 workers.
-		# The resolved config always carries walker_costs after validate_config
-		# (the shipped default includes the full section); direct key access
-		# per do-not-hide-bugs-with-defaults.
-		"walker_costs": cfg["walker_costs"],
 	}
 	if on_interval_complete is not None:
 		solve_kwargs["on_interval_complete"] = on_interval_complete

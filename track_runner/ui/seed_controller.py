@@ -285,8 +285,8 @@ class SeedController(BaseAnnotationController):
 			# to avoid config structure issues
 			self._detector = detection_module.YoloDetector(
 				weights_path,
-				confidence_threshold=0.25,
-				nms_threshold=0.45,
+				confidence_threshold=detection_module.YOLO_CONFIDENCE_THRESHOLD,
+				nms_threshold=detection_module.YOLO_NMS_THRESHOLD,
 			)
 		return self._detector
 

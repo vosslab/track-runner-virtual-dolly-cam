@@ -12,6 +12,31 @@ import math
 import numpy
 
 
+# Crop-trajectory post-smoothing constants (both crop paths).
+# These describe OUTPUT crop feel (how the virtual camera moves), not
+# tracker physics, so they live as fixed module constants rather than
+# per-video config knobs. Both the direct_center path and the smooth
+# path read these constants directly; no config key overrides them.
+# The previous per-video config keys (crop_post_smooth_strength,
+# crop_post_smooth_size_strength, crop_post_smooth_max_velocity) were
+# removed -- they are not read from config anywhere in this module.
+#
+# CROP_POST_SMOOTH_STRENGTH: forward-backward EMA alpha on the crop
+#   CENTER. 0.0 keeps the crop glued to the runner center (no position
+#   smoothing); the containment clamp already bounds center motion.
+# CROP_POST_SMOOTH_SIZE_STRENGTH: forward-backward EMA alpha on the
+#   crop HEIGHT. 0.15 is a ~6-7 frame time constant that absorbs the
+#   typical +/-5% per-frame torso-bbox jitter so the zoom does not
+#   visibly breathe in the encoded crop.
+# CROP_POST_SMOOTH_MAX_VELOCITY: final per-frame cap on crop-center
+#   displacement in pixels. 0.0 disables the cap (the fit-to-source
+#   path keeps the runner centered at all costs, which conflicts with
+#   a velocity cap).
+CROP_POST_SMOOTH_STRENGTH = 0.0
+CROP_POST_SMOOTH_SIZE_STRENGTH = 0.15
+CROP_POST_SMOOTH_MAX_VELOCITY = 0.0
+
+
 #============================================
 class OffCenterCropError(RuntimeError):
 	"""Raised when the runner exits the safe central crop window for
@@ -737,17 +762,16 @@ def direct_center_crop_trajectory(
 	# torso_height_multiple: zoom knob. See Step 1 below for the
 	# W+H averaging contract that turns this into desired_crop_h.
 	torso_multiple = float(processing.get("torso_height_multiple", 3.33))
-	# Smoothing alphas. Position smoothing defaults off so the crop
-	# stays glued to the runner; size smoothing defaults ON to avoid
-	# the zoom-bouncing failure mode where per-frame torso-bbox jitter
-	# (typically +/-5%) translates directly into visible breathing in
-	# the encoded crop. 0.15 is a forward-backward EMA alpha
-	# corresponding to a ~6-7 frame time constant; set to 0 in per-video
-	# config to disable size smoothing entirely.
-	alpha_pos = float(processing.get("crop_post_smooth_strength", 0.0))
-	alpha_size = float(processing.get("crop_post_smooth_size_strength", 0.15))
+	# Smoothing alphas. Position smoothing is off so the crop stays glued
+	# to the runner; size smoothing is on to avoid the zoom-bouncing
+	# failure mode where per-frame torso-bbox jitter (typically +/-5%)
+	# translates directly into visible breathing in the encoded crop.
+	# These are OUTPUT crop-feel constants (see module top), not per-video
+	# config knobs.
+	alpha_pos = CROP_POST_SMOOTH_STRENGTH
+	alpha_size = CROP_POST_SMOOTH_SIZE_STRENGTH
 	# final velocity cap on center (0 = no cap)
-	max_velocity = float(processing.get("crop_post_smooth_max_velocity", 0.0))
+	max_velocity = CROP_POST_SMOOTH_MAX_VELOCITY
 
 	# Step 1: extract raw signals from trajectory
 	raw_cx = numpy.empty(n, dtype=float)
@@ -1176,9 +1200,10 @@ def trajectory_to_crop_rects(
 			full_trajectory, frame_width, frame_height, config,
 		)
 		# optional offline post-smoothing (forward-backward EMA)
-		alpha_pos = float(processing.get("crop_post_smooth_strength", 0.0))
-		alpha_size = float(processing.get("crop_post_smooth_size_strength", 0.0))
-		final_velocity = float(processing.get("crop_post_smooth_max_velocity", 0.0))
+		# use the same fixed module constants as the direct_center path
+		alpha_pos = CROP_POST_SMOOTH_STRENGTH
+		alpha_size = CROP_POST_SMOOTH_SIZE_STRENGTH
+		final_velocity = CROP_POST_SMOOTH_MAX_VELOCITY
 		if alpha_pos > 0 or alpha_size > 0:
 			crop_rects = smooth_crop_trajectory(
 				crop_rects, frame_width, frame_height,

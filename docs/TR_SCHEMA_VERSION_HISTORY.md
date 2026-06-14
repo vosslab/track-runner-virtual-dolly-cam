@@ -4,6 +4,8 @@ This document logs the evolution of `SCHEMA_VERSION` across releases. The versio
 
 Per contract C9, there is one unified `SCHEMA_VERSION` for the entire track_runner project, defined in [tr_schema.py](../track_runner/tr_schema.py). All schema references must use this constant; independent versions are forbidden. This file records the versioning history specifically, separate from the changelog which records code changes. Even when on-disk format is byte-identical, a new version number is issued to avoid mixed numbers across outputs; this prevents silent schema mismatches that propagate through cached and derived artifacts.
 
+Any and all schema changes REQUIRE EXPLICIT HUMAN APPROVAL, no hiding it in a larger plan. The human user cannot be expected to read all details. Schema versions should not be changed unless it is completely necessary to store a variable on a per video basis and not a static constant. Many of the recent schema changes should NOT have been made.
+
 ## Schema bumps and the solved-geometry cache
 
 Schema bumps are metadata-only by default: they do NOT invalidate solved-geometry cache entries. The solver cache key lives in `track_runner/interval_fingerprint.py` as `GEOMETRY_TAG`, which embeds the highest member of `tr_schema.GEOMETRY_AFFECTING_SCHEMAS` <= `SCHEMA_VERSION` as a `geometry_schema_v<N>` token. A separate informational tag, `SOLVER_FINGERPRINT_TAG`, includes `/schema/<SCHEMA_VERSION>` and is used for diagnostics headers only.
@@ -11,6 +13,48 @@ Schema bumps are metadata-only by default: they do NOT invalidate solved-geometr
 To bump observer/solver behavior in a way that invalidates geometry caches, increment `SCHEMA_VERSION` and add the new version to `GEOMETRY_AFFECTING_SCHEMAS`. Loaders consult `tr_schema.SUPPORTED_ARTIFACT_SCHEMAS` to decide which on-disk versions remain readable, so a schema bump does not automatically reject older artifacts.
 
 When an old cache carries a schema-tagged fingerprint (e.g. `/schema/5`), a pre-unification tail (`/score_schema/4/prerace/4`), or the legacy `blob_snap/v1/...` form, `migrate_legacy_fingerprints` rewrites the key into the unified `geometry_schema_v<N>` namespace at load time. Each entry below marks whether it was geometry-affecting; only geometry-affecting bumps are cache invalidators.
+
+## Config-key removals (2026-06-13, no schema bump)
+
+**Walker costs, detection thresholds, and crop alphas moved to code constants. Config shape is not under SCHEMA_VERSION.**
+Geometry-affecting: no. No schema bump.
+
+`SCHEMA_VERSION` governs on-disk solver artifacts (diagnostics JSON,
+`torso_box_coords.npz`, and the geometry fingerprint cache key). The YAML
+config files are runtime inputs, not stored artifacts versioned by this
+system. Removing keys from the config schema does not change any on-disk
+artifact layout and does not require a `SCHEMA_VERSION` bump under C10.
+
+**What changed (M1 + M2, 2026-06-13):**
+
+- `walker_costs` section removed from `track_runner/track_runner.config.yaml`
+  and the config-to-worker supply chain removed. Six Viterbi cost weights
+  (`WEIGHT_DISPLACEMENT`, `WEIGHT_SPEED_DELTA`, `WEIGHT_HEADING_DELTA`,
+  `WEIGHT_OVERSPEED`, `WEIGHT_EVIDENCE_NORM`, `SKIP_COST`) are now fixed
+  constants in `track_runner/blob_walk/walk_viterbi.py`. Human decision
+  2026-06-13: too obscure for per-video user config.
+- `detection.confidence_threshold` (0.25) and `detection.nms_threshold`
+  (0.45) removed from config; now fixed constants in `tr_detection.py`.
+  Human decision 2026-06-13: too obscure for per-video user config.
+- `detection.model` (dead key, was `yolov8n`) removed from config; no
+  reader existed in production code.
+- `processing.crop_post_smooth_strength`, `processing.crop_post_smooth_size_strength`,
+  `processing.crop_post_smooth_max_velocity` removed from config; now fixed
+  constants in `tr_crop.py` with identical effective values. Human decision
+  2026-06-13: too obscure for per-video user config.
+- `processing.crop_min_size` removed from config; was already absent (removed
+  2026-05-02); only doc references remained.
+
+**Old-config compatibility:** Stale per-video configs that still carry any of
+these keys load and validate without errors. `validate_config` checks only for
+required sections and the `torso_height_multiple` contract; unknown keys at
+any level are silently ignored. No per-video migration is needed.
+
+**What was kept:** The crop `smooth` path (`crop_mode == "smooth"`,
+`CropController`, and the five smooth-only knobs `crop_smoothing_attack`,
+`crop_smoothing_release`, `crop_max_velocity`, `crop_velocity_scale`,
+`crop_displacement_alpha`) was investigated and proven reachable. It was not
+removed.
 
 ## 14 (2026-06-12)
 

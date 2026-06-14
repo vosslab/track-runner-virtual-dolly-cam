@@ -106,6 +106,11 @@ Allowed:
 - In some cases, schema 1 might be byte-identical to schema 8.
   The version still changes to avoid mixed numbers across outputs and
   prevent silent mismatches in cached or derived artifacts.
+- Any and all schema changes REQUIRE EXPLICIT HUMAN APPROVAL, no hiding it in a larger plan.
+  The human user cannot be expected to read all details.
+- Schema versions should not be changed unless it is completely necessary to store a variable
+  on a per video basis and not a static constant. Many of the recent schema changes
+  should NOT have been made.
 
 ## C11. Torso box information should be solved and stored for all frames
 

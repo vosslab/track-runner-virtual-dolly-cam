@@ -1614,11 +1614,6 @@ def _dispatch_blob_pass(
 					# at ExecutionContext construction (do-not-hide-bugs-with-defaults).
 					bin_factor=context.bin_factor,
 					total_frames=context.video_frame_count,
-					# Thread config-resolved walker costs so Stage-4 workers see
-					# the same weights as solve_queue's Stage-3/blob pool; the
-					# value originates from context.walker_costs (set by cli via
-					# tr_config.resolve_config), matching solve_queue's wiring.
-					walker_costs=context.walker_costs,
 				) as pool:
 					# Frame span lookup keyed by pair_idx so the pool's
 					# completion order doesn't matter for ETA accuracy.
@@ -1697,7 +1692,6 @@ def solve_all_intervals(
 	pre_race_reference: dict = None,
 	bin_factor: int = 1,
 	blob_pass: bool = True,
-	walker_costs: dict = None,
 ) -> dict:
 	"""Solve all seed-to-seed intervals and stitch into a full trajectory.
 
@@ -1752,13 +1746,6 @@ def solve_all_intervals(
 			flag is not carried across the worker-pool boundary). Stage 3 stays
 			pure Hermite on every interval. Passing False reverts the blob pass
 			to the pure-Hermite re-solve.
-		walker_costs: Optional dict of Viterbi cost weights (walk_viterbi
-			COST_WEIGHT_NAMES keys) threaded to Stage-4 workers via
-			ExecutionContext. None keeps walk_viterbi module-constant defaults.
-			Optional-by-design: diagnostic callers that omit it get defaults.
-			Production callers (cli._run_solve) supply cfg["walker_costs"] so
-			YAML config weights reach the walker pool.
-
 	Returns:
 		Dict with keys:
 			- "intervals": list of interval result dicts
@@ -1838,9 +1825,6 @@ def solve_all_intervals(
 		race_start_interval=race_start_interval,
 		pre_race_reference=pre_race_reference,
 		bin_factor=bin_factor,
-		# Config-resolved Viterbi cost weights; None keeps walk_viterbi defaults.
-		# cli._run_solve supplies cfg["walker_costs"] so YAML weights reach workers.
-		walker_costs=walker_costs,
 	)
 	interval_results = solve_queue.execute_interval_work(
 		plan, context,

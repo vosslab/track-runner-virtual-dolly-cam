@@ -20,9 +20,10 @@ Notable shipped qualities:
   [docs/modes/PREPARE.md](modes/PREPARE.md).
 - **Stage-4 worker pool dispatch**: Stage-4 promoted intervals use the same
   parallel worker pool as Stage 3.
-- **walker_costs YAML section**: all Viterbi weight constants live in
-  `track_runner/track_runner.config.yaml` under `walker_costs`; no code
-  changes needed to tune weights.
+- **Viterbi cost weights**: fixed constants in
+  `track_runner/blob_walk/walk_viterbi.py` (as of 2026-06-13); the
+  `walker_costs` YAML section was removed and weights require code
+  changes to tune.
 - **SeedsView / state_io unification**: seeds and geometry loaded through a
   single `SeedsView` abstraction.
 

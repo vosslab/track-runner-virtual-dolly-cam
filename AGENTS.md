@@ -64,7 +64,7 @@ Key contract rules agents must know:
 
 - Walker lives under `track_runner/blob_walk/` and is the default solver on Stage-4-promoted intervals.
 - Stage 3 stays pure Hermite; walker runs only where blob_pass=True.
-- Walker costs are tuned via the `walker_costs` section of `track_runner/track_runner.config.yaml`.
+- Walker cost weights are fixed constants in `track_runner/blob_walk/walk_viterbi.py` (human-approved 2026-06-13); they are not config-tunable.
 - Anti-pattern: no cross-frame blob state (`last_blob`, `prev_accepted_blob`, chain memory). See design doc.
 
 ## Configuration

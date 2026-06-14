@@ -209,10 +209,12 @@ costs:
 - a skip cost (`SKIP_COST`) charged once per skipped frame; geometry
   bridges across gaps via gap-normalized velocity.
 
-All weights live in the `walker_costs` section of
-`track_runner/track_runner.config.yaml` so they can be tuned without
-code edits. No appearance, color, or template-matching term enters the
-cost (C8).
+All weights are fixed constants defined in
+`track_runner/blob_walk/walk_viterbi.py` (human-approved 2026-06-13).
+The prior text claiming weights live in `walker_costs` in the config
+YAML and can be tuned without code edits was unapproved doc drift and
+has been corrected here. No appearance, color, or template-matching
+term enters the cost (C8).
 
 ### Status enum
 

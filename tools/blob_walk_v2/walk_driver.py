@@ -43,11 +43,9 @@ walk_paths.setup()
 import walk_util
 import blob_walk.walk_io as walk_io
 import blob_walk.walk_walker as walk_walker
-import blob_walk.walk_viterbi as walk_viterbi
 import blob_walk.walk_debug_log as walk_debug_log
 import walk_render
 import blob_trace
-import tr_config
 import interval_fingerprint
 import interval_solver
 import state_io
@@ -131,41 +129,6 @@ def _sampled_offsets(interval_length: int) -> list:
 	if interval_length not in offsets:
 		offsets.append(interval_length)
 	return offsets
-
-
-#============================================
-def apply_walker_costs_for_video(video_basename: str) -> dict:
-	"""Resolve this video's config and install its Viterbi cost weights.
-
-	Called once per video while setting up per-video walk state. Resolves the
-	config the same way the cli does (per-video file if present, else the
-	built-in default) via the shared tr_config.resolve_config helper, then
-	installs the walker_costs section into walk_viterbi so the walk driver's
-	in-process walks use the config weights. When the resolved config carries
-	no walker_costs section, the walk_viterbi module-constant defaults stay in
-	force (no override is installed).
-
-	The walk driver runs the walker in-process (not through the worker pool),
-	so the install happens here at the driver rather than in a worker init.
-
-	Args:
-		video_basename: Video filename or base name. Normalized to the config
-			stem used by tr_paths.default_config_path.
-
-	Returns:
-		The resolved (and validated) config dict.
-	"""
-	# Normalize to the stem the per-video config path is keyed on (drop .mkv /
-	# .track_runner suffixes) via the single walk_io definition.
-	base_name = walk_io._normalize_video_basename(video_basename)
-	config, _had_config_file = tr_config.resolve_config(base_name)
-	tr_config.validate_config(config)
-	# Install the config cost weights when the section is present; absence
-	# leaves the walk_viterbi defaults in force (do not fabricate a default
-	# section here -- that is what the absence path is for).
-	if "walker_costs" in config:
-		walk_viterbi.set_cost_weights(config["walker_costs"])
-	return config
 
 
 #============================================

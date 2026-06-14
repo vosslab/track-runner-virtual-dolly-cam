@@ -137,7 +137,6 @@ track-runner-virtual-dolly-cam/
 |       |-- test_tr_velocity_model.py
 |       |-- test_walk_cost_model.py
 |       |-- test_walk_viterbi_brute_force.py
-|       |-- test_walker_costs_config.py
 |       |-- test_walker_flag.py
 |       |-- test_walker_stall_fallback.py
 |       |-- test_blob_walk_v2_windowed.py

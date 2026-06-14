@@ -166,8 +166,8 @@ no external dependencies or network access is required.
 nan-aware mean overlay as a second series on the same left axis. A twin right
 axis carries `torso_h` and `torso_w`. The visible gap between the raw and
 smoothed `crop_h` curves is the bouncing magnitude. The 9-frame window matches
-the ~6-7 frame time constant of the 0.15 default `crop_post_smooth_size_strength`
-EMA (see 2026-05-02 changelog and the "Smoothing" section above).
+the ~6-7 frame time constant of the fixed constant `CROP_POST_SMOOTH_SIZE_STRENGTH = 0.15`
+in `track_runner/tr_crop.py` (see 2026-05-02 changelog and the "Smoothing" section above).
 
 **Zoom multiple (achieved vs configured).** Plots `crop_h / torso_h` per frame.
 A dashed horizontal reference line shows the configured `torso_height_multiple`

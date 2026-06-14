@@ -491,9 +491,9 @@ trajectories from the confidence-weighted tracker output.
 | `max_crop_velocity` | 30.0 | Max px/frame crop movement (smooth mode only) |
 | `min_crop_size` | 200 | Minimum crop dimension in pixels |
 | `deadband_fraction` | 0.02 | Fraction of crop size for deadband (smooth mode only) |
-| `crop_post_smooth_strength` | 0.0 | EMA alpha for position smoothing (0 = disabled) |
-| `crop_post_smooth_size_strength` | 0.0 | EMA alpha for size smoothing (0 = auto in smooth mode) |
-| `crop_post_smooth_max_velocity` | 0.0 | Final center velocity cap after smoothing (0 = no cap) |
+| `crop_post_smooth_strength` | (removed) | Fixed constant in `tr_crop.py`; key no longer read from config |
+| `crop_post_smooth_size_strength` | (removed) | Fixed constant in `tr_crop.py`; key no longer read from config |
+| `crop_post_smooth_max_velocity` | (removed) | Fixed constant in `tr_crop.py`; key no longer read from config |
 
 **Alpha floor**: smoothing alpha is clamped to `max(alpha, 0.02)` so the
 crop always responds, even at low confidence.
@@ -517,12 +517,10 @@ Pipeline:
 
 1. Extract `cx`, `cy`, `h` from solved trajectory
 2. Compute crop size from `h / fill_ratio` and aspect ratio
-3. Apply forward-backward EMA to position (`crop_post_smooth_strength`) and
-   size (`crop_post_smooth_size_strength`)
-4. Guard minimum positive size from `crop_min_size`
+3. Apply forward-backward EMA to position and size (smoothing constants in `tr_crop.py`)
+4. Guard minimum positive size
 5. Reconstruct and clamp rectangles to frame bounds
-6. Optional final velocity cap on center
-   (`crop_post_smooth_max_velocity`)
+6. Optional final velocity cap on center (constant in `tr_crop.py`)
 7. Re-clamp to frame bounds
 8. Convert to integer tuples using `round()` for crop stability
 
@@ -557,16 +555,12 @@ For tight-zoom footage (e.g., 600mm lens), add these values to the
 ```yaml
 processing:
   crop_mode: direct_center
-  crop_post_smooth_strength: 0.10
-  crop_post_smooth_size_strength: 0.05
-  crop_post_smooth_max_velocity: 12.0
   crop_max_velocity: 12.0
 ```
 
-Lower alpha means heavier smoothing. Position alpha 0.10 provides moderate
-stabilization. Size alpha 0.05 smooths zoom changes more aggressively.
-The final velocity cap of 12.0 px/frame is a safety rail on the rendered
-path.
+The forward-backward EMA position/size smoothing and the final velocity cap
+are fixed constants in `tr_crop.py` and are no longer user-configurable.
+`crop_max_velocity` (smooth mode only) may still be set per-video.
 
 **Output resolution**: defaults to the median of all crop rectangle dimensions.
 Can be overridden with `output_resolution: [width, height]` in config.
@@ -579,8 +573,8 @@ YOLOv8n via ONNX runtime. No HOG fallback.
 | --- | --- |
 | Model | `yolov8n.onnx` |
 | Input size | 640 px |
-| Confidence threshold | 0.25 |
-| NMS threshold | 0.45 |
+| Confidence threshold | 0.25 (fixed constant in `tr_detection.py`, not per-video config) |
+| NMS threshold | 0.45 (fixed constant in `tr_detection.py`, not per-video config) |
 | Class | person (COCO class 0) |
 | ROI padding | 3.0x bbox size |
 | Min ROI crop | 320 px |
@@ -718,13 +712,11 @@ All companion files derive from the input filename stem.
 
 Path: `{input}.track_runner.config.yaml`
 
-Header key `track_runner` must equal `2`.
+Header key `track_runner` must equal `3` (v2 auto-migrates at load).
 
 ```yaml
-track_runner: 2
+track_runner: 3
 detection:
-  model: "yolov8n"
-  confidence_threshold: 0.25
 processing:
   crop_aspect: "1:1"
   torso_height_multiple: 3.33

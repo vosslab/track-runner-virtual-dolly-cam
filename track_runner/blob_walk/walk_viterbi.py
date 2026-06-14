@@ -3,8 +3,8 @@
 Pure functions: given a window of candidate lists (one list per frame),
 select the lowest-cost trajectory through the lattice using a Viterbi-style
 dynamic program. No frame state survives past the window; these functions are
-stateless apart from their arguments (and a write-once module weight cache,
-see "Cost-weight injection" below).
+stateless apart from their arguments. The six cost weights are fixed module
+constants (see "Cost weights" below).
 
 Cost model: pairwise velocity-delta scoring (audit P2). The spec called for
 window-variance trajectory-consistency terms (variance of velocity magnitude
@@ -49,15 +49,11 @@ Contract references:
   C8: no appearance, color, or template terms enter the cost.
   C9: FWD/BWD independence; these functions carry no cross-pass state.
 
-Cost-weight injection:
-  The six tunable weights below are module-level defaults. Worker processes
-  call set_cost_weights(walker_costs) once at process startup (_worker_init)
-  to override them from config. The override is held in a write-once module
-  cache (_COST_WEIGHT_OVERRIDES). This global is safe because each interval is
-  solved in a fresh process (make_pool max_tasks_per_child=1), the same
-  write-once pattern as solver_workers._WORKER_CONTEXT. Callers that never call
-  set_cost_weights keep the module-constant defaults. reset_cost_weights_for_tests
-  clears or injects the cache for unit tests.
+Cost weights:
+  The six cost weights below are fixed module constants and are the single
+  source of truth for the DP. They are tracker tuning constants, not per-video
+  config. _active_weights() assembles them into a dict for the two DP call
+  sites (select_path and compute_path_term_breakdown).
 """
 
 # Standard Library
@@ -67,7 +63,7 @@ import math
 import blob_walk.walk_motion_gate as walk_motion_gate
 
 # ============================================================
-# Viterbi cost weights (defaults; overridable via set_cost_weights).
+# Viterbi cost weights (fixed tracker constants; single source of truth).
 # Documented initial values from the WP-COST-1 cost contract.
 # ============================================================
 
@@ -97,69 +93,17 @@ SKIP_COST = 2.0
 # YAML weight (a numerical-stability epsilon, not a tunable cost).
 SPEED_EPSILON_W = 0.02
 
-# Names of the six config-driven weights, in the order config supplies them.
-# Used by set_cost_weights to apply overrides and by tr_config validation.
-COST_WEIGHT_NAMES = (
-	"WEIGHT_DISPLACEMENT",
-	"WEIGHT_SPEED_DELTA",
-	"WEIGHT_HEADING_DELTA",
-	"WEIGHT_OVERSPEED",
-	"WEIGHT_EVIDENCE_NORM",
-	"SKIP_COST",
-)
-
-# ============================================================
-# Write-once module weight cache. Populated by set_cost_weights in a worker
-# process; read by _active_weights on every DP evaluation. None means "use the
-# module-constant defaults above" (callers that never inject overrides).
-# ============================================================
-_COST_WEIGHT_OVERRIDES: dict | None = None
-
-
-#============================================
-def set_cost_weights(walker_costs: dict) -> None:
-	"""Install config-driven cost weights for this process (write-once).
-
-	Called once per worker process by solver_workers._worker_init. All six
-	weight keys are required and accessed directly (do-not-hide-bugs-with-
-	defaults): a missing key fails loud here rather than silently using a
-	module default.
-
-	Args:
-		walker_costs: Dict with the six keys in COST_WEIGHT_NAMES, each a float.
-	"""
-	global _COST_WEIGHT_OVERRIDES
-	# Direct access: every weight must be present in a config-supplied section.
-	overrides = {}
-	for name in COST_WEIGHT_NAMES:
-		overrides[name] = float(walker_costs[name])
-	_COST_WEIGHT_OVERRIDES = overrides
-
-
-#============================================
-def reset_cost_weights_for_tests(overrides: dict | None = None) -> None:
-	"""Clear or inject the module weight cache (test-only hook).
-
-	Args:
-		overrides: None clears the cache (back to module-constant defaults);
-			a dict installs those overrides directly (already keyed by
-			COST_WEIGHT_NAMES with float values).
-	"""
-	global _COST_WEIGHT_OVERRIDES
-	_COST_WEIGHT_OVERRIDES = overrides
-
-
 #============================================
 def _active_weights() -> dict:
-	"""Return the active cost weights: overrides if installed, else defaults.
+	"""Return the cost weights from the fixed module constants.
+
+	The six weights are tracker tuning constants, not per-video config. This
+	accessor assembles them into a dict for the two DP call sites.
 
 	Returns:
-		Dict keyed by COST_WEIGHT_NAMES with the float weight values in force.
+		Dict of the six float weight values in force.
 	"""
-	if _COST_WEIGHT_OVERRIDES is not None:
-		return _COST_WEIGHT_OVERRIDES
-	# Fall back to the module-constant defaults.
-	defaults = {
+	weights = {
 		"WEIGHT_DISPLACEMENT": WEIGHT_DISPLACEMENT,
 		"WEIGHT_SPEED_DELTA": WEIGHT_SPEED_DELTA,
 		"WEIGHT_HEADING_DELTA": WEIGHT_HEADING_DELTA,
@@ -167,7 +111,7 @@ def _active_weights() -> dict:
 		"WEIGHT_EVIDENCE_NORM": WEIGHT_EVIDENCE_NORM,
 		"SKIP_COST": SKIP_COST,
 	}
-	return defaults
+	return weights
 
 
 #============================================
@@ -260,7 +204,7 @@ def _edge_cost(
 		torso_w: torso width in pixels (scale unit per C2).
 		fps: source video frame rate.
 		evidence_b: precomputed evidence cost for node b (already in [0, w_ev]).
-		weights: active cost weights keyed by COST_WEIGHT_NAMES.
+		weights: active cost weights from _active_weights().
 
 	Returns:
 		Edge cost (float); +inf if the per-frame speed exceeds the hard cap.
@@ -308,7 +252,7 @@ def _evidence_costs_for_frame(candidates: list, weights: dict) -> list:
 
 	Args:
 		candidates: list of blob dicts for one frame (integrated_mag required).
-		weights: active cost weights keyed by COST_WEIGHT_NAMES.
+		weights: active cost weights from _active_weights().
 
 	Returns:
 		list of floats aligned 1:1 with candidates.

@@ -23,9 +23,8 @@ see [CHANGELOG.md](CHANGELOG.md).
   solve times on multi-interval runs are reduced.
 
 - **Windowed Viterbi walker parity tests**: `tests/test_walk_cost_model.py`,
-  `tests/test_walker_costs_config.py`, `tests/test_walk_io_parity.py`, and
-  `tests/test_walk_viterbi_brute_force.py` cover the cost model, config
-  plumbing, IO parity, and DP correctness respectively.
+  `tests/test_walk_io_parity.py`, and `tests/test_walk_viterbi_brute_force.py`
+  cover the cost model, IO parity, and DP correctness respectively.
 
 ## Known gaps
 

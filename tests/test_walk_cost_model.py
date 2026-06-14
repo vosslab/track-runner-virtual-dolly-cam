@@ -21,8 +21,7 @@ compute_path_term_breakdown):
 - Module defaults: WEIGHT_DISPLACEMENT=1.0, WEIGHT_SPEED_DELTA=1.0,
   WEIGHT_HEADING_DELTA=0.5, WEIGHT_OVERSPEED=4.0, WEIGHT_EVIDENCE_NORM=0.5,
   SKIP_COST=2.0.
-- reset_cost_weights_for_tests(overrides=None) resets weights to defaults
-  and optionally injects override values for the current test.
+- Weights are fixed module constants; no reset hook exists.
 
 All tests: offline, deterministic, no I/O, sub-second.
 No shebang (library/test file, not executable).
@@ -61,17 +60,11 @@ def _make_blob(cx: float, cy: float, integrated_mag: float = 100.0) -> dict:
 
 
 def _setup() -> None:
-	"""Reset cost weights to contract defaults before each test.
+	"""No-op isolation stub.
 
-	Guards against weight injection from a prior test leaking into this one.
-	Called at the top of every test function that calls select_path or the
-	cost helpers.
+	Weights are now fixed module constants (WP-core); no install or reset is
+	needed. Kept so the _setup() call sites compile unchanged.
 	"""
-	# reset_cost_weights_for_tests is the contract-specified test hook.
-	# OLD_MODEL_PENDING: will AttributeError if the parallel WS-A agent has
-	# not yet added this function; catch and skip gracefully.
-	if hasattr(walk_viterbi, 'reset_cost_weights_for_tests'):
-		walk_viterbi.reset_cost_weights_for_tests()
 
 
 def _torso_w() -> float:
@@ -87,6 +80,28 @@ def _fps() -> float:
 def _speed_limit_w_per_frame() -> float:
 	"""Per-frame speed limit in torso-widths, at canonical fps."""
 	return walk_motion_gate.MAX_RUNNER_SPEED_W_PER_S / _fps()
+
+
+#============================================
+# Single-source-of-truth behavior test: _active_weights returns module constants.
+# No install or override step on any path (WP-core, WP-tests contract).
+#============================================
+
+def test_active_weights_returns_module_constants() -> None:
+	"""_active_weights() returns the six fixed module constants with no install step.
+
+	The weight dict must equal the six module-level constants exactly. No
+	set_cost_weights, reset, or override mechanism exists; the constants are
+	the single source of truth. This asserts the identity between the accessor
+	output and the named constants so any accidental divergence fails loudly.
+	"""
+	weights = walk_viterbi._active_weights()
+	assert weights["WEIGHT_DISPLACEMENT"] == walk_viterbi.WEIGHT_DISPLACEMENT
+	assert weights["WEIGHT_SPEED_DELTA"] == walk_viterbi.WEIGHT_SPEED_DELTA
+	assert weights["WEIGHT_HEADING_DELTA"] == walk_viterbi.WEIGHT_HEADING_DELTA
+	assert weights["WEIGHT_OVERSPEED"] == walk_viterbi.WEIGHT_OVERSPEED
+	assert weights["WEIGHT_EVIDENCE_NORM"] == walk_viterbi.WEIGHT_EVIDENCE_NORM
+	assert weights["SKIP_COST"] == walk_viterbi.SKIP_COST
 
 
 #============================================

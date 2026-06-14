@@ -16,6 +16,12 @@ YOLO_EXPECTED_ONNX_MAX = 20_000_000
 YOLO_INPUT_SIZE = 640
 PERSON_CLASS_ID = 0  # COCO class 0 = person
 
+# Detection thresholds: fixed constants, not user-configurable.
+# These values are tuned for the YOLOv8n model on track footage;
+# they are not per-video settings and do not belong in the YAML config.
+YOLO_CONFIDENCE_THRESHOLD = 0.25  # minimum confidence to keep a detection
+YOLO_NMS_THRESHOLD = 0.45  # IoU threshold for non-maximum suppression
+
 
 #============================================
 def ensure_yolo_weights(
@@ -67,15 +73,17 @@ class YoloDetector:
 	def __init__(
 		self,
 		model_path: str,
-		confidence_threshold: float = 0.25,
-		nms_threshold: float = 0.45,
+		confidence_threshold: float = YOLO_CONFIDENCE_THRESHOLD,
+		nms_threshold: float = YOLO_NMS_THRESHOLD,
 	):
 		"""Initialize the YOLO detector.
 
 		Args:
 			model_path: Path to the YOLOv8 ONNX weights file.
 			confidence_threshold: Minimum confidence to keep a detection.
+				Defaults to YOLO_CONFIDENCE_THRESHOLD.
 			nms_threshold: IoU threshold for non-maximum suppression.
+				Defaults to YOLO_NMS_THRESHOLD.
 		"""
 		self.net = cv2.dnn.readNetFromONNX(model_path)
 		self.confidence_threshold = confidence_threshold
@@ -258,11 +266,13 @@ class YoloDetector:
 def create_detector(config: dict) -> YoloDetector:
 	"""Create a YOLO person detector from config settings.
 
+	Detection thresholds (YOLO_CONFIDENCE_THRESHOLD and YOLO_NMS_THRESHOLD)
+	are fixed module constants, not read from config. The config argument is
+	accepted for API compatibility but no detection keys are consumed.
+
 	Args:
-		config: Configuration dict with top-level detection section.
-			Expected keys under detection:
-				confidence_threshold: float (optional, default 0.25)
-				nms_threshold: float (optional, default 0.45)
+		config: Configuration dict (detection thresholds are not read
+			from config; they are fixed module constants).
 
 	Returns:
 		A YoloDetector instance.
@@ -270,11 +280,7 @@ def create_detector(config: dict) -> YoloDetector:
 	Raises:
 		RuntimeError: If YOLO weights cannot be obtained.
 	"""
-	# extract detection settings with defaults
-	detection = config.get("detection", {})
-	confidence_threshold = float(detection.get("confidence_threshold", 0.25))
-	nms_threshold = float(detection.get("nms_threshold", 0.45))
-	# obtain YOLO weights, raise on failure
+	# obtain YOLO weights path from cache; raise on failure
 	weights_path = ensure_yolo_weights()
 	if not weights_path:
 		msg = "YOLO ONNX weights not found. Run the one-time export:\n"
@@ -282,11 +288,10 @@ def create_detector(config: dict) -> YoloDetector:
 		msg += "  python3 tools/export_yolo_onnx.py\n"
 		msg += "  pip3 uninstall ultralytics  # optional cleanup"
 		raise RuntimeError(msg)
+	# thresholds are fixed constants, not per-video config values
 	det = YoloDetector(
 		weights_path,
-		confidence_threshold=confidence_threshold,
-		nms_threshold=nms_threshold,
+		confidence_threshold=YOLO_CONFIDENCE_THRESHOLD,
+		nms_threshold=YOLO_NMS_THRESHOLD,
 	)
-	# store config for parallel worker recreation
-	det._config = config
 	return det

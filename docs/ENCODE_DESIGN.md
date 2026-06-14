@@ -123,15 +123,14 @@ degenerate frames where the runner sits exactly on a frame edge.
 
 ### Smoothing
 
-Two independent smoothing alphas:
+Two independent smoothing passes, both with fixed constants in `tr_crop.py`
+(removed from config 2026-06-13; no longer user-tunable per video):
 
-- `crop_post_smooth_strength` (default `0.0`): forward-backward EMA
-  on crop center (pan/tilt). Off by default so the crop stays glued
-  to the runner.
-- `crop_post_smooth_size_strength` (default `0.15`): forward-backward
-  EMA on crop height (zoom). On by default to prevent the historical
-  "zoom bouncing" failure mode where per-frame torso-bbox jitter
-  (typically +/-5%) translates directly into visible breathing.
+- Position smoothing (pan/tilt): forward-backward EMA on crop center.
+  Fixed at 0.0 (off) so the crop stays glued to the runner.
+- Size smoothing (zoom): forward-backward EMA on crop height.
+  Fixed at 0.15 to prevent the historical "zoom bouncing" failure mode
+  where per-frame torso-bbox jitter (+/-5%) translated into visible breathing.
 
 Both use forward-backward EMA (one forward pass, one backward pass)
 so smoothing introduces no group delay. The size signal is
@@ -425,17 +424,17 @@ some point.
 | Key | Default | Effect when default fires |
 | --- | --- | --- |
 | `crop_centered_fit_to_source` | `True` | Shrinks crop to fit source frame; makes `torso_multiple` an upper bound rather than a fixed target |
-| `crop_post_smooth_size_strength` | `0.15` | Forward-backward EMA on crop height; smooths zoom but introduces a soft delay |
+| `crop_post_smooth_size_strength` | `0.15` (fixed constant, removed from config 2026-06-13) | Forward-backward EMA on crop height; smooths zoom but introduces a soft delay |
 | `crop_torso_anchor` | `0.50` (identity) | No effect; safe |
-| `crop_max_velocity` | `30.0 px/frame` | Legacy `CropController` only; ignored by direct_center mode |
-| `crop_smoothing_attack` / `crop_smoothing_release` | `0.15` / `0.05` | Legacy `CropController` only |
-| `crop_velocity_scale` | `2.0` | Legacy `CropController` only |
-| `crop_displacement_alpha` | `0.1` | Legacy `CropController` only |
+| `crop_max_velocity` | `30.0 px/frame` | smooth-mode `CropController` only; ignored by direct_center mode |
+| `crop_smoothing_attack` / `crop_smoothing_release` | `0.15` / `0.05` | smooth-mode `CropController` only |
+| `crop_velocity_scale` | `2.0` | smooth-mode `CropController` only |
+| `crop_displacement_alpha` | `0.1` | smooth-mode `CropController` only |
 | `crop_zoom_stabilization` | `False` | Off; safe |
 | `crop_max_height_change` | `0.005` | Only active when zoom_stabilization is True |
 | `crop_containment_radius` | `0.20` | Pulls crop center back toward runner if drift exceeds 20% of crop width |
-| `crop_post_smooth_max_velocity` | `0.0` | Off; safe |
-| `crop_post_smooth_strength` | `0.0` | Off; safe |
+| `crop_post_smooth_max_velocity` | `0.0` (fixed constant, removed from config 2026-06-13) | Off; safe |
+| `crop_post_smooth_strength` | `0.0` (fixed constant, removed from config 2026-06-13) | Off; safe |
 | `_VELOCITY_GAIN` (encoder.py) | `9.0` | Hardcoded velocity-arrow length gain |
 | `_VELOCITY_LOOKBACK_FRAMES` (encoder.py) | `5` | Hardcoded velocity-arrow look-back window |
 | `_OVERLAY_ALPHA_BOXES` / `_OVERLAY_ALPHA_TEXT` | from `overlay_styles.yaml` | Box and text alpha for overlay blending |
@@ -450,7 +449,7 @@ the case, that is a UX bug to file rather than a documentation gap.
 | --- | --- | --- | --- |
 | Runner pinned to one frame edge with black on the other | `crop_centered_fit_to_source: False` plus aggressive `torso_multiple` | Per-video config | Set fit_to_source true, or lower torso_multiple, or set `--allow-offcenter-crop` |
 | `OffCenterCropError` at startup | Validator caught a sustained off-center streak | `tr_crop:validate_torso_within_central_window` | Lower torso_multiple or pass `--allow-offcenter-crop` |
-| Visible zoom breathing | Size smoothing disabled in per-video config | `crop_post_smooth_size_strength` | Set to `0.15` (default) or higher |
+| Visible zoom breathing | Size smoothing constant changed in `tr_crop.py` | `crop_post_smooth_size_strength` constant in `tr_crop.py` | Restore the constant to `0.15` (key was removed from config 2026-06-13) |
 | Velocity arrow points opposite the runner's actual motion | Camera pan faster than runner; missing camera-motion cache | Active marker / per-hash cache | Run `solve` to rebuild the cache |
 | Velocity arrow never appears | No prior valid center within 5 frames | `_VELOCITY_LOOKBACK_FRAMES` | Acceptable for not-in-frame stretches; otherwise a tracking gap |
 | Velocity arrow has discrete angle steps | Should not happen post-2026-05-02 | encoder.py float-coord path | File a bug; fast regression check |
