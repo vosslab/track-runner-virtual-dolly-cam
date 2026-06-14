@@ -1626,6 +1626,37 @@ def _clear_stale_torso_artifact(intervals_path: str) -> bool:
 
 
 #============================================
+def _clear_stale_diagnostics_artifact(diag_path: str) -> bool:
+	"""Remove an interval-scores artifact stamped under an unsupported schema.
+
+	Solve regenerates interval scores from scratch, so a prior interval-scores
+	JSON stamped under a rolled-back schema (for example v11-v14) is cleared
+	rather than loaded. `_load_prior_results` calls `load_diagnostics`, which
+	raises on an unsupported header before solve overwrites it; peek the header
+	cheaply and delete the stale file so solve treats it as absent. This
+	leniency is scoped to solve only, alongside the torso-artifact guard;
+	loaders and refine keep rejecting stale artifacts clearly.
+
+	Args:
+		diag_path: Path to the interval_scores.json artifact.
+
+	Returns:
+		True if a stale artifact was found and removed, otherwise False.
+	"""
+	if not os.path.isfile(diag_path):
+		return False
+	prior_schema = state_io.peek_diagnostics_schema(diag_path)
+	if prior_schema is None:
+		return False
+	if tr_schema.is_supported_artifact_schema("diagnostics", prior_schema):
+		return False
+	print(f"  existing schema v{prior_schema} interval-scores file is stale; "
+		f"solve will regenerate it")
+	os.remove(diag_path)
+	return True
+
+
+#============================================
 def _mode_solve(
 	args: argparse.Namespace,
 	cfg: dict,
@@ -1663,6 +1694,7 @@ def _mode_solve(
 	# cleared and regenerated fresh; loaders and refine keep rejecting stale
 	# artifacts clearly.
 	_clear_stale_torso_artifact(intervals_path)
+	_clear_stale_diagnostics_artifact(diag_path)
 
 	# only clear intervals if a prior solve completed successfully;
 	# if the prior solve was interrupted, resume from saved intervals

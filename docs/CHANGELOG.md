@@ -34,6 +34,17 @@
 
 ### Fixes and Maintenance
 
+- **Solve stale-artifact guard extended to the interval-scores JSON (Patch 3)**:
+  the Patch 1 guard cleared only the stale `torso_box_coords.npz`, so the first
+  `solve` against a rolled-back config still crashed in `_load_prior_results` ->
+  `state_io.load_diagnostics` with "diagnostics file header mismatch ... got 11".
+  `interval_scores.json` is a solve OUTPUT, not a required input (absent -> empty
+  structure, never raises), but a stale v11-v14 file raised on load. Added
+  `state_io.peek_diagnostics_schema` and `_clear_stale_diagnostics_artifact` in
+  `track_runner/cli.py`, called in `_mode_solve` beside the torso guard: a stale
+  interval-scores file is now treated as absent and regenerated. Scoped to solve
+  only; loaders and refine keep rejecting stale artifacts clearly.
+
 - **Stale schema-14 references corrected across docs (Patch 2)**: the rollback
   made several docs wrong. `docs/TR_CONFIG_FILES.md` no longer claims the writer
   emits v11 with `{10,11}` supported; `docs/NEWS.md`, `docs/RELEASE_HISTORY.md`,

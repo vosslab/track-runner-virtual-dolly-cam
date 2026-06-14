@@ -12,10 +12,11 @@ for json in tr_config/*.seeds.json; do
   fi
   echo "================================="
   echo "$video"
+  ./track_runner/track_runner.py --workers 1 -i $video prepare
   echo "================================="
   file "$video"
-  ./track_runner/track_runner.py --workers 1 -i $video solve --yes --auto-bin
-  sleep 5
+  ./track_runner/track_runner.py --workers 2 -i $video solve --yes --auto-bin
+  sleep 2
 done
 
 for json in tr_config/*.seeds.json; do

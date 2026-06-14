@@ -639,6 +639,33 @@ def peek_torso_box_coords_schema(path: str) -> int | None:
 
 
 #============================================
+def peek_diagnostics_schema(path: str) -> int | None:
+	"""Read just the header version from an interval-scores JSON, no validation.
+
+	Returns None if the file does not exist or the header key is missing or
+	non-integer. Callers can use this to decide whether a full
+	`load_diagnostics` would raise on an unsupported schema, without paying the
+	schema-rejection cost or wrapping the load in try/except.
+
+	Args:
+		path: Path to the interval_scores.json (or legacy diagnostics.json) file.
+
+	Returns:
+		int header version, or None if unavailable.
+	"""
+	if not os.path.isfile(path):
+		return None
+	with open(path, "r") as fh:
+		data = json.load(fh)
+	if not isinstance(data, dict):
+		return None
+	header_val = data.get(DIAGNOSTICS_HEADER_KEY)
+	if not isinstance(header_val, int):
+		return None
+	return header_val
+
+
+#============================================
 def load_torso_box_coords(path: str) -> dict:
 	"""Load a unified torso_box_coords.npz file with all three paths merged.
 
