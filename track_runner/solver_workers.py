@@ -55,6 +55,7 @@ class WorkerContext:
 	fps: float
 	debug: bool
 	blob_pass: bool
+	bin_factor: int = 1
 
 
 #============================================
@@ -105,7 +106,12 @@ def _worker_init(
 	# worker exposes the same `.geometry` interface regardless of
 	# bin_factor; bin_factor=1 short-circuits the resize and is
 	# byte-identical to the legacy VideoReader path.
-	reader = common_tools.frame_reader.FrameReader(
+	# Construct via the shared opener so all callers route reader construction
+	# through one code path.  Production passes the explicit resolved
+	# bin_factor (decided by cli._resolve_solve_bin_factor), so the opener
+	# uses it as-is and makes no default-bin selector call -- behavior is
+	# unchanged from the prior direct FrameReader construction.
+	reader = common_tools.frame_reader.open_analysis_reader(
 		video_path=decode_video_path,
 		fps=fps,
 		total_frames=total_frames,
@@ -120,6 +126,7 @@ def _worker_init(
 		fps=fps,
 		debug=debug,
 		blob_pass=blob_pass,
+		bin_factor=bin_factor,
 	)
 	# close the reader when the worker shuts down so file handles do not
 	# leak on the normal path. ProcessPoolExecutor also terminates
@@ -159,7 +166,7 @@ def _solve_interval_worker(task: tuple) -> tuple:
 	pair_idx, seed_start, seed_end = task
 	ctx = _WORKER_CONTEXT
 	fingerprint = interval_solver.compute_interval_fingerprint(
-		seed_start, seed_end,
+		seed_start, seed_end, bin_factor=ctx.bin_factor,
 	)
 	# The worker solves with the dispatch's blob_pass: False for Stage-3 (pure
 	# Hermite on every interval) and True for the Stage-4 walker pass. The flag

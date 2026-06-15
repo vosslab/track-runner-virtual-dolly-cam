@@ -23,10 +23,14 @@ def _add_bin_arg(parser: argparse.ArgumentParser) -> None:
 	"""
 	bin_group = parser.add_mutually_exclusive_group()
 	bin_group.add_argument(
-		"--bin", dest="bin_factor", type=int, default=1,
+		"--bin", dest="bin_factor", type=int, default=None,
 		help=(
 			"Optional spatial downsample applied to camera-motion and "
-			"residual stages only. Integer >= 1; default 1 (no bin). "
+			"residual stages only. Integer >= 1. When neither --bin nor "
+			"--auto-bin is given, the production default selector picks a "
+			"bin from source width (floor at the project-wide default "
+			"target; 1440p and below stay full-res). Pass --bin 1 to "
+			"force full resolution. "
 			"bin_factor > 1 also crops each scaled axis to the largest "
 			"FFT-friendly goodbox not exceeding it (origin-preserving "
 			"right/bottom crop). Source-frame outputs unchanged."

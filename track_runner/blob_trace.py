@@ -18,7 +18,7 @@ class BlobObserverTrace:
 	winner_blob: dict | None
 	winner_score: float | None
 	local_tangent: tuple
-	# New fields for M2 walker integration (WP-1B)
+	# Additional fields for blob-walk integration
 	roi_origin_xy: tuple | None = None
 	acceptance_box: tuple | None = None
 	dog_diameter: float | None = None

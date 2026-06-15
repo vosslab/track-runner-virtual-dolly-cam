@@ -393,6 +393,88 @@ def blend_paths(
 
 
 #============================================
+def _seed_source_to_processed(seed: dict, geometry: object) -> dict:
+	"""Project one SOURCE-pixel seed dict to PROCESSED-pixel coords.
+
+	The walker decodes, steps, and clamps ROIs in PROCESSED space
+	(reader.width/height are PROCESSED), so its anchor seed must be
+	PROCESSED. This mirrors state_io.SeedsView._build_processed for a
+	single seed and is the production analogue of the standalone tool's
+	load_seeds_view projection.
+
+	At bin_factor == 1 the geometry conversion is identity, so the
+	returned dict is value-identical to the input (no-op).
+
+	Args:
+		seed: SOURCE-pixel seed dict (cx, cy, w, h, frame_index, ...).
+		geometry: FrameGeometry with source_to_processed and
+			source_to_processed_delta.
+
+	Returns:
+		New seed dict with cx/cy/w/h in PROCESSED pixels; all other keys
+		preserved. not_in_frame seeds (no cx) are returned unchanged.
+	"""
+	# not_in_frame seeds carry no box; pass through untouched
+	if "cx" not in seed or seed["cx"] is None:
+		return dict(seed)
+	cx_p, cy_p = geometry.source_to_processed(seed["cx"], seed["cy"])
+	# axis convention: width is the x-axis delta, height is the y-axis delta.
+	# Pairing them in one call keeps each on its own axis if bin scaling ever
+	# becomes non-isotropic (today it is pure isotropic scale by bin_factor).
+	w_p, h_p = geometry.source_to_processed_delta(seed["w"], seed["h"])
+	processed = dict(seed)
+	processed["cx"] = cx_p
+	processed["cy"] = cy_p
+	processed["w"] = w_p
+	processed["h"] = h_p
+	return processed
+
+
+#============================================
+def _walker_path_processed_to_source(direction_path: list, geometry: object) -> list:
+	"""Project a PROCESSED-space walker path to SOURCE-frame pixels.
+
+	This is THE single PROCESSED -> SOURCE storage boundary for the
+	production walker path (the audit's recommended seam). The walker
+	emits PROCESSED state lists; storage (state_io.write_torso_box_coords)
+	requires SOURCE. Center converts via geometry.processed_to_source and
+	width/height convert as deltas via geometry.processed_to_source_delta.
+	Box math stays float; rounding is deferred to the npz writer.
+
+	At bin_factor == 1 the geometry conversion is identity, so the
+	returned list is value-identical to the input (no-op).
+
+	Mirrors tools/blob_walk_v2/walk_driver._project_path_to_source so the
+	production and standalone paths cannot drift on the conversion.
+
+	Args:
+		direction_path: PROCESSED-pixel walker path; list of state dicts
+			each carrying frame_index, cx, cy, w, h (plus passthrough keys).
+		geometry: FrameGeometry with processed_to_source and
+			processed_to_source_delta.
+
+	Returns:
+		New list of state dicts with cx/cy/w/h in SOURCE pixels; all other
+		keys preserved.
+	"""
+	projected = []
+	for state in direction_path:
+		cx_s, cy_s = geometry.processed_to_source(state["cx"], state["cy"])
+		# Convert width and height as axis-aligned deltas (not positions) to avoid
+		# cross-axis contamination under non-isotropic scaling between the two axes.
+		w_s, _ = geometry.processed_to_source_delta(state["w"], 0.0)
+		_, h_s = geometry.processed_to_source_delta(0.0, state["h"])
+		# preserve every other key (conf, status, frame_index, ...)
+		projected_state = dict(state)
+		projected_state["cx"] = cx_s
+		projected_state["cy"] = cy_s
+		projected_state["w"] = w_s
+		projected_state["h"] = h_s
+		projected.append(projected_state)
+	return projected
+
+
+#============================================
 def solve_interval_analytical(
 	seed_start: dict,
 	seed_end: dict,
@@ -509,16 +591,29 @@ def solve_interval_analytical(
 		precomputed_store = None
 
 	if walker_active:
+		# Gap A fix: the walker decodes, steps, and clamps ROIs in PROCESSED
+		# space, so it must be anchored on PROCESSED seeds. The driver supplies
+		# SOURCE seeds (seed JSON is SOURCE); project them to PROCESSED via the
+		# reader's FrameGeometry before building the bundles. This mirrors the
+		# standalone tool's SeedsView projection. At bin_factor == 1 the
+		# conversion is identity, so this is a no-op for existing solves.
+		geometry = reader.geometry
+		seed_start_processed = _seed_source_to_processed(seed_start, geometry)
+		seed_end_processed = _seed_source_to_processed(seed_end, geometry)
+
 		# Stage 4 walker path: FWD and BWD each get their own bundle
 		# and their own walk_one_direction call (contract C9). The adapter
 		# returns full-span, chronological, PROCESSED-pixel state lists aligned
-		# slot-by-slot, so blend_paths/compute_agreement consume them unchanged.
-		# precomputed_store is built above but not threaded into the walker
-		# (perf-only; see walker_bundle.walk_bundle_to_path docstring).
+		# slot-by-slot; both are projected to SOURCE just below (Gap B seam) so
+		# blend_paths/compute_agreement and storage all consume SOURCE pixels.
+		# precomputed_store is carried on each bundle but not consumed by
+		# walk_one_direction (perf-only; its current signature does not accept
+		# it, so the sequential-read optimization is not reused on the walker
+		# path -- correctness is unaffected).
 		forward_bundle, backward_bundle = (
 			walker_bundle.build_walker_bundles_for_interval(
-				seed_start=seed_start,
-				seed_end=seed_end,
+				seed_start=seed_start_processed,
+				seed_end=seed_end_processed,
 				reader=reader,
 				scene_transform=scene_transform,
 				fps=fps,
@@ -538,6 +633,21 @@ def solve_interval_analytical(
 		)
 		backward_path_scene, bwd_coverage = (
 			walker_bundle.walk_bundle_to_path_with_coverage(backward_bundle)
+		)
+
+		# Gap B fix (THE single PROCESSED -> SOURCE storage boundary): the
+		# walker emits PROCESSED state lists; storage requires SOURCE. Project
+		# both passes back to SOURCE here, immediately after the walks, so every
+		# value downstream (the per-pass Hermite fallback, blend, score, and the
+		# write_torso_box_coords storage call) lives in ONE space (SOURCE). This
+		# keeps the per-pass fallback coherent: a stalled pass swaps in a
+		# SOURCE Hermite path against SOURCE walker output, never a mixed-space
+		# blend. At bin_factor == 1 the conversion is identity (no-op).
+		forward_path_scene = _walker_path_processed_to_source(
+			forward_path_scene, geometry,
+		)
+		backward_path_scene = _walker_path_processed_to_source(
+			backward_path_scene, geometry,
 		)
 
 		# Per-pass Hermite stall fallback (guarantees "never worse than
@@ -1582,7 +1692,7 @@ def _dispatch_blob_pass(
 					)
 					# overwrite Stage 3 result with blob result
 					fingerprint = compute_interval_fingerprint(
-						seed_start, seed_end,
+						seed_start, seed_end, bin_factor=context.bin_factor,
 					)
 					if on_interval_solved is not None:
 						on_interval_solved(fingerprint, result_blob)
@@ -1796,6 +1906,7 @@ def solve_all_intervals(
 	# on the result, not part of the fingerprint.
 	plan = solve_queue.plan_interval_work(
 		seeds, prior_solved_intervals, race_start_interval=race_start_interval,
+		bin_factor=bin_factor,
 	)
 	if plan.total_intervals == 0:
 		print("  interval_solver: need at least 2 usable seeds to solve intervals")

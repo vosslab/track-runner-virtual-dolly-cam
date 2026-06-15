@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Machine-checkable gate over a walker render_manifest.json (WS2-C).
+"""Machine-checkable gate over a walker render_manifest.json.
 
 The walk driver writes one render_manifest.json per video under the run output
 dir, with one record per rendered tile. This checker fails the build WITHOUT a

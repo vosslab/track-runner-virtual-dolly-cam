@@ -1,9 +1,9 @@
-"""Fixed-ROI heat-movie frame compositor and raw-BGR spill (M2-A).
+"""Fixed-ROI heat-movie frame compositor and raw-BGR spill.
 
 This module builds the per-frame imagery for the OPTIONAL `--heat-movie`
 diagnostic. The `--heat-movie` CLI flag, the driver wiring, and the ffmpeg
-encode are a SEPARATE later task (M2-B); nothing in here adds a flag, spawns a
-subprocess, or calls ffmpeg. M2-B imports the two public functions below.
+encode are handled in heat_movie_encode.py; nothing in here adds a flag,
+spawns a subprocess, or calls ffmpeg.
 
 Two responsibilities:
 
@@ -12,15 +12,15 @@ Two responsibilities:
      of the two bracketing seed boxes (by torso height). It reuses the solver's
      own ROI rule (residual_motion.ROI_MULTIPLIER and the same min-half-side
      clamp as residual_motion._compute_roi) so the heat window matches the
-     window the observer actually scores. A single constant size lets the M2-B
-     ffmpeg call pass one `-s WxH` for the whole sequence.
+     window the observer actually scores. A single constant size lets the ffmpeg
+     call pass one `-s WxH` for the whole sequence.
 
   2. build_heat_movie_frame(...): for one frame, build a BGR image whose shape
      is ALWAYS exactly (roiH, roiW, 3): a fixed (roiW, roiH) window centered on
      the solved box, with the JET motion-cue heat (from
      residual_heat_map.compute_heat_map_roi) pasted in by absolute PROCESSED
      pixel coordinates, the solved torso box drawn with walk_draw styling, and
-     the M1-A in-box hot-mean drawn as text. Where the fixed window extends past
+     the in-box hot-mean drawn as text. Where the fixed window extends past
      a frame edge (or where the heat composite does not cover), the pixels stay
      BLACK-FILLED. The window is NEVER shifted (that would move the box
      off-center) and NEVER scaled (that would distort overlay coordinates). The
@@ -35,14 +35,13 @@ frame-limit constant is introduced here.
 
 Disk: the raw ROI frames are uncompressed but ROI-sized (not full-frame), so the
 on-disk footprint is far smaller than full frames; the per-interval frame count
-is bounded and M2-B deletes the scratch dir at run end.
+is bounded and the encode step deletes the scratch dir at run end.
 
 Coordinate spaces: everything here is PROCESSED-space. The solved box is a typed
 PROCESSED ProcessedBox; the reader reports PROCESSED width/height and decodes
 PROCESSED frames; compute_heat_map_roi's ROI origin is in PROCESSED pixels. This
 OPTIONAL compositor MAY read frame imagery: compute_heat_map_roi decodes the
-center frame plus its warp neighbors through the bounded gray cache. The M1
-metric path is untouched by this module.
+center frame plus its warp neighbors through the bounded gray cache.
 """
 
 # Standard Library
@@ -118,7 +117,7 @@ def _draw_hot_mean_text(
 	hot_mean,
 	hot_count: int,
 ) -> None:
-	"""Draw the M1-A in-box hot-mean (and count) as overlay text, in-place.
+	"""Draw the in-box hot-mean (and count) as overlay text, in-place.
 
 	Args:
 		frame: BGR canvas to draw on (modified in-place).
@@ -210,7 +209,7 @@ def build_heat_movie_frame(
 	window centered on the solved box center. The JET motion-cue heat composite
 	from residual_heat_map.compute_heat_map_roi is pasted in by absolute
 	PROCESSED pixel coordinates; the solved torso box is drawn with walk_draw
-	styling (cyan dashed normal, matching the walk tiles); the M1-A in-box
+	styling (cyan dashed normal, matching the walk tiles); the in-box
 	hot-mean is drawn as text. Any region the window covers that lies past a
 	frame edge, or that the heat composite does not cover, stays BLACK-FILLED.
 	The window is NEVER shifted and NEVER scaled.
@@ -231,7 +230,7 @@ def build_heat_movie_frame(
 		scene_transform: SceneTransform for the residual primitive's warp.
 		solved_box: the solved torso box for this frame (PROCESSED space).
 		roi_size: the fixed (roiW, roiH) from compute_fixed_heat_roi_size.
-		scratch_dir: run-scoped scratch directory (M2-B owns its lifecycle).
+		scratch_dir: run-scoped scratch directory (owned by the encode step).
 		fps: source frame rate, forwarded to compute_heat_map_roi for stride.
 		threshold: motion-cue intensity threshold for the in-box hot-mean.
 			Defaults to the single-source residual_motion.DEFAULT_THRESHOLD so
@@ -255,7 +254,7 @@ def build_heat_movie_frame(
 
 	# Compute the JET heat composite at the observer's own ROI (a separate rect
 	# from our fixed window). out_arrays gives us the residual DoG + validity +
-	# ROI origin needed for the M1-A in-box hot-mean. This is the only frame
+	# ROI origin needed for the in-box hot-mean. This is the only frame
 	# imagery read; compute_heat_map_roi decodes through the bounded gray cache.
 	out_arrays = {}
 	pred_center = (float(solved_box.cx), float(solved_box.cy))
@@ -275,7 +274,7 @@ def build_heat_movie_frame(
 		_paste_composite_into_window(
 			canvas, composite, composite_origin, window_x1, window_y1,
 		)
-		# M1-A in-box hot-mean from the SAME residual arrays the composite used
+		# in-box hot-mean from the SAME residual arrays the composite used
 		# (single-source threshold). roi_bounds is (x1, y1, x2, y2); origin is
 		# its top-left.
 		residual_dog = out_arrays['residual_dog']

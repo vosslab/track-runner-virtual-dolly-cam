@@ -1,13 +1,20 @@
-"""Behavioral test for the interval-fingerprint bin-invariance contract.
+"""Behavioral test for the interval-fingerprint bin-awareness contract.
 
-Per the design: per-frame computations cross the source<->processed
-boundary independently inside camera_motion and residual_motion,
-upscaling back to source-frame at the boundary. The interval cache
-is keyed on source-frame solver state, so changing --bin must NOT
-invalidate the interval cache.
+WS2-cache contract (corrects a prior, wrong invariance assumption): the
+production solve default now bins the walker (default bin_factor > 1 on 4K
+floor@1440). bin>1 lowers the analysis resolution, so the walker's per-frame
+candidate lattice and the residual-motion blobs are extracted at processed
+scale and upscaled to SOURCE. The resulting solved SOURCE torso boxes are
+numerically correct but NOT identical to the bin=1 solve. Reusing a bin=1
+interval result under a different bin would serve geometry the new run did
+not produce.
 
-(Camera motion has its own staleness rule keyed on motion_model; that
-is exercised in tests/test_tr_camera_motion_bin.py.)
+Therefore bin_factor MUST enter the interval fingerprint so a bin change
+forces recompute. This is cache-key bookkeeping only, NOT an on-disk schema
+change (no SCHEMA_VERSION bump).
+
+(Camera motion has its own bin staleness rule; that is exercised in
+tests/test_tr_camera_motion_bin.py.)
 """
 
 # local repo modules
@@ -27,24 +34,48 @@ _SEED_B = {
 
 
 #============================================
-def test_interval_fingerprint_is_bin_invariant():
-	# Property: the interval cache key is a contract on source-frame
-	# seed geometry, not a contract on the per-frame computation that
-	# produced the trajectory. compute_interval_fingerprint accepts
-	# only seed dicts (no bin_factor parameter); changing --bin between
-	# runs reuses the cache.
-	fp1 = interval_fingerprint.compute_interval_fingerprint(_SEED_A, _SEED_B)
-	fp2 = interval_fingerprint.compute_interval_fingerprint(_SEED_A, _SEED_B)
-	assert fp1 == fp2
+def test_bin_change_invalidates_fingerprint():
+	# Property: a bin change must yield a different cache key so the
+	# stale-bin interval store is never reused. Same seeds, different bin.
+	fp_bin1 = interval_fingerprint.compute_interval_fingerprint(
+		_SEED_A, _SEED_B, bin_factor=1,
+	)
+	fp_bin2 = interval_fingerprint.compute_interval_fingerprint(
+		_SEED_A, _SEED_B, bin_factor=2,
+	)
+	assert fp_bin1 != fp_bin2
 
 
 #============================================
-def test_interval_fingerprint_signature_excludes_bin():
-	# Static contract: the public callable accepts exactly two
-	# positional seed args. A future regression that re-introduces
-	# bin_factor (or processed dims) into the cache key would surface
-	# here as a failed call.
-	import inspect
-	sig = inspect.signature(interval_fingerprint.compute_interval_fingerprint)
-	param_names = list(sig.parameters)
-	assert param_names == ["seed_start", "seed_end"]
+def test_same_bin_gives_stable_fingerprint():
+	# Property: the key is deterministic for the same seeds + same bin, so
+	# an unchanged interval under an unchanged bin is reused (no recompute).
+	fp_a = interval_fingerprint.compute_interval_fingerprint(
+		_SEED_A, _SEED_B, bin_factor=2,
+	)
+	fp_b = interval_fingerprint.compute_interval_fingerprint(
+		_SEED_A, _SEED_B, bin_factor=2,
+	)
+	assert fp_a == fp_b
+
+
+#============================================
+def test_default_bin_factor_is_one():
+	# Property: the no-arg default keys on bin=1 so existing bin=1 callers
+	# (diagnostic tools, refine at bin=1) keep their current cache identity.
+	fp_default = interval_fingerprint.compute_interval_fingerprint(
+		_SEED_A, _SEED_B,
+	)
+	fp_explicit = interval_fingerprint.compute_interval_fingerprint(
+		_SEED_A, _SEED_B, bin_factor=1,
+	)
+	assert fp_default == fp_explicit
+
+
+#============================================
+def test_geometry_tag_carries_bin():
+	# The bin enters via the geometry tag suffix, not the seed-geometry
+	# parts, so the tag string itself differs across bins.
+	tag1 = interval_fingerprint.build_geometry_tag(bin_factor=1)
+	tag3 = interval_fingerprint.build_geometry_tag(bin_factor=3)
+	assert tag1 != tag3

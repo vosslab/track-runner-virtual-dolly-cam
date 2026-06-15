@@ -635,7 +635,7 @@ def get_heat_map_style() -> dict:
 		)
 	else:
 		# use REFERENCE_FPS-based ~0.133s default when neither is present.
-		# This mirrors the M2 stride model: DEFAULT_HALF_WINDOW * stride,
+		# This mirrors the fps-invariant stride model: DEFAULT_HALF_WINDOW * stride,
 		# where stride=1 at 60 fps. window_seconds is kept for the heat-map
 		# style dict so legacy callers that still read this key still work.
 		window_seconds = float(residual_motion.DEFAULT_HALF_WINDOW * 2) / float(residual_motion.REFERENCE_FPS)

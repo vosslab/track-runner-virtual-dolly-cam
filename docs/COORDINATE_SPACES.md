@@ -24,6 +24,41 @@ There are exactly two pixel spaces in the analysis pipeline:
 also a no-op, which it is at `bin_factor == 1`). At `bin_factor > 1` the two
 spaces differ and must not be mixed.
 
+## Binned-by-default and the single storage boundary
+
+Solve and walker analyze in PROCESSED space by default. The default bin factor
+is computed by `common_tools/frame_reader.select_default_bin_factor`:
+
+```
+bin_factor = max(1, floor(source_width / TARGET_DEFAULT_WIDTH_PX))
+```
+
+`TARGET_DEFAULT_WIDTH_PX = 1440` is a project-wide constant in
+`common_tools/frame_reader.py` (not config).
+
+| Source width | bin_factor | Processed width |
+| --- | --- | --- |
+| 3840 (4K) | 2 | 1920 |
+| 2880 (2.8K) | 2 | 1440 |
+| 2560 (1440p) | 1 | 2560 (full-res) |
+| 1920 (1080p) | 1 | 1920 (full-res) |
+
+Use `--bin N` for an exact override or `--bin 1` as an escape hatch. Use
+`--auto-bin HEIGHT` for a height-based target (different formula; see SOLVE.md).
+
+The entire solve runs in ONE coordinate space (PROCESSED at bin > 1). Conversion
+to SOURCE happens exactly once, at the storage boundary, immediately before
+`state_io.write_torso_box_coords`, via `geometry.processed_to_source` (centers)
+and `geometry.processed_to_source_delta` (width/height). Hermite produces SOURCE
+coordinates directly (its `MotionTrack.dx/dy` are stored in SOURCE pixels). The
+walker produces PROCESSED coordinates and must always cross the boundary before
+persist. At `bin_factor = 1` the conversion is an identity no-op.
+
+Cache keys include `bin_factor`. The interval fingerprint and camera-motion
+staleness key on the bin factor, so the first solve after upgrading to the
+binned-by-default behavior recomputes rather than reusing bin=1 artifacts. No
+SCHEMA_VERSION bump was needed; this is a cache-key bookkeeping change only.
+
 ## Conversions are pure scale
 
 `FrameGeometry` (held by the reader as `reader.geometry`) provides the

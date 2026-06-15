@@ -762,6 +762,39 @@ the **top-left corner** of the bounding rectangle. The seed also carries `cx`,
 top level for direct use by the solver and encoder. Code that needs the center
 must use `cx`/`cy`, never `torso_box[0]`/`torso_box[1]`.
 
+### Coordinate spaces and storage boundary
+
+Three coordinate spaces exist; the full definitions and the per-callsite space
+table are in [COORDINATE_SPACES.md](COORDINATE_SPACES.md), which is the source
+of truth on conflict.
+
+- SOURCE: full-frame pixels at the video's native resolution. This is the
+  storage and consumption space. The seed JSON above is SOURCE, the per-frame
+  torso-box npz (written and read via `state_io.py`) is SOURCE, and the encoder
+  consumes SOURCE.
+- PROCESSED: post-bin analysis pixels. `reader.width`/`reader.height` are
+  PROCESSED. The blob walker decodes, steps, and selects candidates here. At
+  `bin_factor = 1`, PROCESSED equals SOURCE.
+- SCENE: a frame-0-anchored internal space used only inside the Hermite leg,
+  built from `MotionTrack.dx/dy/scale`. Because `MotionTrack.dx/dy` are stored
+  in SOURCE pixels (camera motion upscales by `bin_factor` before persist), the
+  `SceneTransform` pixel side is SOURCE.
+
+The solve and walker run in PROCESSED space by default. The default bin factor
+is `floor(source_width / 1440)` (`TARGET_DEFAULT_WIDTH_PX` constant in
+`common_tools/frame_reader.py`): 4K bins at 2, 2.8K bins at 2, 1440p and 1080p
+stay at bin=1 (full-res). Override with `--bin N` or `--auto-bin HEIGHT`.
+
+Storage-space rule: every value written to the torso-box npz must be SOURCE.
+The Hermite leg produces SOURCE pixels directly (SOURCE seed -> SCENE -> SOURCE
+pixel). The walker leg produces PROCESSED pixels, so the walker path must be
+projected PROCESSED -> SOURCE exactly once, at the storage boundary,
+immediately before `state_io.write_torso_box_coords`, via
+`geometry.processed_to_source` (centers) and `geometry.processed_to_source_delta`
+(width/height). At `bin_factor = 1` this projection is an identity no-op. At
+`bin_factor > 1` it is mandatory for the walker path; omitting it stores
+PROCESSED pixels mislabeled as SOURCE.
+
 ```json
 {
   "track_runner_seeds": 2,

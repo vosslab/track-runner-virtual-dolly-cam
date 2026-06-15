@@ -20,10 +20,31 @@ the walker's own post-seed coverage, never raw_pred and never FWD/BWD
 agreement.
 """
 
+# PIP3 modules
+import common_tools.frame_reader as frame_reader
+
 # local repo modules (track_runner/ is on sys.path via tests/conftest.py)
 import interval_solver
 import velocity_model
 import walker_bundle
+
+
+#============================================
+class _FakeReader:
+	"""Minimal reader stub carrying a real FrameGeometry (bin_factor=1).
+
+	The walker branch of solve_interval_analytical reads reader.geometry to
+	project seeds into PROCESSED and the walker output back into SOURCE. At
+	bin_factor=1 those conversions are identity, so the fallback behavior under
+	test is unchanged; the stub only needs the geometry attribute to exist.
+	"""
+
+	def __init__(self) -> None:
+		self.geometry = frame_reader.FrameGeometry(
+			source_width=64, source_height=64, bin_factor=1,
+			scaled_width=64, scaled_height=64,
+			processed_width=64, processed_height=64,
+		)
 
 
 #============================================
@@ -95,7 +116,7 @@ def test_zero_accepted_pass_falls_back_to_hermite(monkeypatch):
 		scene_transform=object(),
 		all_seeds_scene=[],
 		fps=30.0,
-		reader=object(),
+		reader=_FakeReader(),
 		blob_pass=True,
 	)
 
@@ -135,7 +156,7 @@ def test_seed_only_accepted_pass_falls_back_to_hermite(monkeypatch):
 		scene_transform=object(),
 		all_seeds_scene=[],
 		fps=30.0,
-		reader=object(),
+		reader=_FakeReader(),
 		blob_pass=True,
 	)
 
@@ -167,7 +188,7 @@ def test_accepted_pass_keeps_walker_path(monkeypatch):
 		scene_transform=object(),
 		all_seeds_scene=[],
 		fps=30.0,
-		reader=object(),
+		reader=_FakeReader(),
 		blob_pass=True,
 	)
 

@@ -9,10 +9,10 @@ No cross-frame state lives in this module. The chained/global motion-cue
 fusion that previously existed here was removed when the propagator took
 over per-frame correction directly.
 
-Residual observer contract (M6): the residual pre-pass observer and the
+Byte-identical residual contract: the residual pre-pass observer and the
 on-the-fly compute_residual_for_frame path produce byte-identical results
 for any given (frame_index, roi) pair when both use the same backend
-(PyAV or cv2). The PyAV backend is the canonical reference for M6+.
+(PyAV or cv2). The PyAV backend is the canonical reference.
 
 Public surface:
   - observe_blob_at(...): primary API; returns BlobObservation or None.
@@ -74,7 +74,7 @@ DOG_MIN_DIAMETER = 4.0
 # round(fps / REFERENCE_FPS), so 60 fps -> stride 1 (byte-identical
 # to legacy 60 fps behavior), 120 fps -> stride 2, 240 fps -> stride 4.
 # Total neighbor count stays 8 (4 each side). Time span is fixed at
-# ~133 ms regardless of fps. See M2 of plan memoized-percolating-moler.md.
+# ~133 ms regardless of fps.
 REFERENCE_FPS = 60
 
 # Default per-side neighbor count for residual computation. The window
@@ -87,7 +87,7 @@ DEFAULT_HALF_WINDOW = 4
 # frame at 2816x1584 float32 is ~17.8 MB; an unbounded cache filled the
 # entire interval (hundreds of frames per worker, tens of GB across the
 # pool) and was the cause of the 2026-04-25 batch-solve OOM crashes.
-# With the M2 stride model, the worst-case neighbor offset is
+# With the fps-invariant stride model, the worst-case neighbor offset is
 # DEFAULT_HALF_WINDOW * stride. At 240 fps stride=4, so the outermost
 # neighbor lands at frame +/-16; a cache cap of 40 entries covers the
 # rolling window (33 frames) plus FWD/BWD overlap at any fps.
@@ -491,7 +491,7 @@ def compute_residual_for_frame(
 	a median background from the aligned stack, and subtracts it to
 	reveal moving objects.
 
-	The neighbor offsets use the M2 fps-invariant stride model:
+	The neighbor offsets use the fps-invariant stride model:
 	  offsets = [k * stride for k in range(-half_window, half_window+1) if k != 0]
 	where stride = resolve_stride(fps) when stride is None. At 60 fps
 	stride=1, so offsets are [-4, -3, -2, -1, 1, 2, 3, 4] -- byte-identical
@@ -503,10 +503,10 @@ def compute_residual_for_frame(
 
 	Uses cache dict to avoid re-reading full frames in sequential processing.
 
-	M6 contract: When called via a reader with a given backend (PyAV or cv2),
-	the output is byte-identical to the precomputed residual store produced
-	by the residual pre-pass for the same backend. The PyAV backend is the
-	canonical reference for M6+.
+	Byte-identical residual contract: when called via a reader with a given
+	backend (PyAV or cv2), the output is byte-identical to the precomputed
+	residual store produced by the residual pre-pass for the same backend.
+	The PyAV backend is the canonical reference.
 
 	Args:
 		reader: VideoReader instance.
@@ -680,9 +680,9 @@ def _compute_residual_with_extras(
 	same frame-read order (BGR -> resize -> cvtColor) so diagnostic PNG
 	output matches the pre-refactor reference byte-for-byte.
 
-	The stride parameter comes from the M2 fps-invariant model. At
+	The stride parameter comes from the fps-invariant stride model. At
 	stride=1 (60 fps) the neighbor offsets are contiguous and the
-	output is byte-identical to the pre-M2 behavior.
+	output is byte-identical to the legacy behavior.
 
 	Returns a 4-tuple when return_extras is True:
 		(residual_mag, raw_mag_single, validity_mask, display_frame)
@@ -709,7 +709,7 @@ def _compute_residual_with_extras(
 	center_float = gray_center.astype(numpy.float32)
 
 	# collect aligned neighbor frames into a stack for median computation
-	# stride-spaced offsets match the production path (M2 fps-invariant model)
+	# stride-spaced offsets match the production fps-invariant stride model
 	aligned_stack = []
 	for k in range(-half_window, half_window + 1):
 		if k == 0:
@@ -919,7 +919,7 @@ class BlobObservation:
 	(last few accepted walker frames at most -- never derived from a
 	full-interval seed chord). See dump_step1/BLOB_EXTRACTION_CODE_AUDIT.md.
 
-	2026-05-29 typed boundary (M2/WS2-B): center_pixel is now a typed
+	2026-05-29 typed boundary: center_pixel is now a typed
 	coord_space.SourcePoint (SOURCE space), not a bare (cx, cy) tuple. The
 	observe_blob_at INPUTS are PROCESSED and the RETURN centroid is SOURCE;
 	this processed-in / source-out flip was previously silent and fed the
@@ -1025,7 +1025,7 @@ def observe_blob_at(
 	disagree. Raw frame reads (the nested `_frames` sub-cache) are keyed
 	by `frame_index` alone and stay shared -- they don't depend on ROI.
 
-	Coordinate-space boundary (typed, M2/WS2-B, 2026-05-29):
+	Coordinate-space boundary (typed, 2026-05-29):
 		All geometric INPUTS are PROCESSED space, expressed as typed
 		coord_space primitives, and the RETURN centroid is SOURCE space.
 		The require_processed_* guards at entry reject a SOURCE-space
@@ -1162,7 +1162,7 @@ def observe_blob_at(
 	# PROCESSED-pixel coords.  The prior Model B contract (source coords
 	# everywhere, converted at this boundary) was retired after three
 	# auto-bin coord defects.  Callers that use load_seeds_view or
-	# walk_io.load_walker_seeds_view obtain processed coords from the view;
+	# walk_tool_setup.load_seeds_view obtain processed coords from the view;
 	# solve-mode callers (velocity_model) use bin_factor=1 so
 	# source==processed (no behavior change).  The conversion block that
 	# existed here between 2026-05-28 and 2026-05-29 was:
@@ -1171,7 +1171,7 @@ def observe_blob_at(
 	#   dog_diameter_override converted source->processed         [removed]
 	# These conversions are now the caller's responsibility.
 	geometry = getattr(reader, "geometry", None)
-	# Typed boundary (M2/WS2-B): guard the PROCESSED-space inputs LOUDLY so
+	# Typed boundary: guard the PROCESSED-space inputs LOUDLY so
 	# a SOURCE-space caller (the #101 class) fails with ValueError right
 	# here instead of building a degenerate ROI deep inside. Unwrap the
 	# typed primitives to the bare floats the internal math uses; the
@@ -1241,7 +1241,7 @@ def observe_blob_at(
 	# BlobObservation.
 	cached = None if overrides_in_use else residual_cache.get(cache_key)
 	if cached is None:
-		# M3+M4: check the sequential pre-pass store before falling through
+		# check the sequential pre-pass store before falling through
 		# to compute_residual_for_frame (which does scattered reads). On a
 		# hit, treat the stored uint8 arrays as if just computed; populate
 		# residual_cache so future calls within this interval find it.

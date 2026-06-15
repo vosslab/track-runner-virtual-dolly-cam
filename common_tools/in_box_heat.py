@@ -2,7 +2,7 @@
 
 This module computes how much residual-motion heat sits INSIDE a solved torso
 box, in a single place that is imported by BOTH the track_runner manifest
-metric (M1-B) and the blob_walk_v2 heat movie (M2-A).  Keeping the box->ROI
+metric and the blob_walk_v2 heat movie.  Keeping the box->ROI
 selection in one tested primitive prevents the two callers from drifting on the
 coordinate convention (the failure mode behind bug #101).
 

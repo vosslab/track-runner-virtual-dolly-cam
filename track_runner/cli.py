@@ -798,6 +798,74 @@ def _validate_usable_seeds(seeds: list) -> tuple:
 
 
 #============================================
+def _resolve_solve_bin_factor(
+	cli_bin: int | None,
+	auto_target: int | None,
+	source_width: int,
+	source_height: int,
+) -> tuple[int, str | None]:
+	"""Resolve the solve bin_factor from CLI flags and source dims.
+
+	Three mutually exclusive cases (--bin and --auto-bin are an argparse
+	mutually-exclusive group):
+	  - explicit --bin N (cli_bin is not None): use N exactly. --bin 1 is
+	    the full-resolution escape hatch.
+	  - explicit --auto-bin HEIGHT (auto_target is not None): keep the
+	    existing HEIGHT-based meaning, bin = max(1, round(source_h / HEIGHT)).
+	  - neither flag (both None): production default, route source WIDTH
+	    through the shared floor selector at the project-wide default
+	    target (TARGET_DEFAULT_WIDTH_PX; 1440p and below stay full-res).
+
+	Compatibility note: the no-flag default keys on source WIDTH against
+	the project-wide default target, while --auto-bin keys on source
+	HEIGHT. The two paths use different axes on purpose and must not be
+	conflated.
+
+	Args:
+		cli_bin: Value of --bin (None when the flag was not given).
+		auto_target: Value of --auto-bin HEIGHT (None when not given).
+		source_width: Raw source frame width in pixels.
+		source_height: Raw source frame height in pixels.
+
+	Returns:
+		(bin_factor, info_message) where info_message is a one-line string
+		to print describing the resolution, or None when nothing to print.
+
+	Raises:
+		ValueError: --auto-bin target < 1, or resolved bin_factor < 1.
+	"""
+	if cli_bin is not None:
+		# explicit --bin N (includes the --bin 1 full-res escape hatch)
+		if cli_bin < 1:
+			raise ValueError(f"--bin must be >= 1, got {cli_bin}")
+		return (cli_bin, None)
+	if auto_target is not None:
+		# explicit --auto-bin HEIGHT: unchanged height-based meaning
+		if auto_target < 1:
+			raise ValueError(
+				f"--auto-bin target must be >= 1, got {auto_target}"
+			)
+		bin_factor = max(1, int(round(source_height / float(auto_target))))
+		actual_height = source_height // bin_factor
+		msg = (
+			f"  --auto-bin {auto_target}: source height {source_height}"
+			f" -> bin_factor={bin_factor} (actual height {actual_height})"
+		)
+		return (bin_factor, msg)
+	# neither flag: production default keyed on source WIDTH, floored at
+	# the project-wide TARGET_DEFAULT_WIDTH_PX (selector default arg).
+	bin_factor = common_tools.frame_reader.select_default_bin_factor(
+		source_width
+	)
+	actual_width = source_width // bin_factor
+	msg = (
+		f"  default bin: source width {source_width}"
+		f" -> bin_factor={bin_factor} (actual width {actual_width})"
+	)
+	return (bin_factor, msg)
+
+
+#============================================
 def _run_solve(
 	args: argparse.Namespace,
 	cfg: dict,
@@ -855,23 +923,20 @@ def _run_solve(
 	if not hermite_exists and not blob_exists:
 		print("first run after solve restructure: full recompute expected")
 
-	# build solver kwargs
-	bin_factor = int(getattr(args, "bin_factor", 1))
+	# build solver kwargs.  When neither --bin nor --auto-bin is given,
+	# the no-flag default routes source WIDTH through the shared floor
+	# selector at the project-wide TARGET_DEFAULT_WIDTH_PX.  --auto-bin
+	# keeps its HEIGHT-based meaning; the two paths key on different axes
+	# on purpose.
+	cli_bin = getattr(args, "bin_factor", None)
 	auto_target = getattr(args, "auto_bin_target", None)
-	if auto_target is not None:
-		if auto_target < 1:
-			raise ValueError(
-				f"--auto-bin target must be >= 1, got {auto_target}"
-			)
-		source_height = int(video_info["height"])
-		bin_factor = max(1, int(round(source_height / float(auto_target))))
-		actual_height = source_height // bin_factor
-		print(
-			f"  --auto-bin {auto_target}: source height {source_height}"
-			f" -> bin_factor={bin_factor} (actual height {actual_height})"
-		)
-	if bin_factor < 1:
-		raise ValueError(f"--bin must be >= 1, got {bin_factor}")
+	source_width = int(video_info["width"])
+	source_height = int(video_info["height"])
+	bin_factor, bin_info_msg = _resolve_solve_bin_factor(
+		cli_bin, auto_target, source_width, source_height
+	)
+	if bin_info_msg is not None:
+		print(bin_info_msg)
 	if bin_factor > 1:
 		print(
 			f"  bin_factor={bin_factor}: camera-motion and residual"
@@ -902,8 +967,10 @@ def _run_solve(
 		# file or motion_model mismatch -> hard error pointing the
 		# user at solve.
 		print("loading camera motion (refine -- not recomputed)...")
+		# Pass the refine run's bin_factor so a bin mismatch fails loudly
+		# instead of reusing a stale-bin SOURCE camera track.
 		motion_track = camera_motion.load_active_camera_motion_or_fail(
-			args.input_file, cfg,
+			args.input_file, cfg, expected_bin_factor=bin_factor,
 		)
 	else:
 		print("precomputing camera motion...")
@@ -1832,7 +1899,20 @@ def _mode_refine(
 			f"  store: dropped {len(unscored_fps)} intervals with "
 			f"geometry but no score (interrupted solve); will re-solve"
 		)
-	plan = solve_queue.plan_interval_work(seeds, solved_intervals)
+	# Resolve the run's bin_factor with the same selector _run_solve uses so
+	# the refine partition keys on bin identically to the downstream solve.
+	# bin enters every interval fingerprint (cache-key bookkeeping only), so a
+	# bin change between solve and refine forces recompute instead of reusing a
+	# stale-bin interval store.
+	refine_cli_bin = getattr(args, "bin_factor", None)
+	refine_auto_target = getattr(args, "auto_bin_target", None)
+	refine_bin_factor, _ = _resolve_solve_bin_factor(
+		refine_cli_bin, refine_auto_target,
+		int(video_info["width"]), int(video_info["height"]),
+	)
+	plan = solve_queue.plan_interval_work(
+		seeds, solved_intervals, bin_factor=refine_bin_factor,
+	)
 	total_expected = plan.total_intervals
 
 	# fast-exit (no write). enforces contract rule 1: unchanged seeds

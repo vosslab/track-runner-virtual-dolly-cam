@@ -11,18 +11,18 @@ via the precomputed_store parameter. On a hit the function bypasses
 compute_residual_for_frame entirely; on a miss it falls through to the
 legacy reader path.
 
-M6 contract (PyAV canonical): the precomputed store is byte-identical to
-the on-the-fly compute_residual_for_frame path when both use the same
-backend (PyAV or cv2). The PyAV backend is the canonical reference for M6+.
+Byte-identical residual contract (PyAV canonical): the precomputed store is
+byte-identical to the on-the-fly compute_residual_for_frame path when both
+use the same backend (PyAV or cv2). The PyAV backend is the canonical
+reference.
 
-Memory safety (M6, 2026-05-04 OOM hotfix):
-- The first M3+M4 ship held the entire interval+padding range of
-  frames in a single dict with no eviction. At --bin 2 across 7 workers
-  this multiplied to ~40 GB; at --bin 1 ~157 GB. The user's MacStudio
-  (36 GB) crashed.
-- M6 splits BGR and gray storage into two dicts and evicts each by
-  numeric frame index after every drain step, so the rolling buffer
-  stays within the neighbor footprint regardless of interval length.
+Memory safety (2026-05-04 OOM hotfix):
+- An earlier version held the entire interval+padding range of frames in a
+  single dict with no eviction. At --bin 2 across 7 workers this multiplied
+  to ~40 GB; at --bin 1 ~157 GB. The user's MacStudio (36 GB) crashed.
+- The current implementation splits BGR and gray storage into two dicts and
+  evicts each by numeric frame index after every drain step, so the rolling
+  buffer stays within the neighbor footprint regardless of interval length.
 - MAX_PREPASS_BUFFER_FRAMES is the safety net cap on each buffer; it
   matches the MAX_GRAY_CACHE_FRAMES = 40 cap in residual_motion.py for
   one mental model. Should never fire under normal operation; surfaces
@@ -35,10 +35,9 @@ Design notes:
   the worker process exits (pool uses max_tasks_per_child=1).
 - Per C11: no frame-based state escapes this call; the dict is pure
   image-derived data (residual + validity arrays).
-- M2 stride model: padding is half_window * stride so the BGR cache
-  covers the wider time-span window at high fps. At 60 fps stride=1
-  and padding is identical to the pre-M2 behavior.
-- Per plan memoized-percolating-moler.md M3+M4+M2+M6.
+- fps-invariant stride model: padding is half_window * stride so the BGR
+  cache covers the wider time-span window at high fps. At 60 fps stride=1
+  and padding is identical to the legacy behavior.
 """
 
 # Standard Library
@@ -102,9 +101,9 @@ def precompute_interval_residuals(
 	compute_residual_for_frame; on a miss it falls through to the legacy
 	reader path.
 
-	M6 contract: the output is byte-identical to the on-the-fly
-	compute_residual_for_frame path for all (frame_index, roi) keys when
-	both use the same backend. The PyAV backend is canonical for M6+.
+	Byte-identical residual contract: the output is byte-identical to the
+	on-the-fly compute_residual_for_frame path for all (frame_index, roi)
+	keys when both use the same backend. The PyAV backend is canonical.
 
 	Args:
 		reader: FrameReader with read_frame, frame_count, width, height.

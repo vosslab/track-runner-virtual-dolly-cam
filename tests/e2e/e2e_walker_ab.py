@@ -17,7 +17,7 @@ Corrected design:
   contract C4 separates this from the pre-race stationary phase that Stage 3b
   synthesis owns, NOT the walker) and to seeds that are human-VISIBLE torso
   boxes on BOTH ends (status == "visible"; not_in_frame / approximate /
-  partial excluded). Selection reuses walk_io.load_race_start_frame (the same
+  partial excluded). Selection reuses walk_tool_setup.load_race_start_frame (the same
   race_start_frame the corpus driver uses) and the same fixed-seed sampling
   shape as walk_util.select_random_visible. A fixed --random-seed makes the
   sample reproducible.
@@ -67,13 +67,13 @@ import walk_paths
 walk_paths.setup()
 
 # local repo modules (blob_walk_v2 + track_runner, imported by bare name)
-import blob_walk.walk_io as walk_io
+import walk_tool_setup
 import interval_solver
 
 
 #============================================
 # The established outdoor corpus (data/outdoor_corpus.txt), already resolved to
-# the basenames open_walker_reader accepts. Kept as a constant so the harness
+# the basenames walk_tool_setup.open_reader accepts. Kept as a constant so the harness
 # is a single-purpose runner; the corpus file is the source of truth and this
 # mirror is asserted against it at startup.
 CORPUS_FILE = os.path.join(_REPO_ROOT, "data", "outdoor_corpus.txt")
@@ -268,11 +268,11 @@ def run_ab(sample_n: int, random_seed: int, per_video_budget_s: float) -> None:
 	attempted = 0
 
 	for video in CORPUS_VIDEOS:
-		reader, probe_info = walk_io.open_walker_reader(video)
-		seeds_view = walk_io.load_walker_seeds_view(video, reader.geometry)
+		reader, probe_info = walk_tool_setup.open_reader(video)
+		seeds_view = walk_tool_setup.load_seeds_view(video, reader.geometry)
 		seeds_view.assert_geometry_match(reader.geometry)
-		scene_transform = walk_io.load_walker_scene_transform(video)
-		race_start_frame = walk_io.load_race_start_frame(video)
+		scene_transform = walk_tool_setup.load_scene_transform(video)
+		race_start_frame = walk_tool_setup.load_race_start_frame(video)
 		fps = float(probe_info["fps"])
 		# sort seeds ascending so triples are consecutive in frame order
 		seeds = sorted(seeds_view.seeds, key=lambda s: s["frame_index"])

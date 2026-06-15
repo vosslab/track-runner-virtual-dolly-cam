@@ -28,7 +28,8 @@ import walk_paths
 walk_paths.setup()
 
 import walk_util
-from blob_walk.walk_io import SeedToSeedInterval
+import race_phases
+SeedToSeedInterval = race_phases.SeedToSeedInterval
 
 
 #============================================
@@ -149,30 +150,3 @@ def test_output_sorted_by_left_frame_index():
 # Tests covering the make_walk_html_v2.py:151 pre-filter predicate (filter site 2).
 #============================================
 
-def test_site151_predicate_matches_select_random_visible_behavior():
-	"""The make_walk_html_v2.py:151 visible_count predicate is behaviorally equivalent.
-
-	Site 151 uses:
-		sum(1 for i in post_start
-			if i.left_seed['status'] == 'visible' and i.right_seed['status'] == 'visible')
-
-	This test constructs a known-mix list and asserts that the count produced
-	by the site-151 predicate equals the length returned by select_random_visible
-	with n=inf, confirming both sites agree on which intervals qualify.
-	"""
-	rng = random.Random(42)
-	intervals = [
-		_make_interval('visible', 'visible', left_frame=0),
-		_make_interval('partial', 'visible', left_frame=10),
-		_make_interval('visible', 'not_in_frame', left_frame=20),
-		_make_interval('visible', 'visible', left_frame=30),
-		_make_interval('approximate', 'approximate', left_frame=40),
-	]
-	# site-151 predicate (inline copy of the production expression)
-	site151_count = sum(
-		1 for iv in intervals
-		if iv.left_seed['status'] == 'visible' and iv.right_seed['status'] == 'visible'
-	)
-	selected = walk_util.select_random_visible(intervals, n=len(intervals), rng=rng)
-	# Both sites must agree on the qualifying count.
-	assert site151_count == len(selected)

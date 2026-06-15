@@ -3,7 +3,7 @@
 Produces one PNG per visited frame showing:
 - Source frame at the ROI crop (implicit base layer, not in the layer list)
 - Transparent JET heat-map overlay alpha-composited at the ROI
-- Blob ellipses from the real BlobObserverTrace (WS2-A): yellow=winner,
+- Blob ellipses from the real BlobObserverTrace: yellow=winner,
   cyan=corridor non-winner, faded gray=raw blobs outside corridor,
   light-red=legacy rejected winner (v12 backward-compat only)
 - Magenta + at the walker prior (pred_cx, pred_cy)
@@ -21,7 +21,7 @@ is a callable dispatched in that order.  heat is one named layer (the
 alpha-composite step); all others are vector-draw steps.  Reordering the YAML
 list changes z-order with no code edits.
 
-Coordinate contract (WS2-B2 / WS2-F): blob centroid_x/y in the
+Coordinate contract: blob centroid_x/y in the
 BlobObserverTrace are in PROCESSED-pixel space (roi_x1/roi_y1 was added to
 them at extract time, see residual_motion.py:1249).  Each ellipse center is
 converted to tile-local by subtracting roi_origin exactly once; NO bin
@@ -92,7 +92,7 @@ def render_walk_tile(
 	Reads source frame, composites heat-map overlay, crops to ROI, draws blob
 	ellipses and prior marker, bakes vector overlays, and saves to PNG.
 
-	Coordinate contract (WS2-B1 / WS2-F): seed_box and solved_box are in
+	Coordinate contract: seed_box and solved_box are in
 	PROCESSED pixels (same space as roi_origin_xy).  At this render entry each
 	is built into a typed coord_space.ProcessedBox and validated with
 	require_processed_box, then passed through exactly one typed tile-local
@@ -114,9 +114,9 @@ def render_walk_tile(
 		scene_transform: SceneTransform for residual computation.
 		fps: Frame rate (required for residual stride resolution).
 		out_png_path: Output PNG path.
-		vx_px: Velocity x-component in px/frame (M1 schema; optional).
-		vy_px: Velocity y-component in px/frame (M1 schema; optional).
-		max_displacement_px: Allowed-jump radius in px (M1 schema; optional).
+		vx_px: Velocity x-component in px/frame (optional).
+		vy_px: Velocity y-component in px/frame (optional).
+		max_displacement_px: Allowed-jump radius in px (optional).
 		seed_box: Optional dict {cx, cy, w, h} in PROCESSED pixels for this
 			frame's human seed annotation.  When present, drawn solid+heavy
 			(user-authored style, C1/C3 truth).  When None, no seed box drawn.
@@ -129,7 +129,7 @@ def render_walk_tile(
 			or required fields are missing.
 
 	Returns:
-		Render manifest dict with per-tile metadata for WS2-C:
+		Render manifest dict with per-tile metadata:
 		  frame_index, seed_box_present, solved_box_present,
 		  solved_box_source, trace_present, raw_blob_count,
 		  corridor_blob_count, winner_blob_count,
@@ -187,7 +187,7 @@ def render_walk_tile(
 	# Draw line thickness based on torso height
 	thickness = walk_draw._compute_thickness_from_torso_h(torso_h_px)
 
-	# Build per-tile render manifest for WS2-C.
+	# Build per-tile render manifest.
 	# box_coord_space_before_draw='processed': both seed_box and solved_box are
 	# typed ProcessedBox (PROCESSED pixels) before the single typed
 	# processed->tile-local conversion below (walk_draw.processed_box_to_tile_local).

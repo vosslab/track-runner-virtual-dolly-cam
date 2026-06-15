@@ -228,7 +228,7 @@ def compute_heat_map_roi(
 		return None
 	frame_roi = center_bgr[y1:y2, x1:x2].copy()
 
-	# stage 1b: residual calculation. stride derived from fps via M2 model.
+	# stage 1b: residual calculation. stride derived from fps via the fps-invariant stride model.
 	stride = residual_motion.resolve_stride(fps)
 	residual_result = residual_motion.compute_residual_for_frame(
 		reader, frame_index, scene_transform,
@@ -359,7 +359,7 @@ def compute_heat_map_overlay_roi(
 	)
 	x1, y1 = int(roi[0]), int(roi[1])
 
-	# stage 1b: residual calculation. stride derived from fps via M2 model.
+	# stage 1b: residual calculation. stride derived from fps via the fps-invariant stride model.
 	stride = residual_motion.resolve_stride(fps)
 	residual_result = residual_motion.compute_residual_for_frame(
 		reader, frame_index, scene_transform,

@@ -19,8 +19,9 @@ fatal flaw and is rejected by construction. The data-boundary test pairs a
 positive assertion (the bundle carries seed + lattice source) with a
 negative assertion (no Hermite path field).
 
-This is an additive seam. No production call site invokes `run_walker_pass`
-yet; default solve behavior is unchanged. The real walker is wired separately.
+The walker IS the Stage-4 producer on promoted intervals (blob_pass=True with
+a reader present). `interval_solver.solve_interval_analytical` calls
+`walk_bundle_to_path_with_coverage` for both the FWD and BWD passes.
 """
 
 # Standard Library
@@ -481,10 +482,13 @@ def walk_bundle_to_path(bundle: WalkerInputBundle) -> list:
 	walker walks from `bundle.seed` over its own image-derived candidate
 	lattice; no Hermite raw_pred is read (the bundle carries none).
 
-	The walker's direction_path is PROCESSED pixels. The solver's FWD/BWD paths
-	are PROCESSED too (both consume the same scene_transform and reader), so no
-	coordinate conversion happens here at any bin_factor -- exactly one space,
-	confirmed at the seam.
+	The walker's direction_path is PROCESSED pixels and this adapter returns
+	PROCESSED pixels unchanged. The PROCESSED -> SOURCE conversion happens once,
+	downstream, in interval_solver.solve_interval_analytical
+	(_walker_path_processed_to_source), immediately after both passes run and
+	before blend/score/storage. The bundle's seed must therefore be PROCESSED;
+	the production driver projects SOURCE seeds via reader.geometry before
+	building the bundle. At bin_factor == 1 both projections are identity.
 
 	precomputed_store note (perf only): walk_one_direction builds its own
 	per-walk residual_cache and does not accept the solver's precomputed_store

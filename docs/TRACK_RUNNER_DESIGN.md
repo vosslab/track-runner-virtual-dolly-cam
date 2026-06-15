@@ -161,10 +161,40 @@ Rules:
   walker fall back to interpolated/extrapolated status, not a memorized
   earlier blob position.
 
+### Anti-pattern: parallel tool glue that duplicates core loaders
+
+A tool shim must never re-implement what a core owner already provides.
+`tools/blob_walk_v2/walk_io.py` was deleted after it had grown into a
+parallel shim: it duplicated seed loading from `state_io`, forked the
+bin/reader policy with its own `select_bin_factor` call, rewrapped
+`camera_motion` and `scene_coords` for the scene transform, and
+re-implemented interval enumeration. That divergence caused tool output
+to drift silently from production solve output whenever a core owner
+changed.
+
+Rules:
+
+- Production solve and any diagnostic or visualization tool MUST share
+  one reader-opener: `common_tools/frame_reader.open_analysis_reader`
+  (single `select_default_bin_factor` / `TARGET_DEFAULT_WIDTH_PX` policy).
+- Seeds load through `state_io.load_seeds` / `state_io.load_seeds_view`.
+- Scene transform is built through `camera_motion.load_motion_cache` +
+  `scene_coords.SceneTransform`.
+- Race-start loads through `state_io.load_diagnostics` -- fail loud, never
+  silent zero.
+- Interval enumeration routes through
+  `track_runner/race_phases.enumerate_seed_to_seed_intervals`.
+- Tool-only path and basename glue (artifact path mapping) may live under
+  `tools/` but must call the core owners above; it must not re-implement
+  them.
+
+Code reviews reject any new module under `tools/` that wraps or re-enters
+one of the named core owners.
+
 ## Windowed path-selection walker
 
 The blob walker core (modules `walk_walker.py`, `walk_viterbi.py`,
-`walk_motion_gate.py`, `walk_status.py`, `walk_io.py`, `walk_debug_log.py`)
+`walk_motion_gate.py`, `walk_status.py`, `walk_debug_log.py`)
 now lives under `track_runner/blob_walk/`. The walker is the default blob pass
 on Stage-4-promoted intervals (`blob_pass=True`); Stage 3 and non-promoted
 dispatches stay pure Hermite (`blob_pass=False`). It selects per-frame blobs
@@ -352,9 +382,20 @@ Four distinct jobs, four distinct systems:
   optional filters, and ffmpeg encoding.
 
 These systems communicate through well-defined interfaces (trajectory arrays,
-crop rectangles, seed JSON) rather than sharing internal state. The pixel
-coordinate spaces those interfaces use (SOURCE vs PROCESSED, and why analysis
-runs in PROCESSED while storage and encode stay SOURCE) are defined in
+crop rectangles, seed JSON) rather than sharing internal state.
+
+The solve and walker analyze in PROCESSED (binned, goodbox) space by default.
+The default bin factor is `floor(source_width / 1440)`, a project-wide constant
+(`TARGET_DEFAULT_WIDTH_PX`) in `common_tools/frame_reader.py`; 4K (3840 px wide)
+bins at 2 (processed 1920x1080), 2.8K (2880) bins at 2, 1440p (2560) and 1080p
+(1920) stay at full resolution (bin=1). The entire solve runs in one coordinate
+space (PROCESSED at bin > 1) and converts to SOURCE exactly once, at the storage
+boundary, immediately before `state_io.write_torso_box_coords`. Hermite and walker
+both emit correct SOURCE boxes via that single boundary. The encoder consumes SOURCE
+and decodes the original full-resolution video.
+
+The pixel coordinate spaces those interfaces use (SOURCE vs PROCESSED, and why
+analysis runs in PROCESSED while storage and encode stay SOURCE) are defined in
 [COORDINATE_SPACES.md](COORDINATE_SPACES.md).
 
 Within the tracker, the interval-solve execution layer splits along the same

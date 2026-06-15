@@ -41,7 +41,7 @@ walk_paths.setup()
 
 # local repo modules
 import walk_util
-import blob_walk.walk_io as walk_io
+import walk_tool_setup
 import blob_walk.walk_walker as walk_walker
 import blob_walk.walk_debug_log as walk_debug_log
 import walk_render
@@ -135,8 +135,8 @@ def _sampled_offsets(interval_length: int) -> list:
 def video_npz_path(video_basename: str) -> str:
 	"""Return the torso_box_coords.npz path for this video.
 
-	Mirrors the walk_io convention: tr_config lives under walk_paths.setup()
-	(the repo root), not under the current working directory.
+	Mirrors the walk_tool_setup convention: tr_config lives under
+	walk_paths.setup() (the repo root), not under the current working directory.
 
 	Args:
 		video_basename: Video base name (with or without .mkv).
@@ -146,9 +146,9 @@ def video_npz_path(video_basename: str) -> str:
 	"""
 	# walk_paths.setup() returns the repo root; tr_config lives there.
 	repo_root = walk_paths.setup()
-	# Single source of truth for basename normalization lives in walk_io; the
-	# former duplicate mirror here was deleted (WP-COST-1 file ownership).
-	base_name = walk_io._normalize_video_basename(video_basename)
+	# Single source of truth for basename normalization lives in
+	# walk_tool_setup; the former duplicate mirror here was deleted.
+	base_name = walk_tool_setup.normalize_video_basename(video_basename)
 	# Match tr_paths._data_file_path pattern: tr_config/{stem}.track_runner.torso_box_coords.npz
 	npz_filename = f"{base_name}.track_runner.torso_box_coords.npz"
 	npz_path = os.path.join(repo_root, "tr_config", npz_filename)
@@ -231,14 +231,14 @@ def _render_direction_tiles(
 
 	Reads the CSV written by DebugLogWriter, reconstructs a DebugLogRow object
 	for each renderable frame, and calls render_walk_tile. The per-frame
-	BlobObserverTrace comes from the live walk (frame_trace_map, WS2-A) when
+	BlobObserverTrace comes from the live walk (frame_trace_map) when
 	available; this is what restores the winner/corridor/raw blob ellipses and
 	the acceptance box. When a frame has no captured trace (render-only mode
 	with no --walk run in this process, or a diagnostic/miss frame), a minimal
 	empty stub trace is used so box/marker overlays still render and ellipses
 	silently skip.
 
-	Per-frame solved_box comes from direction_path (WS1-A processed-space box
+	Per-frame solved_box comes from direction_path (processed-space box
 	path): looked up by frame_index and passed as solved_box to render_walk_tile.
 	Per-frame seed_box comes from proc_seed_by_frame (SeedsView.seeds keyed by
 	frame_index): non-None only on seed frames (those whose frame_index appears
@@ -272,11 +272,11 @@ def _render_direction_tiles(
 		scene_transform: SceneTransform instance.
 		fps: Frames per second.
 		frame_trace_map: Optional frame_index -> lightened BlobObserverTrace map
-			from the live walk (WS2-A). Trace geometry is PROCESSED/ROI-relative
-			with roi_origin_xy in processed coords (handoff to WS2-B2). None or a
-			missing key falls back to the empty stub (no ellipses).
-		direction_path: Optional per-frame box path list from WS1-A (PROCESSED
-			pixels), each entry {frame_index, cx, cy, w, h, conf}. Used to supply
+			from the live walk. Trace geometry is PROCESSED/ROI-relative
+			with roi_origin_xy in processed coords. None or a missing key falls
+			back to the empty stub (no ellipses).
+		direction_path: Optional per-frame box path list in PROCESSED pixels,
+			each entry {frame_index, cx, cy, w, h, conf}. Used to supply
 			solved_box per frame. None in render-only mode (no --walk).
 		proc_seed_by_frame: Optional dict mapping frame_index -> processed-pixel
 			seed dict ({frame_index, cx, cy, w, h, ...}) from SeedsView.seeds.
@@ -293,7 +293,7 @@ def _render_direction_tiles(
 		Tuple (render_error: bool, manifests: list) where render_error is True if
 		any render error occurred, and manifests is the list of render manifest
 		dicts returned by render_walk_tile (one per successfully rendered frame).
-		Manifests are in frame_index order. For WS2-C manifest assembly.
+		Manifests are in frame_index order.
 	"""
 	if frame_trace_map is None:
 		frame_trace_map = {}
@@ -303,7 +303,7 @@ def _render_direction_tiles(
 	# Build frame_index -> {cx,cy,w,h} lookup in PROCESSED pixels.
 	# Used to supply solved_box per frame to render_walk_tile.
 	#
-	# --walk path: direction_path is provided directly in PROCESSED pixels (WS1-A).
+	# --walk path: direction_path is provided directly in PROCESSED pixels.
 	#   Build the lookup by iterating over direction_path entries.
 	#
 	# Render-only path (direction_path=None): load source-frame boxes from the npz
@@ -382,7 +382,7 @@ def _render_direction_tiles(
 			)
 
 	render_error = False
-	# Collected render manifest dicts (one per successfully rendered frame, WS2-C).
+	# Collected render manifest dicts (one per successfully rendered frame).
 	manifests = []
 
 	# Read CSV rows keyed by frame_index
@@ -417,8 +417,8 @@ def _render_direction_tiles(
 			continue
 
 		try:
-			# Use the real per-frame trace captured during the live walk
-			# (WS2-A): this carries raw_blobs/corridor_blobs/winner_blob/
+			# Use the real per-frame trace captured during the live walk.
+			# This carries raw_blobs/corridor_blobs/winner_blob/
 			# acceptance_box/roi_origin_xy in PROCESSED/ROI-relative space and
 			# is what restores the blob ellipses + acceptance box. Falls back to
 			# an empty stub when no live trace exists for this frame (render-only
@@ -441,13 +441,13 @@ def _render_direction_tiles(
 					local_tangent=(1.0, 0.0, 0.0, 1.0),
 				)
 
-			# SOLVED BOX (WS2-INT): per-frame walker-solved box in PROCESSED pixels.
-			# Sourced from direction_path (WS1-A) via direction_box_by_frame lookup.
+			# SOLVED BOX: per-frame walker-solved box in PROCESSED pixels.
+			# Sourced from direction_path via direction_box_by_frame lookup.
 			# None when direction_path was not provided (render-only mode; follow-up
 			# task: load source-frame npz and down-project via reader.geometry).
 			solved_box = direction_box_by_frame.get(frame_index)
 
-			# SEED BOX (WS2-INT): present only on seed frames (frame_index in
+			# SEED BOX: present only on seed frames (frame_index in
 			# proc_seed_by_frame with cx/cy/w/h populated). Uses processed-pixel
 			# seed dict from SeedsView.seeds; passes as-is (already PROCESSED).
 			seed_entry = proc_seed_by_frame.get(frame_index)
@@ -480,7 +480,7 @@ def _render_direction_tiles(
 				reject_reason=row_dict.get('reject_reason', ''),
 			)
 			out_png_path = tile_dir / f"frame_{frame_index:06d}.png"
-			# Collect manifest dict returned by render_walk_tile (WS2-C assembly).
+			# Collect manifest dict returned by render_walk_tile.
 			manifest = walk_render.render_walk_tile(
 				frame_index=frame_index,
 				debug_row=debug_row,
@@ -492,9 +492,9 @@ def _render_direction_tiles(
 				seed_box=seed_box,
 				solved_box=solved_box,
 			)
-			# WS2-C manifest enrichment (additive; render_walk_tile is not edited).
+			# Manifest enrichment (additive; render_walk_tile is not edited).
 			# roi_origin_xy: processed-space ROI origin carried on the live trace
-			#   (None on a stub frame). This is the single offset WS2-B1 subtracts.
+			#   (None on a stub frame). This is the single offset the tile assembler subtracts.
 			# crop_origin_xy: always (0, 0). FrameGeometry is origin-preserving:
 			#   the goodbox crop only trims the right/bottom edges, so the top-left
 			#   origin never moves (common_tools/frame_reader.py FrameGeometry).
@@ -664,7 +664,7 @@ def run_interval_walk(
 		left_seed: Left seed dict with frame_index, cx, cy, w, h in PROCESSED
 			pixels (docs/COORDINATE_SPACES.md). The space is enforced at the top
 			of this function via coord_space.ProcessedBox + require_processed_box;
-			a SOURCE-derived seed fails loud here (WS2-D, bug #101 cure).
+			a SOURCE-derived seed fails loud here (bug #101 cure).
 		right_seed: Right seed dict with frame_index, cx, cy, w, h in PROCESSED
 			pixels. Same boundary guard as left_seed.
 		reader: FrameReader instance (must have .geometry for coordinate projection).
@@ -696,13 +696,13 @@ def run_interval_walk(
 		SOURCE-frame coordinates, or (IntervalSummary, None, None, [], []) if
 		projection fails (e.g. empty direction_path). fwd_manifests and
 		bwd_manifests are lists of render manifest dicts (one per rendered frame)
-		for WS2-C assembly.
+		for render manifest assembly.
 	"""
 	left_frame = left_seed["frame_index"]
 	right_frame = right_seed["frame_index"]
 	interval_length = right_frame - left_frame
 
-	# WS2-D typed seed boundary (bug #101 cure): the walker steps in PROCESSED
+	# Typed seed boundary (bug #101 cure): the walker steps in PROCESSED
 	# space (docs/COORDINATE_SPACES.md). The caller (make_walk_html_v2.process_video)
 	# must feed PROCESSED seeds. Construct a
 	# typed ProcessedBox for each seed and assert the space at the boundary so a
@@ -762,7 +762,7 @@ def run_interval_walk(
 		winner_mode=winner_mode,
 		audit_rule=audit_rule,
 		extra_diagnostic_frames=fwd_sampled_frames,
-		# neighbor coords come from the validated PROCESSED right_box (WS2-D).
+		# neighbor coords come from the validated PROCESSED right_box.
 		neighbor_seed_cx=right_box.cx,
 		neighbor_seed_cy=right_box.cy,
 		neighbor_seed_w=right_box.w,
@@ -787,7 +787,7 @@ def run_interval_walk(
 		winner_mode=winner_mode,
 		audit_rule=audit_rule,
 		extra_diagnostic_frames=bwd_sampled_frames,
-		# neighbor coords come from the validated PROCESSED left_box (WS2-D).
+		# neighbor coords come from the validated PROCESSED left_box.
 		neighbor_seed_cx=left_box.cx,
 		neighbor_seed_cy=left_box.cy,
 		neighbor_seed_w=left_box.w,
@@ -806,15 +806,15 @@ def run_interval_walk(
 	# Fill seed pred for bootstrap (step=0) and after_walk_terminated rows
 	# so the user always sees at least the seed frame and the first stepped
 	# frame, even on early stop.
-	# Per-direction render manifest lists (WS2-C assembly).
+	# Per-direction render manifest lists.
 	fwd_manifests = []
 	bwd_manifests = []
 
 	if render_tiles:
-		# WS2-A: thread the live per-frame trace maps (FWD and BWD independent,
-		# C9) from the just-completed walks into rendering so the renderer draws
+		# Thread the live per-frame trace maps (FWD and BWD independent, C9)
+		# from the just-completed walks into rendering so the renderer draws
 		# real blob ellipses + acceptance box instead of the old empty stub.
-		# WS2-INT: also thread direction_path for solved_box and proc_seed_by_frame
+		# Also thread direction_path for solved_box and proc_seed_by_frame
 		# for seed_box per frame. FWD and BWD direction_paths are kept independent (C9).
 		fwd_had_error, fwd_manifests = _render_direction_tiles(
 			direction_label='FWD',
@@ -900,11 +900,11 @@ def run_interval_walk(
 		writer.writerow(dataclasses.asdict(interval_summary))
 
 	# Assemble solved interval: project processed->source, blend, return for npz write.
-	# direction_path is per WS1-A: list of {frame_index, cx, cy, w, h, conf} in processed pixels.
+	# direction_path: list of {frame_index, cx, cy, w, h, conf} in processed pixels.
 	fwd_raw = fwd_summary.direction_path
 	bwd_raw = bwd_summary.direction_path
 
-	# Heat movie encode (M2-B): per-direction, FWD and BWD independent (C9).
+	# Heat movie encode: per-direction, FWD and BWD independent (C9).
 	# Runs only when --heat-movie is set AND a live walk produced a direction_path.
 	# Import heat_movie_encode lazily so the normal walk path does not import it.
 	if heat_movie:
@@ -946,7 +946,7 @@ def run_interval_walk(
 
 	if fwd_raw and bwd_raw:
 		# Project processed-space paths to source-frame using reader.geometry.
-		# Per WS1-C contract: center = processed_to_source(cx_p, cy_p);
+		# Project processed->source: center = processed_to_source(cx_p, cy_p);
 		# width = processed_to_source_delta(w_p, 0)[0]; height = processed_to_source_delta(0, h_p)[1].
 		geometry = reader.geometry
 		fwd_source = _project_path_to_source(fwd_raw, geometry)

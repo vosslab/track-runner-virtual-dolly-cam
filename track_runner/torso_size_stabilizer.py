@@ -131,9 +131,8 @@ def mad_gated_filter_1d(
 	replaces a non-finite input with the local median when one is
 	available, even when the gate does not strictly fire.
 
-	Behaviorally similar to Hampel for clean inputs; included for
-	the M4 method comparison so the choice between Hampel and a
-	gap-aware variant can be made on evidence.
+	Behaviorally similar to Hampel for clean inputs; included so the
+	choice between Hampel and a gap-aware variant can be made on evidence.
 
 	Args:
 		values: 1D float array.

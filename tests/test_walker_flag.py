@@ -13,11 +13,29 @@ Heavy collaborators (pre-pass, curve fit, scoring) are stubbed so the test
 stays fast and isolates the branch decision.
 """
 
+# PIP3 modules
+import common_tools.frame_reader as frame_reader
+
 # local repo modules (track_runner/ is on sys.path via tests/conftest.py)
 import interval_solver
 import velocity_model
 import walker_bundle
 import residual_pre_pass
+
+
+#============================================
+def _reader():
+	"""Reader stub carrying a real bin_factor=1 FrameGeometry.
+
+	The walker branch reads reader.geometry to project seeds/output across the
+	SOURCE/PROCESSED boundary; at bin_factor=1 the conversions are identity.
+	"""
+	geometry = frame_reader.FrameGeometry(
+		source_width=64, source_height=64, bin_factor=1,
+		scaled_width=64, scaled_height=64,
+		processed_width=64, processed_height=64,
+	)
+	return type("_R", (), {"geometry": geometry})()
 
 
 #============================================
@@ -121,7 +139,7 @@ def test_flag_on_takes_walker_adapter_path(monkeypatch):
 		scene_transform=object(),
 		all_seeds_scene=[],
 		fps=30.0,
-		reader=object(),
+		reader=_reader(),
 		blob_pass=True,
 	)
 

@@ -112,13 +112,9 @@ def test_bin1_and_bin2_agree_in_source_frame(translating_video):
 
 
 #============================================
-def test_bin_factor_does_not_invalidate_camera_motion_cache(tmp_path):
-	# Property under C12.3: after retiring config_hash the only
-	# staleness signal is motion_model. A cache file written under one
-	# bin_factor must remain a hit for a load that nominally would
-	# correspond to a different bin, because bin is not part of the
-	# cache identity any more.
-	cache_path = str(tmp_path / "video.track_runner.camera_motion.npz")
+def _write_fixed_motion_cache(cache_path: str, bin_factor: int) -> None:
+	# Helper: write a 4-frame fixed-zoom camera-motion artifact at a given
+	# bin_factor so the staleness tests below can vary only bin.
 	motion = camera_motion.MotionTrack(
 		dx=numpy.zeros(4, dtype=numpy.float32),
 		dy=numpy.zeros(4, dtype=numpy.float32),
@@ -128,12 +124,64 @@ def test_bin_factor_does_not_invalidate_camera_motion_cache(tmp_path):
 	video_identity = {"basename": "video.mp4", "frame_count": 4}
 	camera_motion.save_motion_cache(
 		motion, cache_path, camera_motion.MOTION_MODEL_FIXED, video_identity,
+		bin_factor=bin_factor,
 	)
-	# Loader receives the same motion_model; bin_factor is not even
-	# part of the API. Cache must hit.
+
+
+#============================================
+def test_camera_motion_cache_hits_for_same_bin(tmp_path):
+	# Property: same motion_model AND same bin_factor must hit so an
+	# unchanged-bin re-solve reuses the camera motion (no recompute).
+	cache_path = str(tmp_path / "video.track_runner.camera_motion.npz")
+	_write_fixed_motion_cache(cache_path, bin_factor=2)
 	cached = camera_motion.load_motion_cache(
-		cache_path, expected_motion_model=camera_motion.MOTION_MODEL_FIXED,
+		cache_path,
+		expected_motion_model=camera_motion.MOTION_MODEL_FIXED,
+		expected_bin_factor=2,
 	)
 	assert cached is not None
+
+
+#============================================
+def test_bin_change_invalidates_camera_motion_cache(tmp_path):
+	# Property: the phase-correlation estimator runs on PROCESSED frames and
+	# upscales dx/dy to SOURCE, so the stored SOURCE track depends on bin.
+	# A cache written at one bin must be treated as stale (None) for a load
+	# at a different bin so the caller recomputes.
+	cache_path = str(tmp_path / "video.track_runner.camera_motion.npz")
+	_write_fixed_motion_cache(cache_path, bin_factor=1)
+	cached = camera_motion.load_motion_cache(
+		cache_path,
+		expected_motion_model=camera_motion.MOTION_MODEL_FIXED,
+		expected_bin_factor=2,
+	)
+	assert cached is None
+
+
+#============================================
+def test_legacy_cache_without_bin_treated_as_bin1(tmp_path):
+	# Property: a legacy artifact written before bin_factor was persisted
+	# has no bin_factor key. It must be read as a bin=1 solve: a hit for a
+	# bin=1 load, stale for a bin=2 load.
+	cache_path = str(tmp_path / "video.track_runner.camera_motion.npz")
+	# Write WITHOUT a bin_factor field by stripping it from the on-disk file.
+	_write_fixed_motion_cache(cache_path, bin_factor=1)
+	with numpy.load(cache_path, allow_pickle=False) as npz:
+		arrays = {k: npz[k] for k in npz.files if k != "bin_factor"}
+	numpy.savez(cache_path, **arrays)
+	# bin=1 load hits
+	hit = camera_motion.load_motion_cache(
+		cache_path,
+		expected_motion_model=camera_motion.MOTION_MODEL_FIXED,
+		expected_bin_factor=1,
+	)
+	assert hit is not None
+	# bin=2 load is stale
+	miss = camera_motion.load_motion_cache(
+		cache_path,
+		expected_motion_model=camera_motion.MOTION_MODEL_FIXED,
+		expected_bin_factor=2,
+	)
+	assert miss is None
 
 

@@ -49,7 +49,7 @@ import walk_paths
 walk_paths.setup()
 
 # local repo modules (blob_walk_v2 + track_runner, imported by bare name)
-import blob_walk.walk_io as walk_io
+import walk_tool_setup
 import walk_driver
 
 
@@ -58,7 +58,7 @@ import walk_driver
 #============================================
 # EXACTLY 4 intervals, walked explicitly by seed-pair frame indices. These are
 # consecutive seed pairs verified present in each video's seeds file (enumerated
-# via walk_io.enumerate_seed_to_seed_intervals). Two videos x two intervals
+# via race_phases.enumerate_seed_to_seed_intervals). Two videos x two intervals
 # each, mixing a near-bootstrap interval (early, right after race start) with a
 # steady-state mid-race interval. Both videos have a dump_step1/ dir and live in
 # TRACK_VIDEOS/. Frame counts kept small so the gate stays fast.
@@ -184,11 +184,11 @@ def walk_baseline(output_dir: pathlib.Path) -> None:
 
 	for video_basename, frame_pairs in intervals_by_video.items():
 		print(f"[baseline] opening reader for {video_basename}")
-		reader, probe_info = walk_io.open_walker_reader(video_basename)
+		reader, probe_info = walk_tool_setup.open_reader(video_basename)
 		# Load processed-pixel seeds (Option A coords) keyed to reader geometry.
-		seeds_view = walk_io.load_walker_seeds_view(video_basename, reader.geometry)
+		seeds_view = walk_tool_setup.load_seeds_view(video_basename, reader.geometry)
 		seeds_view.assert_geometry_match(reader.geometry)
-		scene_transform = walk_io.load_walker_scene_transform(video_basename)
+		scene_transform = walk_tool_setup.load_scene_transform(video_basename)
 
 		# Build a frame_index -> processed-pixel seed lookup, exactly as
 		# walk_driver.main does. The walker consumes processed-pixel coords.

@@ -42,7 +42,8 @@ import walk_paths
 walk_paths.setup()
 
 # local repo modules (blob_walk_v2 + track_runner, imported by bare name)
-import blob_walk.walk_io as walk_io
+import walk_tool_setup
+import race_phases
 import walk_driver
 
 # Fixture: bin_factor=2 video with a near-right-edge seed.
@@ -63,12 +64,12 @@ def reproduce_degenerate_roi() -> None:
 	# SOURCE-pixel seeds: this is the batch-path loader. walk_driver.main() uses
 	# the PROCESSED SeedsView instead, which is why isolated walk_driver.main
 	# runs did not crash.
-	seeds_dict = walk_io.load_walker_seeds(VIDEO_BASENAME)
-	reader, probe_info = walk_io.open_walker_reader(VIDEO_BASENAME)
-	scene_transform = walk_io.load_walker_scene_transform(VIDEO_BASENAME)
-	race_start_frame = walk_io.load_race_start_frame(VIDEO_BASENAME)
+	seeds_dict = walk_tool_setup.load_seeds(VIDEO_BASENAME)
+	reader, probe_info = walk_tool_setup.open_reader(VIDEO_BASENAME)
+	scene_transform = walk_tool_setup.load_scene_transform(VIDEO_BASENAME)
+	race_start_frame = walk_tool_setup.load_race_start_frame(VIDEO_BASENAME)
 
-	intervals = walk_io.enumerate_seed_to_seed_intervals(seeds_dict, race_start_frame)
+	intervals = race_phases.enumerate_seed_to_seed_intervals(seeds_dict, race_start_frame)
 	# Select the known-crashing interval by its seed-pair frame indices.
 	target = [
 		i for i in intervals

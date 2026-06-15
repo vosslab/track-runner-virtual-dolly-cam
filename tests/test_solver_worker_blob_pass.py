@@ -48,7 +48,7 @@ def _run_worker_capturing_blob_pass(monkeypatch, blob_pass: bool) -> bool:
 	# stub the fingerprint so tiny stub seeds need no real geometry
 	monkeypatch.setattr(
 		interval_solver, "compute_interval_fingerprint",
-		lambda seed_start, seed_end: "fp",
+		lambda seed_start, seed_end, bin_factor=1: "fp",
 	)
 	monkeypatch.setattr(
 		solver_workers, "_WORKER_CONTEXT", _make_context(blob_pass),

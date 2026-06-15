@@ -11,6 +11,7 @@ This module is the start of a race semantics layer. Future additions
 # Standard Library
 import math
 import statistics
+import dataclasses
 
 # Timing constants (seconds, converted to frames via fps)
 PRE_WINDOW_S = 0.75		# trailing window for baseline velocity
@@ -289,3 +290,65 @@ def detect_race_start(
 		"debounce_frames": debounce_frames_used,
 	}
 	return result
+
+
+#============================================
+@dataclasses.dataclass
+class SeedToSeedInterval:
+	"""A consecutive seed-pair interval with race-phase classification.
+
+	Attributes:
+		left_seed: Earlier seed dict (must carry frame_index).
+		right_seed: Later seed dict (must carry frame_index).
+		label: Race-phase label, one of {"post_start",
+			"crossing_race_start", "pre_start"}.
+	"""
+	left_seed: dict
+	right_seed: dict
+	label: str
+
+
+#============================================
+def enumerate_seed_to_seed_intervals(
+	seeds_dict: dict,
+	race_start_frame: int,
+) -> list:
+	"""Enumerate consecutive seed-pair intervals with race-phase labels.
+
+	Side-effect-free derived-signal helper: reads a seeds dict and the
+	detected race-start frame, classifies each consecutive seed pair by
+	when it falls relative to race start. Does not touch disk or trajectory
+	state.
+
+	Args:
+		seeds_dict: Seeds dict from state_io.load_seeds (or the .source of a
+			SeedsView). Must carry a "seeds" list whose entries each have a
+			"frame_index" key.
+		race_start_frame: Frame index where the race begins.
+
+	Returns:
+		list: One SeedToSeedInterval per consecutive seed pair, each with
+			left_seed, right_seed, and a race-phase label.
+	"""
+	seeds = seeds_dict["seeds"]
+	intervals = []
+	for i in range(len(seeds) - 1):
+		left_seed = seeds[i]
+		right_seed = seeds[i + 1]
+		left_frame = left_seed["frame_index"]
+		right_frame = right_seed["frame_index"]
+		# classify by race-start position
+		if left_frame > race_start_frame and right_frame > race_start_frame:
+			label = "post_start"
+		elif left_frame <= race_start_frame and right_frame > race_start_frame:
+			label = "crossing_race_start"
+		else:
+			# right_frame <= race_start_frame
+			label = "pre_start"
+		interval = SeedToSeedInterval(
+			left_seed=left_seed,
+			right_seed=right_seed,
+			label=label,
+		)
+		intervals.append(interval)
+	return intervals

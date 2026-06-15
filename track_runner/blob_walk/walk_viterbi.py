@@ -75,7 +75,7 @@ import blob_walk.walk_motion_gate as walk_motion_gate
 # model flip can never pass. At 0.25 the in-envelope displacement term is a
 # gentle regularizer that bounded evidence (WEIGHT_EVIDENCE_NORM) can outvote
 # when the mover carries stronger residual-motion signal (evidence-forward).
-# WS-VAL tuning owns final values.
+# Human-approved values; see TRACK_RUNNER_DESIGN.md for tuning rationale.
 WEIGHT_DISPLACEMENT = 0.25
 # WEIGHT_SPEED_DELTA: multiplies abs speed change between consecutive velocities.
 WEIGHT_SPEED_DELTA = 1.0

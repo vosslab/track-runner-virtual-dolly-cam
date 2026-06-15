@@ -64,7 +64,7 @@ WALKER_WINDOW_FRAMES = 9
 BOOTSTRAP_N = 1
 
 # ============================================================
-# Per-frame confidence decay (WS1-A).
+# Per-frame confidence decay.
 # ============================================================
 # Mirror velocity_model.py's deterministic distance-from-anchor decay
 # verbatim (FWD _compute_raw_pred_forward, BWD _compute_raw_pred_backward):
@@ -72,8 +72,7 @@ BOOTSTRAP_N = 1
 # The anchor is the pass's own seed (FWD = left seed, BWD = right seed); the
 # walker originates at that seed, so frames_from_anchor = abs(frame - seed).
 # This is NOT an image-evidence score; it makes the FWD/BWD blend behave like
-# the main solver (the closer-to-seed pass wins). No status-tier fork, no
-# window-smoothness variant (WS1-A scope).
+# the main solver (the closer-to-seed pass wins).
 CONF_DECAY_PER_FRAME = 0.97
 CONF_FLOOR = 0.1
 CONF_START = 1.0
@@ -153,7 +152,7 @@ def make_size_at_frame(
 
 #============================================
 def lighten_trace(trace: blob_trace.BlobObserverTrace) -> blob_trace.BlobObserverTrace:
-	"""Return a render-only copy of a trace with heavy arrays dropped (WS2-A).
+	"""Return a render-only copy of a trace with heavy arrays dropped.
 
 	The live BlobObserverTrace carries large per-frame numpy arrays
 	(residual_dog, residual_pre_dog, validity_mask) used only during blob
@@ -164,8 +163,8 @@ def lighten_trace(trace: blob_trace.BlobObserverTrace) -> blob_trace.BlobObserve
 	frames; keeping residual arrays would be a memory blow-up risk).
 
 	Coordinate space is preserved exactly: trace geometry stays PROCESSED/
-	ROI-relative with roi_origin_xy in processed coords (the handoff contract
-	to WS2-B2). This function performs NO coordinate conversion.
+	ROI-relative with roi_origin_xy in processed coords. This function
+	performs NO coordinate conversion.
 
 	Args:
 		trace: Live BlobObserverTrace captured during the walk.
@@ -262,16 +261,16 @@ class WalkSummary:
 		final_displacement_to_neighbor_px: Distance from last accepted to neighbor
 		    seed center (pixels), or None if no accepts or neighbor coords unknown.
 		mode_disagreement_count: Always 0 in v13 (no production/audit split).
-		direction_path: Per-frame solved box path for this direction (WS1-A),
+		direction_path: Per-frame solved box path for this direction,
 		    a list of {frame_index, cx, cy, w, h, conf} dicts in PROCESSED
 		    pixels, one per emitted walk frame (bootstrap + windowed steps;
 		    after-walk diagnostic rows excluded). conf is the deterministic
 		    distance-from-anchor decay (see conf_from_anchor). w/h are
 		    seed-derived geometry, not an independent size solve. The path lives
-		    in processed space; projection to source is a downstream (WS1-B)
-		    concern, not done here.
+		    in processed space; projection to source is a downstream concern,
+		    not done here.
 		direction_trace_map: Per-frame frame_index -> lightened
-		    BlobObserverTrace map for this direction (WS2-A), one entry per
+		    BlobObserverTrace map for this direction, one entry per
 		    emitted walk frame (bootstrap + windowed steps; after-walk
 		    diagnostic rows excluded, matching direction_path). Each trace has
 		    its heavy arrays (residual_dog, residual_pre_dog, validity_mask)
@@ -343,7 +342,7 @@ def _run_viterbi_and_emit_oldest(
 		    {frame_index, cx, cy, w, h, conf} dict appended per emitted frame).
 		direction_trace_map: Per-frame frame_index -> lightened
 		    BlobObserverTrace map (mutated; one entry appended per emitted
-		    frame that carried a trace; WS2-A).
+		    frame that carried a trace).
 
 	Returns:
 		(updated_last_accepted_cx, updated_last_accepted_cy)
@@ -433,7 +432,7 @@ def _run_viterbi_and_emit_oldest(
 			actual_jump_val = (jump_dx * jump_dx + jump_dy * jump_dy) ** 0.5
 
 		# Per-frame solved box: position from the path, size seed-derived,
-		# conf the deterministic distance-from-anchor decay (WS1-A). Carried
+		# conf the deterministic distance-from-anchor decay. Carried
 		# on EVERY emitted frame (not None) for the downstream box path.
 		frame_w = r["w"]
 		frame_h = r["h"]
@@ -459,7 +458,7 @@ def _run_viterbi_and_emit_oldest(
 			"in_box_hot_count": in_box_hot_count,
 		})
 
-		# WS2-A: thread the live (lightened) per-frame trace to the render map.
+		# Thread the live (lightened) per-frame trace to the render map.
 		# Aligned 1:1 with the emitted frame; None on miss frames (no trace).
 		entry_light_trace = entry.get("light_trace")
 		if entry_light_trace is not None:
@@ -632,8 +631,8 @@ def _compute_roi_and_observe(
 		(None, trace_sink_holder) as a soft-miss without calling observe.
 	"""
 	# All inputs are already PROCESSED-pixel coords (Option A, 2026-05-29).
-	# Do NOT re-introduce any source->processed conversion here (that was the
-	# reverted WS0-A regression); the seeds and last-accepted anchors that
+	# Do NOT re-introduce any source->processed conversion here (that was a
+	# reverted regression); the seeds and last-accepted anchors that
 	# feed anchor_cx/anchor_cy are processed floats.
 	trace_sink_holder = type('TraceSink', (), {'observer_trace': None})()
 
@@ -829,7 +828,7 @@ def _build_window_entry(obs: object, trace_sink_holder: object, frame_f: int,
 		winner_proximity_score = None
 		winner_total_score = None
 
-	# WS2-A: carry a render-only (heavy-array-dropped) copy of the live trace
+	# Carry a render-only (heavy-array-dropped) copy of the live trace
 	# so the emit step can thread it to the frame->trace map. Coordinate space
 	# is preserved (PROCESSED/ROI-relative). None on a miss frame (no trace).
 	light_trace = lighten_trace(trace) if trace is not None else None
@@ -953,7 +952,7 @@ def _run_bootstrap_step(
 		"in_box_hot_count": in_box_hot_count,
 	})
 
-	# WS2-A: thread the bootstrap-frame live (lightened) trace to the render
+	# Thread the bootstrap-frame live (lightened) trace to the render
 	# map. None when the seed-frame observation produced no trace.
 	if bootstrap_trace is not None:
 		direction_trace_map[frame_f] = lighten_trace(bootstrap_trace)
@@ -1057,7 +1056,7 @@ def _run_windowed_steps(
 		size_at_frame: Callable frame_index -> (w, h) seed-derived torso size.
 		direction_path: Per-frame solved box path (mutated).
 		direction_trace_map: Per-frame frame_index -> lightened
-		    BlobObserverTrace map (mutated; WS2-A).
+		    BlobObserverTrace map (mutated).
 
 	Returns:
 		(last_accepted_cx, last_accepted_cy, frame_f, stop_reason)
@@ -1271,7 +1270,7 @@ def _compute_summary_metrics(
 		stop_reason: Walk stop reason.
 		direction_path: Per-frame processed-space box path for this direction.
 		direction_trace_map: Per-frame frame_index -> lightened
-		    BlobObserverTrace map for this direction (WS2-A).
+		    BlobObserverTrace map for this direction.
 
 	Returns:
 		WalkSummary with counts and metrics.
@@ -1424,11 +1423,11 @@ def walk_one_direction(
 	accepts = []
 	visited_frames = set()
 
-	# Per-frame solved box path for this direction (WS1-A), processed pixels.
+	# Per-frame solved box path for this direction, in processed pixels.
 	# One {frame_index, cx, cy, w, h, conf} dict per emitted walk frame.
 	direction_path = []
 
-	# Per-frame frame_index -> lightened BlobObserverTrace map (WS2-A),
+	# Per-frame frame_index -> lightened BlobObserverTrace map,
 	# threaded to the renderer under --walk. Image-derived per-frame data
 	# (heavy arrays dropped); no accepted-blob memory; FWD/BWD independent.
 	direction_trace_map = {}

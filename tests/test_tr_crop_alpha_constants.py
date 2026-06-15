@@ -1,18 +1,22 @@
-"""Crop-rect equivalence guard for the alpha-to-constants promotion.
+"""Crop-rect equivalence guard for direct_center size smoothing.
 
-Three direct_center smoothing alphas were promoted from per-video config
-keys to named module constants in tr_crop.py with the SAME effective values:
+The crop SIZE smoothing alpha lives as a named module constant in
+tr_crop.py:
 
-	crop_post_smooth_strength       -> CROP_POST_SMOOTH_STRENGTH       (0.0)
 	crop_post_smooth_size_strength  -> CROP_POST_SMOOTH_SIZE_STRENGTH  (0.15)
-	crop_post_smooth_max_velocity   -> CROP_POST_SMOOTH_MAX_VELOCITY   (0.0)
+
+The crop CENTER position-smoothing and center velocity-cap legs were
+permanently disabled no-ops (alpha 0.0, cap 0.0) and have been removed
+along with their CROP_POST_SMOOTH_STRENGTH and
+CROP_POST_SMOOTH_MAX_VELOCITY constants.
 
 These tests lock in the equivalence contract:
 
-direct_center crop rectangles are unchanged whether the smoothing
-alphas arrive as the new constants or as the old config keys with
-the same values. Equivalence is exact on the stored integer crop
-coordinates (the path is deterministic).
+direct_center crop rectangles are unchanged whether stale legacy config
+alpha keys are present or absent. The current code reads only the size
+constant and ignores any config alpha keys, so feeding the old keys must
+yield identical rectangles. Equivalence is exact on the stored integer
+crop coordinates (the path is deterministic).
 """
 
 # PIP3 modules

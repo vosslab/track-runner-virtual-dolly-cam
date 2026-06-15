@@ -1,4 +1,4 @@
-"""Heat movie encode helper (M2-B).
+"""Heat movie encode helper.
 
 Drives the raw-BGR spill + ffmpeg image2 encode for the optional `--heat-movie`
 diagnostic.  The two public functions are:
@@ -19,7 +19,7 @@ diagnostic.  The two public functions are:
     user-facing message when ffmpeg is absent.  Called at flag-parse time so
     a missing ffmpeg is diagnosed immediately, not mid-encode.
 
-Design notes (M2-B spec):
+Design notes:
   - ffmpeg REQUIRED only for --heat-movie.  This module is imported only
     when --heat-movie is set; the normal --walk path does not import or call
     anything from here.
@@ -220,7 +220,7 @@ def encode_heat_movie_for_direction(
 ) -> str | None:
 	"""Spill + encode one per-direction heat movie, copy beside render output.
 
-	Orchestrates the full M2-B pipeline for one FWD or BWD direction:
+	Orchestrates the full encode pipeline for one FWD or BWD direction:
 	  1. Compute fixed ROI size from the two bracketing seeds (once per interval).
 	  2. Enter a tempfile.TemporaryDirectory context (under scratch_parent when
 	     provided, otherwise the system tempdir /tmp) -- the context manager owns

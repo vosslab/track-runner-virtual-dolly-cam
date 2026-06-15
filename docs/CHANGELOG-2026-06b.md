@@ -497,8 +497,8 @@
   imports of track_runner siblings (`residual_motion`, `blob_trace`, `scene_coords`,
   `state_io`, `camera_motion`) and `common_tools.*` keep the package-wide bare-name top-level
   convention (these modules import their own siblings by bare name, so a dotted
-  `track_runner.X` import is not resolvable). [walk_io.py](../track_runner/blob_walk/walk_io.py)
-  now resolves the repo root once via `git rev-parse --show-toplevel`
+  `track_runner.X` import is not resolvable). `walk_io.py` (since deleted in WS3-coreroute)
+  resolved the repo root once via `git rev-parse --show-toplevel`
   (per [docs/REPO_STYLE.md](REPO_STYLE.md)) instead of `walk_paths.setup()`.
 - **WP-1: repointed the tool-side driver and render imports to the relocated core.**
   [walk_driver.py](../tools/blob_walk_v2/walk_driver.py) (kept under `tools/` for WP-2;

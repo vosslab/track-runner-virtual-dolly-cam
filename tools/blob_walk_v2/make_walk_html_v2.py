@@ -7,7 +7,7 @@ corpus lives. Batch runs loop over a corpus list in the shell, calling this
 once per video (see run_random_walk.sh).
 
   Phase 1: walker batch (only with --walk). Enumerates seed-to-seed intervals
-           via walk_io, randomly samples up to N visible-both intervals, then
+           via race_phases, randomly samples up to N visible-both intervals, then
            walks each via walk_driver.run_interval_walk.
   Phase 2: render walker tiles (CSV + PNG) unless --skip-render.
   Phase 3: build walk.html via walk_html.build_walk_html.
@@ -32,10 +32,11 @@ import walk_paths
 walk_paths.setup()
 
 # local repo modules
-import blob_walk.walk_io as walk_io
+import walk_tool_setup
 import walk_util
 import walk_driver
 import walk_html
+import race_phases  # track_runner/race_phases.py: seed-to-seed interval enumerator
 import interval_solver  # track_runner/interval_solver.py: reused progress renderer
 
 
@@ -121,7 +122,7 @@ def process_video(
 ) -> dict:
 	"""Walk + render the sampled intervals of one video. Returns counters dict."""
 	logger.info(f'Processing video: {video_basename}')
-	reader, probe_info = walk_io.open_walker_reader(video_basename)
+	reader, probe_info = walk_tool_setup.open_reader(video_basename)
 	# Decode cost is resolution-bound and pre-bin: binning happens after decode so
 	# auto-bin cannot reduce seek cost on 4K HEVC sources (see common_tools/README.md).
 	if reader.geometry.source_width >= 3840 or reader.geometry.source_height >= 2160:
@@ -134,10 +135,10 @@ def process_video(
 	# receives PROCESSED seeds natively (the bug #101 cure). At bin > 1 a
 	# source cx near the right edge built a degenerate ROI clamped against the
 	# processed width (bug #101); the SeedsView path avoids that.
-	seeds_view = walk_io.load_walker_seeds_view(video_basename, reader.geometry)
+	seeds_view = walk_tool_setup.load_seeds_view(video_basename, reader.geometry)
 	seeds_view.assert_geometry_match(reader.geometry)
-	scene_transform = walk_io.load_walker_scene_transform(video_basename)
-	race_start_frame = walk_io.load_race_start_frame(video_basename)
+	scene_transform = walk_tool_setup.load_scene_transform(video_basename)
+	race_start_frame = walk_tool_setup.load_race_start_frame(video_basename)
 
 	# Processed-pixel seed map keyed by frame_index. This is BOTH the walk input
 	# and the renderer's seed-box source. The walker steps in PROCESSED space
@@ -147,7 +148,7 @@ def process_video(
 	# Enumerate intervals using the source-pixel seeds dict for frame-index
 	# bookkeeping only. Walk coords come from proc_seed_by_frame (processed),
 	# never from seeds_view.source.
-	intervals = walk_io.enumerate_seed_to_seed_intervals(seeds_view.source, race_start_frame)
+	intervals = race_phases.enumerate_seed_to_seed_intervals(seeds_view.source, race_start_frame)
 	post_start = [i for i in intervals if i.label == 'post_start']
 
 	# Random visible-both sampling: pick up to sample_intervals random intervals

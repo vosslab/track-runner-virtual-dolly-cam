@@ -11,30 +11,64 @@ import math
 # PIP3 modules
 import numpy
 
+# local repo modules
+import torso_size_stabilizer
 
-# Crop-trajectory post-smoothing constants (both crop paths).
-# These describe OUTPUT crop feel (how the virtual camera moves), not
-# tracker physics, so they live as fixed module constants rather than
-# per-video config knobs. Both the direct_center path and the smooth
-# path read these constants directly; no config key overrides them.
-# The previous per-video config keys (crop_post_smooth_strength,
-# crop_post_smooth_size_strength, crop_post_smooth_max_velocity) were
-# removed -- they are not read from config anywhere in this module.
+
+# Crop-trajectory post-smoothing constant (both crop paths).
+# This describes OUTPUT crop feel (how the virtual camera moves), not
+# tracker physics, so it lives as a fixed module constant rather than a
+# per-video config knob. Both the direct_center path and the smooth
+# path read this constant directly; no config key overrides it.
 #
-# CROP_POST_SMOOTH_STRENGTH: forward-backward EMA alpha on the crop
-#   CENTER. 0.0 keeps the crop glued to the runner center (no position
-#   smoothing); the containment clamp already bounds center motion.
 # CROP_POST_SMOOTH_SIZE_STRENGTH: forward-backward EMA alpha on the
 #   crop HEIGHT. 0.15 is a ~6-7 frame time constant that absorbs the
 #   typical +/-5% per-frame torso-bbox jitter so the zoom does not
 #   visibly breathe in the encoded crop.
-# CROP_POST_SMOOTH_MAX_VELOCITY: final per-frame cap on crop-center
-#   displacement in pixels. 0.0 disables the cap (the fit-to-source
-#   path keeps the runner centered at all costs, which conflicts with
-#   a velocity cap).
-CROP_POST_SMOOTH_STRENGTH = 0.0
+#
+# The crop CENTER (position) is not post-smoothed and the crop center is
+# not velocity-capped. Both legs were permanently disabled no-ops
+# (position alpha 0.0, velocity cap 0.0) and have been removed. Center
+# motion is already bounded by the containment clamp, and the
+# fit-to-source path keeps the runner centered at all costs, which
+# conflicts with a velocity cap.
 CROP_POST_SMOOTH_SIZE_STRENGTH = 0.15
-CROP_POST_SMOOTH_MAX_VELOCITY = 0.0
+
+# Robust size-spike hardening for torso size (w/h), applied to the loaded
+# trajectory BEFORE the size-EMA. The EMA is a low-pass filter, not an
+# outlier rejector: on every frame it injects alpha*(desired - smoothed),
+# so a single-frame torso w/h spike always moves the crop height by ~alpha
+# of the spike. This stage rejects isolated single-frame torso w/h outliers
+# (a window-local median replaces a spike with its local median), and
+# preserves real multi-frame scale ramps (which agree with their
+# neighborhood and pass through untouched). It does NOT remove broadband
+# sub-pixel breathing. This separates size TRACKING (robust,
+# trend-following) from size SMOOTHING (cosmetic EMA), the C5 separability
+# the contract asks for. Position (cx, cy) is never touched by this stage.
+#
+# Honest framing: this is size-spike hardening, not a zoom-bounce fix. The
+# visible residual breathing on current clips is BROADBAND ~1px wiggle near
+# the integer-rounding floor, not isolated spikes, and this stage does not
+# measurably reduce it. See the measured null-effect numbers in
+# docs/active_plans/decisions/size_spike_hardening_evidence.md. Reducing the
+# broadband breathing is a SEPARATE future task (longer window / stronger
+# EMA / crop-height deadband), not done here.
+#
+# CROP_SIZE_STABILIZER_METHOD: one of the torso_size_stabilizer methods
+#   ("none", "median", "hampel", "mad_gated"). "median" is chosen because a
+#   window-local median rejects true single-frame spikes when they occur
+#   while tracking a monotone ramp; a MAD-gated Hampel filter fires on under
+#   2% of frames on real production trajectories and does not lower the
+#   per-frame step (the residual jitter there is broadband, not spikes).
+# CROP_SIZE_STABILIZER_WINDOW: centered window length. 7 frames matches the
+#   ~6-7 frame time constant of the size-EMA: long enough for a stable
+#   local median, short enough to preserve a genuine fast zoom.
+#
+# This is an OUTPUT crop-feel constant (it edits only the in-memory crop
+# trajectory, never the stored torso boxes / npz), so it lives as a fixed
+# module constant, not a per-video config knob.
+CROP_SIZE_STABILIZER_METHOD = "median"
+CROP_SIZE_STABILIZER_WINDOW = 7
 
 
 #============================================
@@ -762,16 +796,13 @@ def direct_center_crop_trajectory(
 	# torso_height_multiple: zoom knob. See Step 1 below for the
 	# W+H averaging contract that turns this into desired_crop_h.
 	torso_multiple = float(processing.get("torso_height_multiple", 3.33))
-	# Smoothing alphas. Position smoothing is off so the crop stays glued
-	# to the runner; size smoothing is on to avoid the zoom-bouncing
-	# failure mode where per-frame torso-bbox jitter (typically +/-5%)
-	# translates directly into visible breathing in the encoded crop.
-	# These are OUTPUT crop-feel constants (see module top), not per-video
-	# config knobs.
-	alpha_pos = CROP_POST_SMOOTH_STRENGTH
+	# Size-smoothing alpha. Size smoothing avoids the zoom-bouncing failure
+	# mode where per-frame torso-bbox jitter (typically +/-5%) translates
+	# directly into visible breathing in the encoded crop. This is an
+	# OUTPUT crop-feel constant (see module top), not a per-video config
+	# knob. The crop center is intentionally not post-smoothed (it stays
+	# glued to the runner; the containment clamp bounds center motion).
 	alpha_size = CROP_POST_SMOOTH_SIZE_STRENGTH
-	# final velocity cap on center (0 = no cap)
-	max_velocity = CROP_POST_SMOOTH_MAX_VELOCITY
 
 	# Step 1: extract raw signals from trajectory
 	raw_cx = numpy.empty(n, dtype=float)
@@ -798,13 +829,10 @@ def direct_center_crop_trajectory(
 	desired_h_from_w = (raw_w * torso_multiple) / aspect_ratio
 	desired_crop_h = 0.5 * (desired_h_from_h + desired_h_from_w)
 
-	# Step 2: apply forward-backward EMA to position and size
-	if alpha_pos > 0:
-		smoothed_cx = _forward_backward_ema(raw_cx, alpha_pos)
-		smoothed_cy = _forward_backward_ema(raw_cy, alpha_pos)
-	else:
-		smoothed_cx = raw_cx.copy()
-		smoothed_cy = raw_cy.copy()
+	# Step 2: crop center stays glued to the runner (no position EMA);
+	# apply forward-backward EMA to size only.
+	smoothed_cx = raw_cx.copy()
+	smoothed_cy = raw_cy.copy()
 
 	if alpha_size > 0:
 		smoothed_h = _forward_backward_ema(desired_crop_h, alpha_size)
@@ -1025,33 +1053,14 @@ def direct_center_crop_trajectory(
 	smoothed_h = numpy.minimum(smoothed_h, float(frame_height))
 	# do NOT clamp position to frame bounds -- allow black fill at edges
 	# (apply_crop in encoder.py fills out-of-bounds with black)
+	#
+	# The crop center is intentionally not velocity-capped: the
+	# fit-to-source path keeps the runner centered at all costs, and a
+	# per-frame cap would let the crop center lag the runner (decentring
+	# the runner and possibly re-introducing a black-fill edge the fit
+	# step avoided).
 
-	# Step 6: apply final velocity cap on center only.
-	# When fit_to_source is on, the velocity cap conflicts with the
-	# "always centered on the runner" contract: capping per-frame motion
-	# would let the crop center lag the smoothed runner center, which
-	# both decentres the runner and can re-introduce a black-fill edge
-	# (the lagged crop may extend past a source edge that was avoided
-	# by the fit step). The user's contract is "keep torso centered at
-	# all costs", so velocity capping is skipped on the fit path.
-	if max_velocity > 0 and not fit_to_source:
-		# recompute centers from current rects
-		cx = x + smoothed_w / 2.0
-		cy = y + smoothed_h / 2.0
-		for i in range(1, n):
-			dx = cx[i] - cx[i - 1]
-			dy = cy[i] - cy[i - 1]
-			dist = math.sqrt(dx * dx + dy * dy)
-			if dist > max_velocity:
-				# rescale displacement to max_velocity preserving direction
-				scale = max_velocity / dist
-				cx[i] = cx[i - 1] + dx * scale
-				cy[i] = cy[i - 1] + dy * scale
-		# rebuild x, y from capped centers
-		x = cx - smoothed_w / 2.0
-		y = cy - smoothed_h / 2.0
-
-	# Step 8: convert to integer tuples using round() for stability
+	# Step 6: convert to integer tuples using round() for stability
 	result = []
 	for i in range(n):
 		rect = (
@@ -1174,6 +1183,20 @@ def trajectory_to_crop_rects(
 			}
 			full_trajectory.append(fallback)
 
+	# Robust size-spike hardening (rejects isolated single-frame torso w/h
+	# outliers, preserves real multi-frame scale ramps); does NOT remove
+	# broadband sub-pixel breathing. Applied once here so BOTH crop modes
+	# benefit from a single wiring point, BEFORE either mode's size-EMA runs,
+	# leaving the EMA to do only cosmetic smoothing. Position (cx, cy) is
+	# untouched (C5). This edits only the in-memory full_trajectory used for
+	# crop geometry; the stored torso boxes / npz are unchanged
+	# (output-feel only).
+	full_trajectory = torso_size_stabilizer.stabilize_trajectory(
+		full_trajectory,
+		method=CROP_SIZE_STABILIZER_METHOD,
+		window=CROP_SIZE_STABILIZER_WINDOW,
+	)
+
 	# read crop mode from config (default: smooth for backward compatibility)
 	processing = config.get("processing", {})
 	crop_mode = str(processing.get("crop_mode", "smooth"))
@@ -1199,17 +1222,15 @@ def trajectory_to_crop_rects(
 		crop_rects = compute_crop_trajectory(
 			full_trajectory, frame_width, frame_height, config,
 		)
-		# optional offline post-smoothing (forward-backward EMA)
-		# use the same fixed module constants as the direct_center path
-		alpha_pos = CROP_POST_SMOOTH_STRENGTH
+		# offline post-smoothing of crop SIZE (forward-backward EMA).
+		# use the same fixed module constant as the direct_center path.
+		# The crop center is not post-smoothed (position EMA was a
+		# permanently disabled no-op and has been removed).
 		alpha_size = CROP_POST_SMOOTH_SIZE_STRENGTH
-		final_velocity = CROP_POST_SMOOTH_MAX_VELOCITY
-		if alpha_pos > 0 or alpha_size > 0:
+		if alpha_size > 0:
 			crop_rects = smooth_crop_trajectory(
 				crop_rects, frame_width, frame_height,
-				alpha_position=alpha_pos,
 				alpha_size=alpha_size,
-				max_velocity=final_velocity,
 			)
 	else:
 		raise RuntimeError(
@@ -1264,24 +1285,21 @@ def smooth_crop_trajectory(
 	crop_rects: list,
 	frame_width: int,
 	frame_height: int,
-	alpha_position: float = 0.0,
 	alpha_size: float = 0.0,
-	max_velocity: float = 0.0,
 ) -> list:
-	"""Post-smooth a crop trajectory using forward-backward EMA.
+	"""Post-smooth a crop trajectory's SIZE using forward-backward EMA.
 
 	Decomposes crop rectangles into center (cx, cy) and size (w, h)
-	signals, applies optional forward-backward EMA smoothing to each,
-	reconstructs rectangles, clamps to frame bounds, and applies an
-	optional final velocity cap on the crop center.
+	signals, applies optional forward-backward EMA smoothing to the size,
+	reconstructs rectangles, and clamps to frame bounds. The crop center
+	is passed through unchanged (the position-smoothing and velocity-cap
+	legs were permanently disabled no-ops and have been removed).
 
 	Args:
 		crop_rects: List of (x, y, w, h) integer crop rectangles.
 		frame_width: Source video frame width in pixels.
 		frame_height: Source video frame height in pixels.
-		alpha_position: EMA alpha for center smoothing. 0 = disabled.
 		alpha_size: EMA alpha for size smoothing. 0 = disabled.
-		max_velocity: Max center displacement per frame (px). 0 = no cap.
 
 	Returns:
 		List of (x, y, w, h) integer crop rectangles after smoothing.
@@ -1298,11 +1316,6 @@ def smooth_crop_trajectory(
 	w = arr[:, 2].copy()
 	h = arr[:, 3].copy()
 
-	# smooth position signals
-	if alpha_position > 0:
-		cx = _forward_backward_ema(cx, alpha_position)
-		cy = _forward_backward_ema(cy, alpha_position)
-
 	# smooth size signals
 	if alpha_size > 0:
 		w = _forward_backward_ema(w, alpha_size)
@@ -1313,7 +1326,7 @@ def smooth_crop_trajectory(
 	w = numpy.maximum(w, min_dim)
 	h = numpy.maximum(h, min_dim)
 
-	# reconstruct rectangles from smoothed center + size
+	# reconstruct rectangles from passed-through center + smoothed size
 	x = cx - w / 2.0
 	y = cy - h / 2.0
 
@@ -1321,79 +1334,11 @@ def smooth_crop_trajectory(
 	x = numpy.clip(x, 0.0, frame_width - w)
 	y = numpy.clip(y, 0.0, frame_height - h)
 
-	# apply final velocity cap on center only
-	if max_velocity > 0:
-		# recompute centers after clamping
-		cx = x + w / 2.0
-		cy = y + h / 2.0
-		for i in range(1, n):
-			dx = cx[i] - cx[i - 1]
-			dy = cy[i] - cy[i - 1]
-			dist = math.sqrt(dx * dx + dy * dy)
-			if dist > max_velocity:
-				# rescale displacement to max_velocity, preserving direction
-				scale = max_velocity / dist
-				cx[i] = cx[i - 1] + dx * scale
-				cy[i] = cy[i - 1] + dy * scale
-		# rebuild x, y from capped centers
-		x = cx - w / 2.0
-		y = cy - h / 2.0
-		# re-clamp to frame bounds after velocity cap
-		x = numpy.clip(x, 0.0, frame_width - w)
-		y = numpy.clip(y, 0.0, frame_height - h)
-
 	# convert back to integer tuples
 	result = []
 	for i in range(n):
 		rect = (int(x[i]), int(y[i]), int(w[i]), int(h[i]))
 		result.append(rect)
-	return result
-
-
-#============================================
-def compute_crop_metrics(crop_rects: list) -> dict:
-	"""Compute motion metrics for a crop trajectory.
-
-	Measures frame-to-frame crop center step distances, velocity
-	changes (jerk proxy), and 95th percentile step distance.
-	Useful for comparing trajectories before and after smoothing.
-
-	Args:
-		crop_rects: List of (x, y, w, h) integer crop rectangles.
-
-	Returns:
-		Dict with keys:
-			velocity_std: std of frame-to-frame center step distances.
-			acceleration_std: std of frame-to-frame velocity changes.
-			p95_step_distance: 95th percentile of center step distances.
-	"""
-	n = len(crop_rects)
-	if n < 2:
-		result = {
-			"velocity_std": 0.0,
-			"acceleration_std": 0.0,
-			"p95_step_distance": 0.0,
-		}
-		return result
-
-	# compute center positions
-	arr = numpy.array(crop_rects, dtype=float)
-	cx = arr[:, 0] + arr[:, 2] / 2.0
-	cy = arr[:, 1] + arr[:, 3] / 2.0
-
-	# frame-to-frame step distances (Euclidean)
-	dx = numpy.diff(cx)
-	dy = numpy.diff(cy)
-	step_dist = numpy.sqrt(dx * dx + dy * dy)
-
-	# velocity changes (acceleration proxy)
-	accel = numpy.diff(step_dist) if len(step_dist) > 1 else numpy.array([0.0])
-
-	result = {
-		"velocity_std": float(numpy.std(step_dist)),
-		"acceleration_std": float(numpy.std(accel)),
-		"p95_step_distance": float(numpy.percentile(step_dist, 95)),
-	}
 	return result
 
 
@@ -1488,12 +1433,12 @@ def _detect_zoom_phases(
 
 
 # ============================================================
-# experiment-only override passes (M1 stabilization)
+# Retained override levers for broadband zoom-breathing work
 # ============================================================
 # These functions take baseline crop rects and optionally the solved
 # trajectory, then replace center or size channels while preserving
-# the other. They are internal hooks for axis-isolation experiments
-# and are not part of the public crop_mode surface.
+# the other. slow_size and fixed_height are the relevant levers
+# for the deferred zoom-breathing task. Retained intentionally.
 
 
 #============================================
@@ -1746,13 +1691,13 @@ def apply_experiment_overrides(
 	frame_height: int,
 	config: dict,
 ) -> list:
-	"""Apply experiment-only center and/or size overrides to baseline rects.
+	"""Apply center and/or size overrides to baseline crop rects.
 
-	Reads experiment override settings from config['processing'] and
-	dispatches to the appropriate override functions. Center overrides
-	are applied first, then size overrides.
+	Reads override settings from config['processing'] and dispatches to the
+	appropriate override functions. Center overrides are applied first, then
+	size overrides. Retained as levers for the broadband zoom-breathing task.
 
-	Experiment config keys (all optional, internal-only):
+	Config keys (all optional):
 		exp_center_override: 'center_lock' or None
 		exp_center_alpha: float, EMA alpha for center lock
 		exp_center_max_velocity: float, velocity cap for center lock

@@ -63,7 +63,6 @@ track-runner-virtual-dolly-cam/
 |   |   |-- walk_viterbi.py        Viterbi DP over candidate lattice
 |   |   |-- walk_motion_gate.py    per-step motion gate predicates
 |   |   |-- walk_status.py         per-frame status enum
-|   |   |-- walk_io.py             walker NPZ reader/writer
 |   |   `-- walk_debug_log.py      debug-log schema and writer
 |   |
 |   +-- ui/                        PySide6 GUI modules

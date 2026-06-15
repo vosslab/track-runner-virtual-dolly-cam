@@ -980,14 +980,22 @@ def save_motion_cache(
 	cache_path: str,
 	motion_model: str,
 	video_identity: dict,
+	bin_factor: int = 1,
 ) -> None:
 	"""Save motion track to the canonical camera_motion.npz file.
 
 	Writes per-model arrays (fixed_zoom omits `scale`; discrete and
 	continuous include it) plus `motion_model`, `video_identity_basename`,
-	and `frame_count` as artifact-identity metadata. All per-frame arrays
-	are stored as float32. No `event_flags`. This is a durable solved-result
-	artifact, not cache.
+	`frame_count`, and `bin_factor` as artifact-identity metadata. All
+	per-frame arrays are stored as float32. No `event_flags`. This is a
+	durable solved-result artifact, not cache.
+
+	bin_factor is persisted as identity metadata (cache-key bookkeeping,
+	NOT an on-disk schema change). The phase-correlation estimator runs on
+	PROCESSED frames and upscales dx/dy by bin_factor to SOURCE before
+	storage, so the stored SOURCE track depends on the analysis bin even
+	though its units are SOURCE. A bin change must recompute camera motion;
+	`load_motion_cache` treats a bin mismatch as a stale artifact.
 
 	Args:
 		motion_track: MotionTrack instance to save.
@@ -1015,6 +1023,7 @@ def save_motion_cache(
 		"frame_count": numpy.asarray(
 			int(video_identity["frame_count"]), dtype=numpy.int64,
 		),
+		"bin_factor": numpy.asarray(int(bin_factor), dtype=numpy.int64),
 		"dx": numpy.asarray(motion_track.dx, dtype=numpy.float32),
 		"dy": numpy.asarray(motion_track.dy, dtype=numpy.float32),
 		"quality": numpy.asarray(motion_track.quality, dtype=numpy.float32),
@@ -1031,13 +1040,21 @@ def save_motion_cache(
 def load_motion_cache(
 	cache_path: str,
 	expected_motion_model: str | None = None,
+	expected_bin_factor: int | None = None,
 ) -> MotionTrack | None:
 	"""Load motion track from camera_motion.npz.
 
 	Returns None if the file does not exist OR the persisted
-	`motion_model` differs from `expected_motion_model`. A stale artifact
-	(mismatched motion_model) is treated as absent so the caller
-	recomputes and overwrites atomically. No merge, no partial reuse.
+	`motion_model` differs from `expected_motion_model` OR the persisted
+	`bin_factor` differs from `expected_bin_factor`. A stale artifact
+	(mismatched motion_model or bin_factor) is treated as absent so the
+	caller recomputes and overwrites atomically. No merge, no partial reuse.
+
+	The phase-correlation estimator runs on PROCESSED frames, so the stored
+	SOURCE dx/dy depend on the analysis bin even though their units are
+	SOURCE. A bin change must recompute camera motion. A legacy artifact
+	written before bin_factor was persisted has no `bin_factor` key; it is
+	treated as a bin_factor=1 solve.
 
 	For `fixed_zoom`, the on-disk file carries no `scale` array; the
 	loader synthesizes an all-ones scale array so downstream
@@ -1070,6 +1087,16 @@ def load_motion_cache(
 		# stale artifact: behave as if file is absent so caller recomputes
 		if expected_motion_model is not None and motion_model != expected_motion_model:
 			return None
+		# bin staleness: a legacy artifact (no bin_factor key) is a bin=1
+		# solve. A bin mismatch means the stored SOURCE track was computed at
+		# a different analysis resolution, so it is stale and must recompute.
+		if expected_bin_factor is not None:
+			if "bin_factor" in npz.files:
+				stored_bin_factor = int(npz["bin_factor"])
+			else:
+				stored_bin_factor = 1
+			if stored_bin_factor != int(expected_bin_factor):
+				return None
 		required = _REQUIRED_ARRAYS[motion_model]
 		for key in required:
 			if key not in npz.files:
@@ -1105,25 +1132,31 @@ def load_motion_cache(
 def load_active_camera_motion_or_fail(
 	input_file: str,
 	config: dict,
+	expected_bin_factor: int | None = None,
 ) -> MotionTrack:
 	"""Load the canonical camera-motion artifact from disk.
 
 	Refine entry point. Loads the canonical solved artifact file
 	`<video>.track_runner.camera_motion.npz`. Refine never recomputes
-	Stage 1, so a missing file or a stored motion_model that disagrees
-	with the current config raises with a "run solve first" message.
+	Stage 1, so a missing file, a stored motion_model that disagrees with
+	the current config, or a stored bin_factor that disagrees with the
+	refine run's bin raises with a "run solve first" message.
 
 	Args:
 		input_file: Path to the input video.
 		config: Configuration dict with motion estimator settings.
+		expected_bin_factor: The refine run's bin_factor. When provided and
+			it disagrees with the stored bin, the artifact is treated as
+			stale (the stored SOURCE track was computed at a different
+			analysis resolution) and the load fails. None skips the check.
 
 	Returns:
 		MotionTrack from the canonical solved artifact file.
 
 	Raises:
 		RuntimeError: If the artifact file is missing or its stored
-			motion_model does not match the current config. Tells the
-			caller to run solve first.
+			motion_model / bin_factor does not match. Tells the caller to
+			run solve first.
 	"""
 	expected_motion_model = _motion_model_from_config(config)
 	cache_path = tr_paths.default_camera_motion_path(input_file)
@@ -1132,7 +1165,9 @@ def load_active_camera_motion_or_fail(
 			"Camera-motion artifact for this solve is missing."
 			" Run solve first."
 		)
-	cached = load_motion_cache(cache_path, expected_motion_model)
+	cached = load_motion_cache(
+		cache_path, expected_motion_model, expected_bin_factor,
+	)
 	if cached is None:
 		raise RuntimeError(
 			"Camera-motion artifact for this solve is missing."
@@ -1169,9 +1204,18 @@ def precompute_camera_motion(
 		input_file, video_info,
 	)
 	motion_model = _motion_model_from_config(config)
-	# Check canonical artifact file and return if motion_model matches
+	# The estimator runs phase correlation on PROCESSED frames at this
+	# reader's bin_factor, then upscales dx/dy to SOURCE. The stored SOURCE
+	# track therefore depends on bin even though its units are SOURCE, so the
+	# cache identity must key on bin: a bin change forces recompute.
+	bin_factor, _, _ = _reader_geometry(reader)
+	# Check canonical artifact file and return if motion_model AND bin match
 	canonical_path = tr_paths.default_camera_motion_path(input_file)
-	cached_motion = load_motion_cache(canonical_path, expected_motion_model=motion_model)
+	cached_motion = load_motion_cache(
+		canonical_path,
+		expected_motion_model=motion_model,
+		expected_bin_factor=bin_factor,
+	)
 	if cached_motion is not None:
 		return cached_motion
 	# select the matching estimator implementation
@@ -1193,5 +1237,6 @@ def precompute_camera_motion(
 	# in place).
 	save_motion_cache(
 		motion, canonical_path, motion_model, video_identity,
+		bin_factor=bin_factor,
 	)
 	return motion

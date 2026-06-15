@@ -32,11 +32,14 @@ options:
   -H, --hermite-only   Stop after Stage 3: Hermite-only solve (fast
                        diagnostics).
   --bin BIN_FACTOR     Optional spatial downsample applied to camera-motion
-                       and residual stages only. Integer >= 1; default 1 (no
-                       bin). bin_factor > 1 also crops each scaled axis to the
-                       largest FFT-friendly goodbox not exceeding it (origin-
-                       preserving right/bottom crop). Source-frame outputs
-                       unchanged.
+                       and residual stages only. Integer >= 1. When neither
+                       --bin nor --auto-bin is given, the production default
+                       selector picks a bin from source width (floor at the
+                       project-wide default target; 1440p and below stay full-
+                       res). Pass --bin 1 to force full resolution. bin_factor
+                       > 1 also crops each scaled axis to the largest FFT-
+                       friendly goodbox not exceeding it (origin-preserving
+                       right/bottom crop). Source-frame outputs unchanged.
   --auto-bin [HEIGHT]  Auto-pick bin_factor from source height: bin = max(1,
                        round(source_h / target)). bin_factor is a whole
                        number, so actual binned height only approximates the
@@ -63,8 +66,42 @@ options:
 
 - `-y`, `--yes` Auto-confirm the "clear and re-solve from scratch?" prompt (useful in scripts).
 
-**First run after upgrade note:** The first solve run after the 2026-04-25 staging restructure will print "first run after solve restructure: full recompute expected" because the cache namespaces are new. Subsequent runs hit the cache normally. Run `--hermite-only` for a quick first-pass read if full solve time is a concern.
+**Default bin behavior (binned by default as of 2026-06-14):** Solve now picks
+a bin factor automatically when no `--bin` or `--auto-bin` flag is given. The
+rule is `floor(source_width / 1440)` (`TARGET_DEFAULT_WIDTH_PX` constant in
+`common_tools/frame_reader.py`, not a config value):
 
-**`--bin N` (optional, speed-focused):** Applies a spatial downsample to the camera-motion (Stage 1) and residual-motion stages, leaving every persisted output in source-frame pixels. Helpful on 4K input. Goodbox crop is automatic when `bin > 1` (right/bottom edges only, capped at 10% per-axis loss). The interval cache is bin-invariant (per-frame work crosses the source<->processed boundary inside the per-frame stages and emits source-frame outputs). The canonical `<video>.track_runner.camera_motion.npz` file is written once per video per motion-model; changing `--bin` between runs reuses the same camera motion artifact because bin and processed geometry are not part of the motion-model staleness check.
+| Source resolution | Bin factor | Processed resolution |
+| --- | --- | --- |
+| 4K 3840 x 2160 | 2 | 1920 x 1080 |
+| 2.8K 2880 x 1620 | 2 | 1440 x 810 |
+| 1440p 2560 x 1440 | 1 | full-res |
+| 1080p 1920 x 1080 | 1 | full-res |
+
+Use `--bin 1` to force full-resolution analysis (slower). Use `--bin N` for an
+exact override. Use `--auto-bin HEIGHT` for a height-based target (different
+formula; documented in the help above).
+
+**Durable upgrade note:** Derived solve artifacts (interval cache entries and
+camera-motion staleness check) now key on `bin_factor`. The first solve run
+after upgrading to the binned-by-default behavior recomputes all artifacts from
+scratch because the cached entries were written under `bin_factor=1` and the new
+default differs for 4K and 2.8K sources. No SCHEMA_VERSION bump occurred; this
+is a cache-key bookkeeping change. Subsequent runs after that first recompute
+hit the cache normally.
+
+**First run after staging restructure (2026-04-25):** The first solve run after
+the 2026-04-25 staging restructure will print "first run after solve restructure:
+full recompute expected" because the cache namespaces are new. Subsequent runs
+hit the cache normally. Run `--hermite-only` for a quick first-pass read if full
+solve time is a concern.
+
+**`--bin N` (explicit override):** Applies a spatial downsample to the
+camera-motion (Stage 1) and residual-motion stages, leaving every persisted
+output in source-frame pixels. Goodbox crop is automatic when `bin > 1`
+(right/bottom edges only, capped at 10% per-axis loss). The entire solve runs in
+one coordinate space (PROCESSED at bin > 1) and converts to SOURCE exactly once,
+at the storage boundary before `state_io.write_torso_box_coords`. Hermite and
+walker both produce correct SOURCE boxes via that single boundary.
 
 For the pipeline philosophy, see [../TRACK_RUNNER_DESIGN.md](../TRACK_RUNNER_DESIGN.md) (stages and signal hierarchy). For the camera motion method, see [../TR_CAMERA_MOTION_METHOD.md](../TR_CAMERA_MOTION_METHOD.md).

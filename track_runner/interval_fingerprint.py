@@ -44,27 +44,32 @@ import state_io
 # Per contract C9, do NOT introduce parallel version constants
 # (BLOB_OBSERVER_VERSION, etc.) to bypass this scheme.
 
-def build_geometry_tag() -> str:
+def build_geometry_tag(bin_factor: int = 1) -> str:
 	"""Build the unified geometry fingerprint tag.
 
-	Encodes only the latest geometry-affecting schema version. Tuning
-	blob-snap constants or changing which propagator ran does not change
-	the tag -- only a real geometry-affecting schema bump does.
+	Encodes the latest geometry-affecting schema version and the analysis
+	bin_factor. Tuning blob-snap constants or changing which propagator ran
+	does not change the tag -- only a real geometry-affecting schema bump or
+	a bin_factor change does.
 
-	bin_factor is intentionally NOT part of this tag: the interval
-	fingerprint is a contract on per-frame source-frame outputs (the
-	final torso boxes), and per-frame computations cross the bin
-	boundary independently inside camera_motion and residual_motion,
-	upscaling back to source-frame before the interval solver consumes
-	them. Camera motion is recomputed if `motion_model` changes, but
-	bin_factor itself does not invalidate interval fingerprints, so
-	changing `--bin` between runs reuses the interval store.
+	bin_factor IS part of this tag (cache-key bookkeeping only, not an
+	on-disk schema change). bin>1 lowers the analysis resolution, so the
+	walker's per-frame candidate lattice and the residual-motion blobs are
+	extracted at processed scale and upscaled back to source. The resulting
+	solved SOURCE torso boxes are numerically correct but NOT identical to
+	the bin=1 solve. Reusing a bin=1 interval result under a different bin
+	would serve geometry the new run did not produce, so a bin change must
+	force recompute. Including bin_factor here makes the interval cache key
+	change with bin so stale-bin intervals are never reused.
+
+	Args:
+		bin_factor: Analysis bin factor for this run (1 = full resolution).
 
 	Returns:
-		Geometry tag string: `schema_v<N>`.
+		Geometry tag string: `schema_v<N>/bin<B>`.
 	"""
 	geom_v = tr_schema.latest_geometry_affecting_schema()
-	tag = f"schema_v{geom_v}"
+	tag = f"schema_v{geom_v}/bin{int(bin_factor)}"
 	return tag
 
 
@@ -91,6 +96,7 @@ SOLVER_FINGERPRINT_TAG = build_solver_fingerprint_tag()
 def compute_interval_fingerprint(
 	seed_start: dict,
 	seed_end: dict,
+	bin_factor: int = 1,
 ) -> str:
 	"""Fingerprint wrapper that includes the unified geometry tag.
 
@@ -100,21 +106,23 @@ def compute_interval_fingerprint(
 	Do NOT pass `SOLVER_FINGERPRINT_TAG` here -- that tag carries
 	schema-version metadata and would couple fingerprints to schema bumps.
 
-	Note: bin_factor is intentionally NOT a parameter here. Per-frame
-	bin-aware computations cross the source<->processed boundary inside
-	camera_motion and residual_motion, upscaling back to source-frame
-	before the interval solver consumes them. Interval-level fingerprints
-	therefore stay bin-invariant.
+	bin_factor IS part of the key (cache-key bookkeeping only, not a
+	schema change). The geometry tag embeds `bin<B>`, so a bin change
+	yields a different fingerprint and the stale-bin interval store is not
+	reused. Solve mode and refine mode MUST pass the same bin_factor for a
+	store hit. See `build_geometry_tag` for the correctness rationale.
 
 	Args:
 		seed_start: Interval start seed dict.
 		seed_end: Interval end seed dict.
+		bin_factor: Analysis bin factor for this run (1 = full resolution).
 
 	Returns:
-		Fingerprint string with `||<GEOMETRY_TAG>` suffix.
+		Fingerprint string with `||<GEOMETRY_TAG>` suffix (tag carries bin).
 	"""
+	geometry_tag = build_geometry_tag(bin_factor)
 	result = state_io.interval_fingerprint(
-		seed_start, seed_end, solver_tag=GEOMETRY_TAG,
+		seed_start, seed_end, solver_tag=geometry_tag,
 	)
 	return result
 

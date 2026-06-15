@@ -19,6 +19,23 @@ Global options must appear before the subcommand.
 | `-w`, `--workers` | Number of parallel workers (default: half of CPU cores). |
 | `--time-range` | Limit processing to a time range in seconds. Format: `START:END`, `START:`, or `:END`. |
 
+## Spatial binning (default: auto)
+
+`solve` and `refine` default to automatic spatial binning: the analysis bin
+factor is `floor(source_width / 1440)`, computed at startup. 4K (3840-wide)
+sources bin at 2 (analyzed at 1920 x 1080); 1080p and 1440p sources stay at
+bin=1 (full-resolution analysis). Persisted outputs are always in full
+source-frame pixels regardless of bin factor.
+
+| Flag | Description |
+| --- | --- |
+| `--bin N` | Force an exact bin factor (integer >= 1). `--bin 1` disables binning. |
+| `--auto-bin [HEIGHT]` | Height-based bin target (different formula from the default; see `solve --help`). |
+
+The default changed from `--bin 1` (no binning) to auto-bin as of 2026-06-14.
+First solve after upgrading recomputes from scratch on 4K/2.8K sources because
+cache keys now include `bin_factor`.
+
 ## Performance diagnostic flag
 
 `solve` and `refine` accept `--debug-blob` to enable verbose Stage 4 instrumentation: per-worker per-frame `read_frame` strategy timings, residual compute timings, per-pid worker-exit summaries, and a 5-second master heartbeat. Off by default and zero overhead when off; opt in only when investigating Stage 4 wall time.

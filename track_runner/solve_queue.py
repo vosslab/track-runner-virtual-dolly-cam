@@ -148,6 +148,7 @@ def plan_interval_work(
 	seeds: list,
 	prior_solved_intervals: dict = None,
 	race_start_interval: tuple = None,
+	bin_factor: int = 1,
 ) -> WorkPlan:
 	"""Compute the WorkPlan for a seed list + optional prior-solved store.
 
@@ -168,6 +169,10 @@ def plan_interval_work(
 		race_start_interval: Optional tuple (low_frame, high_frame) for
 			race-start interval. When None, no phase classification happens
 			(legacy refine mode without interval).
+		bin_factor: Analysis bin factor for this run (1 = full resolution).
+			Enters every interval fingerprint so a bin change forces
+			recompute and never reuses a stale-bin interval store. Solve
+			mode and refine mode MUST pass the same bin_factor for a hit.
 
 	Returns:
 		A frozen `WorkPlan`. When fewer than 2 usable seeds exist, all
@@ -206,7 +211,7 @@ def plan_interval_work(
 		seed_start = usable_sorted[pair_idx]
 		seed_end = usable_sorted[pair_idx + 1]
 		fingerprint = interval_fingerprint.compute_interval_fingerprint(
-			seed_start, seed_end,
+			seed_start, seed_end, bin_factor=bin_factor,
 		)
 		expected_fingerprints.append(fingerprint)
 		# prior-solved branch: remember the solved payload so execute can
@@ -417,6 +422,7 @@ def _solve_pre_race_interval(
 	pre_race_reference: dict,
 	scene_transform,
 	fps: float,
+	bin_factor: int = 1,
 ) -> dict:
 	"""Synthesize a pre-race interval result from the reference.
 
@@ -430,6 +436,8 @@ def _solve_pre_race_interval(
 		pre_race_reference: Dict from compute_pre_race_reference.
 		scene_transform: SceneTransform for pixel-space back-projection.
 		fps: Video frame rate.
+		bin_factor: Analysis bin factor; enters the interval fingerprint so
+			the synthesized result keys identically to plan_interval_work.
 
 	Returns:
 		Interval result dict matching the analytical shape per plan section 5b:
@@ -474,7 +482,9 @@ def _solve_pre_race_interval(
 	}
 
 	# Compute fingerprint for cache consistency
-	fingerprint = ifp.compute_interval_fingerprint(seed_start, seed_end)
+	fingerprint = ifp.compute_interval_fingerprint(
+		seed_start, seed_end, bin_factor=bin_factor,
+	)
 
 	result = {
 		"start_frame": start_frame,
@@ -703,7 +713,8 @@ def execute_interval_work(
 
 			result = _solve_pre_race_interval(
 				seed_start, seed_end, pre_race_reference,
-				context.scene_transform, context.fps
+				context.scene_transform, context.fps,
+				bin_factor=context.bin_factor,
 			)
 			_accept(pre_race_pair_idx, expected_fingerprints[pre_race_pair_idx], result)
 
