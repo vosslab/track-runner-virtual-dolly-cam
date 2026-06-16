@@ -166,7 +166,7 @@ def _solve_interval_worker(task: tuple) -> tuple:
 	pair_idx, seed_start, seed_end = task
 	ctx = _WORKER_CONTEXT
 	fingerprint = interval_solver.compute_interval_fingerprint(
-		seed_start, seed_end, bin_factor=ctx.bin_factor,
+		seed_start, seed_end,
 	)
 	# The worker solves with the dispatch's blob_pass: False for Stage-3 (pure
 	# Hermite on every interval) and True for the Stage-4 walker pass. The flag

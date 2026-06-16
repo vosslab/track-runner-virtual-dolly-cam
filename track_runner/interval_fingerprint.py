@@ -14,9 +14,19 @@ Scope lock: fingerprinting + seed-filter ONLY. Do not grow this module
 into a junk drawer of generic interval utilities.
 """
 
+# Standard Library
+import re
+
 # local repo modules
 import tr_schema
 import state_io
+
+
+# Legacy bin-tagged key suffix: a `||schema_v<N>/bin<B>` tail predates the
+# bin-invariant key. The migration strips the trailing `/bin<B>` segment so
+# the key becomes `||schema_v<N>` and matches a fresh compute. Anchored on the
+# end of the string so only the bin segment is removed.
+_LEGACY_BIN_SUFFIX_RE = re.compile(r"/bin\d+$")
 
 
 #============================================
@@ -31,6 +41,8 @@ import state_io
 # * GEOMETRY_TAG -- the unified fingerprint suffix, keyed off the latest
 #   geometry-affecting schema (from tr_schema.GEOMETRY_AFFECTING_SCHEMAS).
 #   Format: `schema_v<N>` where N is the geometry-affecting schema version.
+#   bin_factor is a per-run performance setting and stays OUT of the key
+#   (stored boxes are always unbinned SOURCE-frame).
 #
 # * SOLVER_FINGERPRINT_TAG -- the informational/telemetry tag. Includes
 #   GEOMETRY_TAG plus full `/schema/<SCHEMA_VERSION>`. Used for diagnostics
@@ -44,32 +56,25 @@ import state_io
 # Per contract C9, do NOT introduce parallel version constants
 # (BLOB_OBSERVER_VERSION, etc.) to bypass this scheme.
 
-def build_geometry_tag(bin_factor: int = 1) -> str:
+def build_geometry_tag() -> str:
 	"""Build the unified geometry fingerprint tag.
 
-	Encodes the latest geometry-affecting schema version and the analysis
-	bin_factor. Tuning blob-snap constants or changing which propagator ran
-	does not change the tag -- only a real geometry-affecting schema bump or
-	a bin_factor change does.
+	Encodes the latest geometry-affecting schema version only. Tuning
+	blob-snap constants or changing which propagator ran does not change the
+	tag -- only a real geometry-affecting schema bump does.
 
-	bin_factor IS part of this tag (cache-key bookkeeping only, not an
-	on-disk schema change). bin>1 lowers the analysis resolution, so the
-	walker's per-frame candidate lattice and the residual-motion blobs are
-	extracted at processed scale and upscaled back to source. The resulting
-	solved SOURCE torso boxes are numerically correct but NOT identical to
-	the bin=1 solve. Reusing a bin=1 interval result under a different bin
-	would serve geometry the new run did not produce, so a bin change must
-	force recompute. Including bin_factor here makes the interval cache key
-	change with bin so stale-bin intervals are never reused.
-
-	Args:
-		bin_factor: Analysis bin factor for this run (1 = full resolution).
+	The reuse key carries exactly three inputs (seed frame indices, the
+	human-authored SOURCE seed box coords, and this geometry-affecting schema
+	tag). bin_factor is a performance setting of the current run and is NOT
+	part of the key: stored torso boxes are always unbinned SOURCE-frame, so
+	bin cannot be part of a durable result's identity. See the reuse-identity
+	rule in `docs/TR_SCHEMA_VERSION_HISTORY.md`.
 
 	Returns:
-		Geometry tag string: `schema_v<N>/bin<B>`.
+		Geometry tag string: `schema_v<N>`.
 	"""
 	geom_v = tr_schema.latest_geometry_affecting_schema()
-	tag = f"schema_v{geom_v}/bin{int(bin_factor)}"
+	tag = f"schema_v{geom_v}"
 	return tag
 
 
@@ -96,7 +101,6 @@ SOLVER_FINGERPRINT_TAG = build_solver_fingerprint_tag()
 def compute_interval_fingerprint(
 	seed_start: dict,
 	seed_end: dict,
-	bin_factor: int = 1,
 ) -> str:
 	"""Fingerprint wrapper that includes the unified geometry tag.
 
@@ -106,21 +110,22 @@ def compute_interval_fingerprint(
 	Do NOT pass `SOLVER_FINGERPRINT_TAG` here -- that tag carries
 	schema-version metadata and would couple fingerprints to schema bumps.
 
-	bin_factor IS part of the key (cache-key bookkeeping only, not a
-	schema change). The geometry tag embeds `bin<B>`, so a bin change
-	yields a different fingerprint and the stale-bin interval store is not
-	reused. Solve mode and refine mode MUST pass the same bin_factor for a
-	store hit. See `build_geometry_tag` for the correctness rationale.
+	The key is seed-pair SOURCE geometry plus the geometry-affecting schema
+	tag only. bin_factor is NOT part of the key: stored coordinates are
+	always unbinned SOURCE-frame, so the same seed pair returns an identical
+	fingerprint regardless of which bin the run uses. Solve mode and refine
+	mode therefore line up byte-for-byte across any bin.
 
 	Args:
 		seed_start: Interval start seed dict.
 		seed_end: Interval end seed dict.
-		bin_factor: Analysis bin factor for this run (1 = full resolution).
 
 	Returns:
-		Fingerprint string with `||<GEOMETRY_TAG>` suffix (tag carries bin).
+		Fingerprint string with `||<GEOMETRY_TAG>` suffix.
 	"""
-	geometry_tag = build_geometry_tag(bin_factor)
+	# GEOMETRY_TAG is already the module-level result of build_geometry_tag();
+	# no need to re-invoke the pure function on every call.
+	geometry_tag = GEOMETRY_TAG
 	result = state_io.interval_fingerprint(
 		seed_start, seed_end, solver_tag=geometry_tag,
 	)
@@ -129,19 +134,56 @@ def compute_interval_fingerprint(
 
 #============================================
 def migrate_legacy_fingerprints(solved: dict) -> tuple:
-	"""Placeholder for legacy fingerprint migration (deprecated).
+	"""Strip the legacy `/bin<B>` suffix from bin-tagged store keys.
 
-	With the unified GEOMETRY_TAG format, legacy cache-key migration is no
-	longer needed. This function returns the input unchanged; callers are
-	retained for compatibility but the function is a no-op.
+	bin_factor used to ride inside the geometry tag as a trailing
+	`/bin<B>` segment, so an interval solved at bin 3 stored under
+	`X||schema_v<N>/bin3`. The key is now bin-invariant (`X||schema_v<N>`),
+	so a freshly computed key would never match a legacy bin-tagged key and
+	the store would prune to empty, forcing a one-time full re-solve. This
+	migration rewrites any key ending `||schema_v<N>/bin<B>` to
+	`||schema_v<N>` so the existing solved work is reused.
+
+	Keys are rewritten in memory; the caller decides whether to persist
+	(see the write-back gating in `cli.py`).
+
+	Collision policy: a single solve run uses exactly one bin and writes one
+	key per seed pair, and the store is a fingerprint->result dict (no
+	write-order or timestamp metadata on entries -- see the manifest in
+	`state_io.write_torso_box_coords`). Two stripped keys colliding therefore
+	signals a corrupt store (the same seed pair stored twice at different
+	bins), which cannot arise from a normal run. A collision fails loud
+	rather than silently dropping an entry.
 
 	Args:
 		solved: Mapping of fingerprint -> solved-interval result dict.
 
 	Returns:
-		Tuple `(solved, 0)` -- the input unchanged, no migrations.
+		Tuple `(migrated, n_changed)` where `migrated` is a new dict with any
+		`/bin<B>` suffixes stripped and `n_changed` is the count of keys
+		rewritten. When nothing matched, `migrated` is content-equal to the
+		input and `n_changed` is 0.
+
+	Raises:
+		RuntimeError: If two distinct legacy keys strip to the same key,
+			indicating a corrupt store with duplicate bin entries.
 	"""
-	return (solved, 0)
+	migrated = {}
+	n_changed = 0
+	for fingerprint, entry in solved.items():
+		stripped = _LEGACY_BIN_SUFFIX_RE.sub("", fingerprint)
+		if stripped != fingerprint:
+			n_changed += 1
+		# A collision means the same seed pair was stored under two bins,
+		# which a one-bin-per-run store cannot produce. Fail loud.
+		if stripped in migrated:
+			raise RuntimeError(
+				f"corrupt interval store: legacy key '{fingerprint}' strips to "
+				f"'{stripped}', which already exists; the store holds duplicate "
+				f"bin entries for one seed pair. Re-solve the video."
+			)
+		migrated[stripped] = entry
+	return (migrated, n_changed)
 
 
 #============================================

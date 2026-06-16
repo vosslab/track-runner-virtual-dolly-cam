@@ -54,10 +54,17 @@ coordinates directly (its `MotionTrack.dx/dy` are stored in SOURCE pixels). The
 walker produces PROCESSED coordinates and must always cross the boundary before
 persist. At `bin_factor = 1` the conversion is an identity no-op.
 
-Cache keys include `bin_factor`. The interval fingerprint and camera-motion
-staleness key on the bin factor, so the first solve after upgrading to the
-binned-by-default behavior recomputes rather than reusing bin=1 artifacts. No
-SCHEMA_VERSION bump was needed; this is a cache-key bookkeeping change only.
+The camera-motion artifact keys on `bin_factor`. The phase-correlation estimator
+runs on PROCESSED frames, so the stored SOURCE dx/dy depend on the analysis bin.
+A bin change invalidates the camera-motion artifact and forces a recompute. No
+SCHEMA_VERSION bump is involved; this is artifact-identity bookkeeping only.
+
+The interval fingerprint does NOT key on `bin_factor`. Stored torso boxes are
+always unbinned SOURCE-frame coordinates, so bin is a runtime performance
+setting that does not change what the artifact stores. A solve at one bin and a
+refine at another reuse all unchanged intervals. See
+[TR_SCHEMA_VERSION_HISTORY.md](TR_SCHEMA_VERSION_HISTORY.md) for the interval
+reuse identity rule and the full fingerprint allow-list.
 
 ## Conversions are pure scale
 

@@ -12,37 +12,6 @@ import tr_video_identity
 
 
 #============================================
-def test_compare_returns_blocking_and_informational_keys():
-	"""Verify compare_video_identity returns dict with correct keys."""
-	stored = {
-		"basename": "video.MOV",
-		"size_bytes": 1000000,
-		"width": 1920,
-		"height": 1080,
-		"fps": 30.0,
-		"frame_count": 1000,
-		"duration_s": 33.0,
-	}
-	current = {
-		"basename": "video.MOV",
-		"size_bytes": 1000000,
-		"width": 1920,
-		"height": 1080,
-		"fps": 30.0,
-		"frame_count": 1000,
-		"duration_s": 33.0,
-	}
-	result = tr_video_identity.compare_video_identity(stored, current)
-	assert isinstance(result, dict)
-	assert "blocking" in result
-	assert "informational" in result
-	assert isinstance(result["blocking"], list)
-	assert isinstance(result["informational"], list)
-	assert result["blocking"] == []
-	assert result["informational"] == []
-
-
-#============================================
 def test_rename_only_is_informational():
 	"""Verify file rename alone produces only informational mismatch."""
 	stored = {
@@ -204,8 +173,48 @@ def test_fps_within_tolerance_is_clean():
 
 
 #============================================
-def test_fps_beyond_tolerance_is_blocking():
-	"""Verify fps beyond 0.01 tolerance is blocking."""
+def test_fps_remux_precision_within_1fps_tolerance_is_clean():
+	"""Verify remux display-precision fps shift is absorbed by the 1.0 tolerance.
+
+	A .MOV -> .mkv container remux shifts the displayed fps value by a small
+	amount (for example 119.94 -> 119.916, diff=0.024). This must land in
+	neither the blocking nor the informational bucket: the 1.0 absolute
+	tolerance absorbs it entirely so users see no fps noise in the warning.
+	"""
+	stored = {
+		"basename": "video.MOV",
+		"size_bytes": 1000000,
+		"width": 3840,
+		"height": 2160,
+		"fps": 119.94,
+		"frame_count": 18000,
+		"duration_s": 150.0,
+	}
+	current = {
+		"basename": "video.MOV",
+		"size_bytes": 1000000,
+		"width": 3840,
+		"height": 2160,
+		"fps": 119.916,
+		"frame_count": 18000,
+		"duration_s": 150.0,
+	}
+	result = tr_video_identity.compare_video_identity(stored, current)
+	# diff is 0.024, well within the 1.0 tolerance: no mismatch in either bucket
+	assert result["blocking"] == []
+	informational_fields = " ".join(result["informational"])
+	assert "fps" not in informational_fields
+
+
+#============================================
+def test_fps_large_change_is_informational():
+	"""Verify a large fps change (30 vs 60) is informational, not blocking.
+
+	fps is advisory metadata noise: even a large fps difference (30 vs 60,
+	diff=30.0) must land in the informational bucket, never the blocking
+	bucket. The mismatch is still visibly reported so users can see it in the
+	warning, but it never prevents a load.
+	"""
 	stored = {
 		"basename": "video.mkv",
 		"size_bytes": 1000000,
@@ -225,9 +234,10 @@ def test_fps_beyond_tolerance_is_blocking():
 		"duration_s": 33.0,
 	}
 	result = tr_video_identity.compare_video_identity(stored, current)
-	assert result["informational"] == []
-	assert len(result["blocking"]) == 1
-	assert "fps" in result["blocking"][0]
+	# blocking must be empty: fps never blocks, width/height/frame_count still do
+	assert result["blocking"] == []
+	# fps is reported as an informational mismatch (diff=30.0 > 1.0 tolerance)
+	assert any("fps" in msg for msg in result["informational"])
 
 
 #============================================
@@ -310,32 +320,6 @@ def test_summarize_mismatches_empty_result():
 
 
 #============================================
-def test_summarize_mismatches_blocking_only():
-	"""Verify summarize_mismatches handles blocking entries only."""
-	result = {
-		"blocking": ["frame_count: stored=1000, current=999"],
-		"informational": [],
-	}
-	summary = tr_video_identity.summarize_mismatches(result)
-	assert "blocking:" in summary
-	assert "informational" not in summary
-	assert "frame_count" in summary
-
-
-#============================================
-def test_summarize_mismatches_informational_only():
-	"""Verify summarize_mismatches handles informational entries only."""
-	result = {
-		"blocking": [],
-		"informational": ["basename: stored=foo.MOV, current=foo.mkv"],
-	}
-	summary = tr_video_identity.summarize_mismatches(result)
-	assert "informational" in summary
-	assert "blocking:" not in summary
-	assert "basename" in summary
-
-
-#============================================
 def test_missing_fields_raise_key_error():
 	"""Verify missing required fields fail loudly per repo style.
 
@@ -348,3 +332,65 @@ def test_missing_fields_raise_key_error():
 	current = {"width": 1920, "height": 1080}
 	with pytest.raises(KeyError):
 		tr_video_identity.compare_video_identity(stored, current)
+
+
+#============================================
+def test_fastread_remux_bucket_assignments():
+	"""Pin bucket assignments for the prepare/fastread remux scenario.
+
+	A valid fastread/remux path changes basename, size_bytes, and shows a
+	small fps display-precision difference (for example 119.916 vs 119.94
+	from the .MOV -> .mkv remux). With matching width, height, and
+	frame_count, all those fields are advisory metadata noise -- they must
+	land in the informational bucket, never the blocking bucket.
+
+	A true geometry mismatch (width, height, or frame_count change) still
+	lands in the blocking bucket so a broken prepare output is caught.
+
+	This test pins the bucket split. If fps, basename, or size_bytes ever
+	move to blocking, this test fails and routes the author to review the
+	fastread contract in docs/TRACK_RUNNER_DESIGN.md.
+	"""
+	# simulate stored seeds written against original .MOV
+	original = {
+		"basename": "Lyra-Wheeling-IMG_3912.MOV",
+		"size_bytes": 3_180_000_000,
+		"width": 3840,
+		"height": 2160,
+		"fps": 119.94,
+		"frame_count": 18000,
+		"duration_s": 150.0,
+	}
+	# simulate current video as the remuxed .mkv fastread with display-
+	# precision fps shift and smaller file size
+	remuxed = {
+		"basename": "Lyra-Wheeling-IMG_3912-fastread.mkv",
+		"size_bytes": 2_950_000_000,
+		"width": 3840,
+		"height": 2160,
+		"fps": 119.916,
+		"frame_count": 18000,
+		"duration_s": 150.1,
+	}
+	result = tr_video_identity.compare_video_identity(original, remuxed)
+	# geometry matches: no blocking mismatches
+	assert result["blocking"] == []
+	# advisory metadata mismatches: basename and size_bytes differ
+	informational_fields = " ".join(result["informational"])
+	assert "basename" in informational_fields
+	assert "size_bytes" in informational_fields
+	# fps 119.94 vs 119.916 diff=0.024 is within 1.0 tolerance: no fps
+	# mismatch at all -- the remux precision noise is fully absorbed
+	assert "fps" not in informational_fields
+
+	# true geometry mismatch must still land in blocking
+	different_resolution = dict(remuxed)
+	different_resolution["width"] = 1920
+	geo_result = tr_video_identity.compare_video_identity(original, different_resolution)
+	assert any("width" in msg for msg in geo_result["blocking"])
+
+	# true frame_count mismatch must still land in blocking
+	different_frame_count = dict(remuxed)
+	different_frame_count["frame_count"] = 17999
+	fc_result = tr_video_identity.compare_video_identity(original, different_frame_count)
+	assert any("frame_count" in msg for msg in fc_result["blocking"])

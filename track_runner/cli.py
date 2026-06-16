@@ -569,18 +569,17 @@ def _load_prior_results(intervals_path: str, diag_path: str) -> tuple:
 	"""
 	intervals_file = state_io.load_torso_box_coords(intervals_path)
 	solved = intervals_file.get("solved_intervals", {})
-	# One-time migration of geometry-compatible legacy fingerprint keys. This
-	# rewrites on-disk fingerprints that predate the geometry/schema tag
-	# split (e.g. tails carrying `/schema/5` or `/score_schema/4/prerace/4`)
-	# into the current `GEOMETRY_TAG`, so schema bumps no longer force
-	# full re-solves. If anything migrated, persist the rewrite so the
-	# next load is free.
+	# One-time migration of legacy bin-tagged fingerprint keys. This strips a
+	# trailing `/bin<B>` segment from on-disk fingerprints that predate the
+	# bin-invariant key, so a solve reuses bin-tagged intervals under the
+	# current `GEOMETRY_TAG`. If anything migrated, persist the rewrite so
+	# the next load is free.
 	solved, migrated_count = interval_fingerprint.migrate_legacy_fingerprints(solved)
 	if migrated_count > 0:
 		intervals_file["solved_intervals"] = solved
 		state_io.write_torso_box_coords(intervals_path, intervals_file)
-		print(f"  store: migrated {migrated_count} legacy fingerprint(s) "
-			f"to current geometry tag")
+		print(f"  store: migrated {migrated_count} legacy bin-tagged "
+			f"fingerprint(s) to the bin-invariant key")
 	# merge prior interval_score back onto each geometry entry.
 	# key on (start_frame, end_frame) because interval_scores.json does
 	# not carry fingerprints.
@@ -810,20 +809,24 @@ def _resolve_solve_bin_factor(
 	mutually-exclusive group):
 	  - explicit --bin N (cli_bin is not None): use N exactly. --bin 1 is
 	    the full-resolution escape hatch.
-	  - explicit --auto-bin HEIGHT (auto_target is not None): keep the
-	    existing HEIGHT-based meaning, bin = max(1, round(source_h / HEIGHT)).
+	  - bare --auto-bin (auto_target == -1, the sentinel set by argparse
+	    const=-1): route through the same width-floor selector as the
+	    no-flag default so that re-solve.sh and interactive refine agree.
+	  - explicit --auto-bin HEIGHT (auto_target is not None and != -1):
+	    keep the existing HEIGHT-based meaning: bin = max(1, round(source_h / HEIGHT)).
 	  - neither flag (both None): production default, route source WIDTH
 	    through the shared floor selector at the project-wide default
 	    target (TARGET_DEFAULT_WIDTH_PX; 1440p and below stay full-res).
 
-	Compatibility note: the no-flag default keys on source WIDTH against
-	the project-wide default target, while --auto-bin keys on source
-	HEIGHT. The two paths use different axes on purpose and must not be
-	conflated.
+	The bare-flag and no-flag paths both call select_default_bin_factor on
+	source_width, so they always resolve the same bin. --auto-bin HEIGHT
+	keys on source HEIGHT intentionally and must not be conflated with
+	either default path.
 
 	Args:
 		cli_bin: Value of --bin (None when the flag was not given).
-		auto_target: Value of --auto-bin HEIGHT (None when not given).
+		auto_target: Value of --auto-bin HEIGHT or sentinel -1 for bare flag
+			(None when not given at all).
 		source_width: Raw source frame width in pixels.
 		source_height: Raw source frame height in pixels.
 
@@ -832,7 +835,7 @@ def _resolve_solve_bin_factor(
 		to print describing the resolution, or None when nothing to print.
 
 	Raises:
-		ValueError: --auto-bin target < 1, or resolved bin_factor < 1.
+		ValueError: --bin < 1, or --auto-bin HEIGHT with HEIGHT < 1.
 	"""
 	if cli_bin is not None:
 		# explicit --bin N (includes the --bin 1 full-res escape hatch)
@@ -840,6 +843,18 @@ def _resolve_solve_bin_factor(
 			raise ValueError(f"--bin must be >= 1, got {cli_bin}")
 		return (cli_bin, None)
 	if auto_target is not None:
+		# bare --auto-bin (sentinel -1): route through the same width-floor
+		# selector so batch solve and no-flag default always agree.
+		if auto_target == -1:
+			bin_factor = common_tools.frame_reader.select_default_bin_factor(
+				source_width
+			)
+			actual_width = source_width // bin_factor
+			msg = (
+				f"  --auto-bin (width-floor): source width {source_width}"
+				f" -> bin_factor={bin_factor} (actual width {actual_width})"
+			)
+			return (bin_factor, msg)
 		# explicit --auto-bin HEIGHT: unchanged height-based meaning
 		if auto_target < 1:
 			raise ValueError(
@@ -1860,18 +1875,14 @@ def _mode_refine(
 	# refine mode both call it so fingerprints match byte-for-byte.
 	intervals_file = state_io.load_torso_box_coords(intervals_path)
 	solved_intervals = intervals_file.get("solved_intervals", {})
-	# Migrate geometry-compatible legacy fingerprint keys so refine can reuse
-	# them. Write-back is gated on migrated_count > 0; if nothing
-	# changed, we preserve the zero-write guarantee of unchanged-seed
-	# refine.
+	# Strip legacy `/bin<B>` suffixes from store keys so refine reuses
+	# bin-tagged intervals under the bin-invariant key. The rewrite is
+	# in-memory only here; persistence is deferred to the work-needed path
+	# below so a no-work refine writes nothing (zero-write contract). A
+	# benign repeated in-memory migration on a no-op refine is invisible.
 	solved_intervals, migrated_count = interval_fingerprint.migrate_legacy_fingerprints(
 		solved_intervals,
 	)
-	if migrated_count > 0:
-		intervals_file["solved_intervals"] = solved_intervals
-		state_io.write_torso_box_coords(intervals_path, intervals_file)
-		print(f"  store: migrated {migrated_count} legacy fingerprint(s) "
-			f"to current geometry tag")
 	# Drop entries with geometry but no matching score (interrupted prior
 	# solve left npz and interval_scores.json out of sync). These need to
 	# be re-solved to make scoring consistent. Geometry-without-score is
@@ -1899,21 +1910,31 @@ def _mode_refine(
 			f"  store: dropped {len(unscored_fps)} intervals with "
 			f"geometry but no score (interrupted solve); will re-solve"
 		)
-	# Resolve the run's bin_factor with the same selector _run_solve uses so
-	# the refine partition keys on bin identically to the downstream solve.
-	# bin enters every interval fingerprint (cache-key bookkeeping only), so a
-	# bin change between solve and refine forces recompute instead of reusing a
-	# stale-bin interval store.
-	refine_cli_bin = getattr(args, "bin_factor", None)
-	refine_auto_target = getattr(args, "auto_bin_target", None)
-	refine_bin_factor, _ = _resolve_solve_bin_factor(
-		refine_cli_bin, refine_auto_target,
-		int(video_info["width"]), int(video_info["height"]),
-	)
+	# Interval reuse identity is bin-invariant: stored torso boxes are always
+	# unbinned SOURCE-frame, so the fingerprint carries seed-pair geometry plus
+	# the geometry-affecting schema tag only. The refine partition therefore
+	# reuses solved intervals regardless of which bin solve or refine uses;
+	# _run_solve resolves the run's bin for the actual solve downstream.
 	plan = solve_queue.plan_interval_work(
-		seeds, solved_intervals, bin_factor=refine_bin_factor,
+		seeds, solved_intervals,
 	)
 	total_expected = plan.total_intervals
+
+	# degenerate early-exit: current seeds yield no solvable intervals
+	# (fewer than 2 usable seeds, or a seed-set mismatch that wiped all
+	# pairs) while the stored solve still holds intervals from a prior run.
+	# return without writing anything -- the existing store is preserved
+	# byte-identical. The C7 guard below handles the distinct case where
+	# work exists but zero prior fingerprints matched (full-solve-disguised-
+	# as-refine); this branch handles the no-intervals-at-all case.
+	if plan.total_intervals == 0 and len(solved_intervals) > 0:
+		print(
+			f"  refine: current seeds yielded no solvable intervals "
+			f"(seeds dropped below 2 usable, or a seed-set mismatch). "
+			f"The existing solved store ({len(solved_intervals)} interval(s)) "
+			f"is preserved unchanged. Add or restore seeds and re-run refine."
+		)
+		return
 
 	# fast-exit (no write). enforces contract rule 1: unchanged seeds
 	# produce no computation AND no disk write. pending_count == 0 is
@@ -1931,16 +1952,22 @@ def _mode_refine(
 		return
 
 	# fall-through path: work is needed, so writes become allowed. the
-	# plan's pruned_prior already has orphan fingerprints filtered out,
-	# so persisting it is the prune operation. only write when the
-	# prune actually changed the dict, per the zero-write contract rule.
+	# plan's pruned_prior already has orphan fingerprints filtered out and
+	# carries the bin-stripped keys, so persisting it both prunes and
+	# bakes in the migration. write when the prune changed the dict OR the
+	# migration rewrote keys; on a no-work refine neither fires, preserving
+	# the zero-write contract.
 	before = len(solved_intervals)
 	pruned_count = before - len(plan.pruned_prior)
-	if pruned_count > 0:
+	if pruned_count > 0 or migrated_count > 0:
 		intervals_file["solved_intervals"] = dict(plan.pruned_prior)
 		state_io.write_torso_box_coords(intervals_path, intervals_file)
-		print(f"  store: pruned {pruned_count} stale intervals "
-			f"({before} -> {len(plan.pruned_prior)})")
+		if migrated_count > 0:
+			print(f"  store: migrated {migrated_count} legacy bin-tagged "
+				f"fingerprint(s) to the bin-invariant key")
+		if pruned_count > 0:
+			print(f"  store: pruned {pruned_count} stale intervals "
+				f"({before} -> {len(plan.pruned_prior)})")
 
 	# contract C6: refine must retain untouched intervals. If the prune
 	# above emptied the prior store but intervals remain to solve, refine

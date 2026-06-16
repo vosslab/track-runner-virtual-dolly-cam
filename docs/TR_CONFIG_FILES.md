@@ -183,16 +183,33 @@ serialized with `:.2f`; the two-decimal format is a fingerprint
 component, not a claim that seeds carry subpixel precision.
 
 ```
-49|1635.00|754.50|64.00|81.00|56|1630.50|756.50|69.00|87.00||blob_snap/v1/a0.600/...
+49|1635.00|754.50|64.00|81.00|56|1630.50|756.50|69.00|87.00||geometry_schema_v10
 ```
 
 ### Reuse semantics
 
-Solve computes a fingerprint for each (start-seed, end-seed,
-solver-tag) triple. Matching entries are reused from the store;
-others are solved and added. Refine uses the same fingerprint so its
-store hits align with solve's. Deleting the file forces a full
-re-solve; nothing else depends on it.
+Solve computes a fingerprint for each interval using its bracketing seeds.
+Matching entries are reused from the store; others are solved and added.
+Refine uses the same fingerprint so its store hits align with solve's.
+Deleting the file forces a full re-solve; nothing else depends on it.
+
+**Reuse key rule:** The key describes the persisted SOURCE-frame result, not
+the runtime method used to compute it. The stored torso boxes are always
+unbinned SOURCE-frame coordinates. Consequently the key carries only:
+
+1. Seed-pair frame indices.
+2. Human-authored SOURCE seed geometry (the box coords x, y, w, h of each
+   endpoint seed).
+3. The approved geometry-affecting schema tag from `tr_schema`.
+
+Bin factor, processed dimensions, CLI flags, solver mode, stage name, tuning
+constants, basename, file size, and container extension stay out of the key.
+These are runtime or performance details; they do not change what the persisted
+artifact stores. A solve at one bin and a refine at another reuse all unchanged
+intervals. Method-only changes (walker DP, cost weights, residual stride) use
+`solve` to refresh stale values rather than widening the key. See
+[TR_SCHEMA_VERSION_HISTORY.md](TR_SCHEMA_VERSION_HISTORY.md) for the full
+allow-list and justification rule.
 
 ## Interval scores JSON
 

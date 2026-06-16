@@ -33,8 +33,10 @@ source-frame pixels regardless of bin factor.
 | `--auto-bin [HEIGHT]` | Height-based bin target (different formula from the default; see `solve --help`). |
 
 The default changed from `--bin 1` (no binning) to auto-bin as of 2026-06-14.
-First solve after upgrading recomputes from scratch on 4K/2.8K sources because
-cache keys now include `bin_factor`.
+The camera-motion artifact is recomputed on the first solve after upgrading for 4K/2.8K
+sources because the camera-motion cache keys on `bin_factor`. Interval cache entries are
+bin-invariant: a load-time key migration strips any legacy `/bin<B>` suffix so no full
+interval re-solve is needed when the bin changes.
 
 ## Performance diagnostic flag
 

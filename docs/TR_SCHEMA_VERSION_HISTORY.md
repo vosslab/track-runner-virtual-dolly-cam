@@ -97,6 +97,48 @@ Boundary classification (a reviewer must classify each correctly):
 | Add a debug-CSV telemetry column | Use diagnostic history; keep solver schema fixed |
 | Change actual coordinate values for a new video | Use existing contract; keep schema fixed |
 
+## Reuse identity rule
+
+The interval reuse key (interval fingerprint) carries exactly three inputs:
+
+1. Seed-pair **frame indices** (start frame and end frame of the interval).
+2. Human-authored **SOURCE-frame seed geometry** -- the x, y, w, h box coords of
+   each bracketing seed. Redrawing a box at the same frame index produces a
+   different key.
+3. The approved **geometry-affecting schema tag** returned by
+   `tr_schema.latest_geometry_affecting_schema()`.
+
+Anything not on this allow-list stays out of the key. Examples of values that
+must never enter the key:
+
+- bin factor, processed dimensions, or any runtime performance setting
+- CLI flags or defaults (auto-bin mode, bin height target)
+- script choice, entry-point, or caller identity
+- solver mode, pipeline stage, or stage selection flags
+- tuning constants, Viterbi weights, cost model parameters
+- basename, file size, container extension, or any video-container metadata
+- telemetry schema or diagnostic-artifact versioning
+
+**Method-only changes refresh derived values via `solve`.** When a solver
+algorithm or observer method changes such that old stored results are stale,
+the correct path is to run `solve` for a fresh compute. Method changes do not
+widen the fingerprint key and do not require a `SCHEMA_VERSION` bump -- stored
+SOURCE coordinate arrays are unchanged.
+
+**Adding a fingerprint input requires justification.** Each proposed new
+fingerprint input must name the persisted artifact field or approved schema rule
+that justifies it. If the proposed input is a runtime-performance setting, a
+computation method detail, or anything not stored in the SOURCE-frame artifact,
+it does not belong in the key.
+
+This rule is backed by contract invariants C10 (unified schema) and C13 (minimal
+artifacts). The allow-list shape gate is
+[tests/test_fingerprint_anti_drift.py](../tests/test_fingerprint_anti_drift.py):
+it inspects `build_geometry_tag`'s signature and fails if any parameter is
+re-added, routing the author back to this allow-list. The behavioral companion
+[tests/test_tr_interval_fingerprint_bin.py](../tests/test_tr_interval_fingerprint_bin.py)
+covers bin-invariance and legacy `/bin<B>` migration correctness.
+
 ## Schema bumps and the solved-geometry cache
 
 Schema bumps are metadata-only by default: they do NOT invalidate solved-geometry cache entries. The solver cache key lives in `track_runner/interval_fingerprint.py` as `GEOMETRY_TAG`, which embeds the highest member of `tr_schema.GEOMETRY_AFFECTING_SCHEMAS` <= `SCHEMA_VERSION` as a `geometry_schema_v<N>` token. A separate informational tag, `SOLVER_FINGERPRINT_TAG`, includes `/schema/<SCHEMA_VERSION>` and is used for diagnostics headers only.

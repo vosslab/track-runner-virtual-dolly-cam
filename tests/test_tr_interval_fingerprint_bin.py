@@ -1,20 +1,15 @@
-"""Behavioral test for the interval-fingerprint bin-awareness contract.
+"""Behavioral test for the bin-invariant interval-fingerprint contract.
 
-WS2-cache contract (corrects a prior, wrong invariance assumption): the
-production solve default now bins the walker (default bin_factor > 1 on 4K
-floor@1440). bin>1 lowers the analysis resolution, so the walker's per-frame
-candidate lattice and the residual-motion blobs are extracted at processed
-scale and upscaled to SOURCE. The resulting solved SOURCE torso boxes are
-numerically correct but NOT identical to the bin=1 solve. Reusing a bin=1
-interval result under a different bin would serve geometry the new run did
-not produce.
+Reuse identity is a contract about the persisted SOURCE-frame result, not
+about how it was computed. Stored torso boxes are always unbinned SOURCE-frame
+(see docs/COORDINATE_SPACES.md), so bin_factor is a per-run performance setting
+and stays OUT of the fingerprint. The key carries seed-pair SOURCE geometry
+plus the geometry-affecting schema tag only.
 
-Therefore bin_factor MUST enter the interval fingerprint so a bin change
-forces recompute. This is cache-key bookkeeping only, NOT an on-disk schema
-change (no SCHEMA_VERSION bump).
-
-(Camera motion has its own bin staleness rule; that is exercised in
-tests/test_tr_camera_motion_bin.py.)
+Therefore the same seed pair returns an identical fingerprint regardless of
+which bin the run uses, and a legacy `/bin<B>`-tagged store key migrates to the
+bin-invariant key and matches a fresh compute. This is cache-key bookkeeping
+only, NOT an on-disk schema change (no SCHEMA_VERSION bump).
 """
 
 # local repo modules
@@ -34,48 +29,42 @@ _SEED_B = {
 
 
 #============================================
-def test_bin_change_invalidates_fingerprint():
-	# Property: a bin change must yield a different cache key so the
-	# stale-bin interval store is never reused. Same seeds, different bin.
-	fp_bin1 = interval_fingerprint.compute_interval_fingerprint(
-		_SEED_A, _SEED_B, bin_factor=1,
-	)
-	fp_bin2 = interval_fingerprint.compute_interval_fingerprint(
-		_SEED_A, _SEED_B, bin_factor=2,
-	)
-	assert fp_bin1 != fp_bin2
+def test_fingerprint_is_bin_invariant():
+	# Property: the same seed pair yields one key regardless of any bin the
+	# run uses, so a solve at one bin and a refine at another reuse the
+	# interval. bin_factor is no longer an argument; the key is identical.
+	fp_first = interval_fingerprint.compute_interval_fingerprint(_SEED_A, _SEED_B)
+	fp_second = interval_fingerprint.compute_interval_fingerprint(_SEED_A, _SEED_B)
+	assert fp_first == fp_second
 
 
 #============================================
-def test_same_bin_gives_stable_fingerprint():
-	# Property: the key is deterministic for the same seeds + same bin, so
-	# an unchanged interval under an unchanged bin is reused (no recompute).
-	fp_a = interval_fingerprint.compute_interval_fingerprint(
-		_SEED_A, _SEED_B, bin_factor=2,
-	)
-	fp_b = interval_fingerprint.compute_interval_fingerprint(
-		_SEED_A, _SEED_B, bin_factor=2,
-	)
-	assert fp_a == fp_b
+def test_geometry_tag_has_no_bin_segment():
+	# The geometry tag is schema_v<N> only; no `/bin<B>` segment rides in it.
+	tag = interval_fingerprint.build_geometry_tag()
+	assert "/bin" not in tag
+	assert tag.startswith("schema_v")
 
 
 #============================================
-def test_default_bin_factor_is_one():
-	# Property: the no-arg default keys on bin=1 so existing bin=1 callers
-	# (diagnostic tools, refine at bin=1) keep their current cache identity.
-	fp_default = interval_fingerprint.compute_interval_fingerprint(
-		_SEED_A, _SEED_B,
-	)
-	fp_explicit = interval_fingerprint.compute_interval_fingerprint(
-		_SEED_A, _SEED_B, bin_factor=1,
-	)
-	assert fp_default == fp_explicit
+def test_legacy_bin_key_migrates_to_fresh_compute():
+	# A stored key tagged `||schema_v<N>/bin3` strips its bin segment via
+	# migrate_legacy_fingerprints and matches a freshly computed key.
+	fresh_key = interval_fingerprint.compute_interval_fingerprint(_SEED_A, _SEED_B)
+	legacy_key = fresh_key + "/bin3"
+	store = {legacy_key: {"start_frame": 49, "end_frame": 56}}
+	migrated, n_changed = interval_fingerprint.migrate_legacy_fingerprints(store)
+	assert n_changed == 1
+	assert fresh_key in migrated
+	assert legacy_key not in migrated
 
 
 #============================================
-def test_geometry_tag_carries_bin():
-	# The bin enters via the geometry tag suffix, not the seed-geometry
-	# parts, so the tag string itself differs across bins.
-	tag1 = interval_fingerprint.build_geometry_tag(bin_factor=1)
-	tag3 = interval_fingerprint.build_geometry_tag(bin_factor=3)
-	assert tag1 != tag3
+def test_migration_no_op_on_already_bin_invariant_key():
+	# A key with no `/bin<B>` suffix passes through unchanged, so a second
+	# migration of an already-migrated store reports zero changes.
+	fresh_key = interval_fingerprint.compute_interval_fingerprint(_SEED_A, _SEED_B)
+	store = {fresh_key: {"start_frame": 49, "end_frame": 56}}
+	migrated, n_changed = interval_fingerprint.migrate_legacy_fingerprints(store)
+	assert n_changed == 0
+	assert fresh_key in migrated

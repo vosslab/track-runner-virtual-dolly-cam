@@ -30,16 +30,17 @@ options:
                        > 1 also crops each scaled axis to the largest FFT-
                        friendly goodbox not exceeding it (origin-preserving
                        right/bottom crop). Source-frame outputs unchanged.
-  --auto-bin [HEIGHT]  Auto-pick bin_factor from source height: bin = max(1,
-                       round(source_h / target)). bin_factor is a whole
-                       number, so actual binned height only approximates the
-                       target. Source dims that are not multiples of bin
+  --auto-bin [HEIGHT]  Auto-pick bin_factor from source. Bare flag (--auto-bin
+                       with no value) routes through the project-wide width-
+                       floor selector (same as the no-flag default:
+                       floor(source_width / 1440)). With an explicit HEIGHT
+                       value (--auto-bin 720), uses the height-based selector:
+                       bin = max(1, round(source_h / HEIGHT)). bin_factor is a
+                       whole number, so actual binned size only approximates
+                       the target. Source dims that are not multiples of bin
                        silently drop at most (bin-1) right/bottom pixels, the
-                       same kind of crop goodbox already does. Bare flag
-                       targets 480; pass --auto-bin 720 for 720. Examples at
-                       target=480: 720->bin2 (360), 1080->bin2 (540),
-                       1440->bin3 (480), 2160->bin4 (540), 2816->bin6 (469).
-                       At target=720: 1080->bin1 (1080), 2160->bin3 (720).
+                       same kind of crop goodbox already does. Examples at
+                       --auto-bin 720: 1080->bin1 (1080), 2160->bin3 (720).
                        Mutually exclusive with --bin.
 ```
 <!-- END AUTO HELP: refine -->

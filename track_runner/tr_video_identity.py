@@ -7,10 +7,26 @@ size, and compares stored identity against current video to detect
 mismatches. Identity is heuristic (metadata-based, not content-hashed).
 
 Policy per contract C12.3: video_identity is a metadata sanity block.
-Blocking mismatches indicate the persisted data was computed against
-a different video (different resolution, frame count, or frame rate).
-Informational mismatches are cosmetic (file rename, container remux);
-they are warnings only and never reject a load.
+Blocking mismatches indicate the persisted data was computed against a
+different video (different resolution or frame count). Informational
+mismatches are advisory metadata noise (file rename, container remux,
+fps display-precision difference); they are warnings only and never
+reject a load.
+
+Bucket assignments:
+  Blocking: frame_count (exact), width (exact), height (exact).
+  Informational: basename (exact), size_bytes (exact), fps (tol 1.0),
+    duration_s (tol 0.5s).
+
+fps is in the informational bucket because remux (for example .MOV ->
+.mkv) can shift the display-precision value by small amounts (for
+example 119.916 vs 119.94) without changing the frame-index-to-time
+mapping. The prepare/fastread pipeline performs its own live fps
+validation via fastread_video.validate_fastread_structural with a
+tighter relative tolerance (FPS_REL_TOLERANCE = 1e-3) before
+authorizing a fastread for decode. fps differences in video_identity
+do not gate solve or refine (width, height, and frame_count in the
+blocking bucket still do).
 """
 
 # Standard Library
@@ -25,15 +41,20 @@ _BLOCKING_RULES = (
 	("frame_count", "exact", None),
 	("width", "exact", None),
 	("height", "exact", None),
-	("fps", "tol", 0.01),
 )
 _INFORMATIONAL_RULES = (
 	("basename", "exact", None),
 	("size_bytes", "exact", None),
+	# fps display-precision varies by container (remux shifts .MOV -> .mkv
+	# by small amounts); use a 1.0 absolute tolerance so typical remux noise
+	# does not appear under a blocking header. Large true frame-rate changes
+	# (e.g. 30 fps vs 60 fps) still surface as informational mismatches.
+	("fps", "tol", 1.0),
 	("duration_s", "tol", 0.5),
 )
 
 
+#============================================
 def _check_rule(stored: dict, current: dict, field: str, kind: str, tol: float) -> str | None:
 	"""Apply one comparison rule; return mismatch message or None.
 
@@ -90,13 +111,13 @@ def compare_video_identity(stored: dict, current: dict) -> dict:
 	An empty result means no mismatches: both lists are empty.
 
 	Comparison rules:
-		Blocking (exact match required):
+		Blocking (must match exactly):
 			- frame_count: exact match
 			- width, height: exact match
-			- fps: within 0.01 tolerance
-		Informational (warnings only):
+		Informational (advisory warnings only):
 			- basename: exact match
 			- size_bytes: exact match
+			- fps: within 1.0 absolute tolerance (remux display-precision noise)
 			- duration_s: within 0.5s tolerance
 
 	Args:

@@ -40,16 +40,17 @@ options:
                        > 1 also crops each scaled axis to the largest FFT-
                        friendly goodbox not exceeding it (origin-preserving
                        right/bottom crop). Source-frame outputs unchanged.
-  --auto-bin [HEIGHT]  Auto-pick bin_factor from source height: bin = max(1,
-                       round(source_h / target)). bin_factor is a whole
-                       number, so actual binned height only approximates the
-                       target. Source dims that are not multiples of bin
+  --auto-bin [HEIGHT]  Auto-pick bin_factor from source. Bare flag (--auto-bin
+                       with no value) routes through the project-wide width-
+                       floor selector (same as the no-flag default:
+                       floor(source_width / 1440)). With an explicit HEIGHT
+                       value (--auto-bin 720), uses the height-based selector:
+                       bin = max(1, round(source_h / HEIGHT)). bin_factor is a
+                       whole number, so actual binned size only approximates
+                       the target. Source dims that are not multiples of bin
                        silently drop at most (bin-1) right/bottom pixels, the
-                       same kind of crop goodbox already does. Bare flag
-                       targets 480; pass --auto-bin 720 for 720. Examples at
-                       target=480: 720->bin2 (360), 1080->bin2 (540),
-                       1440->bin3 (480), 2160->bin4 (540), 2816->bin6 (469).
-                       At target=720: 1080->bin1 (1080), 2160->bin3 (720).
+                       same kind of crop goodbox already does. Examples at
+                       --auto-bin 720: 1080->bin1 (1080), 2160->bin3 (720).
                        Mutually exclusive with --bin.
 ```
 <!-- END AUTO HELP: solve -->
@@ -82,13 +83,13 @@ Use `--bin 1` to force full-resolution analysis (slower). Use `--bin N` for an
 exact override. Use `--auto-bin HEIGHT` for a height-based target (different
 formula; documented in the help above).
 
-**Durable upgrade note:** Derived solve artifacts (interval cache entries and
-camera-motion staleness check) now key on `bin_factor`. The first solve run
-after upgrading to the binned-by-default behavior recomputes all artifacts from
-scratch because the cached entries were written under `bin_factor=1` and the new
-default differs for 4K and 2.8K sources. No SCHEMA_VERSION bump occurred; this
-is a cache-key bookkeeping change. Subsequent runs after that first recompute
-hit the cache normally.
+**Durable upgrade note:** The camera-motion artifact (`<video>.track_runner.camera_motion.npz`)
+keys on `bin_factor`. The first solve run after upgrading to binned-by-default behavior
+recomputes the camera-motion artifact for 4K and 2.8K sources because the prior artifact was
+computed at `bin_factor=1` and the new default differs. Subsequent runs hit the camera-motion
+cache normally. Interval cache entries are bin-invariant: a load-time migration strips any
+legacy `/bin<B>` suffix from stored keys so no full interval re-solve is needed on a bin change
+or upgrade. No SCHEMA_VERSION bump occurred; this is cache-key bookkeeping only.
 
 **First run after staging restructure (2026-04-25):** The first solve run after
 the 2026-04-25 staging restructure will print "first run after solve restructure:

@@ -1692,7 +1692,7 @@ def _dispatch_blob_pass(
 					)
 					# overwrite Stage 3 result with blob result
 					fingerprint = compute_interval_fingerprint(
-						seed_start, seed_end, bin_factor=context.bin_factor,
+						seed_start, seed_end,
 					)
 					if on_interval_solved is not None:
 						on_interval_solved(fingerprint, result_blob)
@@ -1906,7 +1906,6 @@ def solve_all_intervals(
 	# on the result, not part of the fingerprint.
 	plan = solve_queue.plan_interval_work(
 		seeds, prior_solved_intervals, race_start_interval=race_start_interval,
-		bin_factor=bin_factor,
 	)
 	if plan.total_intervals == 0:
 		print("  interval_solver: need at least 2 usable seeds to solve intervals")

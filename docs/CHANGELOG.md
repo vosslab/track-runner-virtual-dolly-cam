@@ -1,3 +1,194 @@
+## 2026-06-15
+
+### Behavior or Interface Changes
+
+- **Interval reuse fingerprint made bin-invariant (Patch 1, WS1a)**:
+  `interval_fingerprint.build_geometry_tag` no longer takes `bin_factor` and emits
+  `schema_v<N>` (the trailing `/bin<B>` segment is gone); `compute_interval_fingerprint`
+  drops its `bin_factor` argument. The reuse key now carries only the allow-list inputs:
+  seed-pair frame indices, human-authored SOURCE seed box coords, and the
+  geometry-affecting schema tag. Stored torso boxes are always unbinned SOURCE-frame, so
+  bin is a per-run performance setting and cannot be part of a durable result's identity.
+  Consequence: a solve at one bin and a `refine` at another now reuse all unchanged
+  intervals instead of pruning the store to empty and tripping the C7 guard. No
+  `SCHEMA_VERSION` bump: stored SOURCE coordinate arrays are byte-identical; this is
+  cache-key bookkeeping only. The `bin_factor=` keyword was removed from every caller of
+  the fingerprint helpers (`solve_queue.plan_interval_work`, `_solve_pre_race_interval`,
+  `interval_solver.solve_all_intervals` and its Stage-4 re-key, `solver_workers`) so no
+  caller breaks; `bin_factor` stays a live solve-run parameter for processing resolution.
+
+- **Bare `--auto-bin` now resolves the same bin as the no-flag default (Patch 5, WS2b)**:
+  bare `--auto-bin` (no value) previously used a stale height-target-480 constant
+  (`cli_args.py:41`, yielding `round(source_height / 480)`) instead of the intended
+  width-floor selector. The stale constant is replaced with a `-1` sentinel that
+  `_resolve_solve_bin_factor` in `track_runner/cli.py` routes through
+  `select_default_bin_factor`, producing `floor(source_width / 1440)` -- exactly
+  the same bin the no-flag default produces. Explicit `--auto-bin HEIGHT` with a
+  positive integer retains its height-based meaning unchanged. Affected files:
+  `track_runner/cli_args.py`, `track_runner/cli.py`. Unit test:
+  `tests/test_solve_default_bin.py`.
+
+- **Standing reuse-identity rule added to governance docs (Patch 6, WS2c)**:
+  `docs/TR_SCHEMA_VERSION_HISTORY.md` gains a "Reuse identity rule" subsection with
+  the three-input allow-list, the "stays out of the key" examples list, the
+  method-only-changes-use-solve rule, and the require-justification clause.
+  `docs/TR_CONFIG_FILES.md` gains a "Reuse key rule" note under
+  `torso_box_coords.npz` (SOURCE-frame, unbinned; key describes the persisted
+  result, not the runtime method). Stale fingerprint example corrected in
+  `docs/TR_CONFIG_FILES.md`. Wording in `docs/COORDINATE_SPACES.md` corrected to
+  remove the claim that bin enters the interval reuse key.
+
+- **Identity-warning wording aligned with prepare/fastread contract (Patch 7, WS3a)**:
+  `fps` moved from the blocking bucket to the informational bucket in
+  `track_runner/tr_video_identity.py` `_BLOCKING_RULES` / `_INFORMATIONAL_RULES`.
+  A container remux (.MOV -> .mkv) shifts the display-precision fps value by small
+  amounts (for example 119.94 vs 119.916, diff=0.024) without affecting the
+  frame-index-to-time mapping. With the prior 0.01 absolute tolerance that difference
+  appeared under the "blocking:" header in the identity warning, misleading users into
+  thinking the fastread path was problematic. The new tolerance is 1.0 (absolute),
+  which absorbs remux precision noise while still surfacing large true frame-rate
+  changes (e.g. 30 fps vs 60 fps) in the informational bucket. width, height, and
+  frame_count remain in the blocking bucket. `_check_identity_mismatch` in cli.py
+  already warns-only and never rejects; this change only improves the label accuracy.
+  The live structural validation in `fastread_video.validate_fastread_structural`
+  continues to use its own tighter `FPS_REL_TOLERANCE = 1e-3` before authorizing
+  fastread decode -- that gate is unchanged.
+
+### Fixes and Maintenance
+
+- **`cli._mode_refine` zero-interval guard improved (Patch 4, WS2a)**:
+  `cli._mode_refine` now detects `plan.total_intervals == 0` with a non-empty
+  solved store -- meaning the current seeds dropped below 2 usable or the seed
+  set no longer matches any stored interval -- and prints an unambiguous
+  diagnostic naming the likely cause, then returns cleanly (exit 0) leaving the
+  solved store byte-identical. Previously this case fell through to a misleading
+  "all 0 intervals already solved" message that gave no hint about the seed
+  mismatch. The C7 guard path (work needed, zero reuse) is unchanged and still
+  raises. Tests in `tests/test_tr_refine_mode.py`.
+
+- **Legacy bin-tagged store keys migrate on load (Patch 1, WS1a)**:
+  `interval_fingerprint.migrate_legacy_fingerprints` is repurposed from a no-op into a
+  strip migration that rewrites any key ending `||schema_v<N>/bin<B>` to `||schema_v<N>`
+  and returns `(migrated, n_changed)`, so the bin-invariance fix does not force a one-time
+  full re-solve of existing `/bin<B>` stores. Collision policy: a single solve run uses
+  one bin and writes one key per seed pair, and the store is a fingerprint->result dict
+  with no per-entry write-order or timestamp metadata (the manifest in
+  `state_io.write_torso_box_coords` is an ordered list keyed only by fingerprint), so two
+  stripped keys colliding signals a corrupt store (same seed pair stored at two bins) and
+  fails loud rather than silently dropping an entry. Write-back: the migration rewrites
+  keys in memory; on a no-work `refine` (`pending_count == 0`) nothing is persisted
+  (zero-write contract holds, the cheap in-memory migration repeats next run); on a
+  work-needed refine the existing pruned-store write persists the migrated keys and prints
+  "migrated N keys" only when the store actually changes. The solve load path
+  (`cli._load_prior_results`) persists the migration immediately since solve rewrites the
+  store anyway. The dead `bin_factor` bin-resolution block in `cli._mode_refine` (which
+  only fed the fingerprint) was removed; `_run_solve` still resolves the run's bin for the
+  actual solve.
+
+- **Evidence audit: prepare frame-identity contract confirmed (Patch 7, WS3a)**:
+  `fastread_video.py` validates width/height/frame_count exact match and fps within
+  1e-3 relative tolerance before authorizing fastread decode (`validate_fastread_structural`).
+  `resolve_video_context` keys state to the original (`metadata_identity` always selects
+  the original path); only `working_decode` uses the fastread and only after validation.
+  The fastread contract holds; the only change needed was reclassifying fps in the
+  identity-warning bucket.
+
+### Developer Tests and Notes
+
+- **Geometry-sensitivity regression test added (Patch 2, WS1b)**:
+  `tests/test_tr_fingerprint_geometry_sensitivity.py` pins two complementary
+  properties of `state_io.interval_fingerprint`: (a) the same seed pair produces a
+  stable key across bin values and across runs, and (b) redrawing any box coordinate
+  at the same frame index changes the key. This guards against drift toward
+  frame-index-only identity, which would reuse a stale interval after a user
+  re-annotates a box.
+
+- **Synthetic legacy store reuse proof added (Patch 3, WS1c)**:
+  `tests/test_tr_legacy_store_reuse.py` constructs synthetic `/bin4` and `/bin1`
+  stores in memory, runs `migrate_legacy_fingerprints`, and asserts
+  `reused_count == total_intervals` and `pending_count == 0`; keys at different
+  bins become byte-identical after migration. No external video required.
+
+- **Anti-drift tripwire added (Patch 3, WS1d)**:
+  `tests/test_fingerprint_anti_drift.py` covers two concerns. Behavioral
+  invariance: identical key across representative bin values and solver modes;
+  different key when a box coordinate changes or the frame index changes. Shape
+  tripwire: the test inspects `build_geometry_tag`'s signature and fails if any
+  parameter beyond the approved schema tag is added, routing the author to the
+  official-schema-only allow-list in `docs/TR_SCHEMA_VERSION_HISTORY.md`. Modeled
+  after the existing schema-version single-source tripwire
+  `tests/test_tr_schema_version_single_source.py`.
+
+- **Bin-invariance test inverted to match the new key (Patch 1, WS1a)**:
+  `tests/test_tr_interval_fingerprint_bin.py` previously asserted the M2 stance (bin
+  enters the key, a bin change invalidates the fingerprint). It is rewritten to assert the
+  restored bin-invariant contract: the same seed pair yields one key, the geometry tag has
+  no `/bin` segment, a legacy `||schema_v<N>/bin3` key migrates to the bin-invariant key
+  and matches a fresh compute, and re-migrating an already-stripped store reports zero
+  changes. `pytest tests/ -k fingerprint` passes (50 selected) and
+  `pytest tests/test_pyflakes_code_lint.py` passes (no dead `bin_factor` args).
+
+- **Bucket-pinning test added for fastread/remux scenario (Patch 7)**:
+  `tests/test_tr_video_identity.py` gains `test_fastread_remux_bucket_assignments`
+  and `test_fps_large_change_is_informational`. The pinning test confirms that
+  a remux with changed basename, size_bytes, and small fps display-precision shift
+  lands in informational (not blocking) while a true width or frame_count mismatch
+  still lands in blocking. The previously-named `test_fps_beyond_tolerance_is_blocking`
+  is renamed to `test_fps_large_change_is_informational` to match the new bucket
+  assignment; 16 tests pass.
+
+- **Reviewer precision fixes applied (Patch 7, WS3a M3)**:
+  (Fix A) Module docstring in `track_runner/tr_video_identity.py` reworded from
+  "the video_identity block ... does not gate solve or refine" (ambiguous: could
+  imply width/height/frame_count also do not block) to "fps differences in
+  video_identity do not gate solve or refine (width, height, and frame_count in
+  the blocking bucket still do)." (Fix B) Added
+  `test_fps_remux_precision_within_1fps_tolerance_is_clean` which explicitly
+  asserts 119.94 vs 119.916 (diff=0.024) produces no fps entry in either bucket;
+  updated `test_fps_large_change_is_informational` docstring to clarify that 30
+  vs 60 fps is visibly reported in the informational bucket but never blocks; 17
+  tests pass.
+
+### Decisions and Failures
+
+- **No `SCHEMA_VERSION` bump for Patches 1-7**: removing `bin_factor` from the
+  interval fingerprint key is cache-key bookkeeping only -- the stored SOURCE
+  coordinate arrays in `torso_box_coords.npz` are byte-identical regardless of the
+  bin used during solve. Aligning the `--auto-bin` selector, the refine guard edge
+  case, and the identity-warning wording are all behavioral fixes that leave the
+  on-disk artifact format unchanged. No persisted artifact contract changed; no
+  C10 approval was sought or required.
+
+### Behavior or Interface Changes
+
+- **Audit follow-up doc corrections**: `docs/modes/SOLVE.md` "Durable upgrade note"
+  reworded to accurately scope the bin-keyed cache: only the camera-motion artifact
+  (`camera_motion.npz`) keys on `bin_factor`; interval cache entries are bin-invariant
+  (load-time migration strips legacy `/bin<B>` suffixes, no full re-solve needed on bin
+  change). `docs/USAGE.md` "Spatial binning" note updated with the same distinction.
+  Auto-help blocks in `docs/modes/SOLVE.md` and `docs/modes/REFINE.md` regenerated via
+  `tools/refresh_mode_docs.py` to replace stale "Bare flag targets 480" text with the
+  current `--auto-bin` help string (bare flag routes through width-floor / 1440, same
+  as the no-flag default).
+
+### Fixes and Maintenance
+
+- **Audit follow-up code fixes**: `interval_fingerprint.compute_interval_fingerprint`
+  now references the module-level `GEOMETRY_TAG` constant instead of re-invoking
+  `build_geometry_tag()` on every call (pure function, identical result, avoids
+  redundant computation). `tr_video_identity._check_rule` gained the missing
+  `#============================================` visual separator that every other
+  function in that file carries.
+
+### Developer Tests and Notes
+
+- Audit follow-up: removed duplicate/fragile fingerprint and identity tests flagged
+  by the test audit (stable-across-runs duplicate, state_io substring-format
+  assertions, a duplicate C7-guard refine test, a duplicate 1080p default-bin case,
+  and three structural/required-key video-identity tests); extended the fingerprint
+  shape-gate to also pin `compute_interval_fingerprint`'s parameter count. Net fewer
+  tests, same contract coverage.
+
 ## 2026-06-14
 
 ### Additions and New Features
@@ -47,10 +238,15 @@
   `track_runner/interval_solver.py`. Shared `open_analysis_reader` used by both
   production solve and the standalone HTML tool.
 
-- **Solve caches are now bin-aware (M2)**: `bin_factor` enters the interval
-  fingerprint (`track_runner/interval_fingerprint.py`, `solve_queue.py`) and the
-  camera-motion cache staleness check (`track_runner/camera_motion.py`). See
-  UPGRADE NOTE in Decisions and Failures.
+- **Solve caches were made bin-aware at M2 (later reversed for interval fingerprint)**:
+  at M2, `bin_factor` was added to the interval fingerprint
+  (`track_runner/interval_fingerprint.py`, `solve_queue.py`) and to the
+  camera-motion cache staleness check (`track_runner/camera_motion.py`).
+  The camera-motion staleness check still keys on `bin_factor` because stored
+  SOURCE dx/dy depend on the analysis bin used. The interval fingerprint bin-awareness
+  was reversed by Patch 1 (2026-06-15, WS1a): `bin_factor` is no longer part of the
+  interval reuse key; a load-time migration strips `/bin<B>` from existing keys so no
+  one-time full re-solve is needed. See 2026-06-15 Behavior or Interface Changes.
 
 - **`SCHEMA_VERSION` rolled back to 10 (Patch 1)**: v11, v12, v13, and v14 are
   rolled back because none of those changes altered the stored solver artifact
@@ -160,20 +356,26 @@
   surface and invite the same drift). The governance tripwire test makes an
   accidental bump impossible to merge unnoticed.
 
-- **No SCHEMA_VERSION bump for bin-aware cache keys (M1-M4 spine)**: `bin_factor`
-  enters the interval fingerprint and camera-motion staleness check as a bookkeeping
-  key, not an on-disk artifact schema change. Torso boxes persist in SOURCE
-  coordinates regardless of bin. `TARGET_DEFAULT_WIDTH_PX` is a code constant, not
-  a per-video config field. C10 and C13 respected; no bump applied.
+- **No SCHEMA_VERSION bump for bin-aware camera-motion cache keys (M1-M4 spine)**:
+  `bin_factor` enters the camera-motion staleness check as a bookkeeping key, not an
+  on-disk artifact schema change. Torso boxes persist in SOURCE coordinates regardless
+  of bin. `TARGET_DEFAULT_WIDTH_PX` is a code constant, not a per-video config field.
+  C10 and C13 respected; no bump applied. Note: at M2, `bin_factor` was also added to
+  the interval fingerprint with the same "bookkeeping, no bump" rationale; that
+  addition was reversed by Patch 1 (2026-06-15) when it caused solve/refine bin
+  divergence -- the interval reuse key is now bin-invariant.
 
 - **Default bin target confirmed as floor@1440 (M2)**: human approved option B
   (4K analyses at 1080p, conservative for small-runner signal) over the more
   aggressive 720p/target-1280 option.
 
-- **UPGRADE NOTE -- first solve after M2 recomputes derived artifacts**: because
-  `bin_factor` now enters the interval fingerprint and camera-motion cache staleness
-  check, existing bin=1 artifacts are treated as stale and recomputed on first run
-  after upgrade. This is a one-time recompute, not an ongoing cost.
+- **UPGRADE NOTE -- first solve after M2 recomputes camera-motion derived artifacts**:
+  because `bin_factor` enters the camera-motion cache staleness check, existing bin=1
+  camera-motion artifacts are treated as stale and recomputed on first run after
+  upgrade. This is a one-time recompute, not an ongoing cost. Note: a similar one-time
+  recompute for interval fingerprints was anticipated at M2 but is no longer needed --
+  Patch 1 (2026-06-15) removes `bin_factor` from the interval fingerprint entirely and
+  provides a load-time migration that strips `/bin<B>` suffixes from existing keys.
 
 - **DESIGN anti-pattern added: parallel tool glue that duplicates core loaders**:
   `docs/TRACK_RUNNER_DESIGN.md` now documents the pattern as a known bad practice
