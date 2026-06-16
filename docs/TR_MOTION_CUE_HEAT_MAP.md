@@ -380,6 +380,15 @@ runs the walker, which consumes `observe_blob_at` per non-endpoint frame.
   suppressed. Interval-level `blob_coverage_fraction` in the
   diagnostics carries `no_candidate_blobs: true` when the whole
   interval had zero candidates.
+- **Off-frame predicted center**: when the Hermite-predicted center lies
+  outside the frame boundary, `observe_blob_at`
+  (`track_runner/residual_motion.py`) returns `None` immediately with
+  `reject_reason="off_frame"` before any residual computation. An
+  upstream guard in `residual_pre_pass._build_rois_for_frame`
+  (`track_runner/residual_pre_pass.py`) also skips off-frame centers
+  when building the per-interval ROI list, so no degenerate ROI reaches
+  the residual reader. The walker treats the None return as a soft-miss
+  and falls back to Hermite interpolation for that frame.
 
 ## Why the default window is about 0.133 seconds
 

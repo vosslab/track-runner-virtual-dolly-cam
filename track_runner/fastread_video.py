@@ -193,7 +193,13 @@ def resolve_video_context(original_video_path: str) -> VideoContext:
 	else:
 		# (3) present -> validate exactly once for its side-effect (raises on
 		# failure); the returned FastreadValidation is not needed here.
-		validate_fastread_structural(original_video_path, expected_fastread_path)
+		# fps_mismatch_fatal=False: the consume path warns and proceeds when
+		# fps probes differ (e.g. 59.94 vs 60.0); geometry/frame_count/duration
+		# are still fatal. Solve consumes fps only via resolve_stride, which is
+		# identical for 59.94 and 60.0, so index alignment is safe.
+		validate_fastread_structural(
+			original_video_path, expected_fastread_path, fps_mismatch_fatal=False
+		)
 		# (4) valid -> working modes decode from the fast-read video
 		working_decode = VideoSelection(
 			path=expected_fastread_path,
@@ -304,16 +310,24 @@ def _check_geometry_and_count(
 
 #============================================
 
-def _check_fps(fastread_path: str, original_info: dict, fastread_info: dict) -> None:
+def _check_fps(
+	fastread_path: str, original_info: dict, fastread_info: dict
+) -> str | None:
 	"""Check fps matches within probe-precision relative tolerance.
 
+	Does NOT raise on its own; returns a warning-detail string when the
+	mismatch exceeds tolerance, or None when within tolerance. The caller
+	decides whether to raise or warn based on the mode (prepare vs. consume).
+
 	Args:
-		fastread_path: Fast-read video path (used in error text).
+		fastread_path: Fast-read video path (used in the detail string).
 		original_info: probe_video dict for the original video.
 		fastread_info: probe_video dict for the fast-read video.
 
-	Raises:
-		RuntimeError: When the relative fps difference exceeds tolerance.
+	Returns:
+		str | None: Warning detail string (including source fps, fastread fps,
+			and fastread path) when the relative fps difference exceeds
+			FPS_REL_TOLERANCE; None when within tolerance.
 	"""
 	original_fps = original_info["fps"]
 	fastread_fps = fastread_info["fps"]
@@ -322,10 +336,12 @@ def _check_fps(fastread_path: str, original_info: dict, fastread_info: dict) -> 
 	rel_diff = abs(fastread_fps - original_fps) / original_fps
 	if rel_diff > FPS_REL_TOLERANCE:
 		detail = (
-			f"fps {fastread_fps} differs from original {original_fps}"
-			f" by relative {rel_diff:.6f} > tolerance {FPS_REL_TOLERANCE}"
+			f"fps {fastread_fps} (fastread) differs from source fps"
+			f" {original_fps} by relative {rel_diff:.6f} > tolerance"
+			f" {FPS_REL_TOLERANCE}; fastread path: {fastread_path!r}"
 		)
-		_raise_validation_error(fastread_path, "fps", detail)
+		return detail
+	return None
 
 #============================================
 
@@ -445,7 +461,9 @@ def _smoke_read_fastread(fastread_path: str, fastread_info: dict) -> None:
 #============================================
 
 def validate_fastread_structural(
-	original_video_path: str, fastread_path: str
+	original_video_path: str,
+	fastread_path: str,
+	fps_mismatch_fatal: bool = True,
 ) -> FastreadValidation:
 	"""Live-validate a fast-read video against its original.
 
@@ -457,20 +475,35 @@ def validate_fastread_structural(
 	final frame is skipped due to cv2 terminal-seek imprecision).
 
 	Checks, in order:
-		1. width / height / frame_count exact match.
-		2. fps within probe-precision relative tolerance.
-		3. duration within a small absolute tolerance.
+		1. width / height / frame_count exact match (always fatal).
+		2. duration within a small absolute tolerance (always fatal).
+		3. fps within probe-precision relative tolerance (consequence
+		   controlled by fps_mismatch_fatal; see below).
 		4. best-effort first/middle/near-last frame timestamp alignment
 		   (falls back to frame-count + duration and notes the fallback).
 		5. FrameReader open + smoke reads at 0 / mid / near-last.
 
-	Any failed check raises a `RuntimeError` naming the fast-read path, the
-	failed check, and the remedy. A successful return authorizes fast-read
-	decode for the run (`resolve_video_context` calls this once per CLI run).
+	The fps check always runs after the hard structural checks (geometry,
+	frame_count, duration) so the non-fatal fps path is reachable only when
+	index alignment is confirmed. When fps_mismatch_fatal is True (default,
+	used by prepare), a mismatch raises RuntimeError so a freshly generated
+	fast-read is never silently accepted with wrong timing. When
+	fps_mismatch_fatal is False (used by consume paths like solve), a
+	mismatch logs a warning and proceeds, since fps has no effect on
+	stride calculation for 59.94 vs 60.0 (contract C13).
+
+	Any failed hard check raises a `RuntimeError` naming the fast-read
+	path, the failed check, and the remedy. A successful return authorizes
+	fast-read decode for the run (`resolve_video_context` calls this once
+	per CLI run).
 
 	Args:
 		original_video_path: Path to the original source video.
 		fastread_path: Path to the fast-read video to validate.
+		fps_mismatch_fatal: When True (default), an fps mismatch above
+			FPS_REL_TOLERANCE raises RuntimeError. When False, it logs a
+			warning and continues. Hard structural checks (geometry,
+			frame_count, duration) are always fatal regardless of this flag.
 
 	Returns:
 		FastreadValidation: Shared geometry/frame_count plus the
@@ -486,12 +519,26 @@ def validate_fastread_structural(
 	# basis (C13: no stored identity snapshot).
 	original_info = common_tools.probe_video.probe_video(original_video_path)
 	fastread_info = common_tools.probe_video.probe_video(fastread_path)
-	# exact geometry + frame_count is the strictest, cheapest gate first
+	# exact geometry + frame_count: strictest, cheapest hard gate -- always fatal
 	_check_geometry_and_count(fastread_path, original_info, fastread_info)
-	# fps within printed-precision tolerance
-	_check_fps(fastread_path, original_info, fastread_info)
-	# duration within a small absolute tolerance
+	# duration within a small absolute tolerance -- always fatal
 	_check_duration(fastread_path, original_info, fastread_info)
+	# fps check runs LAST among hard structural checks so that the non-fatal
+	# consume path is reachable only once geometry, frame_count, and duration
+	# have already confirmed index alignment.
+	fps_detail = _check_fps(fastread_path, original_info, fastread_info)
+	if fps_detail is not None:
+		if fps_mismatch_fatal:
+			# prepare path: fail loud so a timing-defective artifact is rejected
+			_raise_validation_error(fastread_path, "fps", fps_detail)
+		else:
+			# consume path (solve etc.): warn and continue; fps does not affect
+			# resolve_stride for 59.94 vs 60.0, and frame_count/duration passed.
+			logger.warning(
+				f"fast-read fps mismatch (warn-and-continue on consume path):"
+				f" {fps_detail};"
+				f" remedy: regenerate with prepare (updated encoder) to refresh timing"
+			)
 	# best-effort timestamp alignment; records the fallback note
 	timestamp_fallback_note = _check_timestamp_alignment(
 		original_info, fastread_info
@@ -534,6 +581,11 @@ def _build_ffmpeg_transcode_cmd(
 		"-map", "0:v:0",
 		"-an",
 		"-vf", TRANSCODE_FILTER,
+		# preserve source frame timestamps exactly; avoids the 59.94 vs 60.0
+		# probe mismatch that arises from mkvmerge 1ms-precision re-derivation.
+		# passthrough copies each frame's original PTS through the encoder
+		# without duplicating or dropping frames.
+		"-fps_mode:v", "passthrough",
 		"-c:v", TRANSCODE_CODEC,
 		"-preset", TRANSCODE_PRESET,
 		"-crf", str(TRANSCODE_CRF),

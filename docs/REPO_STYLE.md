@@ -24,7 +24,7 @@ Core principles guide work in this repo. Cite them by name when making judgment 
 
 ## Project type marker
 
-Every repo carries `REPO_TYPE` at the repo root: one lowercase token plus newline. Tokens: `python`, `typescript`, `rust`, `other`. Missing marker triggers detection via `tools/detect_repo_type.py`; if detection is unavailable or ambiguous, falls back to `LANG_UNKNOWN`. Files gated by `ROUTING_OVERRIDES` (language- or `requires_repo_file`-tagged) do not ship to `LANG_UNKNOWN` repos; universal walker-routed files (`docs/`, `tests/`, `devel/`) still ship. The propagator (`propagate_style_guides.py` entry script + `repolib/` package: `repolib.repo.read_repo_type` reads the marker, `repolib.files.compute_propagation_plan` dispatches overlays) routes files by repo type; `reset_repo.py` writes the marker during bootstrap by calling `repolib` directly (no longer shells out to `propagate_style_guides.py`). `REPO_TYPE` is maintained after bootstrap; it controls future propagation behavior, not just initial scaffolding. Note: `other`-typed repos no longer receive `docs/PYTHON_STYLE.md`, as this historical exception was removed when `ROUTING_OVERRIDES` replaced the legacy language-file manifest.
+Every repo carries `REPO_TYPE` at the repo root: one lowercase token plus newline. Tokens: `python`, `typescript`, `rust`, `other`. Missing marker triggers detection via `tools/detect_repo_type.py`; if detection is unavailable or ambiguous, falls back to `LANG_UNKNOWN`. `LANG_UNKNOWN` repos receive only universal walker-routed files (`docs/`, `tests/`, `devel/`); no `ROUTING_OVERRIDES` `exclude_repos` rule applies. The propagator (`propagate_style_guides.py` entry script + `repolib/` package: `repolib.repo.read_repo_type` reads the marker, `repolib.files.compute_propagation_plan` dispatches overlays) routes files by repo type; `reset_repo.py` writes the marker during bootstrap by calling `repolib` directly (no longer shells out to `propagate_style_guides.py`). `REPO_TYPE` is maintained after bootstrap; it controls future propagation behavior, not just initial scaffolding. File location is the primary routing determinant: every file under `templates/<type>/` ships to that type, files under `docs/`, `tests/`, and `devel/` ship universally. `docs/PYTHON_STYLE.md` ships to all repo types. The only routing exception encoded in `ROUTING_OVERRIDES` is `exclude_repos` (blocks a file from shipping back to its source repo). Conditional overlays (`_folder` convention, see `meta/docs/PROPAGATION_RULES.md`) are selected by a `conditional_overlays` manifest rule. All propagation manifests live in `meta/propagation/manifests.yaml`.
 
 ## AGENTS.md files
 
@@ -35,6 +35,16 @@ guidance. Put canonical explanations in the appropriate `docs/*.md` file, then
 link to that file from `AGENTS.md`.
 Concise `AGENTS.md` files help coding agents perform better because the
 instructions are easier to scan, prioritize, and follow.
+
+### Human guidance
+
+- `docs/HUMAN_GUIDANCE.md`: durable human preferences, project-specific guidance, review expectations, and stable decisions that agents should preserve across planning and implementation work.
+- Use this file for long-term guidance that prevents drift across manager and subagent runs.
+- Keep entries focused on stable preferences and recurring project decisions, not transient task notes.
+- Link to `docs/HUMAN_GUIDANCE.md` from `AGENTS.md` when agents need the guidance during routine work.
+- Update this file when the human gives a stable correction, workflow preference, review rule, or project priority that should apply to future tasks.
+- Prefer positive phrasing. State the behavior agents should follow.
+- Keep detailed history in `docs/CHANGELOG.md`; keep current human guidance in `docs/HUMAN_GUIDANCE.md`.
 
 ## README.md and GitHub About descriptions
 

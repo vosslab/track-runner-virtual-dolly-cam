@@ -48,6 +48,7 @@ import cv2
 import numpy
 
 # local repo modules
+import common_tools.coord_space as coord_space
 import residual_motion
 
 
@@ -274,6 +275,34 @@ def precompute_interval_residuals(
 
 
 #============================================
+def _center_in_frame(
+	cx_p: float,
+	cy_p: float,
+	geometry: object,
+	frame_w: int,
+	frame_h: int,
+) -> bool:
+	"""Return True when the processed-space center lies within the frame bounds.
+
+	Uses geometry.in_bounds when a geometry object is present (bin_factor > 1
+	coordinate space); falls back to raw pixel bounds otherwise.
+
+	Args:
+		cx_p: Processed-space center x.
+		cy_p: Processed-space center y.
+		geometry: Reader geometry, or None when bin_factor == 1.
+		frame_w: Processed-frame width in pixels.
+		frame_h: Processed-frame height in pixels.
+
+	Returns:
+		True when the center is within the frame; False otherwise.
+	"""
+	if geometry is not None:
+		return coord_space.ProcessedPoint(cx=cx_p, cy=cy_p).in_bounds(geometry)
+	return 0 <= cx_p < frame_w and 0 <= cy_p < frame_h
+
+
+#============================================
 def _build_rois_for_frame(
 	start_frame: int,
 	end_frame: int,
@@ -308,11 +337,15 @@ def _build_rois_for_frame(
 		if t in fwd_by_frame:
 			cx, cy, h = fwd_by_frame[t]
 			cx_p, cy_p, h_p = _to_processed(cx, cy, h, geometry)
-			rois.add(residual_motion._compute_roi(cx_p, cy_p, h_p, frame_w, frame_h))
+			# skip FWD prediction if center is off-frame (avoids degenerate ROI crash #101)
+			if _center_in_frame(cx_p, cy_p, geometry, frame_w, frame_h):
+				rois.add(residual_motion._compute_roi(cx_p, cy_p, h_p, frame_w, frame_h))
 		if t in bwd_by_frame:
 			cx, cy, h = bwd_by_frame[t]
 			cx_p, cy_p, h_p = _to_processed(cx, cy, h, geometry)
-			rois.add(residual_motion._compute_roi(cx_p, cy_p, h_p, frame_w, frame_h))
+			# skip BWD prediction if center is off-frame (avoids degenerate ROI crash #101)
+			if _center_in_frame(cx_p, cy_p, geometry, frame_w, frame_h):
+				rois.add(residual_motion._compute_roi(cx_p, cy_p, h_p, frame_w, frame_h))
 		if rois:
 			out[t] = rois
 	return out

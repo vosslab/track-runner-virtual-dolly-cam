@@ -15,6 +15,7 @@ import pytest
 
 # local repo modules
 import fastread_video
+import residual_motion
 import tr_paths
 
 #============================================
@@ -309,7 +310,7 @@ def test_resolve_valid_fastread_selects_fastread(
 	with open(fastread_path, "wb") as handle:
 		handle.write(b"\x00")
 	# stub validation to succeed without probing or reading frames
-	def _ok_validate(orig: str, fast: str) -> object:
+	def _ok_validate(orig: str, fast: str, fps_mismatch_fatal: bool = True) -> object:
 		return object()
 	monkeypatch.setattr(fastread_video, "validate_fastread_structural", _ok_validate)
 	context = fastread_video.resolve_video_context(original_path)
@@ -328,7 +329,7 @@ def test_resolve_invalid_fastread_propagates_raise(
 	fastread_path = tr_paths.fastread_video_path(original_path)
 	with open(fastread_path, "wb") as handle:
 		handle.write(b"\x00")
-	def _bad_validate(orig: str, fast: str) -> object:
+	def _bad_validate(orig: str, fast: str, fps_mismatch_fatal: bool = True) -> object:
 		raise RuntimeError("fast-read video failed structural validation")
 	monkeypatch.setattr(fastread_video, "validate_fastread_structural", _bad_validate)
 	with pytest.raises(RuntimeError):
@@ -343,7 +344,7 @@ def test_resolve_validates_exactly_once(
 	with open(fastread_path, "wb") as handle:
 		handle.write(b"\x00")
 	call_count = {"n": 0}
-	def _counting_validate(orig: str, fast: str) -> object:
+	def _counting_validate(orig: str, fast: str, fps_mismatch_fatal: bool = True) -> object:
 		call_count["n"] += 1
 		return object()
 	monkeypatch.setattr(
@@ -369,7 +370,7 @@ def _valid_fastread_context(
 	fastread_path = tr_paths.fastread_video_path(original_path)
 	with open(fastread_path, "wb") as handle:
 		handle.write(b"\x00")
-	def _ok_validate(orig: str, fast: str) -> object:
+	def _ok_validate(orig: str, fast: str, fps_mismatch_fatal: bool = True) -> object:
 		return object()
 	monkeypatch.setattr(
 		fastread_video, "validate_fastread_structural", _ok_validate
@@ -472,3 +473,116 @@ def test_analyze_html_carries_source_fields(tmp_path: object) -> None:
 	# check the values appear in the output; label text is UI-internal and not pinned
 	assert "Lyra-Wheeling-IMG_3912.fastread.mkv" in html_text
 	assert "Lyra-Wheeling-IMG_3912.mkv" in html_text
+
+#============================================
+# -fps_mode:v passthrough in transcode command
+#============================================
+
+def test_ffmpeg_cmd_includes_fps_mode_passthrough() -> None:
+	"""Argv contains the adjacent pair -fps_mode:v / passthrough.
+
+	ffmpeg requires these as an adjacent flag-value pair; a split or reorder
+	silently changes behavior (fps mode is ignored). The ordering relative to
+	-c:v is not pinned here: only the adjacency matters for ffmpeg correctness.
+	"""
+	cmd = fastread_video._build_ffmpeg_transcode_cmd(
+		"/usr/bin/ffmpeg", "/data/race.mkv", "/data/race.fastread.mkv"
+	)
+	# -fps_mode:v must be in the argv and immediately followed by passthrough
+	assert "-fps_mode:v" in cmd, "-fps_mode:v missing from transcode argv"
+	i = cmd.index("-fps_mode:v")
+	assert cmd[i + 1] == "passthrough", (
+		"-fps_mode:v must be immediately followed by passthrough"
+	)
+
+#============================================
+# stride safety: 59.94 vs 60.0 fps mismatch
+#============================================
+
+def test_resolve_stride_5994_equals_60() -> None:
+	"""resolve_stride(59.94) == resolve_stride(60.0).
+
+	Backs the fps-safety claim: the consumer path warns-and-continues on
+	a 59.94 vs 60.0 fps probe mismatch because both round to the same stride,
+	so frame index alignment is unaffected regardless of which fps value is used.
+	"""
+	assert residual_motion.resolve_stride(59.94) == residual_motion.resolve_stride(60.0)
+
+#============================================
+# validate_fastread_structural fps_mismatch_fatal modes
+#============================================
+
+def _make_two_probe_patcher(
+	monkeypatch: pytest.MonkeyPatch,
+	original_probe: dict,
+	fastread_probe: dict,
+) -> None:
+	"""Patch probe_video to return two distinct probes on consecutive calls."""
+	call_count = [0]
+	probes = [original_probe, fastread_probe]
+	def _side_effect(_path: str) -> dict:
+		idx = call_count[0]
+		call_count[0] += 1
+		return probes[idx]
+	monkeypatch.setattr("common_tools.probe_video.probe_video", _side_effect)
+	monkeypatch.setattr("common_tools.frame_reader.FrameReader", _FakeFrameReader)
+
+def test_fps_mismatch_fatal_false_does_not_raise_warns(
+	tmp_path: object, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+	"""fps_mismatch_fatal=False: 59.94 vs 60.0 mismatch warns-and-continues.
+
+	The consume path (resolve_video_context) calls with fps_mismatch_fatal=False
+	and must receive a FastreadValidation rather than a RuntimeError on a small
+	fps probe mismatch.
+	"""
+	import logging
+	orig_probe = _make_probe(fps=60.0)
+	fast_probe = _make_probe(fps=59.94)
+	_make_two_probe_patcher(monkeypatch, orig_probe, fast_probe)
+	original = str(tmp_path / "race.mkv")
+	fastread = str(tmp_path / "race.fastread.mkv")
+	# must not raise; must return a FastreadValidation
+	with caplog.at_level(logging.WARNING, logger="fastread_video"):
+		result = fastread_video.validate_fastread_structural(
+			original, fastread, fps_mismatch_fatal=False
+		)
+	assert isinstance(result, fastread_video.FastreadValidation)
+	# a warning mentioning both fps values must have been logged
+	warning_text = " ".join(r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING)
+	assert "59.94" in warning_text or "60.0" in warning_text, (
+		"expected a warning mentioning one or both fps values; got: " + warning_text
+	)
+
+def test_fps_mismatch_fatal_true_raises(
+	tmp_path: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+	"""fps_mismatch_fatal=True (default): same fps mismatch raises RuntimeError.
+
+	The prepare path must reject a newly transcoded fast-read whose fps probe
+	does not match the source, so timing defects are caught at build time.
+	"""
+	orig_probe = _make_probe(fps=60.0)
+	fast_probe = _make_probe(fps=59.94)
+	_make_two_probe_patcher(monkeypatch, orig_probe, fast_probe)
+	original = str(tmp_path / "race.mkv")
+	fastread = str(tmp_path / "race.fastread.mkv")
+	with pytest.raises(RuntimeError, match="race.fastread.mkv"):
+		fastread_video.validate_fastread_structural(original, fastread, fps_mismatch_fatal=True)
+
+def test_frame_count_mismatch_raises_regardless_of_fps_flag(
+	tmp_path: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+	"""frame_count mismatch raises even with fps_mismatch_fatal=False.
+
+	The fps exception must never mask a real structural failure such as a
+	frame_count mismatch; geometry/frame_count/duration remain always-fatal.
+	"""
+	orig_probe = _make_probe(frame_count=3600)
+	# change frame_count to trigger the hard structural gate first
+	fast_probe = _make_probe(frame_count=3599)
+	_make_two_probe_patcher(monkeypatch, orig_probe, fast_probe)
+	original = str(tmp_path / "race.mkv")
+	fastread = str(tmp_path / "race.fastread.mkv")
+	with pytest.raises(RuntimeError, match="race.fastread.mkv"):
+		fastread_video.validate_fastread_structural(original, fastread, fps_mismatch_fatal=False)

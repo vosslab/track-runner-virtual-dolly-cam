@@ -1,214 +1,109 @@
-# Usage
+# USAGE.md
 
-## Entry point
+How to run the tools in this repository.
+
+## reset_repo.py
+
+`reset_repo.py` is the bootstrap entry point for a new consumer repo cloned from this
+template. It runs an interactive interview (project type, code license, docs license,
+PyPI intent, stage, commit), writes the `REPO_TYPE` marker, installs license files,
+seeds `pyproject.toml` when PyPI is requested, runs propagation, and removes
+template-meta paths.
+
+### Normal use (interactive)
 
 ```bash
-source source_me.sh
-python track_runner/track_runner.py -i VIDEO.mp4 <subcommand>
+source source_me.sh && python3 reset_repo.py
 ```
 
-## Global options
+The script interviews you in your terminal. No flags are required for normal use.
 
-Global options must appear before the subcommand.
+### CLI flags
 
 | Flag | Description |
 | --- | --- |
-| `-i`, `--input` | Input video file path (required). |
-| `-c`, `--config` | Config YAML file path (default: auto-detected). |
-| `-d`, `--debug` | Enable verbose diagnostic output for developers (logging and side-channel debug artifacts). Does not affect rendered overlays in encoded video; see `encode --draw-tracking-overlay` for those. |
-| `-w`, `--workers` | Number of parallel workers (default: half of CPU cores). |
-| `--time-range` | Limit processing to a time range in seconds. Format: `START:END`, `START:`, or `:END`. |
+| `--config <file>` | Supply interview answers from a JSON file (testing/reproducibility mode) |
+| `--dry-run` | Log planned actions without writing any files |
+| `-h` | Show help and exit |
 
-## Spatial binning (default: auto)
+### Config mode (testing/reproducibility interface)
 
-`solve` and `refine` default to automatic spatial binning: the analysis bin
-factor is `floor(source_width / 1440)`, computed at startup. 4K (3840-wide)
-sources bin at 2 (analyzed at 1920 x 1080); 1080p and 1440p sources stay at
-bin=1 (full-resolution analysis). Persisted outputs are always in full
-source-frame pixels regardless of bin factor.
-
-| Flag | Description |
-| --- | --- |
-| `--bin N` | Force an exact bin factor (integer >= 1). `--bin 1` disables binning. |
-| `--auto-bin [HEIGHT]` | Height-based bin target (different formula from the default; see `solve --help`). |
-
-The default changed from `--bin 1` (no binning) to auto-bin as of 2026-06-14.
-The camera-motion artifact is recomputed on the first solve after upgrading for 4K/2.8K
-sources because the camera-motion cache keys on `bin_factor`. Interval cache entries are
-bin-invariant: a load-time key migration strips any legacy `/bin<B>` suffix so no full
-interval re-solve is needed when the bin changes.
-
-## Performance diagnostic flag
-
-`solve` and `refine` accept `--debug-blob` to enable verbose Stage 4 instrumentation: per-worker per-frame `read_frame` strategy timings, residual compute timings, per-pid worker-exit summaries, and a 5-second master heartbeat. Off by default and zero overhead when off; opt in only when investigating Stage 4 wall time.
-
-```
-./track_runner/track_runner.py -i video.mkv solve --bin 4 --debug-blob 2>&1 | tee /tmp/blob_debug.log
-```
-
-See [README.md](../common_tools/README.md) for read-pattern cost numbers (sequential vs scattered) and how to interpret the per-strategy histogram. For known slow-run symptoms (for example, hours-long walker runs on 4K HEVC sources), see [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
-
-## Subcommands
-
-The nine subcommands -- `prepare`, `setup`, `seed`, `solve`, `target`, `refine`,
-`edit`, `encode`, `analyze` -- each have a dedicated reference page. See
-[MODES.md](MODES.md) for the index, or jump directly:
-
-- [modes/PREPARE.md](modes/PREPARE.md) -- create a fast-read working video (optional, 4K HEVC).
-- [modes/SETUP.md](modes/SETUP.md) -- per-video camera configuration.
-- [modes/SEED.md](modes/SEED.md) -- place anchor seeds.
-- [modes/SOLVE.md](modes/SOLVE.md) -- full re-solve from scratch.
-- [modes/TARGET.md](modes/TARGET.md) -- add seeds at weak intervals.
-- [modes/REFINE.md](modes/REFINE.md) -- incremental re-solve.
-- [modes/EDIT.md](modes/EDIT.md) -- fix or review existing seeds.
-- [modes/ENCODE.md](modes/ENCODE.md) -- encode the final cropped video.
-- [modes/ANALYZE.md](modes/ANALYZE.md) -- pre-encode diagnostic.
-
-The flag tables on those pages are auto-regenerated from `--help` by `tools/refresh_mode_docs.py`.
-
-## Typical workflow
-
-For 4K HEVC sources, run `prepare` first. Working modes (`setup` through
-`analyze`) will then decode from the fast-read video, which makes scattered
-OpenCV frame reads dramatically faster. `encode` always uses the original for
-final output quality.
+`--config` is intended for automated testing and reproducible resets, not for
+routine human use. Pass a JSON file with the interview answers:
 
 ```bash
-# Optional but recommended for 4K HEVC sources
-python track_runner/track_runner.py -i VIDEO.mkv prepare
+source source_me.sh && python3 reset_repo.py --config my_config.json
 ```
 
-1. **prepare** (optional, recommended for 4K HEVC) -- create a fast-read
-   working video beside the original. See [modes/PREPARE.md](modes/PREPARE.md).
-2. **setup** -- one-time camera configuration for the video.
-3. **seed** -- place anchor seeds on the runner.
-4. **solve** -- full solve from the seed set.
-5. **target** -- add corrective seeds at weak intervals.
-6. **refine** -- incremental re-solve picking up the new seeds.
-7. Repeat `target` + `refine` until interval scores are acceptable.
-8. **encode** -- produce the final cropped output video.
+Config mode is non-interactive: the script reads answers from the file and proceeds
+without prompting. This replaces the interactive interview for the run.
 
-`edit` is for fixing bad seeds or double-checking ones the scorer flagged.
-`analyze` is a pre-encode diagnostic that reports crop-path stability,
-solver context, and motion-regime classification without producing a
-video; it is not required before `encode`. Run either when you need it.
+#### JSON schema
 
-### prepare role policy summary
+| Key | Required | Values | Notes |
+| --- | --- | --- | --- |
+| `project_type` | YES | `python` / `p`, `typescript` / `t`, `rust` / `r`, `other` / `o` | Short alias or full token |
+| `code_license` | YES | SPDX identifier or alias (e.g. `MIT`, `m`, `GPL-3.0`, `g`) | Resolved via `resolve_license` |
+| `docs_license` | no | SPDX identifier or alias | Default: `CC-BY-4.0` |
+| `pypi` | no | `true` / `false` | Default: `false`; Python-only |
+| `stage` | no | `true` / `false` | Default: `true` |
+| `commit` | no | `true` / `false` | Default: `false` |
 
-- Working modes `setup`, `seed`, `edit`, `target`, `solve` (all stages),
-  `refine`, `analyze`: decode from the fast-read video when it is present
-  and structurally valid; otherwise decode from the original with no warning.
-- `encode`: always uses the original for final output quality.
-- All state (seeds, geometry, scores, caches) stays keyed to the original
-  video path.
+#### Minimal example
 
-### prepare selection semantics
+```json
+{
+  "project_type": "python",
+  "code_license": "GPL-3.0"
+}
+```
 
-- Fast-read absent: working modes use original; no warning.
-- Fast-read present and structurally valid: working modes use fast-read.
-- Fast-read present and structurally invalid: the run raises loudly with the
-  remedy. Re-run `prepare` (it always rebuilds) or delete the fast-read video.
+#### Full example
 
-Rollback: delete `VIDEO.fastread.mkv`. All modes revert to the original on
-the next run automatically. No other cleanup is needed.
+```json
+{
+  "project_type": "typescript",
+  "code_license": "MIT",
+  "docs_license": "CC-BY-4.0",
+  "stage": false,
+  "commit": false
+}
+```
 
-Working modes decode from the fast-read video when it is present and structurally
-valid; the final encode always uses the original.
+### Folder-name guard
 
-## Heat movie diagnostic (blob_walk_v2)
+The script refuses to run when the repo root directory is named exactly
+`starter-repo-template`. This protects the template development checkout from
+accidental destruction.
 
-The `--heat-movie` flag is available on
-`tools/blob_walk_v2/make_walk_html_v2.py`. It is off by default and
-only active when `--walk` is also set.
+If you see this error, clone or rename the repo to your project name first:
 
-When enabled, it writes one per-direction `.mkv` file (`heat_fwd.mkv`
-and `heat_bwd.mkv`) beside each interval's render output tiles. Each
-movie shows the residual-motion heat overlay cropped to a fixed ROI
-derived from the larger of the two bracketing seeds; the solved torso
-box and in-box hot-mean value are drawn on every frame.
+```
+This repo is named starter-repo-template. Clone or rename it to the consumer project name before running reset.
+```
 
-**ffmpeg is required** only for `--heat-movie`. The flag is checked at
-startup and raises a clean error immediately if ffmpeg is absent. A
-normal `--walk` run does not need ffmpeg.
+The guard checks the folder name only; it does not inspect remotes or origin URLs.
 
-Memory and scratch: raw `.bgr` frames are spilled one at a time to a
-run-scoped scratch directory under `/tmp`, encoded with ffmpeg
-`image2` (libx264, yuv420p), verified, then copied beside the render
-output. The scratch directory is deleted at the end of each interval
-encode. Nothing is retained between runs.
+### Outside a git repo
+
+Running `reset_repo.py` outside a git repository exits with a clear message
+instead of a raw subprocess traceback.
+
+## E2E test harness
+
+For the clone-based reset E2E harness (LOCAL and REMOTE modes), see
+[E2E_TESTS.md](E2E_TESTS.md) and the inline documentation in
+`tests/meta/e2e/e2e_reset_routing.py`. The harness is template-meta:
+it lives under `tests/meta/e2e/` and is removed by reset.
+
+Run all offline E2E tests:
 
 ```bash
-# Walk one video with heat movies (ffmpeg required; -v is required)
-python3 tools/blob_walk_v2/make_walk_html_v2.py --walk -v TRACK_VIDEOS/IMG_3823.mkv --heat-movie
-
-# Explicitly disable (default)
-python3 tools/blob_walk_v2/make_walk_html_v2.py --walk -v TRACK_VIDEOS/IMG_3823.mkv --no-heat-movie
+bash tests/meta/e2e/run_all.sh
 ```
 
-Install ffmpeg if missing:
+Run a single E2E test:
 
 ```bash
-brew install ffmpeg
+source source_me.sh && python3 tests/meta/e2e/e2e_reset_routing.py
 ```
-
-See [tools/blob_walk_v2/README.md](../tools/blob_walk_v2/README.md) for
-the full blob_walk_v2 flag reference.
-
-## Motion heat-map overlay
-
-The annotation GUI (`seed`, `edit`, `target`) can show a residual-motion heat
-map as a diagnostic overlay to help you see where real motion is happening
-on the current frame.
-
-- Toggle with the `H` key or the **Heat** button in the overlay toolbar.
-- Sticky mode: the overlay stays ON across frame advances and recomputes
-  automatically for each new frame. Press `H` again to turn it off.
-- During a frame advance the previous heat is hidden immediately and the
-  status label next to the toolbar action shows `computing...` until the
-  new frame's heat is ready.
-- If the current frame has no prediction (pre-race, unsolved intervals),
-  the overlay stays hidden and the label reads
-  `no prediction for this frame`. The toggle remains ON so heat will
-  resume automatically on the next frame with a prediction.
-- The heat map is scoped to the solver's 8x torso-height ROI around the
-  predicted center, not the entire frame. Compute is expected to be
-  interactive on typical review frames, though actual latency depends on
-  the video's resolution and codec.
-- The overlay is a full composite, not a translucent wash. Below-
-  threshold pixels render as grayscale of the source frame (luminance
-  preserved, color removed so irrelevant areas are visibly
-  de-emphasized). Above-threshold pixels render as the JET-colorized
-  residual mixed with the original color frame. The final pixmap is
-  opaque.
-- The JET colormap carries known accessibility caveats (non-monotonic
-  luminance, red/green confusion). The `blend_alpha` value in
-  [overlay_styles.yaml](../track_runner/overlay_styles.yaml)
-  under the `heat_map:` block (default `0.40`) controls the JET-over-
-  color mix in above-threshold pixels, not overlay transparency. Lower
-  values make the color frame show through more under the heat tint;
-  higher values make the JET dominate.
-- A `camera motion not compensated` badge appears beneath the ROI whenever
-  the overlay is shown. The GUI uses an identity scene transform in this
-  release, so the overlay will ghost on panning footage. A future patch
-  will load the solver's motion-track artifact.
-- The overlay is strictly read-only. Enabling it does not alter
-  trajectories, the geometry cache NPZ, interval-scores JSON, or any
-  solver artifact. `SOLVER_FINGERPRINT_TAG` is unchanged.
-- The overlay renders a display-oriented view: residual magnitudes below
-  the configured `threshold` (default `10.0`) are suppressed so sensor
-  noise does not fog the frame. This is an intentional divergence from
-  `tools/diagnose_residual_motion.py`, which shows the full residual
-  field including the noise floor.
-
-## Configuration
-
-The default config file is [track_runner.config.yaml](../track_runner/track_runner.config.yaml). Override with `-c`/`--config`. Settings include detection confidence threshold, crop aspect ratio, fill ratio, video codec, CRF, and encode filter pipeline.
-
-## Input and output
-
-- **Input:** any video file readable by ffmpeg/mediainfo.
-- **Output:** cropped and stabilized video file. Per-video state (seeds, geometry cache, interval scores, debug tracks, camera motion) is stored in the per-video `tr_config` store; see [TR_CONFIG_FILES.md](TR_CONFIG_FILES.md) for the file layout.
-
-## Keyboard shortcuts
-
-See [TRACK_RUNNER_KEYBINDINGS.md](TRACK_RUNNER_KEYBINDINGS.md) for the full annotation UI keybindings reference.

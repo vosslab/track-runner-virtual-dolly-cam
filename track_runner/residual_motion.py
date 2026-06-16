@@ -1126,7 +1126,7 @@ def observe_blob_at(
 		When no observation is produced (returns None), the trace's
 		`reject_reason` field is populated before return with one of
 		"no_residual", "no_raw_blobs", "corridor_empty",
-		"acceptance_box_empty", or "no_winner". Capture and audit tools
+		"acceptance_box_empty", "no_winner", or "off_frame". Capture and audit tools
 		differentiate these failure modes without re-instrumenting the
 		heat-map pipeline.
 	"""
@@ -1200,6 +1200,13 @@ def observe_blob_at(
 		)
 	frame_w = reader.width
 	frame_h = reader.height
+	# Guard: predicted center off-frame -> no observation (soft miss).
+	# Upstream off-frame predictions clamp the ROI to zero width/height,
+	# which causes a degenerate-ROI crash in compute_residual_for_frame.
+	# Treat off-frame predictions as missing evidence rather than an error.
+	if not (0 <= pred_cx_p < frame_w and 0 <= pred_cy_p < frame_h):
+		_set_reject_reason("off_frame")
+		return None
 	# Optional caller-supplied ROI override as a PROCESSED-space ProcessedBox.
 	# Guard the space at the boundary, then derive its (x1, y1, x2, y2)
 	# edges for the clamp math (the numeric clamp below is unchanged).
@@ -1213,6 +1220,12 @@ def observe_blob_at(
 		roi = (ox1, oy1, ox2, oy2)
 	else:
 		roi = _compute_roi(pred_cx_p, pred_cy_p, pred_h_p, frame_w, frame_h)
+	# Guard: degenerate ROI after clamping (e.g. roi_override that barely
+	# clips the frame edge and clamps to zero extent). Return None so the
+	# walker can fall back to Hermite rather than crashing downstream.
+	if roi[2] <= roi[0] or roi[3] <= roi[1]:
+		_set_reject_reason("off_frame")
+		return None
 	cache_key = (frame_index, roi)
 
 	# Bypass the residual cache when DoG diameter override is in effect.

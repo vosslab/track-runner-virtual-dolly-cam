@@ -16,6 +16,7 @@ REPORT_NAME = file_utils.report_name(__file__)
 REQUIREMENT_FILES = (
 	"pip_requirements.txt",
 	"pip_requirements-dev.txt",
+	"pip_requirements-meta.txt",
 	"pip_extras.txt",
 	os.path.join("config_files", "pip_requirements.txt"),
 	os.path.join("config_files", "pip_requirements-dev.txt"),

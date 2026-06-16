@@ -193,8 +193,11 @@ method.
 - [fastread_video.py](../track_runner/fastread_video.py) --
   fast-read working video creation (`create_fastread_video`) and live
   structural validation (`validate_fastread_structural`). Returns a
-  frozen `FastreadValidation` dataclass on success; raises
-  `RuntimeError` naming the failed check and remedy on any mismatch.
+  frozen `FastreadValidation` dataclass on success. The hard structural
+  checks (exact geometry, exact frame count, duration tolerance) always
+  raise `RuntimeError` naming the failed check and remedy. The fps check
+  is caller-controlled: fatal in prepare mode, warn-and-continue in
+  consume paths (solve, refine, target) after the hard checks pass.
   Path helper lives in [tr_paths.py](../track_runner/tr_paths.py)
   (`fastread_video_path`). Consumed by `prepare` mode (`_mode_prepare`
   in `cli.py`).

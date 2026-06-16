@@ -89,8 +89,9 @@ sidecar file and no persisted bookkeeping; all checks use live-probed data.
 
 ## Loud failure on invalid fast-read
 
-If the fast-read video is present but fails any validation check, the run
-raises immediately with:
+The hard structural checks -- exact width/height match, exact frame count,
+and duration within tolerance -- are always fatal regardless of which mode
+runs. If any of them fails, the run raises immediately with:
 
 - The fast-read path.
 - The specific failed check.
@@ -100,6 +101,13 @@ raises immediately with:
 This is intentional: a present-but-mismatched fast-read file means the source
 changed after `prepare` was run (re-remux, trim, or file replacement). Silent
 fallback to the original would hide the mismatch.
+
+**Frame-rate mismatch is caller-controlled.** On the `prepare` path, an fps
+mismatch is fatal (a changed frame rate invalidates the fast-read). On consume
+paths (solve, refine, target), an fps mismatch logs a warning and the run
+proceeds -- but only after the hard structural checks above all pass first.
+fps is consumed only via `resolve_stride`, where values like 59.94 and 60.0
+are identical in practice (contract C13).
 
 ## Always rebuilds
 

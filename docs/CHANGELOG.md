@@ -1,5 +1,41 @@
 ## 2026-06-16
 
+### Behavior or Interface Changes
+
+- **fps validation is now caller-controlled in `validate_fastread_structural`
+  (`track_runner/fastread_video.py`)**: `FPS_REL_TOLERANCE` is unchanged and
+  the fps check still detects mismatches, but the consequence depends on the
+  caller. The prepare path remains fatal on an fps mismatch (a changed
+  frame rate means a stale fast-read). Consume paths (solve, refine, target)
+  log a warning and proceed, but only after the hard structural checks --
+  geometry (exact width/height), exact frame count, and duration tolerance --
+  all pass first. fps is consumed only via `resolve_stride`, where 59.94 and
+  60.0 are identical (contract C13).
+
+- **Off-frame predicted centers produce no residual observation instead of a
+  crash**: `residual_pre_pass._build_rois_for_frame`
+  (`track_runner/residual_pre_pass.py`) now skips centers that lie outside
+  the frame boundary before building any ROI. `observe_blob_at`
+  (`track_runner/residual_motion.py`) returns `None` with
+  `reject_reason="off_frame"` when the predicted center is off-frame or would
+  produce a degenerate ROI. The walker treats the None return as a soft-miss
+  and falls back to Hermite interpolation for that frame.
+
+### Fixes and Maintenance
+
+- **`-fps_mode:v passthrough` added to fastread transcode**
+  (`track_runner/fastread_video.py`): the ffmpeg output option is now included
+  in `create_fastread_video` to preserve source frame timestamps exactly.
+  Without it, ffmpeg could resample or shift PTS values on some containers,
+  causing subtle per-frame timestamp misalignment in the fast-read video.
+
+- **Off-frame predicted center no longer raises in `observe_blob_at`**
+  (`track_runner/residual_motion.py`): previously a predicted center outside
+  the frame boundary would reach `compute_residual_for_frame` with a
+  degenerate ROI and raise. The upstream guard in `_build_rois_for_frame` and
+  the explicit `reject_reason="off_frame"` early return in `observe_blob_at`
+  eliminate the crash path entirely.
+
 ### Developer Tests and Notes
 
 - **`re-solve.sh` now captures per-video output to log files**: both the solve
