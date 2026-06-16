@@ -15,8 +15,8 @@ for json in tr_config/*.seeds.json; do
   echo $(file -LIb "$video")
   #./track_runner/track_runner.py --workers 1 -i $video prepare
   echo "================================="
-  ./track_runner/track_runner.py --workers 2 -i $video solve --yes --auto-bin
-  sleep 2
+  ./track_runner/track_runner.py --workers 2 -i $video solve --yes --bin 1
+  sleep 20
 done
 
 for json in tr_config/*.seeds.json; do
