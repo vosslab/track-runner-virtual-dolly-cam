@@ -1,3 +1,13 @@
+## 2026-06-16
+
+### Developer Tests and Notes
+
+- **`re-solve.sh` now captures per-video output to log files**: both the solve
+  loop and the upgrade loop pipe `2>&1 | tee` into a per-video log in CWD
+  (`solve_<stem>.log` and `upgrade_<stem>.log`). `2>&1` folds stderr (Python
+  tracebacks) into the capture so failures are reviewable after the batch run,
+  while `tee` keeps console output live.
+
 ## 2026-06-15
 
 ### Behavior or Interface Changes
