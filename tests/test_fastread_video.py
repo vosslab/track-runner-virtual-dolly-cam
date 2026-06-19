@@ -39,10 +39,18 @@ def _make_probe(*, width: int = 1920, height: int = 1080,
 #============================================
 
 class _FakeFrameReader:
-	"""Minimal FrameReader stand-in: context manager, read_frame returns a sentinel."""
+	"""Minimal FrameReader stand-in: context manager, read_frame returns a sentinel.
+
+	Also records seek_for_encode calls and read_frame indices so behavior
+	tests can inspect what the smoke-read path actually did.
+	"""
 
 	def __init__(self, path: str, fps: float, total_frames: int) -> None:
 		self._total_frames = total_frames
+		# record all read_frame index calls in order
+		self.read_indices: list[int] = []
+		# record the start argument from the most recent seek_for_encode call
+		self.seek_start: int | None = None
 
 	def __enter__(self) -> "_FakeFrameReader":
 		return self
@@ -50,8 +58,13 @@ class _FakeFrameReader:
 	def __exit__(self, *args: object) -> None:
 		pass
 
+	def seek_for_encode(self, start: int) -> None:
+		"""Record the seek start position for tail-read behavior assertions."""
+		self.seek_start = start
+
 	def read_frame(self, index: int) -> object:
-		# return a truthy sentinel so the None-check in validate does not fire
+		# record the index before returning a truthy sentinel
+		self.read_indices.append(index)
 		return object()
 
 #============================================
@@ -586,3 +599,43 @@ def test_frame_count_mismatch_raises_regardless_of_fps_flag(
 	fastread = str(tmp_path / "race.fastread.mkv")
 	with pytest.raises(RuntimeError, match="race.fastread.mkv"):
 		fastread_video.validate_fastread_structural(original, fastread, fps_mismatch_fatal=False)
+
+#============================================
+# smoke-read tail behavior: seek + sequential reads through the last frame
+#============================================
+
+def test_smoke_read_reads_tail_sequentially_through_last_frame(
+	tmp_path: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+	"""_smoke_read_fastread seeks to the tail start and reads contiguously to the last frame.
+
+	Uses a frame_count larger than TAIL_PREROLL so the tail slice is non-trivial.
+	Asserts the invariant: seek_start is correct and reads from seek_start through
+	frame_count-1 are contiguous with no gaps, ending at the true last frame.
+	"""
+	frame_count = 500
+	probe = _make_probe(frame_count=frame_count)
+	# single shared fake so we can inspect its recorded state after validation
+	fake_reader = _FakeFrameReader("/fake/race.fastread.mkv", fps=120.0, total_frames=frame_count)
+	monkeypatch.setattr(
+		"common_tools.probe_video.probe_video",
+		lambda _path: probe,
+	)
+	monkeypatch.setattr(
+		"common_tools.frame_reader.FrameReader",
+		# ignore constructor args; return the shared fake instance
+		lambda path, fps, total_frames: fake_reader,
+	)
+	original = str(tmp_path / "race.mkv")
+	fastread = str(tmp_path / "race.fastread.mkv")
+	fastread_video.validate_fastread_structural(original, fastread, fps_mismatch_fatal=False)
+	# derive expected tail start the same way the impl does
+	expected_start = max(0, (frame_count - 1) - fastread_video.TAIL_PREROLL)
+	# invariant 1: seek_for_encode was called with the correct tail start
+	assert fake_reader.seek_start == expected_start
+	# invariant 2: the last read index is the true last frame
+	assert fake_reader.read_indices[-1] == frame_count - 1
+	# invariant 3: the tail portion of read_indices is contiguous through the end
+	# (frames 0 and mid may also appear; we check only the tail slice)
+	tail_reads = [i for i in fake_reader.read_indices if i >= expected_start]
+	assert tail_reads == list(range(expected_start, frame_count))

@@ -1,3 +1,29 @@
+## 2026-06-18
+
+### Fixes and Maintenance
+
+- **`_smoke_read_fastread` false-positive crash on near-EOF random seek fixed**
+  (`track_runner/fastread_video.py`): the previous validation probe sought to
+  `frame_count - 2`, which lands inside the final x264 GOP (`TRANSCODE_GOP = 30`).
+  OpenCV near-EOF random-access seek is imprecise in that region, causing intermittent
+  `RuntimeError: cv2 decode failure` on healthy fast-read files (observed on
+  `Jason-3200m-sectionals-IMG_4005`; ffmpeg decoded all 36044 frames cleanly).
+  The fix replaces the deep-tail random seek with the production tail-read pattern:
+  read frame 0, frame `frame_count // 2` (one reliable mid-file seek), then
+  `seek_for_encode(start)` + sequential `read_frame` for
+  `index in range(start, frame_count)` where `start = max(0, (frame_count - 1) - TAIL_PREROLL)`.
+  New module constant `TAIL_PREROLL = 120` (several times `TRANSCODE_GOP`). The probe
+  now reaches the genuine last frame (`frame_count - 1`) via sequential decode -- the
+  same access pattern production already uses (residual pre-pass walk, encoder chunk loop).
+  `validate_fastread_structural` docstring updated (steps 4/5 now read
+  "first/middle/last", "0 / mid / tail"). No change to `FrameReader`/`frame_reader.py`,
+  fast-read artifacts, or transcode settings.
+
+- **`test_smoke_read_reads_tail_sequentially_through_last_frame` added**
+  (`tests/test_fastread_video.py`): `_FakeFrameReader` extended with `seek_for_encode`
+  and read/seek recording; new test asserts that the tail probe reaches the genuine last
+  frame (`frame_count - 1`) via sequential decode. 31 tests pass; `pyflakes` clean.
+
 ## 2026-06-16
 
 ### Behavior or Interface Changes

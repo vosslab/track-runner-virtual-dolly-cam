@@ -72,6 +72,13 @@ TRANSCODE_PRESET = "veryfast"
 TRANSCODE_FILTER = "hqdn3d,format=yuv420p"
 TRANSCODE_CODEC = "libx264"
 
+# Tail pre-roll for the smoke-read sequential tail probe. The pre-roll must
+# begin far enough before EOF that sequential decode passes through at least
+# one full GOP before reaching the final GOP and the true last frame. 120 is
+# several times TRANSCODE_GOP (30), keeping the design correct if TRANSCODE_GOP
+# is raised later.
+TAIL_PREROLL = 120
+
 #============================================
 
 @dataclasses.dataclass(frozen=True)
@@ -421,41 +428,60 @@ def _check_timestamp_alignment(
 #============================================
 
 def _smoke_read_fastread(fastread_path: str, fastread_info: dict) -> None:
-	"""Open the fast-read video and read frames 0 / mid / near-last.
+	"""Open the fast-read video and read frames 0, mid, and the tail sequentially.
 
-	The near-last probe targets frame_count - 2, not the final frame.
-	cv2 random-access seek to the exact last frame is unreliable even on
-	a healthy file (terminal-seek imprecision), and the production
-	pipeline never random-seeks the last frame. Truncation is already
-	caught by the exact frame_count match in _check_geometry_and_count,
-	so probing one frame short still smoke-tests the tail of the file
-	without the terminal-seek flake.
+	Three probes are performed inside one FrameReader context:
+	  1. Frame 0: confirms the file opens and the first frame decodes.
+	  2. Frame frame_count // 2: one reliable mid-file random seek, far from
+	     the EOF GOP, confirming basic seekability.
+	  3. Tail read from start through frame_count - 1 via seek_for_encode +
+	     sequential read_frame calls: mirrors the production encoder tail
+	     pattern (encoder.py:791-793) and avoids the near-EOF random-seek
+	     imprecision that caused intermittent false-positive decode failures
+	     on healthy files.
+
+	The tail probe uses seek_for_encode(start) to land before the final GOP
+	(a precise mid-file seek), then forward-decodes sequentially through the
+	last GOP and the true last frame. Every read_frame(index) call matches
+	_cap_next_index (strategy 0, sequential), so no random-seek occurs inside
+	the final GOP.
+
+	Short-clip behavior:
+	  frame_count == 1 -> start=0, tail loop reads frame 0 (harmless duplicate
+	    of the first probe).
+	  frame_count == 2 -> start=0, tail loop reads frames 0 and 1.
+	  frame_count < TAIL_PREROLL -> start=0, tail loop reads the whole clip.
+	frame_count <= 0 is unreachable: _check_geometry_and_count runs first and
+	raises on a zero count before this function is called.
 
 	Args:
 		fastread_path: Fast-read video path.
 		fastread_info: probe_video dict for the fast-read video.
 
 	Raises:
-		RuntimeError: When FrameReader open or any of the three reads
-			fail (the failure carries the fast-read path and remedy).
+		RuntimeError: When FrameReader open or any read fails (the failure
+			carries the fast-read path and remedy).
 	"""
 	frame_count = fastread_info["frame_count"]
 	fps = fastread_info["fps"]
-	# first / middle / near-last indices; max() clamps a negative index on
-	# tiny clips, the set deduplicates collisions on very short clips
-	sample_indices = sorted({0, frame_count // 2, max(0, frame_count - 2)})
-	# FrameReader requires .mkv; the fast-read suffix guarantees that. A
-	# failed open or read raises RuntimeError, which we re-wrap so the
-	# message carries the failed-check name and remedy.
+	# bin_factor defaults to 1: this is a raw-decodability smoke test;
+	# unbinned frames are correct here -- do NOT route through open_analysis_reader.
 	reader = common_tools.frame_reader.FrameReader(
 		fastread_path, fps=fps, total_frames=frame_count
 	)
 	# context manager guarantees the capture is released even on failure
 	with reader:
-		for index in sample_indices:
-			# read_frame raises RuntimeError on failure (per its docstring);
-			# it never returns None. The unreachable None-guard is removed so
-			# read_frame's own error propagates directly.
+		# probe 1: first frame
+		reader.read_frame(0)
+		# probe 2: mid-file random seek, well away from the EOF GOP
+		reader.read_frame(frame_count // 2)
+		# probe 3: tail read through the true last frame using seek_for_encode
+		# so every subsequent read_frame is strategy 0 (sequential); this
+		# mirrors the production encoder tail pattern and avoids near-EOF
+		# random-seek imprecision.
+		start = max(0, (frame_count - 1) - TAIL_PREROLL)
+		reader.seek_for_encode(start)
+		for index in range(start, frame_count):
 			reader.read_frame(index)
 
 #============================================
@@ -471,17 +497,18 @@ def validate_fastread_structural(
 	compares live-probed geometry and timing only (no basename, no
 	size_bytes, no stored metadata -- contract C13). Then opens the
 	fast-read video with `common_tools.frame_reader.FrameReader` and reads
-	frames 0, frame_count // 2, and frame_count - 2 (near-last; the exact
-	final frame is skipped due to cv2 terminal-seek imprecision).
+	frame 0, frame frame_count // 2 (mid random seek), and the tail
+	sequentially from start through frame_count - 1 via seek_for_encode +
+	sequential read_frame calls (production tail pattern).
 
 	Checks, in order:
 		1. width / height / frame_count exact match (always fatal).
 		2. duration within a small absolute tolerance (always fatal).
 		3. fps within probe-precision relative tolerance (consequence
 		   controlled by fps_mismatch_fatal; see below).
-		4. best-effort first/middle/near-last frame timestamp alignment
+		4. best-effort first/middle/last frame timestamp alignment
 		   (falls back to frame-count + duration and notes the fallback).
-		5. FrameReader open + smoke reads at 0 / mid / near-last.
+		5. FrameReader open + smoke reads at 0 / mid / tail.
 
 	The fps check always runs after the hard structural checks (geometry,
 	frame_count, duration) so the non-fatal fps path is reachable only when

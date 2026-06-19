@@ -82,7 +82,10 @@ it live against the current original before decoding from it. Validation checks:
 - Best-effort first, middle, and last frame timestamp alignment; falls back to
   frame-count plus duration invariant when per-frame timestamps are not
   available, and notes the fallback in console output.
-- Smoke reads of frames 0, frame_count//2, and frame_count-1 via FrameReader.
+- Smoke reads via FrameReader: frame 0, frame frame_count//2 (one mid-file
+  seek), then the tail decoded sequentially from max(0, (frame_count-1) - 120)
+  through the true last frame. The sequential tail read mirrors the production
+  encoder path and avoids unreliable random seeks inside the final GOP.
 
 A structurally valid fast-read video is the only gate for routing. There is no
 sidecar file and no persisted bookkeeping; all checks use live-probed data.
