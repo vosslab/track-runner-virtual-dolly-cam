@@ -1,0 +1,581 @@
+{
+  "configured_smoothness": 20.0,
+  "direct_center_p95_acceleration_tw_per_frame2": 0.13975424859373686,
+  "results": [
+    {
+      "constraints": {
+        "max_center_offset_normalized": 0.09492397034955809,
+        "radius": 0.2,
+        "rounded_containment_ok": true,
+        "source_fit": true
+      },
+      "height_steps": {
+        "max_abs_px": 32.0,
+        "p50_px": 0.0,
+        "p95_px": 4.0,
+        "std_px": 1.7729543413991908
+      },
+      "lag": {
+        "x": 0,
+        "y": 0
+      },
+      "p95_acceleration_tw_per_frame2": 0.46354722850843494,
+      "report": {
+        "converged": true,
+        "fallback_used": false,
+        "iterations": 2
+      },
+      "smoothness": 0.0
+    },
+    {
+      "constraints": {
+        "max_center_offset_normalized": 0.2480793569544608,
+        "radius": 0.2,
+        "rounded_containment_ok": false,
+        "source_fit": true
+      },
+      "height_steps": {
+        "max_abs_px": 24.0,
+        "p50_px": 0.0,
+        "p95_px": 3.0,
+        "std_px": 1.458281802806123
+      },
+      "lag": {
+        "x": 0,
+        "y": 0
+      },
+      "p95_acceleration_tw_per_frame2": 0.20327890704543544,
+      "report": {
+        "converged": true,
+        "fallback_used": false,
+        "iterations": 9
+      },
+      "smoothness": 0.25
+    },
+    {
+      "constraints": {
+        "max_center_offset_normalized": 0.23076923076923078,
+        "radius": 0.2,
+        "rounded_containment_ok": true,
+        "source_fit": true
+      },
+      "height_steps": {
+        "max_abs_px": 24.0,
+        "p50_px": 1.0,
+        "p95_px": 3.0,
+        "std_px": 1.4120148812736497
+      },
+      "lag": {
+        "x": 0,
+        "y": 0
+      },
+      "p95_acceleration_tw_per_frame2": 0.18027756377319945,
+      "report": {
+        "converged": true,
+        "fallback_used": false,
+        "iterations": 9
+      },
+      "smoothness": 0.5
+    },
+    {
+      "constraints": {
+        "max_center_offset_normalized": 0.22470831573507427,
+        "radius": 0.2,
+        "rounded_containment_ok": true,
+        "source_fit": true
+      },
+      "height_steps": {
+        "max_abs_px": 24.0,
+        "p50_px": 1.0,
+        "p95_px": 3.0,
+        "std_px": 1.3672255305833418
+      },
+      "lag": {
+        "x": 0,
+        "y": 0
+      },
+      "p95_acceleration_tw_per_frame2": 0.16624997081755724,
+      "report": {
+        "converged": true,
+        "fallback_used": false,
+        "iterations": 10
+      },
+      "smoothness": 1.0
+    },
+    {
+      "constraints": {
+        "max_center_offset_normalized": 0.2216462783447573,
+        "radius": 0.2,
+        "rounded_containment_ok": true,
+        "source_fit": true
+      },
+      "height_steps": {
+        "max_abs_px": 22.0,
+        "p50_px": 1.0,
+        "p95_px": 3.0,
+        "std_px": 1.3215662095811473
+      },
+      "lag": {
+        "x": 0,
+        "y": 0
+      },
+      "p95_acceleration_tw_per_frame2": 0.15858098560067926,
+      "report": {
+        "converged": true,
+        "fallback_used": false,
+        "iterations": 10
+      },
+      "smoothness": 2.0
+    },
+    {
+      "constraints": {
+        "max_center_offset_normalized": 0.2480793569544608,
+        "radius": 0.2,
+        "rounded_containment_ok": false,
+        "source_fit": true
+      },
+      "height_steps": {
+        "max_abs_px": 19.0,
+        "p50_px": 1.0,
+        "p95_px": 3.0,
+        "std_px": 1.2722075323787736
+      },
+      "lag": {
+        "x": 0,
+        "y": 0
+      },
+      "p95_acceleration_tw_per_frame2": 0.15132914490205668,
+      "report": {
+        "converged": true,
+        "fallback_used": false,
+        "iterations": 10
+      },
+      "smoothness": 4.0
+    },
+    {
+      "constraints": {
+        "max_center_offset_normalized": 0.2480793569544608,
+        "radius": 0.2,
+        "rounded_containment_ok": false,
+        "source_fit": true
+      },
+      "height_steps": {
+        "max_abs_px": 18.0,
+        "p50_px": 0.0,
+        "p95_px": 3.0,
+        "std_px": 1.2433623409067234
+      },
+      "lag": {
+        "x": 0,
+        "y": 0
+      },
+      "p95_acceleration_tw_per_frame2": 0.1502313031443329,
+      "report": {
+        "converged": true,
+        "fallback_used": false,
+        "iterations": 10
+      },
+      "smoothness": 8.0
+    },
+    {
+      "constraints": {
+        "max_center_offset_normalized": 0.2480793569544608,
+        "radius": 0.2,
+        "rounded_containment_ok": false,
+        "source_fit": true
+      },
+      "height_steps": {
+        "max_abs_px": 19.0,
+        "p50_px": 0.0,
+        "p95_px": 3.0,
+        "std_px": 1.226224301375165
+      },
+      "lag": {
+        "x": 0,
+        "y": 0
+      },
+      "p95_acceleration_tw_per_frame2": 0.1502313031443329,
+      "report": {
+        "converged": true,
+        "fallback_used": false,
+        "iterations": 10
+      },
+      "smoothness": 12.0
+    },
+    {
+      "constraints": {
+        "max_center_offset_normalized": 0.2395629599625455,
+        "radius": 0.2,
+        "rounded_containment_ok": true,
+        "source_fit": true
+      },
+      "height_steps": {
+        "max_abs_px": 20.0,
+        "p50_px": 0.0,
+        "p95_px": 3.0,
+        "std_px": 1.2161788935542173
+      },
+      "lag": {
+        "x": 0,
+        "y": 0
+      },
+      "p95_acceleration_tw_per_frame2": 0.14373989364401726,
+      "report": {
+        "converged": true,
+        "fallback_used": false,
+        "iterations": 10
+      },
+      "smoothness": 16.0
+    },
+    {
+      "constraints": {
+        "max_center_offset_normalized": 0.2206019700865093,
+        "radius": 0.2,
+        "rounded_containment_ok": true,
+        "source_fit": true
+      },
+      "height_steps": {
+        "max_abs_px": 21.0,
+        "p50_px": 0.0,
+        "p95_px": 2.0,
+        "std_px": 1.2174906009785695
+      },
+      "lag": {
+        "x": 0,
+        "y": 0
+      },
+      "p95_acceleration_tw_per_frame2": 0.1502313031443329,
+      "report": {
+        "converged": true,
+        "fallback_used": false,
+        "iterations": 10
+      },
+      "smoothness": 20.0
+    },
+    {
+      "constraints": {
+        "max_center_offset_normalized": 0.23179091367411922,
+        "radius": 0.2,
+        "rounded_containment_ok": true,
+        "source_fit": true
+      },
+      "height_steps": {
+        "max_abs_px": 22.0,
+        "p50_px": 0.0,
+        "p95_px": 2.0,
+        "std_px": 1.2135171027199305
+      },
+      "lag": {
+        "x": 0,
+        "y": 0
+      },
+      "p95_acceleration_tw_per_frame2": 0.1502313031443329,
+      "report": {
+        "converged": true,
+        "fallback_used": false,
+        "iterations": 9
+      },
+      "smoothness": 24.0
+    },
+    {
+      "constraints": {
+        "max_center_offset_normalized": 0.24426529200813324,
+        "radius": 0.2,
+        "rounded_containment_ok": false,
+        "source_fit": true
+      },
+      "height_steps": {
+        "max_abs_px": 18.0,
+        "p50_px": 0.0,
+        "p95_px": 2.0,
+        "std_px": 1.1681511691902045
+      },
+      "lag": {
+        "x": 0,
+        "y": 0
+      },
+      "p95_acceleration_tw_per_frame2": 0.1468898583858867,
+      "report": {
+        "converged": true,
+        "fallback_used": false,
+        "iterations": 9
+      },
+      "smoothness": 32.0
+    },
+    {
+      "constraints": {
+        "max_center_offset_normalized": 0.2239613369927068,
+        "radius": 0.2,
+        "rounded_containment_ok": true,
+        "source_fit": true
+      },
+      "height_steps": {
+        "max_abs_px": 20.0,
+        "p50_px": 0.0,
+        "p95_px": 2.0,
+        "std_px": 1.177386306524755
+      },
+      "lag": {
+        "x": 0,
+        "y": 0
+      },
+      "p95_acceleration_tw_per_frame2": 0.14373989364401726,
+      "report": {
+        "converged": true,
+        "fallback_used": false,
+        "iterations": 9
+      },
+      "smoothness": 48.0
+    },
+    {
+      "constraints": {
+        "max_center_offset_normalized": 0.21829905739157437,
+        "radius": 0.2,
+        "rounded_containment_ok": true,
+        "source_fit": true
+      },
+      "height_steps": {
+        "max_abs_px": 22.0,
+        "p50_px": 0.0,
+        "p95_px": 2.0,
+        "std_px": 1.1855251970177292
+      },
+      "lag": {
+        "x": 0,
+        "y": 0
+      },
+      "p95_acceleration_tw_per_frame2": 0.15,
+      "report": {
+        "converged": true,
+        "fallback_used": false,
+        "iterations": 9
+      },
+      "smoothness": 64.0
+    },
+    {
+      "constraints": {
+        "max_center_offset_normalized": 0.21829905739157437,
+        "radius": 0.2,
+        "rounded_containment_ok": true,
+        "source_fit": true
+      },
+      "height_steps": {
+        "max_abs_px": 22.0,
+        "p50_px": 0.0,
+        "p95_px": 2.0,
+        "std_px": 1.1750870549473345
+      },
+      "lag": {
+        "x": 0,
+        "y": 0
+      },
+      "p95_acceleration_tw_per_frame2": 0.1502313031443329,
+      "report": {
+        "converged": true,
+        "fallback_used": false,
+        "iterations": 9
+      },
+      "smoothness": 96.0
+    },
+    {
+      "constraints": {
+        "max_center_offset_normalized": 0.2887364960865453,
+        "radius": 0.2,
+        "rounded_containment_ok": false,
+        "source_fit": true
+      },
+      "height_steps": {
+        "max_abs_px": 16.0,
+        "p50_px": 0.0,
+        "p95_px": 2.0,
+        "std_px": 1.1014342333447023
+      },
+      "lag": {
+        "x": 0,
+        "y": 0
+      },
+      "p95_acceleration_tw_per_frame2": 0.1502313031443329,
+      "report": {
+        "converged": true,
+        "fallback_used": false,
+        "iterations": 9
+      },
+      "smoothness": 128.0
+    },
+    {
+      "constraints": {
+        "max_center_offset_normalized": 0.2887364960865453,
+        "radius": 0.2,
+        "rounded_containment_ok": false,
+        "source_fit": true
+      },
+      "height_steps": {
+        "max_abs_px": 20.0,
+        "p50_px": 0.0,
+        "p95_px": 2.0,
+        "std_px": 1.1686850282426071
+      },
+      "lag": {
+        "x": 0,
+        "y": 0
+      },
+      "p95_acceleration_tw_per_frame2": 0.1502313031443329,
+      "report": {
+        "converged": true,
+        "fallback_used": false,
+        "iterations": 9
+      },
+      "smoothness": 192.0
+    },
+    {
+      "constraints": {
+        "max_center_offset_normalized": 0.8919026076902407,
+        "radius": 0.2,
+        "rounded_containment_ok": false,
+        "source_fit": true
+      },
+      "height_steps": {
+        "max_abs_px": 6.0,
+        "p50_px": 0.0,
+        "p95_px": 2.0,
+        "std_px": 0.7396391241997702
+      },
+      "lag": {
+        "x": 5,
+        "y": 3
+      },
+      "p95_acceleration_tw_per_frame2": 0.17857142857142858,
+      "report": {
+        "converged": false,
+        "fallback_used": true,
+        "iterations": 10
+      },
+      "smoothness": 256.0
+    },
+    {
+      "constraints": {
+        "max_center_offset_normalized": 0.8919026076902407,
+        "radius": 0.2,
+        "rounded_containment_ok": false,
+        "source_fit": true
+      },
+      "height_steps": {
+        "max_abs_px": 6.0,
+        "p50_px": 0.0,
+        "p95_px": 2.0,
+        "std_px": 0.7396391241997702
+      },
+      "lag": {
+        "x": 5,
+        "y": 3
+      },
+      "p95_acceleration_tw_per_frame2": 0.17857142857142858,
+      "report": {
+        "converged": false,
+        "fallback_used": true,
+        "iterations": 10
+      },
+      "smoothness": 384.0
+    },
+    {
+      "constraints": {
+        "max_center_offset_normalized": 0.8919026076902407,
+        "radius": 0.2,
+        "rounded_containment_ok": false,
+        "source_fit": true
+      },
+      "height_steps": {
+        "max_abs_px": 6.0,
+        "p50_px": 0.0,
+        "p95_px": 2.0,
+        "std_px": 0.7396391241997702
+      },
+      "lag": {
+        "x": 5,
+        "y": 3
+      },
+      "p95_acceleration_tw_per_frame2": 0.17857142857142858,
+      "report": {
+        "converged": false,
+        "fallback_used": true,
+        "iterations": 10
+      },
+      "smoothness": 512.0
+    },
+    {
+      "constraints": {
+        "max_center_offset_normalized": 0.8919026076902407,
+        "radius": 0.2,
+        "rounded_containment_ok": false,
+        "source_fit": true
+      },
+      "height_steps": {
+        "max_abs_px": 6.0,
+        "p50_px": 0.0,
+        "p95_px": 2.0,
+        "std_px": 0.7396391241997702
+      },
+      "lag": {
+        "x": 5,
+        "y": 3
+      },
+      "p95_acceleration_tw_per_frame2": 0.17857142857142858,
+      "report": {
+        "converged": false,
+        "fallback_used": true,
+        "iterations": 10
+      },
+      "smoothness": 768.0
+    },
+    {
+      "constraints": {
+        "max_center_offset_normalized": 0.8919026076902407,
+        "radius": 0.2,
+        "rounded_containment_ok": false,
+        "source_fit": true
+      },
+      "height_steps": {
+        "max_abs_px": 6.0,
+        "p50_px": 0.0,
+        "p95_px": 2.0,
+        "std_px": 0.7396391241997702
+      },
+      "lag": {
+        "x": 5,
+        "y": 3
+      },
+      "p95_acceleration_tw_per_frame2": 0.17857142857142858,
+      "report": {
+        "converged": false,
+        "fallback_used": true,
+        "iterations": 10
+      },
+      "smoothness": 1024.0
+    },
+    {
+      "constraints": {
+        "max_center_offset_normalized": 0.8919026076902407,
+        "radius": 0.2,
+        "rounded_containment_ok": false,
+        "source_fit": true
+      },
+      "height_steps": {
+        "max_abs_px": 6.0,
+        "p50_px": 0.0,
+        "p95_px": 2.0,
+        "std_px": 0.7396391241997702
+      },
+      "lag": {
+        "x": 5,
+        "y": 3
+      },
+      "p95_acceleration_tw_per_frame2": 0.17857142857142858,
+      "report": {
+        "converged": false,
+        "fallback_used": true,
+        "iterations": 10
+      },
+      "smoothness": 2048.0
+    }
+  ]
+}

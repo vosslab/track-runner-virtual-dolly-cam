@@ -166,7 +166,7 @@ acceptance-box stall is fixed. Two concrete, separable actions:
 2. Secondary (metric hardening, do regardless): one-sided coverage intervals
    (`blob_coverage_fwd is None` xor `blob_coverage_bwd is None`) must be bucketed
    separately in the A/B classification in
-   [e2e_walker_ab.py](../../../tests/e2e/e2e_walker_ab.py) `_classify`, because
+   the former `e2e_walker_ab.py` `_classify`, because
    an interpolated empty pass scored against a tracked pass under the Dice
    self-consistency `agreement` metric is an apples-to-oranges comparison and
    cannot license a "regressed" label. This matches the independent-verification

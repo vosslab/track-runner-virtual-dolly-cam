@@ -1,0 +1,42 @@
+{
+	"schema": "m7_dolly_rasterization_receipt_v1",
+	"date": "2026-08-20",
+	"fixture": "tests/fixtures/m7_img3823_crop_trajectory.npz",
+	"fixture_sha256": "6344436480de4ea2d7386557c5f97b4085218eab9c0ee7aac4dbe852483bf9bd",
+	"source_scope": "retained IMG_3823 trajectory; fixture is self-contained and reads no video",
+	"command": "source source_me.sh && python3 -m pytest tests/test_tr_crop_dolly.py -k retained_m7_trajectory",
+	"video_info": {
+		"width": 1280,
+		"height": 720,
+		"frame_count": 4086,
+		"fps": 30.0
+	},
+	"rasterization": "round integer width and height before placing their integer origin around the solved center",
+	"results": {
+		"direct_center": {
+			"center_lag_frames": {"x": 0, "y": 0},
+			"center_acceleration_p95_torso_widths_per_frame2": 0.13975424859373686,
+			"crop_height_step_px": {"p50": 0.0, "p95": 1.0, "max_abs": 9.0, "std": 0.7403408357194899}
+		},
+		"smooth": {
+			"center_lag_frames": {"x": 5, "y": 3},
+			"center_acceleration_p95_torso_widths_per_frame2": 0.17857142857142858,
+			"crop_height_step_px": {"p50": 0.0, "p95": 2.0, "max_abs": 6.0, "std": 0.7396391241997702}
+		},
+		"dolly": {
+			"center_lag_frames": {"x": 0, "y": 0},
+			"center_acceleration_p95_torso_widths_per_frame2": 0.13636363636363635,
+			"crop_height_step_px": {"p50": 0.0, "p95": 2.0, "max_abs": 21.0, "std": 1.2174906009785695},
+			"converged": true,
+			"iterations": 10,
+			"fallback_used": false,
+			"source_bounds_violations": 0
+		}
+	},
+	"gate": {
+		"zero_lag": true,
+		"acceleration_below_direct_center": true,
+		"acceleration_below_smooth": true
+	},
+	"limits": "one retained trajectory only; prior plots and JPEG crops predate the rasterization repair; no complete-corpus or default-adoption claim"
+}

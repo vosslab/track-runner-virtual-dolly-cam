@@ -1,5 +1,10 @@
 # Plan: blob walk v2 fix-phase roadmap
 
+> **Status: retired.** The separate `blob_walk_v2` diagnostic product was
+> removed on 2026-08-21 after its production walker ownership moved under
+> `track_runner/blob_walk/`. This roadmap is retained as design history and
+> contains no current implementation or validation work.
+
 ## Context
 
 The blob walk v2 audit (P1-P17,

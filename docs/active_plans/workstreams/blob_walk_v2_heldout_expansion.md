@@ -48,7 +48,7 @@ section before any bundle ruling.
 ## Method
 
 The method replicates the frozen held-out instrument in
-[tests/e2e/e2e_walker_ab.py](../../../tests/e2e/e2e_walker_ab.py). The runner
+the former `tests/e2e/e2e_walker_ab.py` local harness. The runner
 script imports that harness's helper functions directly so the measurement is
 byte-identical to the validated instrument; only seed selection differs (an
 explicit auditable triple list instead of a random sample).

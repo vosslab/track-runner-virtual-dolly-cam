@@ -1,10 +1,14 @@
 # Blob walk v2 P12 fix plan: stride termination overrun
 
+> **Status: historical.** The separate `blob_walk_v2` diagnostic product was
+> removed on 2026-08-21. This plan records an earlier investigation and is not
+> awaiting approval or part of the current production walker workflow.
+
 Narrow fix plan for audit finding P12
 ([blob_walk_v2_implementation_audit.md](../audits/blob_walk_v2_implementation_audit.md)),
 validated as an observed failure in
 [blob_walk_v2_check0_stride_overrun.md](../workstreams/blob_walk_v2_check0_stride_overrun.md).
-Scope is the termination condition only. Status: awaiting user approval.
+Scope was the termination condition only.
 
 ---
 

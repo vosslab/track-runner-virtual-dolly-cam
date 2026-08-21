@@ -59,7 +59,7 @@ documentation -- which keeps the decision-equality surface minimal.
   "considered the layout impact" step required on every bump.
 - [docs/TR_SCHEMA_VERSION_HISTORY.md](../../TR_SCHEMA_VERSION_HISTORY.md)
   -- scope (4). New "## 12 (2026-06-10)" entry documenting the bump and columns.
-- [tests/e2e/e2e_blob_walk_baseline.py](../../../tests/e2e/e2e_blob_walk_baseline.py)
+- Former local harness `tests/e2e/e2e_blob_walk_baseline.py`
   -- scope (3). This is the locking instrument for the verdict-CSV schema (its
   per-column compare policy rejects any unclassified column). `window_head_frame`
   added to `EXACT_MATCH_COLUMNS` (discrete integer label); `path_step_cost`
@@ -98,7 +98,7 @@ Intervals 3-4 and 7-8 are healthy steady-state cases.
 ### Audit item 2: which fields were checked for exact equality
 
 Instrument:
-[e2e_blob_walk_baseline.py](../../../tests/e2e/e2e_blob_walk_baseline.py),
+The former `e2e_blob_walk_baseline.py` local harness,
 which classifies every verdict-CSV column into one of three buckets. Only the
 decision-bearing columns matter here; the two new telemetry columns
 (`path_step_cost`, `window_head_frame`) are in the comparison set but are not

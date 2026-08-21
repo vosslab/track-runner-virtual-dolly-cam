@@ -1,9 +1,13 @@
 # Plan: in-box motion-heat gate and optional heat-movie diagnostic
 
+> **Status: retired.** The offline `blob_walk_v2` reporting product and its
+> manifest checker were removed on 2026-08-21. This document is retained only
+> as design history; it is not an executable plan or a current validation path.
+
 ## Context
 
-The render-manifest gate (`tools/blob_walk_v2/check_render_manifest.py`) today
-proves only presence + plumbing: every non-seed tile has a solved box and
+The former render-manifest gate proved only presence + plumbing: every
+non-seed tile had a solved box and
 `conversion_count == 1`. It does NOT prove the solved box sits on anything
 moving. A box parked on static background passes. The user wants a real
 quality signal: positive motion-cue heat inside the torso box. Two deliverables,
@@ -394,9 +398,9 @@ doers in M2: 2.
   collected by pytest (`collect_ignore`).
 - Calibration: a one-off corpus run recorded as evidence in the plan, not a pinned
   test (no brittle value asserts on heat magnitudes).
-- Verification command end-to-end: run blob_walk_v2 `--walk` (optionally
-  `--heat-movie`) on the corpus via `source source_me.sh && python3 ...`, then
-  `source source_me.sh && python3 tools/blob_walk_v2/check_render_manifest.py <run>`.
+- Historical verification used the retired offline walker and manifest
+  checker. The retained application and permanent pytest suite no longer call
+  either entry point.
 
 ## Migration and compatibility policy
 

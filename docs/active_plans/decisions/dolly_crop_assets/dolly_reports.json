@@ -1,0 +1,13 @@
+{
+	"converged": [
+		{
+			"clip": "IMG_3823",
+			"report": {
+				"converged": true,
+				"fallback_used": false,
+				"iterations": 10
+			}
+		}
+	],
+	"fallback": []
+}

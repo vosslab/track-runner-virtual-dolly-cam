@@ -7,8 +7,8 @@ value in one consistent space and convert to SOURCE only at the storage
 boundary? Or does the walker path store PROCESSED values where SOURCE is
 required?
 
-Source of truth for spaces: [docs/COORDINATE_SPACES.md](../../COORDINATE_SPACES.md)
-and [docs/TRACK_RUNNER_V3_SPEC.md](../../TRACK_RUNNER_V3_SPEC.md). The V3 spec
+Source of truth for spaces: [COORDINATE_SPACES.md](../../COORDINATE_SPACES.md)
+and [TRACK_RUNNER_V3_SPEC.md](../../TRACK_RUNNER_V3_SPEC.md). The V3 spec
 lacked an explicit storage-space section; this audit strengthens it (see
 section "V3 spec strengthening").
 
@@ -21,7 +21,7 @@ default to `bin > 1` (M2).
 
 - Gap A (input): the production driver feeds SOURCE seed dicts into the
   walker, but the contract requires PROCESSED seeds at the walker boundary
-  ([docs/COORDINATE_SPACES.md](../../COORDINATE_SPACES.md) line 62: "Driver
+  ([COORDINATE_SPACES.md](../../COORDINATE_SPACES.md) line 62: "Driver
   seeds fed to the walker | PROCESSED"). No `SeedsView` projection happens in
   the production solve path.
 - Gap B (output/storage): the walker emits a PROCESSED `direction_path`
@@ -30,7 +30,7 @@ default to `bin > 1` (M2).
   ([cli.py](../../../track_runner/cli.py) calls
   `state_io.write_torso_box_coords`) applies NO `processed_to_source`
   projection. The standalone tool
-  [walk_driver.py](../../../tools/blob_walk_v2/walk_driver.py) DOES project
+  `walk_driver.py` DOES project
   via `_project_path_to_source` before writing; production does not.
 
 Hermite (Stage 3) is correct at all bin factors: it converts SOURCE seed ->
@@ -58,11 +58,11 @@ SCENE -> SOURCE pixel internally, so its stored boxes are SOURCE.
 | Blend / store dict | [interval_solver.py](../../../track_runner/interval_solver.py):600, 626-638 | `blended_path`, `forward_path`, `backward_path` | walker=PROCESSED, Hermite=SOURCE | none |
 | Storage boundary | [state_io.py](../../../track_runner/state_io.py):845-877, 924 | `_extract_source_box_coords`, `write_torso_box_coords` | requires SOURCE | plain-dict path assumes SOURCE; NO conversion (Gap B) |
 | Production write call | [cli.py](../../../track_runner/cli.py):581, 618, 660, 1052 | `write_torso_box_coords(...)` | stores whatever it is given | none (no `processed_to_source`) |
-| Standalone tool write | [walk_driver.py](../../../tools/blob_walk_v2/walk_driver.py):159-184, 949-968, 1036 | `_project_path_to_source` then write | SOURCE | PROCESSED -> SOURCE applied (production lacks this) |
+| Standalone tool write | `walk_driver.py`:159-184, 949-968, 1036 | `_project_path_to_source` then write | SOURCE | PROCESSED -> SOURCE applied (production lacks this) |
 
 ## The single consistent contract and the exact gap
 
-Intended contract (from [docs/COORDINATE_SPACES.md](../../COORDINATE_SPACES.md)
+Intended contract (from [COORDINATE_SPACES.md](../../COORDINATE_SPACES.md)
 lines 16-72): solve has TWO spaces, reconciled by typed conversions, not one.
 SCENE is an internal anchored space inside the Hermite leg. The two pixel
 spaces are:
@@ -88,7 +88,7 @@ SOURCE before `write_torso_box_coords` (Gap B). The standalone diagnostic tool
 
 - Gap A degrades the walk itself: a SOURCE seed cx near the right/bottom edge,
   treated as PROCESSED, builds a degenerate or mis-placed ROI (the #101 class;
-  see [docs/COORDINATE_SPACES.md](../../COORDINATE_SPACES.md) lines 115-127).
+  see [COORDINATE_SPACES.md](../../COORDINATE_SPACES.md) lines 115-127).
 - Gap B mis-stores any surviving walker geometry: PROCESSED pixels written as
   SOURCE are too small by a factor of `bin_factor`.
 
@@ -98,10 +98,10 @@ The PROCESSED -> SOURCE conversion must occur exactly once, at the storage
 boundary, immediately before `state_io.write_torso_box_coords`, for the walker
 (PROCESSED) path. This is the boundary the standalone tool already implements:
 `_project_path_to_source`
-([walk_driver.py](../../../tools/blob_walk_v2/walk_driver.py):159-184) projects
+(`walk_driver.py`:159-184) projects
 center via `geometry.processed_to_source` and width/height via
 `geometry.processed_to_source_delta`, then writes
-([walk_driver.py](../../../tools/blob_walk_v2/walk_driver.py):1036).
+(`walk_driver.py`:1036).
 
 The current production code does NOT do this conversion at that boundary
 ([cli.py](../../../track_runner/cli.py):581/618/660/1052 call
@@ -132,7 +132,7 @@ surfaced in production.
 ## Task #99 / auto_bin_coord_stack_audit citation
 
 The PROCESSED/SOURCE-at-bin stack has prior defect history. See
-[docs/archive/auto_bin_coord_stack_audit.md](../../archive/auto_bin_coord_stack_audit.md)
+[auto_bin_coord_stack_audit.md](../../archive/auto_bin_coord_stack_audit.md)
 (task #99, dated 2026-05-28). That audit found and fixed:
 
 - WARP_SCALE_MISMATCH (#99 Fix 1): `compute_residual_for_frame` used
@@ -141,7 +141,7 @@ The PROCESSED/SOURCE-at-bin stack has prior defect history. See
 - DoG diameter / `roi_override` source-scale (#100 Fix 2): override args were
   not converted SOURCE -> PROCESSED before use.
 - ROI_CLAMP_SPACE_MISMATCH (#101 Fix 3): documented in
-  [docs/archive/degenerate_roi_investigation.md](../../archive/degenerate_roi_investigation.md).
+  [degenerate_roi_investigation.md](../../archive/degenerate_roi_investigation.md).
 
 Those fixes addressed the residual / observe interior. They did NOT add the
 two missing production-path boundary conversions this audit names (Gap A: seeds
@@ -153,7 +153,7 @@ cli/interval_solver path was not exercised at `bin > 1` (production defaults to
 
 ## V3 spec strengthening
 
-[docs/TRACK_RUNNER_V3_SPEC.md](../../TRACK_RUNNER_V3_SPEC.md) carried a single
+[TRACK_RUNNER_V3_SPEC.md](../../TRACK_RUNNER_V3_SPEC.md) carried a single
 authoritative storage line:
 
 > Coordinate convention: `torso_box` stores `[x, y, w, h]` where `x, y` is ...
@@ -164,6 +164,6 @@ conversion must occur. This audit adds a "Coordinate spaces and storage
 boundary" subsection to the spec that names the three spaces, states the
 storage npz is SOURCE, and names the single PROCESSED -> SOURCE boundary before
 `write_torso_box_coords`. The added text describes only what the code and
-[docs/COORDINATE_SPACES.md](../../COORDINATE_SPACES.md) already establish; it
+[COORDINATE_SPACES.md](../../COORDINATE_SPACES.md) already establish; it
 invents no new contract. Ambiguity removed: "which space is the stored npz,
 and where does conversion happen" now has an explicit answer in the spec.

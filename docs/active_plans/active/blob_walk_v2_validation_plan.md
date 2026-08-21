@@ -1,5 +1,9 @@
 # Blob walk v2 validation plan
 
+> **Status: historical.** The separate `blob_walk_v2` diagnostic product was
+> removed on 2026-08-21. This validation plan is retained as prior design
+> context and contains no current implementation gate or user dependency.
+
 Follow-up to the implementation audit at
 [blob_walk_v2_implementation_audit.md](../audits/blob_walk_v2_implementation_audit.md).
 This plan validates the audit's assumption table, smallest checks first.
@@ -8,7 +12,7 @@ proven (or refutes it). No behavior changes to walker selection logic; the
 single code change this plan contains is the P15 telemetry fix (Check 1),
 which is allowed only if field-wise decision equality confirms no change to
 selected path, statuses, positions, accepted counts, and fallback behavior on
-baseline cases; user approval is still required before implementation.
+baseline cases; that historical implementation step required user approval.
 
 Plan date: 2026-06-10.
 

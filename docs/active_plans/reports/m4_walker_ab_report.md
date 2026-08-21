@@ -4,7 +4,7 @@ Status: SAMPLE-LIMITED (58 of a 120-interval target evaluated; the remaining 62
 were skipped by a per-video decode-time budget, not cherry-picked). Generated
 2026-06-08 for the M4 gate (task #12). Data source:
 [m4_walker_ab_data.csv](m4_walker_ab_data.csv), produced by
-[tests/e2e/e2e_walker_ab.py](../../../tests/e2e/e2e_walker_ab.py).
+the former `tests/e2e/e2e_walker_ab.py` local harness.
 
 This report supersedes the prior 4-interval version. The prior result was a
 selection + metric artifact (see "Was the old result an artifact?" below).

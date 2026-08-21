@@ -1,8 +1,13 @@
 # Plan: Typed coordinate space for the binning pipeline
 
+> **Status: historical.** The coordinate-space work landed in the retained
+> `track_runner/` owners. The separate `blob_walk_v2` diagnostic product was
+> removed on 2026-08-21, so its commands and paths below are historical context,
+> not current implementation instructions.
+
 ## Context
 
-The track_runner / blob_walk_v2 binning pipeline tracks two pixel coordinate
+The original track-runner and offline-diagnostic pipeline tracked two coordinate
 spaces with nothing but comments and bare `(x, y, w, h)` float tuples:
 
 - SOURCE: full-frame source pixels. The npz solved-interval store
@@ -435,7 +440,8 @@ of all temporary shims and stale contract text.
   date, in the canonical category order.
 - One coordinate contract doc (WS1-B) replaces the stale model-B docstring;
   cross-linked from `TRACK_RUNNER_DESIGN.md`.
-- `tools/blob_walk_v2/README.md`: note the typed-coordinate boundary.
+- `docs/COORDINATE_SPACES.md`: retain the typed-coordinate boundary for the
+  production pipeline.
 - This plan moves to `docs/archive/` via `git mv` when M3 closes.
 
 ## Patch plan and reporting format
