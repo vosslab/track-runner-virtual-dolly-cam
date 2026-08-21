@@ -52,7 +52,7 @@
   ranking-driven fraction (including selection-leaning mixed) is 22/34 = 65%.
   Effective starvation fraction (including starvation-leaning mixed) is 12/34 = 35%.
   Workstream doc updated:
-  [docs/active_plans/workstreams/blob_walk_v2_check7_regressed_split.md](active_plans/workstreams/blob_walk_v2_check7_regressed_split.md).
+  [blob_walk_v2_check7_regressed_split.md](active_plans/workstreams/blob_walk_v2_check7_regressed_split.md).
 
 - Check 7 (claim C, regressed-bucket split): re-ran the 35 m4 A/B regressed
   intervals via `walk_one_direction` with a null log to capture
@@ -228,10 +228,10 @@
   from Stage-4/5 windowed-walker dispatches (`blob_pass=True`). No behavior
   or default change.
 
-- Updated [docs/TRACK_RUNNER_DESIGN.md](TRACK_RUNNER_DESIGN.md),
-  [docs/TR_FWD_BWD_MODEL_METHODOLOGY.md](TR_FWD_BWD_MODEL_METHODOLOGY.md),
-  [docs/TR_MOTION_CUE_HEAT_MAP.md](TR_MOTION_CUE_HEAT_MAP.md), and
-  [docs/ROADMAP.md](ROADMAP.md) to reflect the current state: walker is the
+- Updated [TRACK_RUNNER_DESIGN.md](TRACK_RUNNER_DESIGN.md),
+  [TR_FWD_BWD_MODEL_METHODOLOGY.md](TR_FWD_BWD_MODEL_METHODOLOGY.md),
+  [TR_MOTION_CUE_HEAT_MAP.md](TR_MOTION_CUE_HEAT_MAP.md), and
+  [ROADMAP.md](ROADMAP.md) to reflect the current state: walker is the
   default blob pass on promoted intervals (`blob_pass=True`); `--walker-stage4`
   flag removed; `use_walker`/`stage4_walker` seam names replaced with
   `blob_pass`; "experimental" labels removed from ASCII diagrams and prose.
@@ -239,34 +239,34 @@
   pipeline, three-gate list, `snap_pred` terminology).
 
 - Doc path corrections (blob_walk absorption review): updated
-  [docs/TRACK_RUNNER_DESIGN.md](TRACK_RUNNER_DESIGN.md) to point the
+  [TRACK_RUNNER_DESIGN.md](TRACK_RUNNER_DESIGN.md) to point the
   windowed path-selection walker section at its new home
   `track_runner/blob_walk/` (relocated from `tools/blob_walk_v2/`); added
   clarifying note that the walker is wired behind the default-off
   `--walker-stage4` flag; updated the C10 compliance note to reflect that
   the walker schema version now reads `tr_schema.SCHEMA_VERSION`.
-- Updated [docs/FILE_STRUCTURE.md](FILE_STRUCTURE.md) to add entries for
+- Updated [FILE_STRUCTURE.md](FILE_STRUCTURE.md) to add entries for
   the new `track_runner/blob_walk/` subpackage (all six modules) and
   `track_runner/walker_bundle.py`.
 - Repointed dead `tools/blob_walk_v2/core/walk_io.py` and
   `tools/blob_walk_v2/core/walk_walker.py` references in
-  [docs/active_plans/decisions/walker_npz_coord_contract.md](active_plans/decisions/walker_npz_coord_contract.md)
+  [walker_npz_coord_contract.md](active_plans/decisions/walker_npz_coord_contract.md)
   and
-  [docs/active_plans/active/typed_coordinate_space_plan.md](active_plans/active/typed_coordinate_space_plan.md)
+  [typed_coordinate_space_plan.md](active_plans/active/typed_coordinate_space_plan.md)
   to `track_runner/blob_walk/walk_io.py` and
   `track_runner/blob_walk/walk_walker.py`.
-- Rotated [docs/CHANGELOG.md](CHANGELOG.md): 1256 lines exceeded the
+- Rotated [CHANGELOG.md](CHANGELOG.md): 1256 lines exceeded the
   ~1000-line threshold; kept day blocks 2026-06-08 and 2026-06-07 in the
   active file; moved 2026-06-03 through 2026-05-03 into new archive
-  [docs/CHANGELOG-2026-06a.md](CHANGELOG-2026-06a.md) (named for the most
+  [CHANGELOG-2026-06a.md](CHANGELOG-2026-06a.md) (named for the most
   recent month in the archived range per REPO_STYLE.md).
 - Archived two v1-era analysis docs to `docs/archive/` with a `V1_` prefix
   (`docs/SOLVE_STAGE_FACTORABILITY_NOTE.md` ->
-  [docs/archive/V1_SOLVE_STAGE_FACTORABILITY_NOTE.md](archive/V1_SOLVE_STAGE_FACTORABILITY_NOTE.md),
+  [V1_SOLVE_STAGE_FACTORABILITY_NOTE.md](archive/V1_SOLVE_STAGE_FACTORABILITY_NOTE.md),
   `docs/BLOB_REDESIGN_REPORT.md` ->
-  [docs/archive/V1_BLOB_REDESIGN_REPORT.md](archive/V1_BLOB_REDESIGN_REPORT.md));
+  [V1_BLOB_REDESIGN_REPORT.md](archive/V1_BLOB_REDESIGN_REPORT.md));
   repaired all inbound Markdown links in
-  [docs/archive/blob_problem_discovery/blob_refinement_visual_audit.md](archive/blob_problem_discovery/blob_refinement_visual_audit.md)
+  [blob_refinement_visual_audit.md](archive/blob_problem_discovery/blob_refinement_visual_audit.md)
   and updated backtick path references in
   `docs/active_plans/audits/v1_blob_snap_deletion_blast_radius.md` and
   `docs/CHANGELOG-2026-05a.md`.
@@ -276,15 +276,15 @@
 ### Additions and New Features
 
 - Wrote the consolidated absorption closeout / handoff at
-  [docs/active_plans/reports/blob_walk_absorption_closeout.md](active_plans/reports/blob_walk_absorption_closeout.md):
+  [blob_walk_absorption_closeout.md](active_plans/reports/blob_walk_absorption_closeout.md):
   what shipped (M1-M4), verification, independent review, the corrected A/B
   result and how to read it, design facts, the WP-6 prereqs, and the one human
   decision (commit the default-off increment now; schedule bootstrap-fix +
   Viterbi tuning + promoted-only re-A/B as the next reviewed phase).
 - M4 gate (task #12): rewrote the walker A/B report at
-  [docs/active_plans/reports/m4_walker_ab_report.md](active_plans/reports/m4_walker_ab_report.md)
+  [m4_walker_ab_report.md](active_plans/reports/m4_walker_ab_report.md)
   and saved its raw per-interval data at
-  [docs/active_plans/reports/m4_walker_ab_data.csv](active_plans/reports/m4_walker_ab_data.csv).
+  [m4_walker_ab_data.csv](active_plans/reports/m4_walker_ab_data.csv).
   Sample-limited run (58 of a 120-interval target evaluated; 62 skipped by a
   per-video decode-time budget, not cherry-picked). Distribution headline:
   success (rescued+preserved) = 21/58 (rescued=6, preserved=15), regressed=35,
@@ -312,7 +312,7 @@
   `solve_interval_analytical(use_walker=...)`. Default OFF keeps the v1
   `_apply_blob_snap` path byte-identical (e2e_blob_walk_baseline RESULT: PASS,
   full pytest suite green). Added the M4 A/B report at
-  [docs/active_plans/reports/m4_walker_ab_report.md](active_plans/reports/m4_walker_ab_report.md)
+  [m4_walker_ab_report.md](active_plans/reports/m4_walker_ab_report.md)
   and its harness `tests/e2e/e2e_walker_ab.py`; the partial 4-interval A/B
   classified rescued=1, preserved=0, needs_review=0, regressed=3, confirming the
   walker is not yet a default. New tests `tests/test_walker_adapter.py`
@@ -336,7 +336,7 @@
   is WP-5b. The bundle deliberately omits the Hermite raw_pred path (Hermite
   independence).
 - WP-2 (WS-B): created the relocation-equivalence report artifact at
-  [docs/active_plans/reports/blob_walk_relocation_equivalence.md](active_plans/reports/blob_walk_relocation_equivalence.md).
+  [blob_walk_relocation_equivalence.md](active_plans/reports/blob_walk_relocation_equivalence.md).
   States the equivalence gate (`e2e_blob_walk_baseline.sh`), column comparison
   policy (EXACT for categorical/flag columns including `status`; TOLERANT abs
   <= 0.5 for numeric columns; unclassified falls back to exact), the 8 verdict
@@ -346,11 +346,11 @@
 ### Behavior or Interface Changes
 
 - M4 gate (task #12): rebuilt the walker A/B evaluation harness
-  [tests/e2e/e2e_walker_ab.py](../tests/e2e/e2e_walker_ab.py) to fix the prior
+  the former `tests/e2e/e2e_walker_ab.py` local harness to fix the prior
   selection + metric artifact. Selection now draws 20 random DURING-RACE
   (left frame > `race_start_frame`, contract C4) VISIBLE-on-all-three seed
   triples per video over the established 6-video corpus
-  ([data/outdoor_corpus.txt](../data/outdoor_corpus.txt)) at a fixed
+  ([outdoor_corpus.txt](../data/outdoor_corpus.txt)) at a fixed
   `--random-seed`, mirroring `walk_util.select_random_visible` and reusing
   `walk_io.load_race_start_frame`. The metric is now an INDEPENDENT accuracy
   proxy: the interior human seed B of each triple is HELD OUT, the merged A->C
@@ -416,10 +416,10 @@
   single-process (the pool worker does not carry the walker flag). Cosmetic
   help-string only; `dest`, `default`, and `action` are unchanged.
 - WP-2 review cleanup: fixed 20 broken markdown links in
-  [docs/CHANGELOG.md](CHANGELOG.md) pointing to the dead path
+  [CHANGELOG.md](CHANGELOG.md) pointing to the dead path
   `tools/blob_walk_v2/core/walk_driver.py`; repointed to the current location
   `tools/blob_walk_v2/walk_driver.py`. Also fixed 2 references in
-  [docs/TR_SCHEMA_VERSION_HISTORY.md](TR_SCHEMA_VERSION_HISTORY.md) (`## 12`
+  [TR_SCHEMA_VERSION_HISTORY.md](TR_SCHEMA_VERSION_HISTORY.md) (`## 12`
   and `## 13` entries) pointing to the dead path
   `tools/blob_walk_v2/core/walk_debug_log.py`; repointed to
   `track_runner/blob_walk/walk_debug_log.py`. Verified with
@@ -433,7 +433,7 @@
   `track_runner/blob_walk/walk_debug_log.py` (module docstring and HEADER
   inline comment) that said "44 columns as of schema v13" / "SCHEMA_VERSION=13".
   Both now describe HEADER as the locked verdict-CSV column tuple (43 columns)
-  and point to [docs/TR_SCHEMA_VERSION_HISTORY.md](TR_SCHEMA_VERSION_HISTORY.md)
+  and point to [TR_SCHEMA_VERSION_HISTORY.md](TR_SCHEMA_VERSION_HISTORY.md)
   for version history, without hard-coding a stale version stamp.
 
 ### Developer Tests and Notes
@@ -481,11 +481,11 @@
 ### Additions and New Features
 
 - **WP-1: relocated the blob_walk_v2 windowed-walker core into a new
-  [track_runner/blob_walk/](../track_runner/blob_walk/) subpackage.** `git mv` moved the six
+  `blob_walk` subpackage.** `git mv` moved the six
   core algorithm modules out of `tools/blob_walk_v2/core/` with no behavior change:
   `walk_viterbi.py`, `walk_motion_gate.py`, `walk_status.py`, `walk_walker.py`,
   `walk_debug_log.py`, and `walk_io.py`. Added a minimal
-  [track_runner/blob_walk/__init__.py](../track_runner/blob_walk/__init__.py) (docstring only,
+  [__init__.py](../track_runner/blob_walk/__init__.py) (docstring only,
   no re-exports). This is the M1/WS-A relocation step of the plan to make the windowed walker
   the in-pipeline blob solver.
 
@@ -499,12 +499,12 @@
   convention (these modules import their own siblings by bare name, so a dotted
   `track_runner.X` import is not resolvable). `walk_io.py` (since deleted in WS3-coreroute)
   resolved the repo root once via `git rev-parse --show-toplevel`
-  (per [docs/REPO_STYLE.md](REPO_STYLE.md)) instead of `walk_paths.setup()`.
+  (per [REPO_STYLE.md](REPO_STYLE.md)) instead of `walk_paths.setup()`.
 - **WP-1: repointed the tool-side driver and render imports to the relocated core.**
-  [walk_driver.py](../tools/blob_walk_v2/walk_driver.py) (kept under `tools/` for WP-2;
-  see Notes), [make_walk_html_v2.py](../tools/blob_walk_v2/make_walk_html_v2.py),
-  [walk_render.py](../tools/blob_walk_v2/render/walk_render.py), and
-  [walk_html.py](../tools/blob_walk_v2/render/walk_html.py) now import the moved modules as
+  `walk_driver.py` (kept under `tools/` for WP-2;
+  see Notes), `make_walk_html_v2.py`,
+  `walk_render.py`, and
+  `walk_html.py` now import the moved modules as
   `blob_walk.*`.
 
 ### Developer Tests and Notes
@@ -514,7 +514,7 @@
   `test_blob_walk_v2_offframe_softmiss.py`, `test_blob_walk_v2_windowed.py`,
   `test_blob_walk_v2_winner_modes.py`, `test_blob_walk_v2_visible_seed_filter.py`,
   `test_m1d_heat_not_computed_detection.py`, `e2e_blob_walk_baseline.py`,
-  `e2e_bug_101_degenerate_roi.py`). [test_blob_walk_v2_no_hermite.py](../tests/test_blob_walk_v2_no_hermite.py)
+  `e2e_bug_101_degenerate_roi.py`). `test_blob_walk_v2_no_hermite.py`
   now scans both `track_runner/blob_walk/` and `tools/blob_walk_v2/` and still asserts no
   `velocity_model`/`interval_solver`/`scoring` import in the walker core.
 - **WP-1 verification:** captured the `e2e_blob_walk_baseline` golden snapshot on the pre-move
