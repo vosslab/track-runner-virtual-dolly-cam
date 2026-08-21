@@ -134,6 +134,16 @@
   walker-bundle dataclass-name scan. Behavioral heat-map and Stage-4 seam tests
   remain.
 
+### Decisions and Failures
+
+- **Fixup-plan close-out uses grounded repository evidence**
+  (`docs/archive/interaction_shell_and_trajectory_truth.md`): the original
+  private-image, shared-tangent, corpus-ranking, machine-profile, and fragile
+  lifecycle gates are documented as superseded design or verification choices,
+  not missing implementation. Permanent coverage follows the repository's
+  deterministic, offline behavior-test policy; image evidence of high school
+  runners is excluded from Git.
+
 ### Developer Tests and Notes
 
 - `source source_me.sh && python3 -m pytest tests/ -q` passes the full portable suite.

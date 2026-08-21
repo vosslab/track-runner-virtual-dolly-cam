@@ -1,5 +1,11 @@
 # Plan: Interaction shell, trajectory truth, and offline dolly path
 
+> **Historical plan:** This original proposal is superseded by the completed
+> [interaction_shell_and_trajectory_truth.md](interaction_shell_and_trajectory_truth.md)
+> tracker and its post-implementation review. Private runner images, rejected
+> shared-tangent logic, and ungrounded local performance gates are not
+> outstanding completion requirements.
+
 ## Context
 
 Track runner works end to end, but three foundational weaknesses limit how good it

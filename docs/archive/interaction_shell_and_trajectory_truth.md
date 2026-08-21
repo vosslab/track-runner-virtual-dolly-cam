@@ -20,6 +20,57 @@ This revision restores a simple execution boundary. Required verification is rep
 deterministic, and tied directly to behavior or a contract. Private media and local receipts may help
 diagnosis, but never determine milestone completion.
 
+## Post-implementation review
+
+A code, test, and documentation review on 2026-08-21 concludes that the revised
+product outcomes are implemented. Literal completion of every gate in the
+original [fixup-plan.md](fixup-plan.md) is neither required nor desirable.
+Several original gates depended on private media, local machine measurements,
+exact artifact parity, fragile implementation checks, or an implementation
+hypothesis that evidence later rejected.
+
+The following items are justified plan corrections, not missing work:
+
+- Private image evidence of high school runners is excluded from the
+  repository. Source frames, crops, overlays, thumbnails, and similar derived
+  images may be inspected locally when authorized, but must remain untracked.
+  Safe repository evidence uses generated inputs, non-identifying data, and
+  aggregate numerical results.
+- Human seed boxes establish position and size, not velocity or size
+  derivatives. The original shared-tangent proposal was therefore replaced by
+  pair-local endpoint interpolation, as recorded in
+  [chord_tangent_retention_decision.md](../active_plans/decisions/chord_tangent_retention_decision.md).
+  A neighboring seed cannot alter an interval whose two endpoints did not
+  change.
+- Real-video overlays, corpus A/B comparisons, RSS profiles, wall-time
+  measurements, and exploratory GUI lifecycle exercises are one-time checks
+  unless a grounded product requirement makes them repeatable acceptance
+  criteria. They do not automatically belong in the permanent suite.
+- The removal of fragile Qt lifecycle, implementation-shape, and
+  one-trajectory ranking tests is not evidence that the implemented behavior is
+  missing. Permanent tests must satisfy
+  [PYTEST_STYLE.md](../PYTEST_STYLE.md): they remain deterministic, offline,
+  quick, self-contained, and focused on durable behavior.
+
+Plan gates establish a user-visible behavior, an explicit repository contract,
+or a resource bound controlled by the code. Exact equality remains appropriate
+where exactness is the requirement, including human-authored seed geometry,
+FWD/BWD evidence independence, and unified schema ownership. Byte-equivalent
+files, pixel-equivalent renders, arbitrary timing thresholds, and
+machine-specific corpus rankings are not default requirements.
+
+Under this standard, the original M3 private-overlay gate, M4 bin-specific
+profiling gates, M5 shared-tangent gate, M6 implementation-era GUI checks, and
+M7 one-corpus ranking gate are superseded. No new product code, private
+fixtures, image artifacts, or permanent E2E tests are required to satisfy them.
+Historical reports may preserve what was attempted, but must not be read as the
+current completion authority.
+
+Documentation drift remains separate from implementation completeness. Current
+reference documentation should describe the shipped pair-local interpolation,
+run-level commitment, dolly default, and worker-budget policy without reviving
+superseded or privacy-prohibited evidence requirements.
+
 ## Objectives
 
 - Keep one persistent annotation session and move frame/heat work off the Qt event loop.
