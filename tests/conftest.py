@@ -1,29 +1,31 @@
+import os
+import sys
+
+import file_utils
+
+# Put the package root first, followed by the two source directories. The root
+# supports package-qualified imports such as track_runner.blend_commitment;
+# track_runner/ supports the project's established bare-module imports such as
+# ui.session, trajectory_confidence, and blob_trace; common_tools/ supports its
+# established bare imports such as frame_reader. Keeping the repo root first
+# prevents either source directory from shadowing a package.
+_repo_root = file_utils.get_repo_root()
+_track_runner_root = os.path.join(_repo_root, "track_runner")
+_common_tools_root = os.path.join(_repo_root, "common_tools")
+for _local_path in (_repo_root, _track_runner_root, _common_tools_root):
+	if _local_path in sys.path:
+		sys.path.remove(_local_path)
+sys.path.insert(0, _common_tools_root)
+sys.path.insert(0, _track_runner_root)
+sys.path.insert(0, _repo_root)
+
+
 # Exclude both end-to-end tiers from pytest collection. tests/playwright/
 # holds browser-driven tests (Playwright), and tests/e2e/ holds heavier
 # shell/Python whole-system runners. Both run outside pytest -- see
 # docs/PLAYWRIGHT_USAGE.md and docs/E2E_TESTS.md.
 collect_ignore = ["e2e", "playwright"]
 
-"""Shared pytest configuration for track_runner tests.
-
-Adds track_runner/ to sys.path so bare imports (e.g. import scoring)
-work the same way they do at runtime via source_me.sh.
-"""
-
-# Standard Library
-import os
-import sys
-
-_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_TR_DIR = os.path.join(_REPO_ROOT, "track_runner")
-# track_runner/ for bare submodule imports (e.g. import scoring)
-if _TR_DIR not in sys.path:
-	sys.path.insert(0, _TR_DIR)
-# repo root for package imports that cross the repo (e.g. import
-# common_tools.frame_filters) so tests that pull in cli / encoder work
-# without needing source_me.sh
-if _REPO_ROOT not in sys.path:
-	sys.path.insert(0, _REPO_ROOT)
 
 # REPO_HYGIENE_FILTERS is the repo-local hygiene-exclusion registry (Layer 2).
 # file_utils.discover_files reads it from this conftest, which is the right
@@ -45,6 +47,10 @@ if _REPO_ROOT not in sys.path:
 #     does not cross "/". Use "temp_scripts/**" to exclude a whole subtree.
 #
 # This template has no repo-specific exclusions, so the registry is empty.
+# Cross-overlay doc references (a template doc naming a doc that ships from a
+# different overlay or the universal docs/ tree) use a backticked name, not a
+# markdown link: no single relative link is valid both in the split template
+# tree and in the flattened consumer repo.
 # Example entries (commented out; this repo needs none):
 #   REPO_HYGIENE_FILTERS = {
 #       "all": ["temp_scripts/**", "TEMPLATE.py"],
@@ -52,6 +58,7 @@ if _REPO_ROOT not in sys.path:
 #       "pyflakes_code_lint": ["devel/scratch_*.py"],
 #   }
 REPO_HYGIENE_FILTERS = {}
+
 
 # === OPTIONAL_HELPERS_MENU ===
 # See meta/docs/PROPAGATION_RULES.md for the managed-block propagation contract.

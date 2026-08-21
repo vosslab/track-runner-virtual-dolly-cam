@@ -1,0 +1,5 @@
+docs/GRAPH_REPORT.md
+docs/active_plans/ANALYZE_MODE_PLOTS.md
+docs/active_plans/reports/blob_walk_v2_cost_model_synthesis.md
+docs/archive/TRACK_RUNNER_PLAN_07_ANALYTICAL_REFACTOR.md
+docs/archive/fixup-plan.md
