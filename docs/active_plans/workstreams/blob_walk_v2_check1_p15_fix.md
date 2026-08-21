@@ -29,7 +29,7 @@ documentation -- which keeps the decision-equality surface minimal.
 
 ## Files changed and the requirement each satisfies
 
-- [track_runner/blob_walk/walk_viterbi.py](../../../track_runner/blob_walk/walk_viterbi.py)
+- [walk_viterbi.py](../../../track_runner/blob_walk/walk_viterbi.py)
   -- scope (1). New pure function `compute_path_step_costs(path, torso_w, fps)`
   returns the per-node Viterbi cost contribution (local node cost + transition
   cost into the node) along an already-selected path. It reads the selected path
@@ -37,27 +37,27 @@ documentation -- which keeps the decision-equality surface minimal.
   selection. `select_path`, `transition_cost`, and `compute_path_cost` are
   byte-unchanged. By construction `sum(compute_path_step_costs(p)) ==
   compute_path_cost(p)` for path `p` (node 0 has no inbound edge).
-- [track_runner/blob_walk/walk_walker.py](../../../track_runner/blob_walk/walk_walker.py)
+- [walk_walker.py](../../../track_runner/blob_walk/walk_walker.py)
   -- scope (1),(2). `_run_viterbi_and_emit_oldest` now also computes the
   per-node step costs and the window head frame, and stamps `path_step_cost`
   (indexed by the same path index `k` that already drives status/position) and
   `window_head_frame` onto each emitted `DebugLogRow`. No selection, status,
   stepping, anchor, or fallback code path was touched; the additions are purely
   recording.
-- [track_runner/blob_walk/walk_debug_log.py](../../../track_runner/blob_walk/walk_debug_log.py)
+- [walk_debug_log.py](../../../track_runner/blob_walk/walk_debug_log.py)
   -- scope (1),(2),(4). HEADER grows from 43 to 45 columns: `path_cost`
   documentation corrected to "whole-window Viterbi total", and the new
   `path_step_cost` and `window_head_frame` columns added with truthful comments.
   `DebugLogRow` gains the two matching optional fields (default None -> blank
   cell). Module docstring history advances to v14 (CSV column-meaning label).
-- [track_runner/tr_schema.py](../../../track_runner/tr_schema.py)
+- [tr_schema.py](../../../track_runner/tr_schema.py)
   -- scope (4). Unified `SCHEMA_VERSION` bumped 11 -> 12 per contract C10.
   Metadata-only: 12 is intentionally NOT added to `GEOMETRY_AFFECTING_SCHEMAS`
   (the verdict CSV is a diagnostic artifact; no solved geometry changed). 12
   added to `SUPPORTED_ARTIFACT_SCHEMAS` for `torso_box_coords` and `diagnostics`
   (on-disk layout unchanged from v11; v10/v11/v12 all readable) -- the
   "considered the layout impact" step required on every bump.
-- [docs/TR_SCHEMA_VERSION_HISTORY.md](../../TR_SCHEMA_VERSION_HISTORY.md)
+- [TR_SCHEMA_VERSION_HISTORY.md](../../TR_SCHEMA_VERSION_HISTORY.md)
   -- scope (4). New "## 12 (2026-06-10)" entry documenting the bump and columns.
 - Former local harness `tests/e2e/e2e_blob_walk_baseline.py`
   -- scope (3). This is the locking instrument for the verdict-CSV schema (its
@@ -152,7 +152,7 @@ baseline harness.
 ### Audit item 4: SCHEMA_VERSION 12 is metadata-only
 
 `SCHEMA_VERSION` 11 -> 12 in
-[track_runner/tr_schema.py](../../../track_runner/tr_schema.py) is
+[tr_schema.py](../../../track_runner/tr_schema.py) is
 **metadata-only**. Evidence: version 12 is absent from `GEOMETRY_AFFECTING_SCHEMAS`
 at line 54 of that file:
 

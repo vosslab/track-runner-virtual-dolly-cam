@@ -64,7 +64,7 @@ combined behavior.
 
 Changes 5 and 6 are SEPARATE fixes staged together. Change 5 (P10 fallback)
 had its own pre-approved plan (now archived at
-[docs/archive/blob_walk_v2_p10_fix_plan.md](../../archive/blob_walk_v2_p10_fix_plan.md));
+[blob_walk_v2_p10_fix_plan.md](../../archive/blob_walk_v2_p10_fix_plan.md));
 it touches disjoint files from the cost-model lane and was ready to land
 independently. Change 6 (walk_io trust audit) was a user-required pre-flight
 for the A/B tool path; it is not geometry-affecting and does not factor into
@@ -97,7 +97,7 @@ intervals; do NOT read "walker farther from the held-out seed than Hermite" as
 a quality ranking, because the walker is the trusted more-accurate solver and a
 small hermite_err means the held-out frame was easy, not well-tracked. See the
 standing rule in
-[docs/TRACK_RUNNER_DESIGN.md](../../TRACK_RUNNER_DESIGN.md) "Interpreting
+[TRACK_RUNNER_DESIGN.md](../../TRACK_RUNNER_DESIGN.md) "Interpreting
 walker-vs-Hermite and held-out-seed error" and the WS-G expansion
 [blob_walk_v2_heldout_expansion.md](blob_walk_v2_heldout_expansion.md).
 

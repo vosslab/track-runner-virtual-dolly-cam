@@ -1,7 +1,7 @@
 # Check 5: normalized-cy trace (claims D and E)
 
 Part of the blob_walk_v2 validation plan at
-[active_plans/active/blob_walk_v2_validation_plan.md](../active/blob_walk_v2_validation_plan.md).
+[blob_walk_v2_validation_plan.md](../active/blob_walk_v2_validation_plan.md).
 
 Date: 2026-06-10.
 

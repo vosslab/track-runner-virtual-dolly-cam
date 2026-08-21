@@ -91,22 +91,22 @@ flattens the stack. Both modes already call this same size EMA.
 ## Artifacts
 
 - Per-mode crop-rect overlay plots (center x/y and w/h vs frame):
-  - [crop_mode_assets/crop_plot_smooth.png](crop_mode_assets/crop_plot_smooth.png)
-  - [crop_mode_assets/crop_plot_direct_center.png](crop_mode_assets/crop_plot_direct_center.png)
+  - `crop_plot_smooth.png`
+  - `crop_plot_direct_center.png`
 - Side-by-side crop-height comparison (C5 focus):
-  - [crop_mode_assets/crop_height_compare.png](crop_mode_assets/crop_height_compare.png)
+  - `crop_height_compare.png`
 - Real cropped output sample frames (cv2 decode + apply_crop), frames
   612 / 1428 / 2245 / 3061 / 3673:
-  - smooth: [f0612](crop_mode_assets/sample_smooth_f000612.jpg),
-    [f1428](crop_mode_assets/sample_smooth_f001428.jpg),
-    [f2245](crop_mode_assets/sample_smooth_f002245.jpg),
-    [f3061](crop_mode_assets/sample_smooth_f003061.jpg),
-    [f3673](crop_mode_assets/sample_smooth_f003673.jpg)
-  - direct_center: [f0612](crop_mode_assets/sample_direct_center_f000612.jpg),
-    [f1428](crop_mode_assets/sample_direct_center_f001428.jpg),
-    [f2245](crop_mode_assets/sample_direct_center_f002245.jpg),
-    [f3061](crop_mode_assets/sample_direct_center_f003061.jpg),
-    [f3673](crop_mode_assets/sample_direct_center_f003673.jpg)
+  - smooth: `sample_smooth_f000612.jpg`,
+    `sample_smooth_f001428.jpg`,
+    `sample_smooth_f002245.jpg`,
+    `sample_smooth_f003061.jpg`,
+    `sample_smooth_f003673.jpg`
+  - direct_center: `sample_direct_center_f000612.jpg`,
+    `sample_direct_center_f001428.jpg`,
+    `sample_direct_center_f002245.jpg`,
+    `sample_direct_center_f003061.jpg`,
+    `sample_direct_center_f003673.jpg`
 - Raw metrics: [crop_mode_assets/metrics_dump.json](crop_mode_assets/metrics_dump.json)
 
 ## Recommendation

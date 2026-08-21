@@ -1,7 +1,7 @@
 # Check 0 extension: Lyra-Wheeling stride-2 overrun analysis
 
 Audit finding P12 from
-[docs/active_plans/audits/blob_walk_v2_implementation_audit.md](../audits/blob_walk_v2_implementation_audit.md).
+[blob_walk_v2_implementation_audit.md](../audits/blob_walk_v2_implementation_audit.md).
 
 **Question:** Did any promoted interval on Lyra-Wheeling-IMG_3912 have a span not
 divisible by stride=2, causing the equality termination condition to miss the neighbor seed?

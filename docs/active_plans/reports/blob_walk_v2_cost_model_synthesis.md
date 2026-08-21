@@ -4,7 +4,7 @@ Status: COMPLETE -- cost-model rewrite (WP-COST-1) and P10 fallback fix shipped
 as SCHEMA_VERSION 14 (2026-06-12). All source artifacts synthesized below.
 
 Artifact path:
-[docs/active_plans/reports/blob_walk_v2_cost_model_synthesis.md](blob_walk_v2_cost_model_synthesis.md)
+[blob_walk_v2_cost_model_synthesis.md](blob_walk_v2_cost_model_synthesis.md)
 
 ---
 
@@ -37,7 +37,7 @@ On four of six audit videos, per-frame argmax failed to meet this bar. The
 24-corpus post-M4 walker baseline settled at 19.7% FWD and 9.6% BWD
 `accepted_fraction`.
 
-Source: [audits/blob_walk_v2_implementation_audit.md](../audits/blob_walk_v2_implementation_audit.md),
+Source: [blob_walk_v2_implementation_audit.md](../audits/blob_walk_v2_implementation_audit.md),
 finding L3 reference note.
 
 The H4 root-cause audit diagnosed the mechanism: on individual frames, leg blobs
@@ -63,14 +63,14 @@ DP over a 9-frame rolling buffer. Key spec requirements:
 After absorption the walker baseline improved substantially from the pre-walker
 numbers, reaching 42.3% FWD / 41.0% BWD on the 24-corpus.
 
-Source: [audits/blob_walk_v2_implementation_audit.md](../audits/blob_walk_v2_implementation_audit.md),
+Source: [blob_walk_v2_implementation_audit.md](../audits/blob_walk_v2_implementation_audit.md),
 finding L3.
 
 However, the m4 A/B evaluation (held-out-seed error, 58 passes) found
 6 rescued / 15 preserved / 35 regressed -- the walker was making things worse
 on more passes than it was helping.
 
-Source: [audits/blob_walk_v2_implementation_audit.md](../audits/blob_walk_v2_implementation_audit.md),
+Source: [blob_walk_v2_implementation_audit.md](../audits/blob_walk_v2_implementation_audit.md),
 finding L2.
 
 ---
@@ -78,7 +78,7 @@ finding L2.
 ## 2. The audit
 
 Audit date: 2026-06-10. Source:
-[audits/blob_walk_v2_implementation_audit.md](../audits/blob_walk_v2_implementation_audit.md).
+[blob_walk_v2_implementation_audit.md](../audits/blob_walk_v2_implementation_audit.md).
 
 The audit was a read-only line-level examination of all six `track_runner/blob_walk/`
 modules, cross-checked against the amendment spec, the stall-diagnosis doc, and the
@@ -264,7 +264,7 @@ The documented 0.5-0.75 H offsets were inherent to the signal.
 Nine checks (Check 0 through Check 8, plus Check G) were run between 2026-06-10
 and 2026-06-11. Each targeted one or more of the twelve assumptions (A-L) in the
 audit's assumption table. Source:
-[reports/blob_walk_v2_validation_report.md](blob_walk_v2_validation_report.md).
+[blob_walk_v2_validation_report.md](blob_walk_v2_validation_report.md).
 
 The P15 telemetry fix (Check 1 / SCHEMA_VERSION 12) was the only code change
 during the validation period: the `path_cost` column was corrected from a
@@ -314,7 +314,7 @@ Check 2 result is authoritative because it used the production walker's exact RO
 formula; the earlier document's ROI methodology was not documented in sufficient
 detail to confirm which is correct.
 
-Source: [workstreams/blob_walk_v2_check2_rejected_overlays.md](../workstreams/blob_walk_v2_check2_rejected_overlays.md).
+Source: [blob_walk_v2_check2_rejected_overlays.md](../workstreams/blob_walk_v2_check2_rejected_overlays.md).
 
 ### 3.3 Claim B: evidence term dominates selection (MIXED)
 
@@ -337,7 +337,7 @@ trajectory even when a higher-mag blob was nearby.
 Implication for fix priority: evidence normalization alone had no guaranteed effect
 on path selection on the passes that mattered most (Jason FWD).
 
-Source: [workstreams/blob_walk_v2_check6_per_term_cost.md](../workstreams/blob_walk_v2_check6_per_term_cost.md).
+Source: [blob_walk_v2_check6_per_term_cost.md](../workstreams/blob_walk_v2_check6_per_term_cost.md).
 
 ### 3.4 Claim C: regressed-bucket split (RANKING-DOMINANT)
 
@@ -369,7 +369,7 @@ The validation report's claim C section quotes 50% because it uses 34 classified
 passes as the denominator. The completion addendum sharpens this to 65% including
 the mixed-bucket diagnosis. Both numbers refer to the same 35-pass regressed set.
 
-Source: [workstreams/blob_walk_v2_check7_regressed_split.md](../workstreams/blob_walk_v2_check7_regressed_split.md).
+Source: [blob_walk_v2_check7_regressed_split.md](../workstreams/blob_walk_v2_check7_regressed_split.md).
 
 ### 3.5 Claim D: limb merge is scale-dependent (REFUTED conditional)
 
@@ -383,7 +383,7 @@ by the DoG at small scale.
 Crossover is somewhere between 11 px and 30 px torso height. Limb merge is not a
 universal pipeline property.
 
-Source: [workstreams/blob_walk_v2_check5_normalized_cy.md](../workstreams/blob_walk_v2_check5_normalized_cy.md).
+Source: [blob_walk_v2_check5_normalized_cy.md](../workstreams/blob_walk_v2_check5_normalized_cy.md).
 
 ### 3.6 Claim E: within-body vertical centroid jitter (OBSERVED)
 
@@ -399,7 +399,7 @@ showed a 0.384-torso-height single-step jump and an alternation rate of 0.32
 flips/step, with Viterbi switching between lower-runner blob cluster (ncy ~ -0.4)
 and upper-runner cluster (ncy ~ +0.2) across windows.
 
-Source: [workstreams/blob_walk_v2_check5_normalized_cy.md](../workstreams/blob_walk_v2_check5_normalized_cy.md).
+Source: [blob_walk_v2_check5_normalized_cy.md](../workstreams/blob_walk_v2_check5_normalized_cy.md).
 
 ### 3.7 Claim F: anchor is structurally 9+ frames stale (CONFIRMED structural)
 
@@ -419,7 +419,7 @@ age alone did not drive that stall.
 ALL 72 rejections across 6 non-stall baseline passes occurred at anchor_age >= 7
 frames at observation time. No rejections occurred with a fresh anchor.
 
-Source: [workstreams/blob_walk_v2_check4_anchor_lag.md](../workstreams/blob_walk_v2_check4_anchor_lag.md).
+Source: [blob_walk_v2_check4_anchor_lag.md](../workstreams/blob_walk_v2_check4_anchor_lag.md).
 
 ### 3.8 Claim G: extrapolation (UNDETERMINED)
 
@@ -439,7 +439,7 @@ surface negligible at most 2 frames per pass per interval (EXTRAP_MAX=2).
 Verdict: UNDETERMINED. Fix deferred until `extrapolated_count` becomes non-zero
 in production.
 
-Source: [workstreams/blob_walk_v2_checkg_extrapolation_replay.md](../workstreams/blob_walk_v2_checkg_extrapolation_replay.md).
+Source: [blob_walk_v2_checkg_extrapolation_replay.md](../workstreams/blob_walk_v2_checkg_extrapolation_replay.md).
 
 ### 3.9 Claim I: two stall sub-types confirmed (CONDITIONALLY CONFIRMED)
 
@@ -458,7 +458,7 @@ A single fix cannot address both sub-types. The starvation stalls in the
 regression set concentrated in IMG_3823 (6 intervals) + Conant (1), consistent
 with a scene or runner-size dependency.
 
-Source: [workstreams/blob_walk_v2_check4_anchor_lag.md](../workstreams/blob_walk_v2_check4_anchor_lag.md).
+Source: [blob_walk_v2_check4_anchor_lag.md](../workstreams/blob_walk_v2_check4_anchor_lag.md).
 
 ### 3.10 Claim J: bootstrap masking observed in production (OBSERVED)
 
@@ -473,7 +473,7 @@ The BWD pass on the same interval found 3 accepted frames and returned normally.
 Incidence: 1 of 26 passes = 3.8% of the sample. Short intervals most vulnerable:
 a single bootstrap hit covers the entire "accepted" budget.
 
-Source: [workstreams/blob_walk_v2_check3_bootstrap_masking.md](../workstreams/blob_walk_v2_check3_bootstrap_masking.md).
+Source: [blob_walk_v2_check3_bootstrap_masking.md](../workstreams/blob_walk_v2_check3_bootstrap_masking.md).
 
 ### 3.11 Claim K: stride-2 overrun confirmed (OBSERVED FAILURE)
 
@@ -487,7 +487,7 @@ frames into the next interval) before `max_steps_guard = 4` stopped it. BWD
 overshot to frames 16589, 16587 (2 frames into the previous interval). Confirmed
 by code analysis; no direct CSV telemetry was available.
 
-Source: [workstreams/blob_walk_v2_check0_stride_overrun.md](../workstreams/blob_walk_v2_check0_stride_overrun.md).
+Source: [blob_walk_v2_check0_stride_overrun.md](../workstreams/blob_walk_v2_check0_stride_overrun.md).
 
 ### 3.12 Claim L: skip-teleport not observed (NOT EXERCISED)
 
@@ -500,7 +500,7 @@ on average. The corridor filter pre-constrained candidates to ~0.80 W of the las
 anchor at 60 fps, acting as a soft outer bound. The structural Viterbi hole was
 real but not exercised in the sample.
 
-Source: [workstreams/blob_walk_v2_check8_identity_jumps.md](../workstreams/blob_walk_v2_check8_identity_jumps.md).
+Source: [blob_walk_v2_check8_identity_jumps.md](../workstreams/blob_walk_v2_check8_identity_jumps.md).
 
 ---
 
@@ -520,8 +520,8 @@ prior accepted frames and was converging toward the nearest spatial position at
 each step, which on frames with a moving runner meant tracking the wrong (less
 mobile) blob.
 
-Source: [workstreams/blob_walk_v2_check6_per_term_cost.md](../workstreams/blob_walk_v2_check6_per_term_cost.md);
-confirmed in [track_runner/blob_walk/walk_viterbi.py](../../../track_runner/blob_walk/walk_viterbi.py)
+Source: [blob_walk_v2_check6_per_term_cost.md](../workstreams/blob_walk_v2_check6_per_term_cost.md);
+confirmed in [walk_viterbi.py](../../../track_runner/blob_walk/walk_viterbi.py)
 docstring (shipped model, opening section).
 
 ### 4.2 Dead variance constants
@@ -554,7 +554,7 @@ meaning normalization alone would not change the outcome on the passes that
 mattered most.
 
 Source: audit P1; validated as MIXED by
-[workstreams/blob_walk_v2_check6_per_term_cost.md](../workstreams/blob_walk_v2_check6_per_term_cost.md).
+[blob_walk_v2_check6_per_term_cost.md](../workstreams/blob_walk_v2_check6_per_term_cost.md).
 
 ### 4.4 Skip double-charge and teleport hole
 
@@ -571,7 +571,7 @@ distances across a skip. In practice, the acceptance-box filter upstream
 constrained candidates to ~0.80 W of the anchor, providing a soft outer bound.
 
 Source: audit P4; validated (NOT EXERCISED) by
-[workstreams/blob_walk_v2_check8_identity_jumps.md](../workstreams/blob_walk_v2_check8_identity_jumps.md).
+[blob_walk_v2_check8_identity_jumps.md](../workstreams/blob_walk_v2_check8_identity_jumps.md).
 
 ### 4.5 Bootstrap slack everywhere
 
@@ -596,7 +596,7 @@ normalized evidence only acts as a genuine tie-breaker once the cap stops select
 by motion minimization. Changes 5-6 (P10 fallback, walk_io trust audit) were
 separate fixes staged together.
 
-Source: [workstreams/blob_walk_v2_cost_model_ab.md](../workstreams/blob_walk_v2_cost_model_ab.md),
+Source: [blob_walk_v2_cost_model_ab.md](../workstreams/blob_walk_v2_cost_model_ab.md),
 "Conceptual grouping" section.
 
 ### 5.2 Pairwise velocity-delta scoring: full model
@@ -680,8 +680,8 @@ on 2026-06-12. At 1.0 the displacement term dominated evidence for slow-moving
 runners; at 0.25 the velocity-delta terms and normalized evidence can compete on
 equal footing.
 
-Source: [workstreams/blob_walk_v2_cost_model_ab.md](../workstreams/blob_walk_v2_cost_model_ab.md);
-[track_runner/blob_walk/walk_viterbi.py](../../../track_runner/blob_walk/walk_viterbi.py).
+Source: [blob_walk_v2_cost_model_ab.md](../workstreams/blob_walk_v2_cost_model_ab.md);
+[walk_viterbi.py](../../../track_runner/blob_walk/walk_viterbi.py).
 
 ### 5.3 Boundary rules
 
@@ -694,7 +694,7 @@ The DP handles the window boundaries as follows:
 - All-skip path: N * SKIP_COST; no real nodes.
 - Trailing skip: each frame after the last real node costs SKIP_COST once.
 
-Source: [track_runner/blob_walk/walk_viterbi.py](../../../track_runner/blob_walk/walk_viterbi.py),
+Source: [walk_viterbi.py](../../../track_runner/blob_walk/walk_viterbi.py),
 `select_path` function.
 
 ### 5.4 Tie rules
@@ -702,7 +702,7 @@ Source: [track_runner/blob_walk/walk_viterbi.py](../../../track_runner/blob_walk
 On exact cost ties the earlier state in iteration order wins, preserving the
 incoming candidate order as the deterministic tie order.
 
-Source: [track_runner/blob_walk/walk_viterbi.py](../../../track_runner/blob_walk/walk_viterbi.py),
+Source: [walk_viterbi.py](../../../track_runner/blob_walk/walk_viterbi.py),
 `select_path` docstring.
 
 ### 5.5 Design rationale: pairwise delta vs. window variance
@@ -721,7 +721,7 @@ interpretation is arguably more physically meaningful for a runner: a constant-v
 runner accumulates zero delta cost regardless of its speed, while a runner that
 accelerates or changes direction is penalized.
 
-Source: [track_runner/blob_walk/walk_viterbi.py](../../../track_runner/blob_walk/walk_viterbi.py),
+Source: [walk_viterbi.py](../../../track_runner/blob_walk/walk_viterbi.py),
 module docstring "Cost model: pairwise velocity-delta scoring (audit P2)."
 
 ### 5.6 YAML wiring
@@ -738,9 +738,9 @@ had omitted `walker_costs` from its `make_pool` call (spec-review F1 fix). The
 34-pass config-1 baseline run (job buuqba7rd) predated this fix and used
 module-constant defaults, which are numerically identical to the YAML defaults.
 
-Source: [workstreams/blob_walk_v2_cost_model_ab.md](../workstreams/blob_walk_v2_cost_model_ab.md),
+Source: [blob_walk_v2_cost_model_ab.md](../workstreams/blob_walk_v2_cost_model_ab.md),
 "What changed" and "Provenance disclosure" sections;
-[docs/TR_SCHEMA_VERSION_HISTORY.md](../../TR_SCHEMA_VERSION_HISTORY.md), version 14.
+[TR_SCHEMA_VERSION_HISTORY.md](../../TR_SCHEMA_VERSION_HISTORY.md), version 14.
 
 ### 5.7 P10 seed-only Hermite fallback fix
 
@@ -764,8 +764,8 @@ Terminology note: "seed" replaces "bootstrap" in all new code and docs per user
 decision 2026-06-12. The legacy `BOOTSTRAP_UNCERTAINTY_W` identifier remains in
 existing code pending a follow-up rename.
 
-Source: [archive/blob_walk_v2_p10_fix_plan.md](../../archive/blob_walk_v2_p10_fix_plan.md);
-[docs/TR_SCHEMA_VERSION_HISTORY.md](../../TR_SCHEMA_VERSION_HISTORY.md), version 14.
+Source: [blob_walk_v2_p10_fix_plan.md](../../archive/blob_walk_v2_p10_fix_plan.md);
+[TR_SCHEMA_VERSION_HISTORY.md](../../TR_SCHEMA_VERSION_HISTORY.md), version 14.
 
 ---
 
@@ -786,7 +786,7 @@ Source: [archive/blob_walk_v2_p10_fix_plan.md](../../archive/blob_walk_v2_p10_fi
   all other costs are equal.
 - Neutral-zero: zero-denominator frames receive zero evidence cost.
 
-Source: [workstreams/blob_walk_v2_cost_model_ab.md](../workstreams/blob_walk_v2_cost_model_ab.md),
+Source: [blob_walk_v2_cost_model_ab.md](../workstreams/blob_walk_v2_cost_model_ab.md),
 "Evidence by change" table.
 
 ### 6.2 Brute-force optimality check
@@ -799,7 +799,7 @@ Mutation M1 was also caught: a sign-bug injected into the DP caused the
 brute-force test to fail as required. This confirmed the test was exercising the
 DP logic rather than testing a trivially correct path.
 
-Source: [workstreams/blob_walk_v2_cost_model_ab.md](../workstreams/blob_walk_v2_cost_model_ab.md),
+Source: [blob_walk_v2_cost_model_ab.md](../workstreams/blob_walk_v2_cost_model_ab.md),
 "Evidence by change" table.
 
 ### 6.3 YAML wiring tests and mutation checks
@@ -820,7 +820,7 @@ Mutation M3 was caught.
 The primary proof was the targeted Stage-4 re-solve of Conant `seed_1126_1134`:
 `walker_fallback_fwd = True` with Hermite FWD geometry shipped; BWD unchanged.
 
-Source: [workstreams/blob_walk_v2_cost_model_ab.md](../workstreams/blob_walk_v2_cost_model_ab.md),
+Source: [blob_walk_v2_cost_model_ab.md](../workstreams/blob_walk_v2_cost_model_ab.md),
 "Evidence by change" table.
 
 ### 6.5 walk_io parity tests
@@ -838,7 +838,7 @@ Pure-Hermite path byte-identity was argued structurally: Stage-3 `blob_pass=Fals
 never reaches the walker; the cost-model change only affects Stage-4-promoted
 intervals. No regression on any pure-Hermite pass.
 
-Source: [workstreams/blob_walk_v2_cost_model_ab.md](../workstreams/blob_walk_v2_cost_model_ab.md),
+Source: [blob_walk_v2_cost_model_ab.md](../workstreams/blob_walk_v2_cost_model_ab.md),
 "General safety" rows.
 
 ---
@@ -866,14 +866,14 @@ Ranking-class passes: FWD range 0.692-1.000, mostly >= 0.833. Starvation-class
 passes: FWD range 0.133-0.526 (expected; sparse blobs). The dominant ranking-failure
 bucket now showed 66.7-100% accepted on ranking-class passes, mostly >= 83% FWD.
 
-Source: [workstreams/blob_walk_v2_cost_model_ab.md](../workstreams/blob_walk_v2_cost_model_ab.md),
+Source: [blob_walk_v2_cost_model_ab.md](../workstreams/blob_walk_v2_cost_model_ab.md),
 "22-pass set summary" section.
 
 ### 7.2 Corpus controls: 5-video subset
 
 All 5 corpus videos were re-solved against the frozen interval manifest from the
 Jun 10 corpus run (SCHEMA_VERSION 13 baselines from
-[workstreams/blob_walk_v2_corpus120_run_2026_06_10.md](../workstreams/blob_walk_v2_corpus120_run_2026_06_10.md)).
+[blob_walk_v2_corpus120_run_2026_06_10.md](../workstreams/blob_walk_v2_corpus120_run_2026_06_10.md)).
 
 | Video | Before FWD | After FWD | Delta | Before BWD | After BWD | Delta |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -889,7 +889,7 @@ SCHEMA_VERSION 14. Denominator differences between before and after reflect
 schema 14 counting changes (seed frame included consistently); absolute accepted
 counts were stable or near-stable.
 
-Source: [workstreams/blob_walk_v2_cost_model_ab.md](../workstreams/blob_walk_v2_cost_model_ab.md),
+Source: [blob_walk_v2_cost_model_ab.md](../workstreams/blob_walk_v2_cost_model_ab.md),
 "5-video corpus summary" table.
 
 ### 7.3 Held-out-seed error (quality authority)
@@ -931,7 +931,7 @@ all. Rescues on the hardest intervals (Conant drift-stall, Jason long-run) are t
 primary signal. The short-span regressions are unrepresentative of normal tracking
 intervals.
 
-Source: [workstreams/blob_walk_v2_cost_model_ab.md](../workstreams/blob_walk_v2_cost_model_ab.md),
+Source: [blob_walk_v2_cost_model_ab.md](../workstreams/blob_walk_v2_cost_model_ab.md),
 "E2E smoke outcomes: Part 5 results."
 
 ### 7.4 Identity check
@@ -949,7 +949,7 @@ traversing the scene; positions consistent with the same runner. Jason seeds_233
 and 23406 both showed cx~1231-1235, cy~367-368, tw~9-10 (far-end runner, adjacent
 intervals, matching position).
 
-Source: [workstreams/blob_walk_v2_cost_model_ab.md](../workstreams/blob_walk_v2_cost_model_ab.md),
+Source: [blob_walk_v2_cost_model_ab.md](../workstreams/blob_walk_v2_cost_model_ab.md),
 "Identity spot check: Part 3 results."
 
 ### 7.5 Tuning sensitivity
@@ -971,7 +971,7 @@ Conclusion: default weights are the winning config. For future tuning sensitivit
 longer and more contested intervals (Jason, Lyra-Hersey) are the primary tuning
 surface.
 
-Source: [workstreams/blob_walk_v2_cost_model_ab.md](../workstreams/blob_walk_v2_cost_model_ab.md),
+Source: [blob_walk_v2_cost_model_ab.md](../workstreams/blob_walk_v2_cost_model_ab.md),
 "Tuning table: Part 4 results."
 
 ### 7.6 Corpus-120 baseline (pre-cost-model)
@@ -986,7 +986,7 @@ sample. The elevation is plausible but not directly attributable to P12. Held-ou
 seed distance measurements are the quality authority; `accepted_fraction` is
 diagnostic only.
 
-Source: [workstreams/blob_walk_v2_corpus120_run_2026_06_10.md](../workstreams/blob_walk_v2_corpus120_run_2026_06_10.md).
+Source: [blob_walk_v2_corpus120_run_2026_06_10.md](../workstreams/blob_walk_v2_corpus120_run_2026_06_10.md).
 
 ---
 
@@ -1010,7 +1010,7 @@ The deeper fix -- scale-adaptive DoG diameter, or a post-extraction blob merge a
 runner scale -- requires M3 evidence from the fix-phase roadmap; its primary
 motivation is now the signal-absence class (8.2), not ranking.
 
-Source: [active/blob_walk_v2_fix_phase_roadmap.md](../active/blob_walk_v2_fix_phase_roadmap.md),
+Source: [blob_walk_v2_fix_phase_roadmap.md](../active/blob_walk_v2_fix_phase_roadmap.md),
 milestone M3 section.
 
 ### 8.2 Signal-absence stall class (largest open bucket, high impact)
@@ -1030,7 +1030,7 @@ if the WS-2C census confirms fragmentation at small scales.
 Sources:
 [blob_walk_v2_starvation_characterization.md](blob_walk_v2_starvation_characterization.md);
 corpus results in
-[workstreams/blob_walk_v2_cost_model_ab.md](../workstreams/blob_walk_v2_cost_model_ab.md),
+[blob_walk_v2_cost_model_ab.md](../workstreams/blob_walk_v2_cost_model_ab.md),
 note on Jason starvation intervals.
 
 ### 8.3 Short-span degeneracy (high count, negligible impact)
@@ -1044,7 +1044,7 @@ artifacts rather than structural failures.
 
 Sources:
 [blob_walk_v2_short_span_frequency.md](blob_walk_v2_short_span_frequency.md);
-[workstreams/blob_walk_v2_cost_model_ab.md](../workstreams/blob_walk_v2_cost_model_ab.md),
+[blob_walk_v2_cost_model_ab.md](../workstreams/blob_walk_v2_cost_model_ab.md),
 "Key findings" in the e2e_walker_ab section.
 
 ### 8.4 Lyra-Hersey [840,945] regression (low frequency, medium impact)
@@ -1052,7 +1052,7 @@ Sources:
 A span-105 regression (`hermite_err` 0.206 -> `walker_err` 0.778). Unexplained at
 release time. Flagged for WS-2B overlay review in the M2 roadmap milestone.
 
-Source: [workstreams/blob_walk_v2_cost_model_ab.md](../workstreams/blob_walk_v2_cost_model_ab.md),
+Source: [blob_walk_v2_cost_model_ab.md](../workstreams/blob_walk_v2_cost_model_ab.md),
 "Known gaps" section.
 
 ### 8.5 Jason [12408,12596] needs_review (low frequency, medium impact)
@@ -1060,7 +1060,7 @@ Source: [workstreams/blob_walk_v2_cost_model_ab.md](../workstreams/blob_walk_v2_
 Span=188 frames, high-motion interval. `walker_err` 2.918 vs `hermite_err` 1.312
 (delta +1.606). Flagged for WS-2B overlay review.
 
-Source: [workstreams/blob_walk_v2_cost_model_ab.md](../workstreams/blob_walk_v2_cost_model_ab.md),
+Source: [blob_walk_v2_cost_model_ab.md](../workstreams/blob_walk_v2_cost_model_ab.md),
 "Known gaps" section.
 
 ### 8.6 Anchor staleness floor (structural, impact conditional)
@@ -1071,7 +1071,7 @@ anchor age >= 7. Impact is conditional on image-space drift: Conant drift-stall
 (2.35 TW drift) was directly caused by staleness; Jason signal-absence stall was
 not (drift under 0.53 TW). Anchor-advance is the M4 fix-phase milestone.
 
-Source: [workstreams/blob_walk_v2_check4_anchor_lag.md](../workstreams/blob_walk_v2_check4_anchor_lag.md).
+Source: [blob_walk_v2_check4_anchor_lag.md](../workstreams/blob_walk_v2_check4_anchor_lag.md).
 
 ### 8.7 Bootstrap stall root cause (low frequency)
 
@@ -1079,7 +1079,7 @@ P10 fallback now catches the worst symptom (frozen-at-seed path), but the root
 cause of the seed-frame stall itself is still open. Historical incidence: 3.8% of
 sampled passes in the Check 3 sample.
 
-Source: [workstreams/blob_walk_v2_cost_model_ab.md](../workstreams/blob_walk_v2_cost_model_ab.md),
+Source: [blob_walk_v2_cost_model_ab.md](../workstreams/blob_walk_v2_cost_model_ab.md),
 "Known gaps" item 6.
 
 ### 8.8 walk_motion_gate.evaluate() dead code (low impact)
@@ -1089,7 +1089,7 @@ Kept alive by its tests. Cleanup deferred until primary behavior work (M3, M4)
 is stable.
 
 Source: audit P13;
-[active/blob_walk_v2_fix_phase_roadmap.md](../active/blob_walk_v2_fix_phase_roadmap.md),
+[blob_walk_v2_fix_phase_roadmap.md](../active/blob_walk_v2_fix_phase_roadmap.md),
 deferred items.
 
 ### 8.9 Wiring call sites without guard tests (low impact)
@@ -1099,7 +1099,7 @@ Two wiring call sites have no dedicated test: `solver_workers._worker_init`'s
 `apply_walker_costs_for_video` call. Deleting either would be invisible to the
 current suite. Recommended cheap pre-commit hardening; not yet done.
 
-Source: [workstreams/blob_walk_v2_cost_model_ab.md](../workstreams/blob_walk_v2_cost_model_ab.md),
+Source: [blob_walk_v2_cost_model_ab.md](../workstreams/blob_walk_v2_cost_model_ab.md),
 "Known gaps" item 1.
 
 ---
@@ -1194,7 +1194,7 @@ The cost-model arc spans SCHEMA_VERSION 11 through 14:
 | 13 | P12 stride-termination fix (crossing test + clamp) | Yes (stride > 1 only) |
 | 14 | WP-COST-1 cost-model rewrite + P10 seed-only fallback | Yes (Stage-4 promoted only) |
 
-Source: [docs/TR_SCHEMA_VERSION_HISTORY.md](../../TR_SCHEMA_VERSION_HISTORY.md).
+Source: [TR_SCHEMA_VERSION_HISTORY.md](../../TR_SCHEMA_VERSION_HISTORY.md).
 
 ---
 
@@ -1202,19 +1202,19 @@ Source: [docs/TR_SCHEMA_VERSION_HISTORY.md](../../TR_SCHEMA_VERSION_HISTORY.md).
 
 | Artifact | Role in this report |
 | --- | --- |
-| [audits/blob_walk_v2_implementation_audit.md](../audits/blob_walk_v2_implementation_audit.md) | Primary audit: findings P1-P17, N1-N4, L1-L2, claims A-L |
-| [reports/blob_walk_v2_validation_report.md](blob_walk_v2_validation_report.md) | Validation verdicts and synthesis |
-| [workstreams/blob_walk_v2_check0_stride_overrun.md](../workstreams/blob_walk_v2_check0_stride_overrun.md) | Claim K: stride-2 overrun |
-| [workstreams/blob_walk_v2_check3_bootstrap_masking.md](../workstreams/blob_walk_v2_check3_bootstrap_masking.md) | Claim J: P10 masking |
-| [workstreams/blob_walk_v2_check4_anchor_lag.md](../workstreams/blob_walk_v2_check4_anchor_lag.md) | Claims F, I: anchor staleness |
-| [workstreams/blob_walk_v2_check5_normalized_cy.md](../workstreams/blob_walk_v2_check5_normalized_cy.md) | Claims D, E: blob merge and jitter |
-| [workstreams/blob_walk_v2_check6_per_term_cost.md](../workstreams/blob_walk_v2_check6_per_term_cost.md) | Claim B: evidence dominance |
-| [workstreams/blob_walk_v2_check7_regressed_split.md](../workstreams/blob_walk_v2_check7_regressed_split.md) | Claim C: ranking vs starvation split |
-| [workstreams/blob_walk_v2_check8_identity_jumps.md](../workstreams/blob_walk_v2_check8_identity_jumps.md) | Claim L: identity jumps |
-| [workstreams/blob_walk_v2_checkg_extrapolation_replay.md](../workstreams/blob_walk_v2_checkg_extrapolation_replay.md) | Claim G: extrapolation hold vs linear |
-| [workstreams/blob_walk_v2_corpus120_run_2026_06_10.md](../workstreams/blob_walk_v2_corpus120_run_2026_06_10.md) | Post-P12 corpus baseline |
-| [workstreams/blob_walk_v2_cost_model_ab.md](../workstreams/blob_walk_v2_cost_model_ab.md) | Release review: fix, verification, results |
-| [active/blob_walk_v2_fix_phase_roadmap.md](../active/blob_walk_v2_fix_phase_roadmap.md) | Fix-phase sequencing; milestone M1-M5 |
-| [archive/blob_walk_v2_p10_fix_plan.md](../../archive/blob_walk_v2_p10_fix_plan.md) | M1 detailed plan (archived) |
-| [docs/TR_SCHEMA_VERSION_HISTORY.md](../../TR_SCHEMA_VERSION_HISTORY.md) | Schema version history v12-v14 |
-| [track_runner/blob_walk/walk_viterbi.py](../../../track_runner/blob_walk/walk_viterbi.py) | Shipped cost model |
+| [blob_walk_v2_implementation_audit.md](../audits/blob_walk_v2_implementation_audit.md) | Primary audit: findings P1-P17, N1-N4, L1-L2, claims A-L |
+| [blob_walk_v2_validation_report.md](blob_walk_v2_validation_report.md) | Validation verdicts and synthesis |
+| [blob_walk_v2_check0_stride_overrun.md](../workstreams/blob_walk_v2_check0_stride_overrun.md) | Claim K: stride-2 overrun |
+| [blob_walk_v2_check3_bootstrap_masking.md](../workstreams/blob_walk_v2_check3_bootstrap_masking.md) | Claim J: P10 masking |
+| [blob_walk_v2_check4_anchor_lag.md](../workstreams/blob_walk_v2_check4_anchor_lag.md) | Claims F, I: anchor staleness |
+| [blob_walk_v2_check5_normalized_cy.md](../workstreams/blob_walk_v2_check5_normalized_cy.md) | Claims D, E: blob merge and jitter |
+| [blob_walk_v2_check6_per_term_cost.md](../workstreams/blob_walk_v2_check6_per_term_cost.md) | Claim B: evidence dominance |
+| [blob_walk_v2_check7_regressed_split.md](../workstreams/blob_walk_v2_check7_regressed_split.md) | Claim C: ranking vs starvation split |
+| [blob_walk_v2_check8_identity_jumps.md](../workstreams/blob_walk_v2_check8_identity_jumps.md) | Claim L: identity jumps |
+| [blob_walk_v2_checkg_extrapolation_replay.md](../workstreams/blob_walk_v2_checkg_extrapolation_replay.md) | Claim G: extrapolation hold vs linear |
+| [blob_walk_v2_corpus120_run_2026_06_10.md](../workstreams/blob_walk_v2_corpus120_run_2026_06_10.md) | Post-P12 corpus baseline |
+| [blob_walk_v2_cost_model_ab.md](../workstreams/blob_walk_v2_cost_model_ab.md) | Release review: fix, verification, results |
+| [blob_walk_v2_fix_phase_roadmap.md](../active/blob_walk_v2_fix_phase_roadmap.md) | Fix-phase sequencing; milestone M1-M5 |
+| [blob_walk_v2_p10_fix_plan.md](../../archive/blob_walk_v2_p10_fix_plan.md) | M1 detailed plan (archived) |
+| [TR_SCHEMA_VERSION_HISTORY.md](../../TR_SCHEMA_VERSION_HISTORY.md) | Schema version history v12-v14 |
+| [walk_viterbi.py](../../../track_runner/blob_walk/walk_viterbi.py) | Shipped cost model |

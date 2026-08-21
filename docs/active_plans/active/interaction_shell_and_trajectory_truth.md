@@ -36,7 +36,7 @@ diagnosis, but never determine milestone completion.
 ## Design philosophy
 
 This plan applies **Focus on important issues**, **Perfect is the enemy of good**, **KISS**, and
-**Atomic task decomposition** from [docs/REPO_STYLE.md](../../REPO_STYLE.md).
+**Atomic task decomposition** from [REPO_STYLE.md](../../REPO_STYLE.md).
 
 The plan verifies the behavior it changes. A completion gate exists only when it checks a user-visible
 outcome, a repository contract, or a resource bound controlled by the code. Exact equality is reserved
@@ -413,7 +413,7 @@ does not pause for a human decision.
 
 ## Test and verification strategy
 
-Permanent tests follow [docs/PYTEST_STYLE.md](../../PYTEST_STYLE.md): fast, deterministic, offline,
+Permanent tests follow [PYTEST_STYLE.md](../../PYTEST_STYLE.md): fast, deterministic, offline,
 and self-contained.
 
 Use these input shapes:
@@ -451,7 +451,7 @@ use. It helps future tuning but never blocks this plan.
 
 - Keep this plan's current-state table and package status current.
 - Record behavior/interface changes and important rejected approaches in
-  [docs/CHANGELOG.md](../../CHANGELOG.md).
+  [CHANGELOG.md](../../CHANGELOG.md).
 - Keep [progress_handoff_2026-08-20.md](../reports/progress_handoff_2026-08-20.md) concise and
   restartable.
 - Keep local/private historical reports labeled optional and non-gating.

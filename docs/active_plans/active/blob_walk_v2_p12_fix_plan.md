@@ -38,7 +38,7 @@ observes frames belonging to adjacent intervals.
 
 ## 2. Exact code path
 
-File: [track_runner/blob_walk/walk_walker.py](../../../track_runner/blob_walk/walk_walker.py),
+File: [walk_walker.py](../../../track_runner/blob_walk/walk_walker.py),
 function `_run_windowed_steps`. Current line numbers (the audit's 1012/1019/1027
 references are stale after later edits):
 
@@ -218,7 +218,7 @@ interval bounded by `seed_frame` and `neighbor_seed_frame`.
   geometry-affecting for derived artifacts. Per contract C10 there is one
   unified `SCHEMA_VERSION`, and a bump records that artifacts written after
   the fix follow a new contract; record the bump in
-  [docs/TR_SCHEMA_VERSION_HISTORY.md](../../TR_SCHEMA_VERSION_HISTORY.md)
+  [TR_SCHEMA_VERSION_HISTORY.md](../../TR_SCHEMA_VERSION_HISTORY.md)
   annotated as "geometry-affecting for stride > 1 (>= ~90 fps) sources
   only; byte-identical at stride 1". Honest tradeoff: the bump invalidates
   geometry-derived caches on 30/60 fps videos too, where output is

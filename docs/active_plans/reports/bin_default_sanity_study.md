@@ -7,7 +7,7 @@ production code: the study reuses the shared `open_analysis_reader`,
 walks a fixed, pre-recorded interval set.
 
 The constant under test is `TARGET_DEFAULT_WIDTH_PX = 1440` in
-[common_tools/frame_reader.py](../../../common_tools/frame_reader.py); the
+[frame_reader.py](../../../common_tools/frame_reader.py); the
 default bin is `select_default_bin_factor(source_width) =
 max(1, floor(source_width / 1440))`.
 

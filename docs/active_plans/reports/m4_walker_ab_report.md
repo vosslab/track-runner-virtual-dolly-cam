@@ -39,7 +39,7 @@ Selection criteria (all three required), reusing the established corpus
 machinery:
 
 - corpus: the six videos in
-  [data/outdoor_corpus.txt](../../../data/outdoor_corpus.txt); the harness
+  [outdoor_corpus.txt](../../../data/outdoor_corpus.txt); the harness
   asserts its mirror against that file at startup.
 - DURING-RACE only (a.k.a. post-start): the left seed of the triple is strictly
   after `race_start_frame`. `race_start_frame` comes from

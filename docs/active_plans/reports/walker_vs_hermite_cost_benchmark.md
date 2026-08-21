@@ -19,7 +19,7 @@ recorded in those artifacts (the manifests hold per-frame status, not
 durations). Running a fresh timed walker pass requires concurrent 4K HEVC HDR
 decode, which is the very cost being characterized; rather than perturb the
 machine, the walker number is modeled from the repo's published decode
-benchmarks in [common_tools/README.md](../../../common_tools/README.md).
+benchmarks in [README.md](../../../common_tools/README.md).
 
 Interval geometry is taken from the real corpus: `corpus_walk/` contains 120
 seed-to-seed intervals across 6 videos, with median span 23 frames, mean 35,
@@ -75,7 +75,7 @@ The walker (`track_runner/blob_walk/walk_walker.walk_one_direction` plus
 
 The per-frame decode cost depends entirely on the read pattern, and the repo
 has measured both regimes
-([common_tools/README.md](../../../common_tools/README.md), 4K HEVC HDR, the
+([README.md](../../../common_tools/README.md), 4K HEVC HDR, the
 representative source codec):
 
 | Read pattern | Per-frame decode (ms) | Source |
@@ -186,7 +186,7 @@ Source confirmations:
   Hermite path.
 - `residual_pre_pass.py` line ~1-12: the pre-pass converts scattered reads into
   Strategy-0 sequential reads.
-- [common_tools/README.md](../../../common_tools/README.md): measured 6.4 ms
+- [README.md](../../../common_tools/README.md): measured 6.4 ms
   sequential vs median 2599 ms scattered per-frame decode on 4K HEVC HDR.
 - [TRACK_RUNNER_DESIGN.md](../../TRACK_RUNNER_DESIGN.md) line 60: documented
   Hermite "~3 ms per 100-frame interval".
