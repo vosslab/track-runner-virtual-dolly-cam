@@ -25,7 +25,7 @@ amendment was subsequently redesigned. The variance terms (`velocity_consistency
 (`WEIGHT_SPEED_DELTA` / `WEIGHT_HEADING_DELTA`) rather than window-variance
 terms. All six cost weights now live in `track_runner/track_runner.config.yaml`
 under the `walker_costs` section, not in `overlay_styles.yaml` as the amendment
-proposed. See [docs/TRACK_RUNNER_YAML_CONFIG.md](../TRACK_RUNNER_YAML_CONFIG.md)
+proposed. See [TRACK_RUNNER_YAML_CONFIG.md](../TRACK_RUNNER_YAML_CONFIG.md)
 for the full key reference.
 
 ---

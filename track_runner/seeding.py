@@ -1,23 +1,28 @@
-"""Interactive seeding UI for track_runner v2.
+"""Interactive seeding UI for track_runner.
 
 Collects seed points from the user by showing video frames at intervals
 and letting the user draw rectangles around the runner's upper torso.
-Seeds are returned in the v2 JSON format (no full-person estimation).
+Seeds use the canonical current JSON schema (no full-person estimation).
 """
 
 # PIP3 modules
 from PySide6.QtWidgets import QApplication
 
 # local repo modules
-import common_tools.frame_reader as frame_reader
 import common_tools.probe_video as probe_video
 import ui.workspace as workspace_module
 import ui.seed_controller as seed_controller_module
 import ui.target_controller as target_controller_module
+import ui.edit_controller as edit_controller_module
+import ui.session as session_module
+import ui.frame_source as frame_source_module
 
 AnnotationWindow = workspace_module.AnnotationWindow
 SeedController = seed_controller_module.SeedController
 TargetController = target_controller_module.TargetController
+EditController = edit_controller_module.EditController
+AnnotationSession = session_module.AnnotationSession
+FrameSource = frame_source_module.FrameSource
 
 #============================================
 def collect_seeds(
@@ -64,7 +69,7 @@ def collect_seeds(
 		start_frame: Optional frame index to seek the UI to on launch.
 
 	Returns:
-		List of seed dicts in v2 format (existing + newly collected).
+		List of current-format seed dicts (existing + newly collected).
 	"""
 	# headless mode: return pre-provided seeds without opening video
 	if pre_provided_seeds is not None:
@@ -82,8 +87,14 @@ def collect_seeds(
 		total_frames = frame_count_override
 	else:
 		total_frames = probe_info["frame_count"]
-	# create reliable frame reader with sequential fallback
-	reader = frame_reader.FrameReader(decode_video_path, fps, total_frames, debug=debug)
+	# FrameSource constructs and owns the reader on its decode thread.
+	reader = FrameSource({
+		"video_path": decode_video_path,
+		"fps": fps,
+		"total_frames": total_frames,
+		"bin_factor": 1,
+		"debug": debug,
+	})
 
 	# compute frame interval for the requested seed spacing
 	frame_interval = int(round(fps * interval_seconds))
@@ -138,27 +149,67 @@ def collect_seeds(
 	if app is None:
 		app = QApplication([])
 
-	# Create window and controller
-	window = AnnotationWindow("Track Runner - Seed Collection")
-	controller = SeedController(
-		seed_frame_indices=seed_frame_indices,
+	# One session keeps the reader, human seed list, and predictions alive
+	# while its mode controllers are replaced in place.
+	def make_seed_controller() -> SeedController:
+		return SeedController(
+			seed_frame_indices=seed_frame_indices,
+			reader=reader,
+			fps=fps,
+			config=config,
+			all_seeds=all_seeds,
+			save_callback=save_callback,
+			pass_number=pass_number,
+			mode_str="initial",
+			predictions=predictions,
+			start_frame=start_frame,
+		)
+
+	def make_target_controller() -> TargetController:
+		return TargetController(
+			sorted_targets=seed_frame_indices,
+			reader=reader,
+			fps=fps,
+			config=config,
+			all_seeds=all_seeds,
+			save_callback=save_callback,
+			pass_number=pass_number,
+			mode_str="initial",
+			predictions=predictions,
+			start_frame=start_frame,
+		)
+
+	def make_edit_controller() -> EditController:
+		return EditController(
+			work_seeds=all_seeds,
+			filtered_indices=list(range(len(all_seeds))),
+			reader=reader,
+			fps=fps,
+			config=config,
+			save_callback=save_callback or (lambda ws: None),
+			predictions=predictions,
+			start_frame=start_frame,
+		)
+
+	session = AnnotationSession(
+		video_context={"fps": fps, "total_frames": total_frames, "config": config},
 		reader=reader,
-		fps=fps,
-		config=config,
-		all_seeds=all_seeds,
-		save_callback=save_callback,
-		pass_number=pass_number,
-		mode_str="initial",
-		predictions=predictions,
-		start_frame=start_frame,
+		seed_store=all_seeds,
+		prediction_store=predictions,
+		controller_factories={
+			"seed": make_seed_controller,
+			"target": make_target_controller,
+			"edit": make_edit_controller,
+		},
 	)
-	window.set_controller(controller)
+	# Create window and let the session install the initial controller.
+	window = AnnotationWindow("Track Runner - Seed Collection")
+	window.set_session(session)
 	window.show()
 	app.exec()
 
-	reader.close()
-	all_seeds = controller.get_final_seeds()
-	return all_seeds
+	session.close()
+	return list(session.seed_store)
 
 
 #============================================
@@ -198,7 +249,7 @@ def collect_seeds_at_frames(
 		start_frame: Optional frame index to seek the UI to on launch.
 
 	Returns:
-		List of seed dicts in v2 format (existing + newly collected).
+		List of current-format seed dicts (existing + newly collected).
 	"""
 	if not target_frames:
 		return list(existing_seeds) if existing_seeds else []
@@ -210,8 +261,14 @@ def collect_seeds_at_frames(
 	probe_info = probe_video.probe_video(decode_video_path)
 	fps = probe_info["fps"]
 	total_frames = probe_info["frame_count"]
-	# create reliable frame reader with sequential fallback
-	reader = frame_reader.FrameReader(decode_video_path, fps, total_frames, debug=debug)
+	# FrameSource constructs and owns the reader on its decode thread.
+	reader = FrameSource({
+		"video_path": decode_video_path,
+		"fps": fps,
+		"total_frames": total_frames,
+		"bin_factor": 1,
+		"debug": debug,
+	})
 
 	sorted_targets = sorted(target_frames)
 	# filter out frames that already have seeds to prevent duplicates
@@ -232,24 +289,63 @@ def collect_seeds_at_frames(
 	if app is None:
 		app = QApplication([])
 
-	# Create window and controller
-	window = AnnotationWindow("Track Runner - Target Collection", initial_mode="target")
-	controller = TargetController(
-		sorted_targets=sorted_targets,
+	# Keep all three modes available without reopening the video or reader.
+	def make_seed_controller() -> SeedController:
+		return SeedController(
+			seed_frame_indices=list(range(total_frames)),
+			reader=reader,
+			fps=fps,
+			config=config,
+			all_seeds=all_seeds,
+			save_callback=save_callback,
+			pass_number=pass_number,
+			mode_str=mode,
+			predictions=predictions,
+			start_frame=start_frame,
+		)
+
+	def make_target_controller() -> TargetController:
+		return TargetController(
+			sorted_targets=sorted_targets,
+			reader=reader,
+			fps=fps,
+			config=config,
+			all_seeds=all_seeds,
+			save_callback=save_callback,
+			pass_number=pass_number,
+			mode_str=mode,
+			predictions=predictions,
+			start_frame=start_frame,
+		)
+
+	def make_edit_controller() -> EditController:
+		return EditController(
+			work_seeds=all_seeds,
+			filtered_indices=list(range(len(all_seeds))),
+			reader=reader,
+			fps=fps,
+			config=config,
+			save_callback=save_callback or (lambda ws: None),
+			predictions=predictions,
+			start_frame=start_frame,
+		)
+
+	session = AnnotationSession(
+		video_context={"fps": fps, "total_frames": total_frames, "config": config},
 		reader=reader,
-		fps=fps,
-		config=config,
-		all_seeds=all_seeds,
-		save_callback=save_callback,
-		pass_number=pass_number,
-		mode_str=mode,
-		predictions=predictions,
-		start_frame=start_frame,
+		seed_store=all_seeds,
+		prediction_store=predictions,
+		controller_factories={
+			"seed": make_seed_controller,
+			"target": make_target_controller,
+			"edit": make_edit_controller,
+		},
 	)
-	window.set_controller(controller)
+	# Create window and let the session install the initial controller.
+	window = AnnotationWindow("Track Runner - Target Collection", initial_mode="target")
+	window.set_session(session)
 	window.show()
 	app.exec()
 
-	reader.close()
-	all_seeds = controller.get_final_seeds()
-	return all_seeds
+	session.close()
+	return list(session.seed_store)

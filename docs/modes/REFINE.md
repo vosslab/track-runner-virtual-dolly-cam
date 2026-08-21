@@ -54,6 +54,9 @@ If refine exits with a message to run solve, heed it. The reason is usually:
 - Structural changes to the seed set that cannot be handled incrementally.
 - Missing camera-motion artifact: refine never recomputes Stage 1. It loads the canonical `<video>.track_runner.camera_motion.npz` and validates that the persisted `motion_model` matches the current configuration. Refine aborts with "Camera-motion artifact for this solve is missing. Run solve first." if the file is absent or stale.
 
-**`--bin` and refine:** Refine accepts `--bin` for the per-frame residual stages, but refine never recomputes Stage 1 regardless of `--bin`. Camera motion is a property of the video, not of the seeds, so changing `--bin` between solve and refine does not re-run Stage 1; refine reuses the canonical camera-motion artifact stored by the prior solve. The motion-model staleness check ensures the artifact matches the current configuration.
+**`--bin` and refine:** Refine never recomputes Stage 1. Its requested bin
+must match the canonical camera-motion artifact produced by the prior solve,
+along with its motion estimator and source-video identity. Run `solve` at the
+requested bin before refining when any of those inputs differ.
 
 For interval independence philosophy, see contract C5 in [../TRACK_RUNNER_CONTRACT.md](../TRACK_RUNNER_CONTRACT.md).

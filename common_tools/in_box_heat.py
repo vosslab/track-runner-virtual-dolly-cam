@@ -1,10 +1,9 @@
 """In-box motion-cue heat primitive (shared coordinate-sensitive seam).
 
 This module computes how much residual-motion heat sits INSIDE a solved torso
-box, in a single place that is imported by BOTH the track_runner manifest
-metric and the blob_walk_v2 heat movie.  Keeping the box->ROI
-selection in one tested primitive prevents the two callers from drifting on the
-coordinate convention (the failure mode behind bug #101).
+box, in one shared primitive. Keeping the box->ROI selection here prevents
+callers from drifting on the coordinate convention (the failure mode behind
+bug #101).
 
 THE COORDINATE CONVENTION
 =========================
@@ -12,10 +11,9 @@ THE COORDINATE CONVENTION
 The residual DoG array and the validity mask are ROI crops of the PROCESSED
 frame: array index (0, 0) corresponds to PROCESSED pixel `roi_origin`.  The box
 is a typed PROCESSED-space center-size box.  We map the box into array
-coordinates with EXACTLY ONE subtraction of `roi_origin`, mirroring
-`tools/blob_walk_v2/render/walk_draw.py` `processed_box_to_tile_local`: the
-center is shifted once, then the float edges are derived from the float center
-BEFORE any int cast.
+coordinates with EXACTLY ONE subtraction of `roi_origin`: the center is shifted
+once, then the float edges are derived from the float center BEFORE any int
+cast.
 
 Box-region selection rule (FIXED, tested):
 

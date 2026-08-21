@@ -1,6 +1,7 @@
 TRACK_VIDEOS/IMG_3830.mkv
 TRACK_VIDEOS/IMG_3823.mkv
-TRACK_VIDEOS/Jason-3200m-sectionals-IMG_4005.mkv
+# Permanently excluded by user direction on 2026-08-20.
+# TRACK_VIDEOS/Jason-3200m-sectionals-IMG_4005.mkv
 TRACK_VIDEOS/Lyra-Hersey-800m-IMG_3882.mkv
 TRACK_VIDEOS/Conant-4x400-2026_April_15.mkv
 # 4k 120fps

@@ -1,7 +1,6 @@
 track_runner: 3
-detection: {}
 processing:
-  crop_mode: direct_center
+  crop_mode: dolly
   crop_aspect: '16:9'
   # crop height = torso_height_multiple x tracked torso height
   # (averaged with the width-driven equivalent crop_h = multiple * raw_w / aspect).
@@ -17,9 +16,5 @@ processing:
   - auto_levels
   - hqdn3d
 camera:
-  zoom_type: fixed
   zoom_levels:
   - 1
-  camera_height: elevated
-  camera_position: side
-  track_size: 400

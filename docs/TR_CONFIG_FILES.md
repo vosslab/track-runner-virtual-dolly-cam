@@ -2,10 +2,8 @@
 
 Reference for every file the track runner persists under `tr_config/`.
 One row per video, plus a single global default. Covers on-disk schema,
-reader/writer functions, lifecycle rules, and the two things that most
-often surprise a first-time reader: why seeds files are so small now
-(they used to carry dead appearance data) and where the camera-motion
-solved artifact lives.
+reader/writer functions, lifecycle rules, current seed records, and the
+camera-motion solved artifact.
 
 **Durable Artifacts:** On-disk files in this directory are persistent
 solved data with explicit reuse rules. They are not cache. The word
@@ -24,13 +22,11 @@ belongs to which clip. The naming pattern is:
 
 A single root-level default lives at
 [track_runner.config.yaml](../track_runner/track_runner.config.yaml)
-and is merged under every per-video config at load time. Note: the
-loader used at runtime reads the built-in default from
-[track_runner.config.yaml](../track_runner/track_runner.config.yaml)
-via `read_default_config()` in
-[tr_config.py](../track_runner/tr_config.py); the
-`tr_config/` root-level copy is a user-editable starting point, not
-the built-in default.
+and is used when no per-video config exists. The loader reads the built-in
+default from [track_runner.config.yaml](../track_runner/track_runner.config.yaml)
+via `read_default_config()` in [tr_config.py](../track_runner/tr_config.py).
+A per-video configuration is a complete current configuration, not a partial
+overlay merged with the default.
 
 ## Format rule
 
@@ -44,19 +40,26 @@ This single rule dictates every file format below.
 | --- | --- | --- | --- | --- |
 | `<video>.track_runner.config.yaml` | YAML | 250-450 B | `tr_config.write_config` | `tr_config.load_config` |
 | `<video>.track_runner.seeds.json` | JSON | 5-50 KB | `state_io.write_seeds` | `state_io.load_seeds` |
-| `<video>.track_runner.interval_scores.json` | JSON | ~100 KB | `state_io.write_solver_diagnostics` | `state_io.load_diagnostics` |
-| `<video>.track_runner.torso_box_coords.npz` | NPZ | 100 KB - 3 MB | `state_io.write_torso_box_coords` | `state_io.load_torso_box_coords` |
+| `<video>.track_runner.interval_scores.json` | JSON | ~100 KB | `state_io.write_interval_scores` | `state_io.load_interval_scores` |
+| `<video>.track_runner.torso_box_coords.npz` | NPZ | 100 KB - 3 MB | `torso_box_coords_io.write_torso_box_coords` | `torso_box_coords_io.load_torso_box_coords` |
 | `<video>.track_runner.camera_motion.npz` | NPZ | 150-300 KB | `camera_motion.save_motion_cache` | `camera_motion.load_motion_cache` |
 | `<video>.track_runner.agreement_debug.json` | JSON | varies | `state_io.write_agreement_debug_sidecar` | manual |
-| `track_runner.config.yaml` (root) | YAML | ~250 B | hand-edited | merged under every per-video config |
-| `archive/` | directory | varies | hand-kept or migration tool | none |
+| `<video>.encode_analysis.yaml` | YAML | varies | `modes.analyze.run` | `encode_analysis.load_analyze_target_frames` |
+| `<video>.encode_analysis.html` | HTML | varies | `modes.analyze.run --plot` | browser/manual |
+| `track_runner.config.yaml` (root) | YAML | ~250 B | hand-edited | used when no per-video config exists |
 
-Function names were retained across the cleanup for callsite
-compatibility even where the on-disk filename changed:
-`load_diagnostics`/`write_solver_diagnostics` operate on
-`interval_scores.json`, and `load_intervals`/`write_intervals` were
-replaced by new `load_torso_box_coords`/`write_torso_box_coords`
-because the underlying format changed from JSON to NPZ.
+`tr_paths.default_interval_scores_path` owns the interval-score path.
+`state_io.load_interval_scores`/`write_interval_scores` own its current JSON
+contract; `torso_box_coords_io` owns the NPZ trajectory contract.
+
+## Current-artifact recovery
+
+Readers accept only current interval-score and torso-coordinate schemas. A
+consumer mode reports a stale or malformed artifact and directs the user to
+remove the derived interval artifacts and run `solve`. `solve` replaces
+derived scores or coordinates whose saved video geometry differs from the
+input video. Human seed files are not reinterpreted for another video; create
+fresh seeds when their source geometry does not match.
 
 ## Seeds JSON
 
@@ -73,7 +76,7 @@ temp file and `os.replace`.
 
 | Key | Type | Notes |
 | --- | --- | --- |
-| `track_runner_seeds` | int | Header; required value is `3`. Loader accepts legacy `2` and migrates on next write. |
+| `track_runner_seeds` | int | Header; required value is `3`. Other values are rejected. |
 | `seeds` | list | One record per annotated frame. |
 | `video_identity` | dict | Present on recent files; mismatch-detection metadata. |
 
@@ -97,35 +100,32 @@ temp file and `os.replace`.
 - `source` -- always `"human"` under C7.
 
 The canonical allow-list is `{frame_index, torso_box, status, pass}`.
-Unknown keys outside that set and the strip-list are tolerated in
-memory but discarded at write time. Read tolerant, write strict.
+Stored records with any other key are rejected. The writer drops derived
+in-memory values before serializing.
 
 ### Load-time behavior
 
 [state_io.load_seeds](../track_runner/state_io.py):
 1. If the file does not exist, return
    `{track_runner_seeds: 3, seeds: []}`.
-2. Accept headers 2 (legacy) or 3 (canonical); reject others.
-3. For every seed: migrate legacy `obstructed` status (keep as
-   `approximate` if `torso_box` present, drop otherwise), strip the
-   legacy field set, re-derive cx/cy/w/h from torso_box in memory
-   (skipped for `not_in_frame` seeds which carry no box).
+2. Accept header 3 only; reject any other header.
+3. For every seed: validate the four-field schema and status/torso-box
+   pairing, then re-derive cx/cy/w/h from torso_box in memory (skipped for
+   `not_in_frame` seeds, which carry no box).
 4. Sort by `frame_index`.
 
 ### Why seeds files are now small
 
-Legacy per-seed `histogram` fields (`(30, 32)` float64 arrays, ~11 KB
-of JSON each) dominated pre-migration file sizes. The 20 MB files
-observed before cleanup drop to ~5-50 KB in canonical v3 (~150-200 B
-per seed). The one-shot migration tool
-(`tools/_migrate_tr_config.py`) handles existing files.
+Removed per-seed `histogram` fields (`(30, 32)` float64 arrays, ~11 KB
+of JSON each) previously dominated file sizes. Canonical v3 files are
+~150-200 B per seed.
 
 ## Torso-box-coords NPZ
 
 File: `<video>.track_runner.torso_box_coords.npz`. This is the **per-interval
 solved-result store of per-frame trajectory geometry that refine mode and
-the encoder consume.** Reader `state_io.load_torso_box_coords`, writer
-`state_io.write_torso_box_coords`.
+the encoder consume.** Reader `torso_box_coords_io.load_torso_box_coords`,
+writer `torso_box_coords_io.write_torso_box_coords`.
 
 ### Top-level keys (NPZ)
 
@@ -134,12 +134,12 @@ the encoder consume.** Reader `state_io.load_torso_box_coords`, writer
 | `schema_version` | int32 | Current writer emits `10`; readers accept `{10}` (per `tr_schema.SUPPORTED_ARTIFACT_SCHEMAS["torso_box_coords"]`). The uint16 coordinate layout has been fixed since v10. Method-only changes (residual sampling, walker DP) keep this number fixed and refresh stale values with `solve`. |
 | `manifest` | bytes (JSON-encoded) | List of per-interval entries mapping fingerprint to an `array_index` plus `start_frame`/`end_frame`. |
 | `i<k>_cx`, `i<k>_cy`, `i<k>_w`, `i<k>_h` | uint16 arrays | Per-interval blended-interval-path arrays (the combined FWD+BWD output trajectory); `<k>` is the manifest's `array_index` for that interval. Array length equals `end_frame - start_frame + 1`. Pixel-snapped integers, range [0, 65535]. |
-| `video_identity` | bytes (JSON-encoded) | Optional; same shape as elsewhere. |
+| `video_identity` | bytes (JSON-encoded) | Required source identity. |
 | `solve_complete` | bool | Whether the solve completed vs. was interrupted. |
 
 ### In-memory shape
 
-`load_torso_box_coords` reassembles the legacy shape consumers expect:
+`load_torso_box_coords` reassembles the current in-memory shape:
 
 ```python
 {
@@ -171,8 +171,8 @@ unchanged; only the read site changes.
 - `forward_path`, `backward_path` -- the per-pass forward and
   backward interval paths are computed during solve and produce the
   blended output, but are not persisted to disk.
-- Per-frame extras (`conf`, `source`, `blend_flag`, `occlusion_risk`,
-  `blob_gate`) -- not read by production code from a loaded store;
+- Per-frame extras (`conf`, `source`, `blend_flag`, `blob_gate`) -- not read by
+  production code from a loaded store;
   dropped at write.
 
 ### Fingerprint format
@@ -200,35 +200,35 @@ unbinned SOURCE-frame coordinates. Consequently the key carries only:
 1. Seed-pair frame indices.
 2. Human-authored SOURCE seed geometry (the box coords x, y, w, h of each
    endpoint seed).
-3. The approved geometry-affecting schema tag from `tr_schema`.
+3. The current `SCHEMA_VERSION` tag from `tr_schema`.
 
-Bin factor, processed dimensions, CLI flags, solver mode, stage name, tuning
-constants, basename, file size, and container extension stay out of the key.
-These are runtime or performance details; they do not change what the persisted
-artifact stores. A solve at one bin and a refine at another reuse all unchanged
-intervals. Method-only changes (walker DP, cost weights, residual stride) use
-`solve` to refresh stale values rather than widening the key. See
+Processed dimensions, CLI flags, solver mode, stage name, tuning constants,
+basename, file size, and container extension stay out of the key. These are
+runtime or performance details; they do not change what the persisted artifact
+stores. Bin factor belongs to the camera-motion artifact identity, so refine
+must use the existing motion bin or the user runs `solve` at the requested bin.
+Method-only changes (walker DP, cost weights, residual stride) use `solve` to
+refresh stale values rather than widening the key. See
 [TR_SCHEMA_VERSION_HISTORY.md](TR_SCHEMA_VERSION_HISTORY.md) for the full
 allow-list and justification rule.
 
 ## Interval scores JSON
 
 File: `<video>.track_runner.interval_scores.json`. **Sole owner of
-interval scoring.** Reader `state_io.load_diagnostics`, writer
-`state_io.write_solver_diagnostics`. Function names retained for
-callsite compatibility even though the on-disk filename changed from
-the old `.diagnostics.json`.
+interval scoring.** Reader `state_io.load_interval_scores`, writer
+`state_io.write_interval_scores`. `write_solver_interval_scores` assembles a
+solver result before it delegates to that canonical writer.
 
 ### Top-level keys
 
 | Key | Type | Notes |
 | --- | --- | --- |
-| `track_runner_diagnostics` | int | Header; accepted values `2` (legacy, migrated on load) and `3` (current). |
+| `track_runner_diagnostics` | int | Header; must equal current `SCHEMA_VERSION` (`10`). |
 | `fps` | float | Video fps, rounded to 6 decimals. |
 | `intervals` | list | Per-interval scoring entries. |
 | `cyclical_prior` | dict or null | Optional: period-detection result. |
-| `race_phase` | dict | Optional: race-start frame detection. |
-| `video_identity` | dict | Optional. |
+| `pre_race_reference` | dict or null | Optional current pre-race summary. |
+| `video_identity` | dict | Required source identity. |
 
 ### Per-interval entry
 
@@ -267,8 +267,9 @@ artifact per video; motion-model identity lives inside the file. Reader
 | Key | Type | Notes |
 | --- | --- | --- |
 | `motion_model` | bytes (UTF-8) | One of `fixed_zoom`, `discrete_zoom`, `continuous_zoom`. Staleness determined by comparing persisted model against the current configuration. |
-| `video_identity_basename` | bytes (UTF-8) | Basename of the source video. |
+| `video_identity` | bytes (UTF-8 JSON) | Complete source-video identity used for cache reuse. |
 | `frame_count` | int64 | Frame count from video probe. |
+| `bin_factor` | int64 | Processed-frame bin used for measurement; required for reuse. |
 
 ### Per-model arrays (float32)
 
@@ -287,57 +288,26 @@ the interval scoring.
 - Computed once per video by `precompute_camera_motion`. The result
   is written as the canonical file alongside the video's other
   `tr_config/` files.
-- On the next run, the loader reads `motion_model` from the stored
-  artifact and compares against the current config-derived motion model.
-  On mismatch, the file is treated as absent, the estimator runs, and
-  `save_motion_cache` atomically overwrites.
-- Reused by solve, refine, encode, and the UI. All readers access the
-  single canonical filename directly.
-
-## tr_config/archive
-
-Holds hand-kept backups plus the one-shot migration tool's archive
-directory (`tr_config/archive/pre_cleanup_<YYYYMMDD>/`). No code path
-reads `tr_config/archive/`. Safe to delete for disk reclamation once
-you have confirmed the new formats work end-to-end.
-
-## Migration from legacy formats
-
-The one-shot script `tools/_migrate_tr_config.py` canonicalizes seeds
-and archives every other legacy file:
-
-- Seeds canonicalization: drops rows with `source != "human"` under
-  C7, then rewrites through the v3 canonical writer.
-- Intervals/diagnostics/camera-motion legacy files: moved to
-  `tr_config/archive/pre_cleanup_<YYYYMMDD>/`. No translation; the
-  next solve / analyze / precompute_camera_motion regenerates under
-  the new format.
-- Debug sidecars: never touched (they did not exist pre-migration).
-
-Default is dry-run; use `--apply` to act. Fingerprint-drift refusal
-guards against files with stored cx/cy/w/h that disagree with
-torso_box-derived geometry; `--accept-drift` opts in to rewrite
-anyway.
-
-Once the migration has run successfully, the script may be deleted
-(`rm tools/_migrate_tr_config.py`).
+- Solve reuses the artifact only when its motion model, bin factor, and complete
+  source-video identity match. Otherwise it recomputes and atomically replaces
+  the file.
+- Refine, analyze, encode, and the UI read the same canonical filename. A
+  missing or stale camera-motion artifact directs the user to run solve.
 
 ## FAQ
 
-- **Why is my seeds.json no longer 20 MB?** The legacy `histogram`
-  field is gone under C6. The canonical four-field schema is
+- **Why is my seeds.json no longer 20 MB?** The removed `histogram`
+  field is prohibited under C6. The canonical four-field schema is
   ~150-200 B per seed.
 - **Where is the camera-motion track stored?** In
   `<video>.track_runner.camera_motion.npz`. Keys are `dx`, `dy`,
   `quality` (plus `scale` for discrete/continuous zoom), and
   artifact-identity metadata (`motion_model`,
-  `video_identity_basename`, `frame_count`).
-- **Can I delete `tr_config/archive/`?** Yes. Nothing reads it.
-- **What happens if I hand-edit a per-video config YAML?** The next
-  run reloads it; per-video values override the merged defaults.
-- **Does re-saving seeds.json introduce legacy fields?** No.
-  `write_seeds` is strict: it emits only the canonical four fields
-  regardless of what the in-memory dict carries.
+  `video_identity`, `frame_count`, `bin_factor`).
+- **What happens if I hand-edit a per-video config YAML?** The next run reads
+  the complete file and validates its current header and required sections.
+- **Does re-saving seeds.json introduce extra fields?** No.
+  `write_seeds` emits only the canonical four fields.
 
 ## Related docs
 

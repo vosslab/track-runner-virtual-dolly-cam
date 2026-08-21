@@ -22,12 +22,15 @@ class _IdentitySceneTransform:
 	transform.
 	"""
 
-	def pixel_to_scene(self, frame_index, px, py):
+	def pixel_to_scene(self, frame_index: int, px: float, py: float) -> tuple[float, float]:
 		return (px, py)
 
 
 #============================================
-def make_synthetic_inputs():
+def make_synthetic_inputs() -> tuple[
+	list[dict], list[tuple[int, int, int, int]], types.SimpleNamespace,
+	_IdentitySceneTransform, float, dict,
+]:
 	"""Return (trajectory, crop_rects, motion_track, scene_transform, fps, config).
 
 	30 frames of constant-velocity motion in pixel space; identity scene

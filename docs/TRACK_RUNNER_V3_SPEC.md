@@ -4,7 +4,7 @@ This document is subordinate to
 [TRACK_RUNNER_CONTRACT.md](TRACK_RUNNER_CONTRACT.md). On conflict, the
 contract wins and this document is corrected.
 
-Status: v3, reflects implemented modules as of 2026-03-13
+Status: v3, source-backed reference updated 2026-08-20
 
 This document describes the architecture of track_runner v3, a seed-driven
 interval solver for tracking a single runner in handheld video footage.
@@ -38,26 +38,27 @@ for evolution from v1 and v2.
 | Module | Lines | Purpose |
 | --- | --- | --- |
 | `track_runner.py` | ~8 | Thin entry point: `import cli; cli.main()` |
-| `cli.py` | ~1200 | Argument parsing, multi-pass orchestration, quality report |
-| `config.py` | ~350 | Config YAML loading, defaults, schema validation |
-| `state_io.py` | ~200 | JSON read/write for seeds, diagnostics, and intervals |
-| `detection.py` | ~300 | YOLOv8n ONNX person detection (optional seeding assistance, not active tracking evidence) |
-| `propagator.py` | ~400 | Frame-to-frame geometry propagation |
-| `hypothesis.py` | ~250 | Competing path generation for ambiguous intervals (competitor-based scoring removed as a normative pillar per C6) |
-| `scoring.py` | ~250 | Interval confidence scoring (geometry-based terms) |
-| `interval_solver.py` | ~1400 | Per-interval bounded solving, fusion, refinement, anchoring |
-| `review.py` | ~200 | Weak span identification and seed target generation |
-| `seeding.py` | ~620 | Interactive seed UI, jersey color/histogram extraction |
-| `seed_editor.py` | ~100 | Seed review and editing UI entry point |
-| `crop.py` | ~340 | Adaptive crop trajectory from confidence-weighted positions |
-| `encoder.py` | ~470 | Video decode (OpenCV), crop apply, ffmpeg encode |
+| `cli.py` | dispatch only | Parses arguments and calls the selected module in `modes/` |
+| `modes/` | mode bodies | Implements prepare, setup, seed, edit, target, solve, refine, encode, and analyze |
+| `tr_config.py` | config | YAML loading and validation |
+| `state_io.py` | persistence | Seed and interval-score JSON I/O |
+| `torso_box_coords_io.py` | persistence | Solved torso-coordinate NPZ I/O |
+| `camera_motion_artifact.py` | persistence | Camera-motion NPZ I/O |
+| `trajectory_confidence.py` | confidence owner | Derives confidence from independent raw FWD/BWD geometry |
+| `blend_commitment.py` | commitment owner | Resolves a disagreement run from canonical residual/DoG evidence |
+| `interval_solver.py` | solver | Per-interval Hermite solve, walker dispatch, stitching, and seed stamping |
+| `tr_crop.py` | crop | Whole-path dolly crop and the smooth/direct-center baselines |
+| `encoder.py` | encode | Applies crop rectangles and drives ffmpeg |
 
 ### UI package (`ui/`)
 
 | Module | Purpose |
 | --- | --- |
-| `workspace.py` | `AnnotationWindow(AppShell)` Qt main window with mode toolbar |
+| `workspace.py` | Qt annotation workspace |
 | `frame_view.py` | `FrameView(QGraphicsView)` with cursor-anchored zoom |
+| `frame_source.py` | Worker-owned asynchronous frame reader and newest-only delivery |
+| `session.py` | Annotation-session state and mode wiring |
+| `keymap.py` | Declarative annotation keyboard bindings |
 | `seed_controller.py` | `SeedController(QObject)` for seed collection |
 | `target_controller.py` | `TargetController(SeedController)` for targeted refinement |
 | `edit_controller.py` | `EditController(QObject)` for seed review and editing |
@@ -80,53 +81,42 @@ for evolution from v1 and v2.
 
 ```
 track_runner.py -> cli
-cli -> config, state_io, detection, seeding, interval_solver, review, crop, encoder
-interval_solver -> propagator, hypothesis, scoring
-propagator -> detection, cv2, numpy
-hypothesis -> propagator, scoring
-scoring -> numpy
-review -> scoring, state_io
-seeding -> cv2, numpy, ui.seed_controller, ui.workspace
-seed_editor -> ui.edit_controller, ui.workspace
-crop -> numpy, math
-encoder -> cv2, numpy, crop, common_tools.frame_filters
-config -> yaml, os
-state_io -> json, os
+cli -> modes.*
+modes.solve/refine -> solve_queue, interval_solver, trajectory_confidence
+interval_solver -> velocity_model, blend_commitment, blob_walk
+blend_commitment -> trajectory_confidence, residual/DoG evidence
+modes.encode -> tr_crop, encoder, off_frame_geometry
+tr_crop -> dolly_path, torso_size_stabilizer
+tr_config -> yaml, tr_paths
+state_io -> seed JSON, interval-score JSON
+torso_box_coords_io -> torso-coordinate NPZ
+camera_motion_artifact -> camera-motion NPZ
 ui.workspace -> ui.frame_view, ui.app_shell, ui.actions
+ui.session -> ui.frame_source, ui.keymap, ui.*_controller
 ui.seed_controller -> ui.overlay_items, ui.status_presenter
 ui.edit_controller -> ui.overlay_items, ui.status_presenter
 ```
 
 ## CLI subcommands
 
-The tool supports 7 modes (default is `run`):
+The CLI has no default mode. It requires one of these nine explicit modes:
 
 | Mode | Purpose |
 | --- | --- |
-| `run` | Full pipeline: seed, solve, encode |
-| `seed` | Collect seeds interactively, save, exit |
-| `edit` | Review, fix, and delete existing seeds |
-| `target` | Add seeds at weak interval frames with FWD/BWD overlays |
-| `solve` | Full re-solve: clears prior results, solves all intervals |
-| `refine` | Re-solve only changed/new intervals, reuse prior results |
-| `encode` | Encode cropped video from existing trajectory |
+| `prepare` | Create an optional fast-read working video. |
+| `setup` | Write camera and motion-estimator configuration for one video. |
+| `seed` | Collect human seed torso boxes. |
+| `edit` | Review and change existing seeds. |
+| `target` | Add seeds around weak intervals. |
+| `solve` | Build current camera motion, interval scores, and torso paths. |
+| `refine` | Re-solve intervals changed by additional seeds. |
+| `analyze` | Report crop-path and solver diagnostics without encoding. |
+| `encode` | Produce the cropped output video. |
 
-### CLI flags
-
-| Flag | Dest | Type | Default | Description |
-| --- | --- | --- | --- | --- |
-| `-i`, `--input` | `input_file` | str | required | Input video path |
-| `-o`, `--output` | `output_file` | str | `{stem}_tracked{ext}` | Output path |
-| `-c`, `--config` | `config_file` | str | `{input}.track_runner.config.yaml` | Config YAML |
-| `--seed-interval` | `seed_interval` | float | config value | Override seeding interval |
-| `--aspect` | `aspect` | str | config value | Override crop aspect ratio |
-| `-d`, `--debug` | `debug` | flag | False | Draw debug overlay on output |
-| `--refine` | `refine` | str | `suggested` | Refinement mode |
-| `--gap-threshold` | `gap_threshold` | float | 15.0 | Min seedless gap for gap mode |
-| `--time-range` | `time_range` | str | None | Restrict to `HH:MM:SS-HH:MM:SS` |
-| `--ignore-diagnostics` | `ignore_diagnostics` | flag | False | Re-solve from seeds |
-| `-F`, `--encode-filters` | `encode_filters` | str | config value | Comma-separated filter names |
-| `-s`, `--severity` | `severity` | str | None | Filter by severity (edit/target) |
+Global options include `-i/--input`, `-c/--config`, `-w/--workers`, and
+`--time-range`; they precede the mode name. Each mode owns its own options.
+Run `track_runner.py --help` or the mode-specific `--help` for the current
+argument contract. [MODES.md](MODES.md) is the maintained workflow reference.
 
 ## Data flow
 
@@ -144,13 +134,13 @@ Pass 3: review
   review.py identifies weak intervals (low confidence)
   -> seed targets for refinement pass
 
-Refinement passes (--refine flag controls mode)
+Refinement passes (`refine` mode)
   User seeds weak regions
   interval_solver re-runs on updated seeds
   -> repeat until acceptable or user stops
 
 Pass N: crop
-  crop.py: smooth crop trajectory from solved positions + confidence
+  tr_crop.py: crop rectangles from solved positions and owner confidence
   -> per-frame crop rectangles
 
 Pass N+1: encode
@@ -166,9 +156,8 @@ The user annotates each seed frame using one of four drawing modes.
 ### The four drawing modes
 
 - **Visible**: the runner is fully visible. The user draws a precise torso box.
-  Exact torso position is known. Full tracking confidence. (Jersey color is
-  not used as identity evidence per contract C6; it may be stored in seeds
-  for display or legacy purposes only.)
+  Exact torso position is known. Full tracking confidence. Jersey color is
+  not stored or used as identity evidence per contract C6.
 - **Partial**: the runner is partially hidden (another runner crossing, a pole,
   etc.) but the torso position is identifiable. Precise torso box drawn.
   Used as an interval endpoint.
@@ -176,11 +165,11 @@ The user annotates each seed frame using one of four drawing modes.
   and the exact torso position cannot be determined. The user draws a larger
   area indicating the general region. Stored as `status: "approximate"` with
   `torso_box` holding the drawn area. No `jersey_hsv`. Used as a weak interval
-  endpoint (conf=0.3). Trajectory near the seed is erased because position is
-  uncertain.
+  endpoint (conf=0.3). It preserves machine trajectory geometry with
+  approximate confidence/status; it is not an erasure anchor or exact box.
 - **Not in frame** (`n` key): the runner has physically left the camera frame.
-  Confirmed off-screen past the edge. No position data. Triggers trajectory
-  erasure within the erase radius.
+  Confirmed off-screen past the edge. No position data. It is the
+  authoritative runner-absence status.
 
 ### Approximate vs not_in_frame
 
@@ -189,6 +178,14 @@ outside the frame boundary (off-screen). Approximate means the runner is within
 the frame but fully hidden, and the user draws a general area. The approximate
 area gives the solver a directional hint; `not_in_frame` has no location at all.
 
+`not_in_frame` is literal absence in runner truth: it has no torso box and no
+interpolated tracking geometry. Its derived `NifSpan` covers frames strictly
+between bracketing visible or partial seeds (or through the known last frame
+when open-ended), and that exact span is erased from runner truth. Encode may
+derive a temporary edge-anchored crop target from those bracketing solved boxes
+so the output camera follows the exit edge. That target is crop-output-only
+intent, never a runner state, seed, or persisted tracking geometry.
+
 ### Properties by drawing mode
 
 | Property | visible | partial | approximate | not_in_frame |
@@ -196,27 +193,17 @@ area gives the solver a directional hint; `not_in_frame` has no location at all.
 | Status value in JSON | `visible` | `partial` | `approximate` | `not_in_frame` |
 | Box type | precise torso | precise torso | larger approximate area | none |
 | Has `torso_box` | YES | YES | YES | NO |
-| Has `jersey_hsv` | YES | unreliable | NO | NO |
 | Runner in frame | YES | YES | YES (hidden) | NO (off-screen) |
 | Interval endpoint | YES | YES | YES (weak, conf=0.3) | NO |
-| Trajectory erasure | NO | NO | YES (0.5 s) | YES (1.0 s) |
+| Trajectory erasure | NO | NO | NO | YES, exact derived `NifSpan` |
 | Default confidence | 1.0 | 1.0 | 0.3 | n/a |
 
-## Valid seed modes
+## Stored seed fields
 
-Seeds carry a `mode` field recording how they were created.
-
-| Mode | Description |
-| --- | --- |
-| `initial` | First-pass seeding at regular intervals |
-| `suggested_refine` | Refinement at solver-suggested weak-span frames |
-| `interval_refine` | Refinement at evenly spaced frames across all intervals |
-| `gap_refine` | Refinement at midpoints of large seedless gaps |
-| `target_refine` | Targeted refinement via the target controller UI |
-| `bbox_polish` | YOLO or consensus polish applied during seed editing |
-| `edit_redraw` | Seed redrawn by user during editing |
-| `solve_refine` | Solver-generated refinement |
-| `interactive_refine` | Interactive refinement during a session |
+Each current seed record contains only `frame_index`, `torso_box`, `status`,
+and `pass`. The file does not preserve appearance descriptors, machine output,
+or a seed-creation mode. The loader derives center and size convenience values
+in memory from the human-authored torso box.
 
 ## Core algorithm: bounded interval solver
 
@@ -227,22 +214,11 @@ seed), then blends the two interval paths into a scored result.
 
 ### Forward and backward propagation
 
-`propagator.py` advances a bounding box one frame at a time. Machine
-evidence uses interval geometry propagation plus per-frame residual-
-motion observations (see
-`MOTION_CUE_HEAT_MAP.md` for the heat-map and
-blob-pipeline mechanism). Appearance-based blending is banned per
-contract C6. If local patch matching is present, it is a geometry-only
-propagation aid and not identity evidence.
-
-Lucas-Kanade optical flow (Shi-Tomasi features with LK pyramidal flow)
-is the flow primitive used for short-horizon geometry propagation.
-Image-kernel parameters (pyramid levels, window size, iteration count)
-are about the raster, not about the runner, and are allowed raw-pixel
-quantities under contract clause C1.
-
-**Confidence decay**: Each propagated frame decays confidence by 0.97.
-Floor is 0.1. Seeds start at 1.0 (visible/partial) or 0.3 (approximate).
+`velocity_model.py` builds independent FWD and BWD Hermite paths from human
+seed anchors. Stage 4 may replace promoted spans with the blob walker, using
+the residual-motion evidence pipeline. Appearance evidence is not identity
+evidence. FWD and BWD remain independent until the confidence/commitment
+boundary.
 
 **Per-frame state**:
 
@@ -251,29 +227,35 @@ Floor is 0.1. Seeds start at 1.0 (visible/partial) or 0.3 (approximate).
  "conf": float, "source": str}
 ```
 
-`source` values: `seed`, `detected`, `propagated`, `absent`.
+`conf` is not a per-pass decay value. `trajectory_confidence.py` owns it and
+derives it from the FWD/BWD center separation normalized by their mean torso
+width. The same owner applies those values to fresh, cached, analyze, and
+encode trajectories.
 
 ### Confidence-weighted blending
 
-After forward and backward propagation the interval solver blends the two
-tracks. At each frame, if the Dice overlap coefficient >= 0.3 (boxes agree),
-the blended position is a confidence-weighted average:
+The baseline path is a confidence-weighted average of the independent raw
+paths. Disagreement is determined by `trajectory_confidence.py`, not Dice
+overlap. For each contiguous disagreement run, `blend_commitment.py` compares
+the FWD/BWD trajectories against one canonical residual/DoG field and commits
+the whole run to the stronger evidence direction, with a bounded transition
+band. Missing evidence remains explicit and leaves the baseline path rather
+than selecting a confidence winner.
 
 ```
 blended_cx = (fwd_conf * fwd_cx + bwd_conf * bwd_cx) / (fwd_conf + bwd_conf)
 ```
 
-Same for `cy`, `w`, `h`. Blended confidence = `Dice * max(fwd_conf, bwd_conf)`.
-
-When Dice < 0.3 (disagreement), the higher-confidence direction is used
-directly.
+The output confidence remains the trajectory-confidence owner's raw-pass
+agreement. Commitment selects geometry; it does not invent a second confidence
+or allow a committed result to feed back into FWD/BWD scoring.
 
 ### Post-blend refinement pass (historical / aspirational)
 
 > **Status note:** This section describes a "soft-prior" refinement pass
 > that re-propagated each interval using the blended interval path as a
 > spatial prior. The current `refine` CLI mode in
-> [cli.py](../track_runner/cli.py) `_mode_refine` does
+> [refine.py](../track_runner/modes/refine.py) `run` does
 > something different -- it re-solves only intervals whose fingerprint
 > changed (cache-invalidation refinement, not post-blend soft-prior
 > refinement). Treat the rest of this section as the historical design
@@ -281,7 +263,7 @@ directly.
 > [interval_solver.py](../track_runner/interval_solver.py)
 > are the truth for what currently runs. (For the canonical definitions
 > of forward / backward / blended interval path, see
-> `FWD_BWD_MODEL_METHODOLOGY.md`.)
+> `TR_FWD_BWD_MODEL_METHODOLOGY.md`.)
 
 Pipeline order (as designed):
 
@@ -373,18 +355,20 @@ correlation, jersey color) is banned as identity evidence per C6.
 
 ### Trajectory erasure
 
-When the runner is off-screen or fully hidden, the solver erases trajectory
-data near that frame.
+When the runner is marked `not_in_frame`, the solver derives one absent span
+from the human-authored visible/partial brackets and erases only that span.
 
-| Drawing mode | Erase radius | Endpoint | Reason |
+| Drawing mode | Runner-truth policy | Endpoint | Reason |
 | --- | --- | --- | --- |
-| visible | no erasure | yes (accurate) | precise torso box |
-| partial | no erasure | yes (accurate) | precise torso box |
-| approximate | 0.5 s | yes (weak) | uncertain position |
-| not_in_frame | 1.0 s | no | runner off-screen |
+| visible | retained | yes (accurate) | precise torso box |
+| partial | retained | yes (accurate) | precise torso box |
+| approximate | retained | yes (weak) | uncertain position |
+| not_in_frame | erase strict-between NifSpan frames | no | runner off-screen |
 
-Erasure decisions are centralized in `_apply_trajectory_erasure()`. Both
-solve and encode paths pass all seeds; the function decides what to erase.
+`off_frame_geometry.build_nif_spans()` derives the absence set and
+`erase_nif_span_truth()` is its only runner-truth erasure owner. The visible
+and partial bracket frames remain intact. Edge anchors belong only to the
+separate crop-output trajectory.
 
 ### Cyclical prior detection
 
@@ -405,30 +389,8 @@ can inform seed placement and gap analysis.
 | > 0.2 | > 0.1 | `fair` | Borderline |
 | else | | `low` | Needs seed |
 
-Legacy failure reasons (`likely_identity_swap`, `weak_appearance`)
-were driven by competitor-margin and appearance-based identity scoring.
-Those scoring pillars are removed under C6, so these codes no longer
-fire in the active path. They may still appear in historical
-diagnostics files.
-
-### Blob coverage (additive diagnostic)
-
-Each interval carries a `blob_coverage_fraction` field in
-`interval_score`, written by the analytical propagator's stateless
-per-frame blob snap. Value is in `[0.0, 1.0]` or `null`:
-
-- numerator: frames where the snap accepted a blob.
-- denominator: frames that had at least one candidate blob in the
-  corridor (not total propagated frames). Heavily occluded intervals
-  are not unfairly penalized.
-- seed frames are excluded from both numerator and denominator.
-- `null` with `no_candidate_blobs: true` means the interval had zero
-  candidate blobs (heavy occlusion, tiny runner, or degenerate ROI).
-
-Sibling fields `candidate_frame_count` and `propagated_frame_count`
-carry the raw counters for debugging.
-
-Schema is additive: old diagnostics files load unchanged.
+Competitor-margin and appearance-based identity scoring are removed under C6.
+Current diagnostics use only the documented geometry and motion fields.
 
 ### Interval-length-aware scoring
 
@@ -439,10 +401,7 @@ compensates for inherent noise in FWD/BWD agreement on very short intervals.
 ### Interval severity classification
 
 `review.py` classifies intervals for refinement prioritization.
-Severity is driven by FWD/BWD agreement. Legacy severity rules that
-referenced `likely_identity_swap` or competitor-margin were driven by
-scoring pillars that are removed under C6; current severity uses
-geometry-based agreement terms only.
+Severity is driven by FWD/BWD agreement and current geometry-based terms.
 
 - **high**: very low agreement
 - **medium**: low agreement
@@ -477,37 +436,31 @@ default 15 s).
 
 ## Crop controller
 
-`crop.py` operates as a virtual camera operator, producing smooth crop
+`tr_crop.py` operates as a virtual camera operator, producing smooth crop
 trajectories from the confidence-weighted tracker output.
 
 ### Parameters
 
 | Parameter | Default | Description |
 | --- | --- | --- |
-| `crop_mode` | `smooth` | Crop algorithm: `smooth` (online lag-based) or `direct_center` (offline centering) |
-| `target_fill_ratio` | 0.30 | Subject height / crop height |
-| `smoothing_attack` | 0.15 | Alpha for large position errors (smooth mode only) |
-| `smoothing_release` | 0.05 | Alpha for small position errors (smooth mode only) |
-| `max_crop_velocity` | 30.0 | Max px/frame crop movement (smooth mode only) |
-| `min_crop_size` | 200 | Minimum crop dimension in pixels |
-| `deadband_fraction` | 0.02 | Fraction of crop size for deadband (smooth mode only) |
-| `crop_post_smooth_strength` | (removed) | Fixed constant in `tr_crop.py`; key no longer read from config |
-| `crop_post_smooth_size_strength` | (removed) | Fixed constant in `tr_crop.py`; key no longer read from config |
-| `crop_post_smooth_max_velocity` | (removed) | Fixed constant in `tr_crop.py`; key no longer read from config |
+| `crop_mode` | `dolly` | Crop algorithm: `dolly` (offline whole-path), `smooth`, or `direct_center` |
+| `torso_height_multiple` | config value | User-facing zoom control for all crop modes |
+| `crop_smoothing_attack` | 0.15 | Smooth-mode alpha for large position errors |
+| `crop_smoothing_release` | 0.05 | Smooth-mode alpha for small position errors |
+| `crop_max_velocity` | 30.0 px/frame | Smooth-mode maximum crop movement |
+| `crop_dolly_smoothness` | 20.0 | Dolly whole-path smoothness penalty |
 
-**Alpha floor**: smoothing alpha is clamped to `max(alpha, 0.02)` so the
-crop always responds, even at low confidence.
-
-**Velocity capping**: per-frame crop displacement clamped to 30 px with sign
-preservation.
+`target_fill_ratio` is an internal smooth-mode conversion from
+`torso_height_multiple`, not a user configuration key. There is no
+user-facing minimum crop-size floor; the crop paths retain only a 1-pixel
+sanity floor for degenerate geometry.
 
 ### Direct-center crop mode
 
 `crop_mode: direct_center` replaces the online `CropController` with a pure
-offline signal-processing pipeline. It centers the crop directly on the dense
-solved trajectory (post-propagation, post-fusion, post-refinement,
-post-anchoring), then smooths with forward-backward EMA. No deadband, no
-attack/release alpha, no online state.
+offline signal-processing baseline. It centers the crop directly on the dense
+solved trajectory, applies forward-backward EMA to crop size only, and has no
+deadband, attack/release alpha, center post-smoothing, or center velocity cap.
 
 This mode treats telephoto crop generation as a reframing problem: the operator
 already kept the runner roughly centered, and the system refines that framing.
@@ -515,37 +468,25 @@ Recommended for telephoto footage where the runner fills most of the frame.
 
 Pipeline:
 
-1. Extract `cx`, `cy`, `h` from solved trajectory
-2. Compute crop size from `h / fill_ratio` and aspect ratio
-3. Apply forward-backward EMA to position and size (smoothing constants in `tr_crop.py`)
-4. Guard minimum positive size
+1. Extract `cx`, `cy`, `w`, and `h` from the solved trajectory
+2. Compute crop height by averaging the height-driven and width-driven
+   `torso_height_multiple` estimates, then derive width from the aspect ratio
+3. Apply forward-backward EMA to crop size only (constant in `tr_crop.py`)
+4. Guard only the 1-pixel degenerate-size sanity floor
 5. Reconstruct and clamp rectangles to frame bounds
-6. Optional final velocity cap on center (constant in `tr_crop.py`)
-7. Re-clamp to frame bounds
-8. Convert to integer tuples using `round()` for crop stability
-
-The `smooth` mode (existing `CropController`) remains the default in M1.
-Set `crop_mode: direct_center` explicitly in config to use the new mode.
-
-### Post-smoothing (offline)
-
-An optional offline forward-backward EMA smoother runs after the online crop
-pass. This reduces residual crop jitter for telephoto footage where small
-bbox noise translates to visible crop movement.
-
-The smoother decomposes crop rectangles into center (cx, cy) and size (w, h)
-signals, applies forward-backward EMA independently, reconstructs
-rectangles, clamps to frame bounds, and applies an optional final velocity
-cap on the center.
-
-Pipeline order:
-
-1. Online crop pass (existing `CropController`)
-2. Optional forward-backward EMA on cx, cy (position) and w, h (size)
-3. Reconstruct rectangles from smoothed center + size
-4. Clamp to frame bounds
-5. Optional final velocity cap on center only
 6. Re-clamp to frame bounds
+7. Convert to integer tuples using `round()` for crop stability
+
+`crop_mode: dolly` is the current default. It solves the full known path and
+uses the existing `smooth` controller only as its explicit non-convergence
+fallback. Set `crop_mode: direct_center` or `smooth` to retain either baseline.
+
+### Crop smoothing boundary
+
+The current crop paths do not apply an additional generic offline center
+smoother. `smooth` owns its online controller behavior. `direct_center` keeps
+the center glued to the solved trajectory and smooths crop size only. `dolly`
+solves the whole path and falls back to `smooth` only on non-convergence.
 
 ### Telephoto preset
 
@@ -710,13 +651,12 @@ All companion files derive from the input filename stem.
 
 ### Config YAML
 
-Path: `{input}.track_runner.config.yaml`
+Path: `tr_config/<video-stem>.track_runner.config.yaml`
 
-Header key `track_runner` must equal `3` (v2 auto-migrates at load).
+Header key `track_runner` must equal `3`.
 
 ```yaml
 track_runner: 3
-detection:
 processing:
   crop_aspect: "1:1"
   torso_height_multiple: 3.33
@@ -752,15 +692,13 @@ Visual encoding model:
 
 ### Seeds JSON
 
-Path: `{input}.track_runner.seeds.json`
+Path: `tr_config/<video-stem>.track_runner.seeds.json`
 
-Header key `track_runner_seeds` must equal `2`.
+Header key `track_runner_seeds` must equal `3`.
 
 **Coordinate convention**: `torso_box` stores `[x, y, w, h]` where `x, y` is
-the **top-left corner** of the bounding rectangle. The seed also carries `cx`,
-`cy` (center coordinates, computed as `x + w/2`, `y + h/2`) and `w`, `h` at the
-top level for direct use by the solver and encoder. Code that needs the center
-must use `cx`/`cy`, never `torso_box[0]`/`torso_box[1]`.
+the **top-left corner** of the bounding rectangle. `load_seeds` derives `cx`,
+`cy`, `w`, and `h` in memory for consumers; these values are not stored.
 
 ### Coordinate spaces and storage boundary
 
@@ -770,7 +708,7 @@ of truth on conflict.
 
 - SOURCE: full-frame pixels at the video's native resolution. This is the
   storage and consumption space. The seed JSON above is SOURCE, the per-frame
-  torso-box npz (written and read via `state_io.py`) is SOURCE, and the encoder
+  torso-box NPZ (written and read via `torso_box_coords_io.py`) is SOURCE, and the encoder
   consumes SOURCE.
 - PROCESSED: post-bin analysis pixels. `reader.width`/`reader.height` are
   PROCESSED. The blob walker decodes, steps, and selects candidates here. At
@@ -789,7 +727,7 @@ Storage-space rule: every value written to the torso-box npz must be SOURCE.
 The Hermite leg produces SOURCE pixels directly (SOURCE seed -> SCENE -> SOURCE
 pixel). The walker leg produces PROCESSED pixels, so the walker path must be
 projected PROCESSED -> SOURCE exactly once, at the storage boundary,
-immediately before `state_io.write_torso_box_coords`, via
+immediately before `torso_box_coords_io.write_torso_box_coords`, via
 `geometry.processed_to_source` (centers) and `geometry.processed_to_source_delta`
 (width/height). At `bin_factor = 1` this projection is an identity no-op. At
 `bin_factor > 1` it is mandatory for the walker path; omitting it stores
@@ -797,43 +735,24 @@ PROCESSED pixels mislabeled as SOURCE.
 
 ```json
 {
-  "track_runner_seeds": 2,
-  "video_file": "race.mov",
+	"track_runner_seeds": 3,
   "seeds": [
     {
-      "frame": 150,
-      "time_s": 5.0,
+	  "frame_index": 150,
       "torso_box": [620, 330, 40, 60],
-      "cx": 640.0,
-      "cy": 360.0,
-      "w": 40.0,
-      "h": 60.0,
-      "jersey_hsv": [120, 180, 200],
-      "pass": 1,
-      "source": "human",
-      "mode": "initial",
-      "status": "visible"
+	  "pass": 1,
+	  "status": "visible"
     },
     {
-      "frame": 300,
-      "time_s": 10.0,
-      "status": "not_in_frame",
-      "pass": 1,
-      "source": "human",
-      "mode": "initial"
+	  "frame_index": 300,
+	  "status": "not_in_frame",
+	  "pass": 1
     },
     {
-      "frame": 450,
-      "time_s": 15.0,
+	  "frame_index": 450,
       "status": "approximate",
       "torso_box": [460, 240, 80, 120],
-      "cx": 500.0,
-      "cy": 300.0,
-      "w": 80.0,
-      "h": 120.0,
-      "pass": 2,
-      "source": "human",
-      "mode": "suggested_refine"
+	  "pass": 2
     }
   ]
 }
@@ -841,22 +760,17 @@ PROCESSED pixels mislabeled as SOURCE.
 
 Valid `status` values: `visible`, `partial`, `approximate`, `not_in_frame`.
 
-Legacy `"obstructed"` seeds are migrated on load: those with `torso_box`
-become `"approximate"`, those without are dropped.
-
-Valid `mode` values: `initial`, `suggested_refine`, `interval_refine`,
-`gap_refine`, `target_refine`, `bbox_polish`, `edit_redraw`, `solve_refine`,
-`interactive_refine`.
+Only these four stored fields are accepted for each seed. Other seed headers,
+statuses, or fields fail loudly; this single-user repository has no v2 seed
+compatibility reader.
 
 ### Interval scores JSON
 
-Path: `{input}.track_runner.interval_scores.json` (renamed from the legacy
-`.diagnostics.json`).
+Path: `tr_config/<video-stem>.track_runner.interval_scores.json`.
 
 Sole owner of per-interval scoring: interval scores, failure reasons,
-race-phase summary. Reader `state_io.load_diagnostics`, writer
-`state_io.write_solver_diagnostics` (function names retained for
-callsite compatibility despite the on-disk filename change).
+pre-race summary. Reader `state_io.load_interval_scores`, writer
+`state_io.write_interval_scores`.
 
 This file does NOT carry the forward, backward, or blended interval
 paths. Per-frame geometry lives elsewhere; see "Geometry cache NPZ"
@@ -865,38 +779,21 @@ below and the canonical reference in
 
 ### Torso-box-coords NPZ
 
-Path: `{input}.track_runner.torso_box_coords.npz`.
+Path: `tr_config/<video-stem>.track_runner.torso_box_coords.npz`.
 
-Persists the per-interval blended interval path as four float32 arrays
-per interval (`i<k>_cx`, `i<k>_cy`, `i<k>_w`, `i<k>_h`) plus a JSON
-manifest. The forward and backward interval paths are NOT stored here;
-they live in the opt-in debug-paths sidecar (see "Debug interval paths
-sidecar" below). Full schema in
-[TR_CONFIG_FILES.md](TR_CONFIG_FILES.md).
-
-### Debug interval paths sidecar
-
-Path: `{input}.track_runner.debug_tracks.npz` (legacy filename;
-"debug interval paths" is the canonical prose name).
-
-Opt-in artifact written only when `solve --debug-tracks` runs. Holds
-the per-interval forward and backward interval paths for overlay /
-inspection only. Not consulted by solve, refine, or scoring. Governed
-by contract clause C8.
-
-Stores interval fingerprints for incremental refinement. Each fingerprint
-encodes start/end seed frame and position so that `refine` mode can detect
-which intervals have changed.
+Persists pixel-snapped uint16 `cx`, `cy`, `w`, and `h` arrays plus a JSON
+manifest for each interval. Every interval persists blended SOURCE-frame
+geometry only; forward and backward paths are transient solve-time inputs to
+scoring and commitment. There is no debug-track sidecar. Readers reject
+incomplete array groups or a path whose length disagrees with its manifest
+interval. Full schema is in [TR_CONFIG_FILES.md](TR_CONFIG_FILES.md).
 
 ## Key constants
 
 | Component | Parameter | Value |
 | --- | --- | --- |
-| Propagator | Confidence decay/frame | 0.97 |
-| Propagator | Confidence floor | 0.1 |
-| Propagator | Prior weight scale | 0.3 |
-| Propagator | Min flow features | 4 |
-| Interval solver | Dice agreement threshold | 0.3 |
+| Trajectory confidence | Raw-pass agreement | exp(-center separation / mean torso width) |
+| Blend commitment | Disagreement decision | One canonical residual/DoG evidence run |
 | Scoring | Agreement threshold (high) | > 0.5 |
 | Scoring | Short interval promotion | <= 5 frames |
 | Crop | Target fill ratio | 0.30 |

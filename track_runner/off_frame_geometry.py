@@ -24,7 +24,6 @@ Input shapes:
 
 # Standard Library
 from dataclasses import dataclass
-from typing import Optional
 
 #============================================
 
@@ -46,8 +45,8 @@ class NifSpan:
 	start_frame: int
 	end_frame: int
 	exit_side: str
-	before_frame: Optional[int]
-	after_frame: Optional[int]
+	before_frame: int | None
+	after_frame: int | None
 	stable_w: int
 	stable_h: int
 	anchor_start: int
@@ -128,6 +127,7 @@ def build_nif_spans(
 	solved_trajectory: dict,
 	frame_size: tuple,
 	race_start_frame: int,
+	last_frame_index: int | None = None,
 ) -> list:
 	"""Build a list of NifSpan objects from seeds and solved trajectory.
 
@@ -143,6 +143,7 @@ def build_nif_spans(
 		solved_trajectory: dict[int, dict] keyed by frame index, values {cx, cy, w, h}.
 		frame_size: tuple (frame_width, frame_height).
 		race_start_frame: int, frame where the race starts.
+		last_frame_index: Optional final source frame for an open-ended span.
 
 	Returns:
 		list[NifSpan], one per contiguous NIF interval.
@@ -253,10 +254,9 @@ def build_nif_spans(
 		if after_frame is not None:
 			span_end = after_frame - 1
 		else:
-			# No after bracket; fill to the end
-			# We don't have video frame count, so we must infer from context
-			# For now, store end_frame; it will be clamped at encode time if needed
-			span_end = nif_end_frame  # placeholder; caller must handle open-ended
+			# A caller with the trajectory extent can make an open-ended NIF
+			# statement cover the remaining source frames.
+			span_end = nif_end_frame if last_frame_index is None else last_frame_index
 
 		span = NifSpan(
 			start_frame=span_start,
@@ -272,6 +272,30 @@ def build_nif_spans(
 		nif_spans.append(span)
 
 	return nif_spans
+
+
+#============================================
+
+def erase_nif_span_truth(
+	trajectory: list,
+	nif_spans: list,
+) -> set:
+	"""Erase runner truth over the exact derived NIF span indices.
+
+	Args:
+		trajectory: Authoritative runner states, modified in place.
+		nif_spans: NIF spans from build_nif_spans.
+
+	Returns:
+		Set of in-range frame indices erased from runner truth.
+	"""
+	nif_frames = set()
+	for span in nif_spans:
+		for frame_index in range(span.start_frame, span.end_frame + 1):
+			if 0 <= frame_index < len(trajectory):
+				trajectory[frame_index] = None
+				nif_frames.add(frame_index)
+	return nif_frames
 
 
 #============================================

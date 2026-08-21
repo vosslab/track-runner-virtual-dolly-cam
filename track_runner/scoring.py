@@ -6,10 +6,14 @@ final confidence label.
 """
 
 # Standard Library
+import enum
 import math
 
 # PIP3 modules
 import numpy
+
+# local repo modules
+import trajectory_confidence
 
 
 # Track-runner schema versions are kept in lockstep per contract C9.
@@ -20,54 +24,18 @@ INTERVAL_SCORE_SCHEMA_VERSION = tr_schema.SCHEMA_VERSION
 
 
 #============================================
-def _compute_dice_coefficient(
-	box_a: dict,
-	box_b: dict,
-) -> float:
-	"""Compute Dice coefficient between two bounding boxes.
+class ConfidenceTier(enum.IntEnum):
+	"""Ordered interval confidence tiers for bounded promotions and demotions."""
 
-	Dice = 2 * intersection_area / (area_a + area_b).
-	Result is in [0.0, 1.0] where 1.0 means identical boxes.
+	LOW = 0
+	FAIR = 1
+	GOOD = 2
+	HIGH = 3
 
-	Args:
-		box_a: Dict with keys "cx", "cy", "w", "h" (center-format box).
-		box_b: Dict with keys "cx", "cy", "w", "h" (center-format box).
-
-	Returns:
-		Float Dice coefficient in [0.0, 1.0].
-	"""
-	# convert center-format to corner-format rectangles
-	a_x1 = box_a["cx"] - box_a["w"] / 2.0
-	a_y1 = box_a["cy"] - box_a["h"] / 2.0
-	a_x2 = box_a["cx"] + box_a["w"] / 2.0
-	a_y2 = box_a["cy"] + box_a["h"] / 2.0
-
-	b_x1 = box_b["cx"] - box_b["w"] / 2.0
-	b_y1 = box_b["cy"] - box_b["h"] / 2.0
-	b_x2 = box_b["cx"] + box_b["w"] / 2.0
-	b_y2 = box_b["cy"] + box_b["h"] / 2.0
-
-	# compute intersection rectangle
-	inter_x1 = max(a_x1, b_x1)
-	inter_y1 = max(a_y1, b_y1)
-	inter_x2 = min(a_x2, b_x2)
-	inter_y2 = min(a_y2, b_y2)
-
-	# intersection area (zero if no overlap)
-	inter_w = max(0.0, inter_x2 - inter_x1)
-	inter_h = max(0.0, inter_y2 - inter_y1)
-	intersection = inter_w * inter_h
-
-	# individual areas
-	area_a = box_a["w"] * box_a["h"]
-	area_b = box_b["w"] * box_b["h"]
-
-	# Dice coefficient: 2 * intersection / (area_a + area_b)
-	total_area = area_a + area_b
-	if total_area <= 0:
-		return 0.0
-	dice = 2.0 * intersection / total_area
-	return dice
+	@property
+	def label(self) -> str:
+		"""Return the persisted lower-case tier label."""
+		return self.name.lower()
 
 
 #============================================
@@ -120,190 +88,10 @@ def compute_meeting_point_errors(
 
 
 #============================================
-def compute_agreement_debug(
-	forward_path: list,
-	backward_path: list,
-	start_frame: int = 0,
-) -> dict:
-	"""Compute FWD/BWD agreement with per-frame diagnostic records.
-
-	Returns the same aggregate Dice that compute_agreement() returns, plus
-	per-frame records (iou, center distance, width/height ratios) and iou
-	percentiles. This is meant for --debug runs so the agreement metric
-	can be investigated empirically without changing the metric itself.
-
-	Args:
-		forward_path: List of tracking state dicts from forward propagation.
-		backward_path: List of tracking state dicts from backward propagation.
-			Chronological from propagate_backward_analytical; aligned
-			frame-by-frame with forward_path by shared slot convention.
-		start_frame: Absolute frame index of forward_path[0], used to tag
-			per-frame records with their absolute frame_index.
-
-	Returns:
-		Dict with keys:
-			- agreement: float [0, 1], mean Dice (same as compute_agreement)
-			- iou_p10, iou_p50, iou_p90: float percentile summary of per-frame Dice
-			- per_frame: list of dicts with frame_index, fwd_cx, fwd_cy,
-				fwd_w, fwd_h, bwd_cx, bwd_cy, bwd_w, bwd_h, iou,
-				center_dist_px, size_ratio_w, size_ratio_h
-	"""
-	num_frames = min(len(forward_path), len(backward_path))
-	if num_frames == 0:
-		return {
-			"agreement": 0.0,
-			"iou_p10": 0.0, "iou_p50": 0.0, "iou_p90": 0.0,
-			"per_frame": [],
-		}
-
-	per_frame = []
-	ious = []
-	for i in range(num_frames):
-		fwd = forward_path[i]
-		bwd = backward_path[i]
-		iou = _compute_dice_coefficient(fwd, bwd)
-		ious.append(iou)
-		dx = float(fwd["cx"]) - float(bwd["cx"])
-		dy = float(fwd["cy"]) - float(bwd["cy"])
-		center_dist = math.sqrt(dx * dx + dy * dy)
-		# ratios always >= 1.0: larger / smaller; 1.0 means identical size
-		fwd_w = max(1.0, float(fwd.get("w", 0.0)))
-		fwd_h = max(1.0, float(fwd.get("h", 0.0)))
-		bwd_w = max(1.0, float(bwd.get("w", 0.0)))
-		bwd_h = max(1.0, float(bwd.get("h", 0.0)))
-		size_ratio_w = max(fwd_w, bwd_w) / min(fwd_w, bwd_w)
-		size_ratio_h = max(fwd_h, bwd_h) / min(fwd_h, bwd_h)
-		per_frame.append({
-			"frame_index": start_frame + i,
-			"fwd_cx": round(float(fwd["cx"]), 2),
-			"fwd_cy": round(float(fwd["cy"]), 2),
-			"fwd_w": round(fwd_w, 2),
-			"fwd_h": round(fwd_h, 2),
-			"bwd_cx": round(float(bwd["cx"]), 2),
-			"bwd_cy": round(float(bwd["cy"]), 2),
-			"bwd_w": round(bwd_w, 2),
-			"bwd_h": round(bwd_h, 2),
-			"iou": round(iou, 4),
-			"center_dist_px": round(center_dist, 2),
-			"size_ratio_w": round(size_ratio_w, 3),
-			"size_ratio_h": round(size_ratio_h, 3),
-		})
-
-	return {
-		"agreement": float(numpy.mean(ious)),
-		"iou_p10": float(numpy.percentile(ious, 10)),
-		"iou_p50": float(numpy.percentile(ious, 50)),
-		"iou_p90": float(numpy.percentile(ious, 90)),
-		"per_frame": per_frame,
-	}
-
-
-#============================================
-def compute_agreement(forward_path: list, backward_path: list) -> float:
-	"""Compute overall agreement score between forward and backward interval paths.
-
-	Uses Dice coefficient (2*intersection / (area_a + area_b)) per frame,
-	which naturally handles scale: two large boxes with high overlap score
-	well regardless of absolute pixel size.
-
-	Args:
-		forward_path: List of tracking state dicts from forward propagation.
-		backward_path: List of tracking state dicts from backward propagation.
-			Chronological from propagate_backward_analytical; aligned
-			frame-by-frame with forward_path by shared slot convention.
-
-	Returns:
-		Float in [0.0, 1.0] where 1.0 means perfect agreement.
-	"""
-	num_frames = min(len(forward_path), len(backward_path))
-	if num_frames == 0:
-		return 0.0
-
-	frame_scores = []
-	for i in range(num_frames):
-		fwd = forward_path[i]
-		bwd = backward_path[i]
-		# Dice coefficient captures both position and scale agreement
-		# as a single area-overlap metric
-		dice = _compute_dice_coefficient(fwd, bwd)
-		frame_scores.append(dice)
-
-	agreement = float(numpy.mean(frame_scores))
-	return agreement
-
-
-#============================================
-def classify_confidence(
-	agreement: float,
-	identity: float,
-	margin: float,
-	interval_length: int = 0,
-) -> tuple:
-	"""Classify overall confidence from agreement, identity, and competitor margin.
-
-	Four-tier decision grid:
-		- agreement > 0.5 + margin > 0.5 -> "high"   (trusted)
-		- agreement > 0.5 + margin > 0.2 -> "good"   (acceptable)
-		- agreement > 0.2 + margin > 0.1 -> "fair"   (borderline)
-		- everything else                 -> "low"    (needs seed)
-
-	Short-interval promotion: intervals of 5 frames or fewer get bumped
-	up one tier (low->fair, fair->good) since FWD/BWD barely propagated
-	and agreement noise dominates. Never promotes to "high".
-
-	Additional failure reasons are appended regardless of tier:
-		- margin < 0.2                    -> "likely_identity_swap"
-		- identity < 0.4                  -> "weak_appearance"
-
-	Args:
-		agreement: Float [0, 1], forward/backward agreement score.
-		identity: Float [0, 1], average identity match score.
-		margin: Float [0, 1], average separation from competitors.
-		interval_length: Number of frames in the interval. When > 0 and
-			<= 5, promotes confidence one tier (never to "high").
-
-	Returns:
-		Tuple of (confidence_label: str, failure_reasons: list of str).
-	"""
-	failure_reasons = []
-
-	# four-tier classification
-	if agreement > 0.5 and margin > 0.5:
-		confidence = "high"
-	elif agreement > 0.5 and margin > 0.2:
-		confidence = "good"
-		failure_reasons.append("low_separation")
-	elif agreement > 0.2 and margin > 0.1:
-		confidence = "fair"
-		if agreement <= 0.5:
-			failure_reasons.append("low_agreement")
-		if margin <= 0.2:
-			failure_reasons.append("low_separation")
-	else:
-		confidence = "low"
-		failure_reasons.append("low_agreement")
-
-	# short intervals: agreement is noisy, promote one tier
-	short_interval = interval_length > 0 and interval_length <= 5
-	if short_interval and confidence not in ("high",):
-		tier_order = ["low", "fair", "good", "high"]
-		idx = tier_order.index(confidence)
-		confidence = tier_order[min(idx + 1, len(tier_order) - 1)]
-
-	# additional reasons
-	if margin < 0.2:
-		failure_reasons.append("likely_identity_swap")
-	if identity < 0.4:
-		failure_reasons.append("weak_appearance")
-
-	return (confidence, failure_reasons)
-
-
-#============================================
 # minimum-real-motion floor for velocity_consistency, in scene units per
 # frame. Prevents the ratio median(|a|) / median(|v|) from blowing up when
 # the runner is nearly stationary. Calibrated to roughly match the
-# stationary baseline used in race_phases.py. Not a perfect constant
+# stationary baseline used by current interval scoring. Not a perfect constant
 # (actual stationary speed depends on image scale) but a conservative
 # lower bound so we never divide by tiny numbers.
 VELOCITY_FLOOR_SCENE_UNITS_PER_FRAME = 1.5
@@ -389,7 +177,7 @@ def score_interval_analytical(
 ) -> dict:
 	"""Score an interval using analytical velocity model metrics.
 
-	Computes agreement (Dice FWD/BWD), velocity consistency (internal
+	Computes agreement from raw FWD/BWD center geometry, velocity consistency (internal
 	trajectory smoothness in scene coordinates), size consistency
 	(interpolation residual), and assigns confidence tier and failure reasons.
 
@@ -408,8 +196,8 @@ def score_interval_analytical(
 		fps: Video frame rate. Used for the long-interval demotion threshold.
 
 	Returns:
-		Dict with keys (interval_score_v2 schema):
-			- agreement: float [0, 1], Dice FWD/BWD overlap
+		Dict with interval score fields:
+			- agreement: float [0, 1], raw FWD/BWD geometry agreement
 			- velocity_consistency: float [0, 1], internal smoothness (higher=better)
 			- size_consistency: float [0, 1], box-size interpolation residual
 			- motion_quality: float, set to 1.0 (computed during camera motion)
@@ -419,8 +207,8 @@ def score_interval_analytical(
 			- failure_reasons: list of str
 			- warning_flags: list of str
 	"""
-	# compute agreement between forward and backward interval paths
-	agreement = compute_agreement(forward_path, backward_path)
+	# The confidence owner reads only independent raw FWD/BWD paths (C9).
+	agreement = trajectory_confidence.interval_agreement(forward_path, backward_path)
 
 	# velocity consistency: internal trajectory smoothness in scene coords
 	# rationale: the previous LOO-slope metric measured whether a linear
@@ -495,7 +283,7 @@ def score_interval_analytical(
 		for seed in all_seeds:
 			status = seed.get("status", "")
 			frame = int(seed.get("frame_index", -1))
-			if status in ("approximate", "obstructed"):
+			if status == "approximate":
 				if start_frame <= frame <= end_frame:
 					approx_frames.add(frame)
 		# for each approximate seed, count frames from it to the next
@@ -522,36 +310,29 @@ def score_interval_analytical(
 	# confidence tier classification
 	interval_len = len(forward_path)
 	if agreement > 0.5 and velocity_consistency > 0.5 and size_consistency > 0.5:
-		confidence_tier = "high"
+		confidence_tier = ConfidenceTier.HIGH
 	elif agreement > 0.5 and velocity_consistency > 0.3:
-		confidence_tier = "good"
+		confidence_tier = ConfidenceTier.GOOD
 	elif agreement > 0.2 and velocity_consistency > 0.2:
-		confidence_tier = "fair"
+		confidence_tier = ConfidenceTier.FAIR
 	else:
-		confidence_tier = "low"
-
-	# tier modifiers (pre_race tiers are computed separately; no arithmetic applies)
-	tier_order = ["low", "fair", "good", "high"]
+		confidence_tier = ConfidenceTier.LOW
 
 	# short intervals (<= 5 frames): promote one tier (never to high)
-	if interval_len <= 5 and confidence_tier != "high":
-		idx = tier_order.index(confidence_tier)
-		confidence_tier = tier_order[min(idx + 1, len(tier_order) - 1)]
+	if interval_len <= 5 and confidence_tier != ConfidenceTier.HIGH:
+		confidence_tier = ConfidenceTier(min(confidence_tier + 1, ConfidenceTier.HIGH))
 
 	# long intervals (> 10s of real time): demote one tier
 	if interval_len > fps * 10.0:
-		idx = tier_order.index(confidence_tier)
-		confidence_tier = tier_order[max(idx - 1, 0)]
+		confidence_tier = ConfidenceTier(max(confidence_tier - 1, ConfidenceTier.LOW))
 
 	# low motion quality: demote one tier
 	if motion_quality < 0.5:
-		idx = tier_order.index(confidence_tier)
-		confidence_tier = tier_order[max(idx - 1, 0)]
+		confidence_tier = ConfidenceTier(max(confidence_tier - 1, ConfidenceTier.LOW))
 
 	# high occlusion fraction: cap at fair
 	if occlusion_fraction > 0.3:
-		if tier_order.index(confidence_tier) > tier_order.index("fair"):
-			confidence_tier = "fair"
+		confidence_tier = min(confidence_tier, ConfidenceTier.FAIR)
 
 	# failure reasons
 	failure_reasons = []
@@ -581,7 +362,7 @@ def score_interval_analytical(
 		"size_consistency": size_consistency,
 		"motion_quality": motion_quality,
 		"occlusion_fraction": occlusion_fraction,
-		"confidence_tier": confidence_tier,
+		"confidence_tier": confidence_tier.label,
 		"failure_reasons": failure_reasons,
 		"warning_flags": warning_flags,
 	}
@@ -600,9 +381,7 @@ def compute_seed_confidences(
 
 	Args:
 		seeds: List of seed dicts with 'frame_index' keys.
-		intervals: List of interval dicts from diagnostics, each with
-			'start_frame', 'end_frame', 'agreement_score', 'identity_score',
-			'competitor_margin' keys.
+		intervals: List of interval dicts from diagnostics with nested scores.
 
 	Returns:
 		Dict mapping frame_index (int) to {"score": float, "label": str,
@@ -625,26 +404,13 @@ def compute_seed_confidences(
 				"adjacent_intervals": 0,
 			}
 			continue
-		# combine metrics from adjacent intervals (v2 or v3 format)
-		# detect format from first adjacent interval
-		iscore = adjacent[0].get("interval_score", adjacent[0])
-		is_v3 = "confidence_tier" in iscore
+		# Combine metrics from adjacent current-format intervals.
 		agreements = []
 		secondary_scores = []
 		for iv in adjacent:
-			iv_score = iv.get("interval_score", iv)
-			if is_v3:
-				# analytical v3: use agreement + velocity_consistency
-				agreements.append(float(iv_score.get("agreement", 0.0)))
-				secondary_scores.append(
-					float(iv_score.get("velocity_consistency", 0.5)),
-				)
-			else:
-				# legacy v2: use agreement_score + competitor_margin
-				agreements.append(float(iv_score.get("agreement_score", 0.0)))
-				secondary_scores.append(
-					float(iv_score.get("competitor_margin", 0.0)),
-				)
+			iv_score = iv["interval_score"]
+			agreements.append(float(iv_score.get("agreement", 0.0)))
+			secondary_scores.append(float(iv_score.get("velocity_consistency", 0.5)))
 		avg_agreement = float(numpy.mean(agreements))
 		avg_secondary = float(numpy.mean(secondary_scores))
 		# weighted composite score
@@ -662,43 +428,3 @@ def compute_seed_confidences(
 			"adjacent_intervals": len(adjacent),
 		}
 	return confidences
-
-
-#============================================
-# self-test for compute_seed_confidences
-if __name__ == "__main__":
-	# test with matching intervals
-	test_seeds = [
-		{"frame_index": 100},
-		{"frame_index": 500},
-		{"frame_index": 999},
-	]
-	test_intervals = [
-		{
-			"start_frame": 100, "end_frame": 500,
-			"agreement_score": 0.9, "identity_score": 0.8,
-			"competitor_margin": 0.6,
-		},
-		{
-			"start_frame": 500, "end_frame": 999,
-			"agreement_score": 0.3, "identity_score": 0.2,
-			"competitor_margin": 0.1,
-		},
-	]
-	result = compute_seed_confidences(test_seeds, test_intervals)
-	# frame 100: one adjacent interval (start_frame=100)
-	assert result[100]["adjacent_intervals"] == 1
-	assert result[100]["label"] == "high"
-	# frame 500: two adjacent intervals (end of first, start of second)
-	assert result[500]["adjacent_intervals"] == 2
-	# frame 999: one adjacent interval (end_frame=999)
-	assert result[999]["adjacent_intervals"] == 1
-	assert result[999]["label"] == "low"
-
-	# test with no matching intervals
-	orphan_seeds = [{"frame_index": 42}]
-	orphan_result = compute_seed_confidences(orphan_seeds, test_intervals)
-	assert orphan_result[42]["label"] == "unknown"
-	assert orphan_result[42]["adjacent_intervals"] == 0
-
-	print("all scoring self-tests passed")

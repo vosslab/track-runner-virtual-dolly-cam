@@ -9,7 +9,7 @@ queued and HOW completions are collected:
   paths, worker count, debug). Keeps `execute_interval_work` callable
   with a small kwarg surface.
 - `plan_interval_work`: pure function, no I/O, no printing. Consumed by
-  `cli._mode_refine` for fast-exit / orphan prune and by
+  `modes.refine.run` for fast-exit / orphan prune and by
   `interval_solver.solve_all_intervals` for the dispatch loop.
 - `execute_interval_work`: runs the in-process-vs-pool decision, the
   rich progress bar, the prior-solved fast-exit, the quit/drain path, and
@@ -95,7 +95,7 @@ class ExecutionContext:
 	No callbacks, no cross-interval accumulators, no progress-bar handles.
 
 	Fields:
-		reader: VideoReader open on the input video. In-process path
+		reader: FrameReader open on the input video. In-process path
 			uses this reader directly; pool path hands it to worker-side
 			reopen.
 		scene_transform: SceneTransform instance for pixel<->scene coord
@@ -118,11 +118,11 @@ class ExecutionContext:
 			video regardless of fast-read selection (contract C13).
 		video_frame_count: Total frame count from mediainfo (for correct
 			frame clamping in contact sheet rendering). Must be the
-			authoritative value from cli._probe_video(), not OpenCV.
+			authoritative value from modes.video_artifacts.probe_video(), not OpenCV.
 		debug: Debug flag; gates per-interval debug lines.
 		race_start_interval: Optional tuple (low_frame, high_frame) for
 			race-start interval classification. None means no pre-race
-			classification (legacy refine path).
+			classification (refine execution has no supplied interval).
 		pre_race_reference: Dict from compute_pre_race_reference or None.
 			Initially None; populated by execute_interval_work after the
 			interval is solved and Stage 2 fine detection runs.
@@ -152,7 +152,7 @@ def plan_interval_work(
 	"""Compute the WorkPlan for a seed list + optional prior-solved store.
 
 	Pure function: no I/O, no printing, no side-effects. Called by both
-	`interval_solver.solve_all_intervals` and `cli._mode_refine` so solve
+	`interval_solver.solve_all_intervals` and `modes.refine.run` so solve
 	mode and refine mode see the same partition.
 
 	When race_start_interval is provided, intervals are classified by phase:
@@ -167,7 +167,7 @@ def plan_interval_work(
 			is pending.
 		race_start_interval: Optional tuple (low_frame, high_frame) for
 			race-start interval. When None, no phase classification happens
-			(legacy refine mode without interval).
+			(refine execution without a supplied interval).
 
 	Returns:
 		A frozen `WorkPlan`. When fewer than 2 usable seeds exist, all
@@ -280,34 +280,18 @@ def _format_interval_result(result: dict, fps: float) -> str:
 	duration_s = (end_frame - start_frame) / fps
 	score = result["interval_score"]
 	reasons = score.get("failure_reasons", [])
-	# detect v3 analytical vs v2 legacy format
-	if "confidence_tier" in score:
-		# v3 analytical format
-		confidence = score["confidence_tier"]
-		agree = score.get("agreement", 0.0)
-		vel_cons = score.get("velocity_consistency", 0.0)
-		size_cons = score.get("size_consistency", 0.0)
-		# display labels chosen to read honestly: overlap is a between-pass
-		# metric (FWD vs BWD Dice), vel_smooth and size_smooth are
-		# within-track smoothness metrics (not between passes).
-		metrics_str = (
-			f"overlap={agree:.2f}  "
-			f"vel_smooth={vel_cons:.2f}  "
-			f"size_smooth={size_cons:.2f}"
-		)
-		stage_tag = " [stage3]"
-	else:
-		# v2 legacy format
-		confidence = score.get("confidence", "low")
-		agree = score.get("agreement_score", 0.0)
-		margin = score.get("competitor_margin", 0.0)
-		identity = score.get("identity_score", 0.0)
-		metrics_str = (
-			f"agree={agree:.2f}  "
-			f"margin={margin:.2f}  "
-			f"identity={identity:.2f}"
-		)
-		stage_tag = ""
+	confidence = score["confidence_tier"]
+	agree = score.get("agreement", 0.0)
+	vel_cons = score.get("velocity_consistency", 0.0)
+	size_cons = score.get("size_consistency", 0.0)
+	# Agreement is a between-pass metric; velocity and size values are
+	# within-track smoothness metrics.
+	metrics_str = (
+		f"agreement={agree:.2f}  "
+		f"vel_smooth={vel_cons:.2f}  "
+		f"size_smooth={size_cons:.2f}"
+	)
+	stage_tag = " [stage3]"
 	tag = _CONFIDENCE_LABELS.get(confidence, "WEAK")
 	if confidence in ("high", "good"):
 		label = f"[{tag}]"
@@ -334,8 +318,7 @@ def _format_stage4_interval_result(
 	Stage 4 lines align when scanned vertically. Adds a per-metric delta
 	vs the Stage 3 baseline.
 
-	Stage 4 always produces v3 score dicts (confidence_tier present).
-	No v2 fallback is provided here.
+	Stage 4 always produces current score dicts with confidence_tier.
 
 	Args:
 		result: Interval result dict from a blob-coupled
@@ -370,12 +353,12 @@ def _format_stage4_interval_result(
 		d_vel = vel_cons - baseline_score["velocity_consistency"]
 		d_size = size_cons - baseline_score["size_consistency"]
 		# format each metric with inline delta parenthetical
-		agree_str = f"overlap={agree:.2f} ({d_agree:+.2f})"
+		agree_str = f"agreement={agree:.2f} ({d_agree:+.2f})"
 		vel_str = f"vel_smooth={vel_cons:.2f} ({d_vel:+.2f})"
 		size_str = f"size_smooth={size_cons:.2f} ({d_size:+.2f})"
 	else:
 		# no baseline: omit parenthetical
-		agree_str = f"overlap={agree:.2f}"
+		agree_str = f"agreement={agree:.2f}"
 		vel_str = f"vel_smooth={vel_cons:.2f}"
 		size_str = f"size_smooth={size_cons:.2f}"
 
@@ -415,7 +398,7 @@ def _solve_pre_race_interval(
 	seed_start: dict,
 	seed_end: dict,
 	pre_race_reference: dict,
-	scene_transform,
+	scene_transform: object,
 	fps: float,
 ) -> dict:
 	"""Synthesize a pre-race interval result from the reference.
@@ -577,6 +560,12 @@ def execute_interval_work(
 	# includes both normal and pre-race, but pre-race are fast and solved
 	# after normal, so decision is based on normal work only.
 	use_pool = context.num_workers >= 2 and len(pending_normal) >= 4
+	worker_telemetry = None
+	if use_pool:
+		worker_telemetry = solver_workers.WorkerTelemetrySummary(
+			driver_peak_before_pool_bytes=
+				solver_workers.current_process_peak_rss_bytes(),
+		)
 
 	# announce work scope after prior-solved partition so the number reflects
 	# actual solves, not total intervals. Note: pending_normal does not
@@ -596,12 +585,12 @@ def execute_interval_work(
 
 	# per-interval column legend: printed once per solve so the shorthand
 	# in each subsequent result line is self-explanatory. Distinguishes
-	# between-pass metrics (overlap) from within-track smoothness metrics
+	# between-pass agreement from within-track smoothness metrics
 	# (vel_smooth, size_smooth), which the shorter labels cannot convey
 	# on their own.
 	if pending_normal_total > 0:
 		print("  columns (all in [0,1], higher=better):")
-		print("    overlap      = FWD/BWD Dice overlap (agreement between passes)")
+		print("    agreement    = FWD/BWD center agreement (mean torso-width normalized)")
 		print("    vel_smooth   = within-track velocity smoothness")
 		print("    size_smooth  = within-track box-size smoothness")
 
@@ -826,6 +815,7 @@ def execute_interval_work(
 					blob_pass=False,
 					bin_factor=context.bin_factor,
 					total_frames=context.video_frame_count,
+					telemetry_enabled=True,
 				) as pool:
 					future_to_idx = {}
 					for pair_idx in pending_normal:
@@ -855,7 +845,11 @@ def execute_interval_work(
 							return_when=concurrent.futures.FIRST_COMPLETED,
 						)
 						for fut in done:
-							pair_idx, fingerprint, result = fut.result()
+							pair_idx, fingerprint, result = (
+								solver_workers.collect_worker_result(
+									fut.result(), worker_telemetry,
+								)
+							)
 							_accept(pair_idx, fingerprint, result)
 
 					# on quit, cancel anything not yet running and drain
@@ -867,8 +861,17 @@ def execute_interval_work(
 						for fut in concurrent.futures.as_completed(pending_futures):
 							if fut.cancelled():
 								continue
-							pair_idx, fingerprint, result = fut.result()
+							pair_idx, fingerprint, result = (
+								solver_workers.collect_worker_result(
+									fut.result(), worker_telemetry,
+								)
+							)
 							_accept(pair_idx, fingerprint, result)
+
+	if worker_telemetry is not None:
+		print(solver_workers.format_worker_telemetry(
+			"stage_3", worker_telemetry,
+		))
 
 	# ============ Pre-race synthesis was moved earlier ============
 	# pre-race synthesis now fires as soon as the race-start

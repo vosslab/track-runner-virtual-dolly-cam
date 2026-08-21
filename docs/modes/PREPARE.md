@@ -32,9 +32,9 @@ options:
 original at the deterministic path:
 
 ```text
-original:  Lyra-Wheeling-IMG_3912.mkv
-fast-read: Lyra-Wheeling-IMG_3912.fastread.mkv     (same directory)
-state:     Lyra-Wheeling-IMG_3912.track_runner.*   (unchanged; all keyed to original)
+original:  VIDEO.mkv
+fast-read: VIDEO.fastread.mkv     (same directory)
+state:     VIDEO.track_runner.*   (unchanged; all keyed to original)
 ```
 
 The fast-read video is:
@@ -61,8 +61,8 @@ recreate.
 Every mode banner names both the source video and the decode video:
 
 ```text
-source video: Lyra-Wheeling-IMG_3912.mkv
-decode video: Lyra-Wheeling-IMG_3912.fastread.mkv
+source video: VIDEO.mkv
+decode video: VIDEO.fastread.mkv
 ```
 
 When no fast-read video exists, the banner shows `decode video: original`.
@@ -125,8 +125,8 @@ run:
 
 ```text
 Track Runner prepare
-source video:    Lyra-Wheeling-IMG_3912.mkv
-fast-read video: Lyra-Wheeling-IMG_3912.fastread.mkv
+source video:    VIDEO.mkv
+fast-read video: VIDEO.fastread.mkv
 settings:        crf 23, gop 30, filter hqdn3d,format=yuv420p
 [  0%] probing source video
 [  5%] checking existing fast-read video
@@ -137,7 +137,7 @@ ffmpeg summary:
 [ 90%] validating fast-read video
 [100%] prepare complete
 
-fast-read video: Lyra-Wheeling-IMG_3912.fastread.mkv
+fast-read video: VIDEO.fastread.mkv
 transcode:            completed
 structural validity:  OK
 timestamp alignment:  fallback used (frame count + duration)
@@ -157,7 +157,7 @@ modes fall back to the original automatically on the next run. No other cleanup
 is needed because nothing else is persisted.
 
 ```bash
-rm Lyra-Wheeling-IMG_3912.fastread.mkv
+rm VIDEO.fastread.mkv
 ```
 
 ## Frame-identity contract

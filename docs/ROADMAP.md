@@ -1,100 +1,21 @@
 # Roadmap
 
-Planned work, priorities, and what is intentionally not started.
+Track Runner is a current-only single-runner workflow: annotate human seed
+anchors, solve FWD and BWD paths independently, review results, and encode a
+stable crop. The active mode reference is [MODES.md](MODES.md).
 
-## Planned
+## Current priorities
 
-### Stage 2 race-start refinement (deactivated; needs redesign)
+- Keep the seed, solve, review, and encode workflow portable and deterministic.
+- Preserve source-coordinate seed truth and torso-width-normalized decisions.
+- Keep the production windowed Viterbi walker under `track_runner/blob_walk/`.
+- Improve only behavior that has a clear user-facing workflow and an automated,
+  self-contained validation path.
 
-Production currently picks `race_start_frame` as the deterministic
-midpoint of Stage 1's seed-to-seed interval. The original Stage 2
-velocity-onset detector
-([race_phases.py](../track_runner/race_phases.py)
-`detect_race_start`) is preserved but not called -- it required a
-45-frame trailing baseline window that does not fit short Stage 1
-intervals, and produced None on ambiguous velocity profiles.
+## Deferred ideas
 
-A reworked Stage 2 should refine race_start_frame inside Stage 1's
-interval to sub-seed precision using the motion-cue heat map
-([residual_motion.py](../track_runner/residual_motion.py)
-`compute_residual_for_frame`, 9-frame aligned-background window) --
-not a 45-frame velocity baseline. Full redesign brief in
-[TODO.md](TODO.md) "Stage 2 race-start refinement".
+- Advisory seed-review suggestions from residual-motion evidence.
+- Optional race-end estimates when they support a real review or encode flow.
 
-### Detect race end frame during solve
-
-The solver should automatically identify when the race ends (runner crosses finish
-or stops). Currently post-race seeds are handled ad hoc. Recording race end timing
-in the diagnostics would complement the existing race start detection.
-
-Detection approach: use the target runner's blended-interval-path velocity in scene coordinates.
-- End: sustained drop to near-zero velocity or plateau in along-track progress
-- Must use track-specific velocity, not global cues
-
-Depends on: race start detection (implemented in `race_phases.py`).
-
-### Motion-cue seed recommendation (advisory)
-
-Use the residual motion diagnostic's blob tracking as an advisory seed
-recommendation tool. For low-confidence intervals, identify frames where the
-motion cue is strong and the solver's geometric interpolation is weak. Report
-as "review candidates" -- frames the user should inspect and potentially
-re-seed. Strictly advisory: the user decides identity.
-
-Depends on: race start/end detection (above).
-
-## In progress
-
-### Fast-read video working-mode routing (M2 pending)
-
-`prepare` mode and fast-read video creation are shipped (WP-P1, WP-P2).
-See [docs/modes/PREPARE.md](modes/PREPARE.md) for the full procedure and
-role policy. The mitigation for slow 4K HEVC random reads is available now
-via `python3 track_runner.py prepare`.
-
-Working-mode automatic routing through the fast-read video (milestone M2)
-has not yet merged. Until M2 lands, working modes read the original video;
-`prepare` creates the artifact but it is not consumed automatically.
-
-### Race start detection (implemented)
-
-Race start detection is implemented in `track_runner/race_phases.py`. Uses
-scene-coordinate velocity with ratio-based transition detection from the solved
-trajectory. Integrated after `refine_with_motion_cues()` in the solve pipeline.
-Result serialized in diagnostics JSON.
-
-Remaining work: parameter tuning on real videos, downstream integration with
-seed recommendation and crop trajectory.
-
-### Residual-motion blob observation (measurement pipeline shipped; consumer is the windowed walker)
-
-The measurement pipeline in [residual_motion.py](../track_runner/residual_motion.py)
-(`observe_blob_at`) is shipped and stable. The Stage 4 hot-path optimization
-(pre-worker per-interval sequential pre-pass in
-[residual_pre_pass.py](../track_runner/residual_pre_pass.py)) is also shipped;
-`observe_blob_at` reads from the precomputed store on hit.
-
-The v1 per-frame blob-snap consumer inside the propagator (`_apply_blob_snap`)
-has been removed. The current consumer is the windowed Viterbi walker
-(`track_runner/blob_walk/`), which is the DEFAULT blob pass on Stage-4-promoted
-intervals (and Stage-5 `--full`). The `--walker-stage4` flag was removed; the
-walker is on by default. A `post_seed_accepted == 0` Hermite fallback is in
-place (covers zero-accept stall and seed-only stall; reads
-`WalkCoverage.post_seed_accepted`) so the walker never degrades a promoted
-interval below pure Hermite. Viterbi weight tuning and the promoted-only A/B
-shipped 2026-06-12 (pairwise velocity-delta cost model).
-
-Remaining work: seed-frame stall root-cause fix. See [CHANGELOG.md](CHANGELOG.md)
-for the landing history.
-
-## Not started
-
-### Real-time preview during seeding
-
-Show a live crop preview while placing seeds so the user can judge quality before
-running a full solve.
-
-### Multi-runner tracking
-
-Track multiple runners simultaneously for relay or multi-athlete videos. Currently
-the solver tracks one runner per video.
+Retired experiments and historical implementation detail are recorded in the
+changelog and archive rather than treated as active roadmap work.

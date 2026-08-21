@@ -3,20 +3,28 @@ import sys
 
 import file_utils
 
-# Put the package root first, followed by the two source directories. The root
+# Put the package root first, then the tests and source directories. The root
 # supports package-qualified imports such as track_runner.blend_commitment;
-# track_runner/ supports the project's established bare-module imports such as
-# ui.session, trajectory_confidence, and blob_trace; common_tools/ supports its
-# established bare imports such as frame_reader. Keeping the repo root first
-# prevents either source directory from shadowing a package.
+# tests/ keeps test-only helpers available from pipeline subdirectories;
+# track_runner/ supports established bare-module imports such as ui.session,
+# trajectory_confidence, and blob_trace; common_tools/ supports frame_reader.
+# Keeping the repo root first prevents a source directory from shadowing a
+# package.
 _repo_root = file_utils.get_repo_root()
+_tests_root = os.path.dirname(__file__)
 _track_runner_root = os.path.join(_repo_root, "track_runner")
 _common_tools_root = os.path.join(_repo_root, "common_tools")
-for _local_path in (_repo_root, _track_runner_root, _common_tools_root):
+for _local_path in (
+	_tests_root,
+	_repo_root,
+	_track_runner_root,
+	_common_tools_root,
+):
 	if _local_path in sys.path:
 		sys.path.remove(_local_path)
 sys.path.insert(0, _common_tools_root)
 sys.path.insert(0, _track_runner_root)
+sys.path.insert(0, _tests_root)
 sys.path.insert(0, _repo_root)
 
 

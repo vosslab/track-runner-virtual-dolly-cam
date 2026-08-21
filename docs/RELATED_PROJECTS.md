@@ -8,7 +8,7 @@ integrates with or depends on.
 - `common_tools/` -- frame reader, video prober, and utilities shared across
   scripts in this repo. Not a separate pip package; lives at the repo root and
   is on the Python path via `source_me.sh`. See
-  [common_tools/README.md](../common_tools/README.md) for the measured frame-
+  [README.md](../common_tools/README.md) for the measured frame-
   read strategy table (including HEVC random-access cost breakdown).
 
 ## External tools and runtimes

@@ -54,7 +54,7 @@ byte-identical to the validated instrument; only seed selection differs (an
 explicit auditable triple list instead of a random sample).
 
 Held-out measurement, per the prior artifact
-[blob_walk_v2_cost_model_ab.md](blob_walk_v2_cost_model_ab.md):
+[blob_walk_v2_cost_model_ab.md](../../archive/blob_walk_v2_cost_model_ab.md):
 
 - A triple is three consecutive during-race human seeds L, M, R, all status
   visible, with L strictly after `race_start_frame` (contract C4).

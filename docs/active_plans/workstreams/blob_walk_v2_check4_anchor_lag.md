@@ -2,7 +2,7 @@
 
 Check date: 2026-06-10.
 Prerequisite: Check 1 (P15 telemetry fix, `path_step_cost` and `window_head_frame` columns).
-Validation plan section: [blob_walk_v2_validation_plan.md](../active/blob_walk_v2_validation_plan.md#check-4-anchor-lag-telemetry-claims-f-i----after-check-1).
+Validation plan section: [blob_walk_v2_validation_plan.md](../../archive/blob_walk_v2_validation_plan.md#check-4-anchor-lag-telemetry-claims-f-i----after-check-1).
 Audit basis: [blob_walk_v2_implementation_audit.md](../audits/blob_walk_v2_implementation_audit.md) findings P6, P7, P8, L1.
 
 Standing constraint per plan section "Standing constraints (user feedback, 2026-06-10)": all

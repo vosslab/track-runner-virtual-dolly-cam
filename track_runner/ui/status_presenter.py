@@ -69,7 +69,8 @@ class StatusPresenter:
 			fps: Video frame rate, used to compute time_s for display.
 			confidence: Optional dict with 'score' and 'label' keys.
 			interval_info: Optional dict with severity, agreement, margin,
-				and reasons keys from prediction diagnostics.
+				and reasons keys from prediction diagnostics. May also carry an
+				in-memory commitment review item.
 		"""
 		frame_index = int(seed.get("frame_index", 0))
 		status = seed.get("status", "unknown")
@@ -135,6 +136,26 @@ class StatusPresenter:
 
 	#============================================
 
+	def show_feedback(self, text: str) -> None:
+		"""Show an annotation action result in the persistent status area.
+
+		This is deliberately separate from :meth:`update`: feedback is not
+		seed metadata, and the next navigation update is allowed to replace it
+		with the normal seed summary.
+
+		Args:
+			text: Human-readable result or warning from an annotation action.
+		"""
+		self._label.setText(text)
+		self._label.setTextFormat(Qt.TextFormat.PlainText)
+		mono_family = overlay_config.get_mono_font_family()
+		self._label.setStyleSheet(
+			f"font-family: '{mono_family}'; color: #F8FAFC; "
+			"font-weight: bold; padding: 4px;"
+		)
+
+	#============================================
+
 	def _get_status_color(self, status: str) -> str:
 		"""Map status to a display color from overlay_styles.yaml.
 
@@ -153,26 +174,26 @@ class StatusPresenter:
 		"""Format interval_info reasons as compact human-readable labels.
 
 		Args:
-			interval_info: Dict with agreement, margin, and reasons keys.
+			interval_info: Dict with agreement, velocity_consistency, and reasons keys.
 
 		Returns:
 			List of short reason strings.
 		"""
 		parts = []
 		agreement = interval_info.get("agreement", 1.0)
-		margin = interval_info.get("margin", 1.0)
-		reasons = interval_info.get("reasons", [])
+		velocity_consistency = interval_info.get("velocity_consistency", 1.0)
 		# agreement level
 		if agreement < 0.2:
 			parts.append("low agree")
 		elif agreement < 0.4:
 			parts.append("mod agree")
-		# margin level
-		if margin < 0.2:
-			parts.append("competitor")
-		# specific failure reasons
-		if "likely_identity_swap" in reasons:
-			parts.append("id swap")
+		if velocity_consistency < 0.2:
+			parts.append("motion weak")
+		# Review owns the commitment wording.  The GUI only presents its
+		# already-human-readable item, so it cannot drift from other review paths.
+		commitment_item = interval_info.get("commitment_review_item")
+		if commitment_item is not None:
+			parts.append(commitment_item)
 		return parts
 
 	#============================================

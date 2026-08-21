@@ -16,6 +16,7 @@ import numpy
 
 # local repo modules (BlockBarColumn for wide block-character progress bars)
 import interval_solver
+import process_pool_control
 import tr_crop
 import overlay_config
 import video_io
@@ -26,92 +27,11 @@ import common_tools.frame_reader
 import common_tools.probe_video
 
 
-#============================================
-def _input_has_audio(input_path: str) -> bool:
-	"""Check whether a video file contains an audio stream.
+# Audio helpers have a separate dependency boundary; retain the local adapter here.
+import encode_audio
 
-	Args:
-		input_path: Path to the video file.
-
-	Returns:
-		True if at least one audio stream is detected.
-	"""
-	ffprobe_path = shutil.which("ffprobe")
-	if ffprobe_path is None:
-		raise RuntimeError("ffprobe not found in PATH")
-	cmd = [
-		ffprobe_path,
-		"-v", "error",
-		"-select_streams", "a",
-		"-show_entries", "stream=index",
-		"-of", "csv=p=0",
-		input_path,
-	]
-	result = subprocess.run(cmd, capture_output=True, text=True)
-	# if any audio stream index was printed, audio exists
-	has_audio = len(result.stdout.strip()) > 0
-	return has_audio
-
-
-#============================================
-def copy_audio(
-	input_path: str,
-	video_path: str,
-	output_path: str,
-) -> None:
-	"""Mux audio from input video with video from cropped output.
-
-	If the input file has no audio stream, the video file is
-	copied directly to the output path.
-
-	Args:
-		input_path: Path to original video with audio.
-		video_path: Path to cropped video (video only).
-		output_path: Path for the final muxed output.
-	"""
-	ffmpeg_path = shutil.which("ffmpeg")
-	if ffmpeg_path is None:
-		raise RuntimeError("ffmpeg not found in PATH")
-	# when the input has no audio, still remux through ffmpeg so the
-	# output container matches the destination extension (mkvmerge writes
-	# Matroska bytes regardless of the temp file's extension; a plain
-	# byte-copy from a .tmp.mp4 to a .mp4 destination would mislabel the
-	# container).
-	if not _input_has_audio(input_path):
-		print(f"No audio stream in {input_path}, remuxing video only")
-		cmd = [
-			ffmpeg_path,
-			"-y",
-			"-i", video_path,
-			"-c:v", "copy",
-			output_path,
-		]
-		result = subprocess.run(cmd, capture_output=True, text=True)
-		if result.returncode != 0:
-			raise RuntimeError(
-				f"ffmpeg remux (no audio) failed with code "
-				f"{result.returncode}: {result.stderr}"
-			)
-		return
-	cmd = [
-		ffmpeg_path,
-		"-y",
-		"-i", video_path,
-		"-i", input_path,
-		"-c:v", "copy",
-		"-c:a", "aac",
-		"-map", "0:v:0",
-		"-map", "1:a:0",
-		"-shortest",
-		output_path,
-	]
-	result = subprocess.run(cmd, capture_output=True, text=True)
-	if result.returncode != 0:
-		raise RuntimeError(
-			f"ffmpeg mux failed with code {result.returncode}: "
-			f"{result.stderr}"
-		)
-
+_input_has_audio = encode_audio._input_has_audio
+copy_audio = encode_audio.copy_audio
 
 #============================================
 def encode_cropped_video(
@@ -235,9 +155,9 @@ def encode_cropped_video(
 
 
 #============================================
-# color lookups for debug overlay drawing (v2) - from overlay_styles.yaml
+# Color lookups for debug overlay drawing from overlay_styles.yaml.
 def _source_color(source: str, seed_status: str = "") -> tuple:
-	"""Return a BGR color for a v2 tracking source label.
+	"""Return a BGR color for a tracking source label.
 
 	Seed frames are further distinguished by seed_status (visible,
 	partial, approximate). Non-seed sources ignore seed_status.
@@ -442,7 +362,7 @@ def draw_debug_overlay_cropped(
 
 	Args:
 		frame: BGR image (already cropped and resized to out_w x out_h).
-		state: v2 per-frame state dict with keys: cx, cy, w, h, conf,
+		state: Per-frame state dict with keys: cx, cy, w, h, conf,
 			source. None if the frame had no tracking data.
 		crop_rect: Crop rectangle as (x, y, w, h) in full-frame coords.
 		out_w: Output frame width in pixels.
@@ -474,7 +394,7 @@ def draw_debug_overlay_cropped(
 			)
 		return
 
-	# extract v2 state fields
+	# Extract current state fields.
 	source = state.get("source", "")
 	seed_status = state.get("seed_status", "")
 	conf = state["conf"]
@@ -513,6 +433,7 @@ def draw_debug_overlay_cropped(
 	# text vertical positions
 	text_y1 = max(12, int(22 * s))
 	text_y2 = max(24, int(42 * s))
+	text_y3 = max(36, int(62 * s))
 
 	# resolve debug_state values safely; fall back to state for FWD/BWD boxes
 	if debug_state is None:
@@ -522,6 +443,12 @@ def draw_debug_overlay_cropped(
 	competitor_box = debug_state.get("competitor_box")
 	confidence_label = debug_state.get("confidence_label", "")
 	interval_id = debug_state.get("interval_id", "")
+	commitment_direction = debug_state.get(
+		"commitment_direction", state.get("commitment_direction"),
+	)
+	commitment_alpha = debug_state.get(
+		"commitment_alpha", state.get("commitment_alpha"),
+	)
 
 	# draw all boxes and crosshair on an overlay for alpha blending
 	overlay = frame.copy()
@@ -695,6 +622,18 @@ def draw_debug_overlay_cropped(
 	cv2.putText(text_overlay, conf_text, (text_x, text_y2),
 		cv2.FONT_HERSHEY_SIMPLEX, font_scale_med, source_color, text_thick)
 
+	# Commitment is a developer-review fact, not a new tracking source.  Render
+	# it only on disagreement frames so ordinary encoded overlays stay compact.
+	# The alpha is the explicitly linear baseline-to-committed transition weight.
+	if commitment_direction:
+		if commitment_direction == "unavailable":
+			commitment_text = "commit:unavailable"
+		else:
+			alpha = 0.0 if commitment_alpha is None else float(commitment_alpha)
+			commitment_text = f"commit:{commitment_direction} {alpha:.0%}"
+		cv2.putText(text_overlay, commitment_text, (text_x, text_y3),
+			cv2.FONT_HERSHEY_SIMPLEX, font_scale_med, source_color, text_thick)
+
 	# interval ID in bottom-left corner when provided
 	if interval_id:
 		interval_text = f"[{interval_id}]"
@@ -741,7 +680,7 @@ def _encode_segment(
 ) -> str:
 	"""Encode one segment of the video in a worker process.
 
-	Each worker opens its own VideoReader and ffmpeg pipe. Module-level
+	Each worker opens its own FrameReader and ffmpeg pipe. Module-level
 	function so it is picklable for ProcessPoolExecutor.
 
 	Args:
@@ -805,7 +744,7 @@ def _encode_segment(
 			if encode_filters:
 				resized = frame_filters.apply_filter_pipeline(resized, encode_filters)
 			# draw overlays when any tier requested. prev_center is
-			# precomputed on the driver side (see _mode_encode) and
+			# precomputed by modes.encode.run and
 			# carried inside each frame_state dict; this is what makes
 			# velocity arrows correct at chunk seams.
 			any_overlay = draw_tracking or draw_debug or draw_velocity
@@ -853,7 +792,7 @@ def encode_cropped_video_parallel(
 	"""Encode cropped video using parallel worker processes.
 
 	Splits the frame range into chunks, encodes each chunk in a separate
-	process with its own VideoReader and ffmpeg pipe, then concatenates
+	process with its own FrameReader and ffmpeg pipe, then concatenates
 	the segment files with mkvmerge.
 
 	Falls back to single-threaded encoding if workers <= 1.
@@ -926,10 +865,10 @@ def encode_cropped_video_parallel(
 		})
 		offset = end_offset
 
-	# launch workers with ProcessPoolExecutor
 	seg_paths = []
 	quit_interrupted = False
-	with concurrent.futures.ProcessPoolExecutor(max_workers=actual_workers) as pool:
+	pool = concurrent.futures.ProcessPoolExecutor(max_workers=actual_workers)
+	try:
 		future_to_seg = {}
 		for seg in segments:
 			future = pool.submit(
@@ -950,42 +889,32 @@ def encode_cropped_video_parallel(
 				nif_frames,
 			)
 			future_to_seg[future] = seg["path"]
-		# polling loop: use concurrent.futures.wait() with short timeout
-		# to properly detect completion via internal condition variables
-		# (manual f.done() polling does not work reliably)
+		# wait() detects completion through executor condition variables.
 		all_futures = set(future_to_seg.keys())
 		key_input._quit_trace(
 			"WAIT_ENTER", context="encode_parallel",
 			futures=len(all_futures),
 		)
 		done_futures = set()
-		# heartbeat counter: only trace every 30 iterations (~6s)
 		heartbeat_counter = 0
 		while len(done_futures) < len(all_futures):
-			# poll for quit key (pause not supported during encode)
 			if key_reader_obj is not None and run_control is not None:
 				ch = key_reader_obj.poll()
 				if ch is not None and ch.lower() == "q":
 					run_control.request_quit()
 					key_input._quit_trace("KEY_HANDLE", quit_requested=True)
 					print("  Q pressed, finishing current interval...", flush=True)
-			# check quit flag
 			if run_control is not None and run_control.quit_requested:
 				key_input._quit_trace(
 					"MAIN_LOOP", context="encode_parallel",
 					quit_requested=True,
 				)
-				# cancel pending futures
 				for f in all_futures:
 					if not f.done():
 						f.cancel()
-				# kill worker processes
-				from interval_solver import _force_kill_pool
-				_force_kill_pool(pool)
 				quit_interrupted = True
+				process_pool_control.force_kill_pool(pool)
 				break
-			# wait with 0.2s timeout for any future to complete
-			# this uses the internal condition variable, unlike f.done()
 			remaining = all_futures - done_futures
 			completed_batch, _ = concurrent.futures.wait(
 				remaining, timeout=0.2,
@@ -996,7 +925,6 @@ def encode_cropped_video_parallel(
 				if not f.cancelled():
 					# propagate any exception from the worker
 					f.result()
-			# heartbeat trace every ~6s (30 iterations at 0.2s)
 			heartbeat_counter += 1
 			if heartbeat_counter % 30 == 0:
 				key_input._quit_trace(
@@ -1009,10 +937,12 @@ def encode_cropped_video_parallel(
 			"WAIT_EXIT", context="encode_parallel",
 			completed=len(done_futures),
 		)
-		# collect segment paths in original order
 		if not quit_interrupted:
 			for seg in segments:
 				seg_paths.append(seg["path"])
+	finally:
+		if not quit_interrupted:
+			pool.shutdown(wait=True, cancel_futures=False)
 	# early return if quit interrupted encoding
 	if quit_interrupted:
 		key_input._quit_trace(

@@ -218,7 +218,7 @@
   promoted intervals only; pure-Hermite paths byte-identical to v13. Per
   contract C10 one unified bump covers both geometry-affecting lane changes
   (WP-COST-1 and WP-P10-1). Schema history logged in
-  [docs/TR_SCHEMA_VERSION_HISTORY.md](TR_SCHEMA_VERSION_HISTORY.md).
+  [TR_SCHEMA_VERSION_HISTORY.md](TR_SCHEMA_VERSION_HISTORY.md).
 
 ### Fixes and Maintenance
 
@@ -282,7 +282,7 @@
 - Review-fix cleanup (WP-P2): replace `getattr(args, "force/verbose", False)` with `args.force` / `args.verbose` in `track_runner/cli.py` (`prepare` subparser always sets defaults); tighten `_build_ffmpeg_transcode_cmd` and `_collect_stderr_lines` return annotations to `list[str]` in `track_runner/fastread_video.py`; replace collection-size assert (`len(...) > 0`) with behavioral substring assert (`"frame-count" in ...`) in `tests/test_fastread_video.py`.
 
 - P10 bootstrap-accept fallback correction (audit M1, plan
-  [docs/archive/blob_walk_v2_p10_fix_plan.md](archive/blob_walk_v2_p10_fix_plan.md)).
+  [blob_walk_v2_p10_fix_plan.md](archive/blob_walk_v2_p10_fix_plan.md)).
   The Stage-4 Hermite fallback gate in `track_runner/interval_solver.py`
   previously fired only on zero-accepted-count passes (`accepted_count == 0`).
   A pass whose only accepted frame is the seed frame via bootstrap
@@ -332,7 +332,7 @@
   walk_driver -> apply_walker_costs_for_video -> set_cost_weights.
 
 - **WS-2B overlay review** of the two flagged A/B regressions (see
-  [docs/active_plans/workstreams/blob_walk_v2_ws2b_overlay_review.md](active_plans/workstreams/blob_walk_v2_ws2b_overlay_review.md)).
+  [blob_walk_v2_ws2b_overlay_review.md](active_plans/workstreams/blob_walk_v2_ws2b_overlay_review.md)).
   Lyra-Hersey [840,945]: regression mechanism is per-frame blob centroid cy
   bias (~9px / 0.65 tw) at frame 892 where the runner passes a vertical pole
   (partial occlusion reduces mag to 7023 vs ~20k baseline); one corridor blob
@@ -373,7 +373,7 @@
   and is biased toward Hermite on smooth motion, where a small `hermite_err`
   means the held-out frame was easy, not that Hermite tracked well. Durable rule
   added to
-  [docs/TRACK_RUNNER_DESIGN.md](TRACK_RUNNER_DESIGN.md) ("Interpreting
+  [TRACK_RUNNER_DESIGN.md](TRACK_RUNNER_DESIGN.md) ("Interpreting
   walker-vs-Hermite and held-out-seed error"). The held-out expansion's
   "regressed 11/13" headline is reframed accordingly; its valid signal is
   absolute multi-torso walker outliers, not the Hermite comparison.
@@ -401,18 +401,18 @@
   winning config. `e2e_blob_walk_baseline`: exit code 0, golden snapshot passed.
   `e2e_walker_ab`: IMG_3830 preserved=2, regressed=3; IMG_3823 preserved=2,
   regressed=3 (Jason in progress). Artifact:
-  [docs/active_plans/workstreams/blob_walk_v2_cost_model_ab.md](active_plans/workstreams/blob_walk_v2_cost_model_ab.md).
+  [blob_walk_v2_cost_model_ab.md](archive/blob_walk_v2_cost_model_ab.md).
   Roadmap: P1/P2/P3/P4/P5 and P10 marked fixed in
-  [docs/active_plans/active/blob_walk_v2_fix_phase_roadmap.md](active_plans/active/blob_walk_v2_fix_phase_roadmap.md).
+  [blob_walk_v2_fix_phase_roadmap.md](archive/blob_walk_v2_fix_phase_roadmap.md).
   **Completion (2026-06-12)**: all 5 corpus videos complete (20/20 intervals each); no
   regression on any video (max delta -2.1 pp Conant FWD/BWD vs -2.1 pp baseline shift);
   identity check extended to 39 intervals, PASS; e2e_walker_ab 4/6 complete (Lyra-Hersey
   preserved=4/regressed=1, Conant rescued=3/preserved=2; Jason and Lyra-Wheeling pending
   due to concurrent process log collision). Release-review summary (governance package for
   human accept/reject) inserted at top of
-  [docs/active_plans/workstreams/blob_walk_v2_cost_model_ab.md](active_plans/workstreams/blob_walk_v2_cost_model_ab.md).
+  [blob_walk_v2_cost_model_ab.md](archive/blob_walk_v2_cost_model_ab.md).
 - Held-out error expansion
-  [docs/active_plans/workstreams/blob_walk_v2_heldout_expansion.md](active_plans/workstreams/blob_walk_v2_heldout_expansion.md):
+  [blob_walk_v2_heldout_expansion.md](active_plans/workstreams/blob_walk_v2_heldout_expansion.md):
   13 mid-span held-out triples (spans 15-45, 4 videos), blended-path error.
   Raw numbers walker median 1.105 vs Hermite 0.100 torso-widths; reframed per
   the walker-vs-Hermite interpretation rule above (the instrument is
@@ -421,14 +421,14 @@
   IMG_3823 [2316,2337]) flagged for eyes-on tile review. Every row drove the
   walker; the P10 fallback fired on zero rows.
 - Corpus-120 schema-14 control run
-  [docs/active_plans/workstreams/blob_walk_v2_corpus120_schema14.md](active_plans/workstreams/blob_walk_v2_corpus120_schema14.md):
+  [blob_walk_v2_corpus120_schema14.md](active_plans/workstreams/blob_walk_v2_corpus120_schema14.md):
   same 100 intervals across 5 videos as the schema-13 baseline (Lyra-Wheeling
   skipped, 6 h decode). FWD 59.7% vs 58.9% (+0.8), BWD 60.8% vs 59.8% (+1.0);
   every video and direction at or above baseline, max delta +1.2; all 100
   intervals stop on `hit_neighbor_seed`. Accepted-fraction is a coverage metric,
   not positional accuracy.
 - Weight-sensitivity sweep (SIDE QUEST)
-  [docs/active_plans/workstreams/blob_walk_v2_weight_sensitivity.md](active_plans/workstreams/blob_walk_v2_weight_sensitivity.md):
+  [blob_walk_v2_weight_sensitivity.md](active_plans/workstreams/blob_walk_v2_weight_sensitivity.md):
   6 extreme configs on the 24-pass subset. SKIP_COST is the only load-bearing
   weight (halving it drops accepted fraction 9.8 pp); delta and evidence terms
   near-inert on short high-confidence intervals; multi-candidate fraction 82%.
@@ -440,10 +440,10 @@
   `Developer Tests and Notes` sub-blocks merged into one placed last), five
   planning-tag rewords in code comments, four unstaged doc-truth fixes required
   to ride with the bundle, and fragile-test pruning. Artifact:
-  [docs/active_plans/audits/blob_walk_v2_bundle_audit_run2.md](active_plans/audits/blob_walk_v2_bundle_audit_run2.md).
+  [blob_walk_v2_bundle_audit_run2.md](active_plans/audits/blob_walk_v2_bundle_audit_run2.md).
 
 - New artifact
-  [docs/active_plans/reports/blob_walk_v2_starvation_characterization.md](active_plans/reports/blob_walk_v2_starvation_characterization.md):
+  [blob_walk_v2_starvation_characterization.md](active_plans/reports/blob_walk_v2_starvation_characterization.md):
   read-only characterization of the 12 starvation-class passes (7 pure starvation
   + 5 starvation-leaning mixed from check7). Per-pass table with baseline empty
   fractions, post-rewrite accepted fractions, and seed-cold status. Key findings:
@@ -468,7 +468,7 @@
   videos (IMG_3830, IMG_3823, Hononega-Orion_600m, Hononega-Varsity_4x400m)
   dominate short-span counts; five coarsely-seeded videos have almost none.
   Artifact:
-  [docs/active_plans/reports/blob_walk_v2_short_span_frequency.md](active_plans/reports/blob_walk_v2_short_span_frequency.md).
+  [blob_walk_v2_short_span_frequency.md](active_plans/reports/blob_walk_v2_short_span_frequency.md).
 - **Fast-read video Patch 3 (WP-P3 M1 unit tests)**: new
   `tests/test_fastread_video.py` (15 tests, 0.11 s). Covers structural
   validation pass/fail shapes via synthetic probe dicts and a fake
@@ -511,10 +511,10 @@
 
 - Created `docs/TROUBLESHOOTING.md` (first entry: walker / corpus runs on 4K HEVC sources
   take hours). Documents cause (HEVC random-access seek cost ~450-550 ms vs 6-14 ms
-  sequential per [common_tools/README.md](../common_tools/README.md) strategy table),
+  sequential per [README.md](../common_tools/README.md) strategy table),
   notes auto-bin does not reduce seek cost (binning is post-decode), links the access-pattern
   fix roadmap (P16/P17) parked in
-  [active_plans/active/blob_walk_v2_fix_phase_roadmap.md](active_plans/active/blob_walk_v2_fix_phase_roadmap.md),
+  [archive/blob_walk_v2_fix_phase_roadmap.md](archive/blob_walk_v2_fix_phase_roadmap.md),
   and confirms runs are slow but not broken.
 
 - Added runtime notice in `tools/blob_walk_v2/make_walk_html_v2.py` `process_video`:
@@ -533,7 +533,7 @@
   and a single-f-string message.
 
 - Drafted the M1 fix plan
-  [docs/archive/blob_walk_v2_p10_fix_plan.md](archive/blob_walk_v2_p10_fix_plan.md)
+  [blob_walk_v2_p10_fix_plan.md](archive/blob_walk_v2_p10_fix_plan.md)
   (P10 bootstrap-accept fallback masking; implemented 2026-06-12, archived) from
   the roadmap's M1 section, including the recorded call-site audit of
   `walk_bundle_to_path_with_coverage` (single production consumer at the
@@ -581,7 +581,7 @@
   (b) the real 120fps interval #164 (Lyra-Wheeling, 4K HEVC) was not re-solved
   post-fix due to expensive decode cost; unit tests cover the exact frame arithmetic
   for that interval. Full pytest suite 1578 passed. Plan:
-  [blob_walk_v2_p12_fix_plan.md](active_plans/active/blob_walk_v2_p12_fix_plan.md).
+  [blob_walk_v2_p12_fix_plan.md](archive/blob_walk_v2_p12_fix_plan.md).
 
 ### Developer Tests and Notes
 
@@ -595,7 +595,7 @@
   BETTER (59/59 scenarios). Verdict: UNDETERMINED -- practical impact zero at
   current accepted fractions; fix deferred until `extrapolated_count` becomes
   non-zero. Artifact:
-  [docs/active_plans/workstreams/blob_walk_v2_checkg_extrapolation_replay.md](active_plans/workstreams/blob_walk_v2_checkg_extrapolation_replay.md).
+  [blob_walk_v2_checkg_extrapolation_replay.md](active_plans/workstreams/blob_walk_v2_checkg_extrapolation_replay.md).
   Validation report claim G updated from STILL UNKNOWN to UNDETERMINED.
 
 - Corpus-120 walk run completed (post-P12, SCHEMA_VERSION 13, rng_seed=None fresh

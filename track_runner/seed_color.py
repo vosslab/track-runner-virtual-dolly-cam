@@ -62,9 +62,6 @@ def suggest_seed_candidates(
 				None (ambiguous -> manual pick).
 			mode: "none" (no detections), "single" (one candidate), or
 				"manual" (multiple candidates, user picks).
-			scores: None. Legacy Bhattacharyya-distance field retained
-				as None so older consumers that read it continue to work
-				without crashing.
 	"""
 	# unused arguments retained for callsite compatibility; silence lint
 	del frame, confirmed_seeds, frame_index
@@ -75,7 +72,6 @@ def suggest_seed_candidates(
 			"candidates": [],
 			"suggestion_index": None,
 			"mode": "none",
-			"scores": None,
 		}
 
 	# build candidate list; no appearance cues are computed
@@ -102,14 +98,12 @@ def suggest_seed_candidates(
 			"candidates": candidates,
 			"suggestion_index": 0,
 			"mode": "single",
-			"scores": None,
 		}
 
 	return {
 		"candidates": candidates,
 		"suggestion_index": None,
 		"mode": "manual",
-		"scores": None,
 	}
 
 
@@ -123,7 +117,7 @@ def normalize_seed_box(box: list, config: dict) -> list:
 
 	Args:
 		box: Rectangle as [x, y, w, h] in pixel coordinates.
-		config: Configuration dict optionally containing seeding section.
+	config: Configuration dict with the current processing section.
 
 	Returns:
 		Normalized [x, y, w, h] as integers.
@@ -132,8 +126,8 @@ def normalize_seed_box(box: list, config: dict) -> list:
 	# enforce minimum dimensions of 10 pixels
 	w = max(w, 10)
 	h = max(h, 10)
-	# read aspect ratio limits from config; v2 config uses flat processing section
-	processing = config.get("processing", config.get("settings", {}).get("seeding", {}))
+	# Read aspect ratio limits from the current processing section.
+	processing = config.get("processing", {})
 	aspect_min = float(processing.get("torso_aspect_min", 0.3))
 	aspect_max = float(processing.get("torso_aspect_max", 0.8))
 	# compute current aspect ratio (width / height)
@@ -149,11 +143,11 @@ def normalize_seed_box(box: list, config: dict) -> list:
 
 #============================================
 
-def _build_seed_dict(
+def build_seed_dict(
 	frame_index: int,
 	torso_box: list,
 	pass_number: int,
-	status: str = "visible",
+	status: str,
 ) -> dict:
 	"""Build a canonical v3 seed dict with derived geometry attached.
 
@@ -166,8 +160,7 @@ def _build_seed_dict(
 		frame_index: Frame index (0-based).
 		torso_box: Normalized torso box as [x, y, w, h] (ints).
 		pass_number: Seeding pass number (1 = initial).
-		status: Seed status; defaults to "visible". Callers override to
-			"partial" or "approximate" at the mode decision site.
+		status: Explicit seed status selected at the mode decision site.
 
 	Returns:
 		Seed dict with canonical keys plus derived cx/cy/w/h.

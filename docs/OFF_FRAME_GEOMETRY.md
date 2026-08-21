@@ -27,6 +27,14 @@ inside the encode path. NIF-filled values are never written back to the
 solved trajectory artifact; they exist solely as encode-time crop targets
 in an in-memory derived view.
 
+The shared Analyze/Encode preparation seam derives each `NifSpan` once. It
+sets authoritative runner truth to `None` on every index in that span and
+places edge anchors only in its separate crop trajectory. Thus a sparse NIF
+seed inside a long pair of visible brackets makes the entire strict-between
+span absent; it is not a one-second tracker-erasure radius.
+An open-ended NIF span similarly continues through the final known trajectory
+frame when that bound is available.
+
 ## Edge-anchored geometry rules
 
 Four cases, by inferred exit side:

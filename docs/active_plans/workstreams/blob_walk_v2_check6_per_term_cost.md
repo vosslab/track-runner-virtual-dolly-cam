@@ -3,7 +3,7 @@
 Report date: 2026-06-10.
 
 Plan reference:
-[blob_walk_v2_validation_plan.md](../active/blob_walk_v2_validation_plan.md).
+[blob_walk_v2_validation_plan.md](../../archive/blob_walk_v2_validation_plan.md).
 
 Audit reference:
 [blob_walk_v2_implementation_audit.md](../audits/blob_walk_v2_implementation_audit.md).

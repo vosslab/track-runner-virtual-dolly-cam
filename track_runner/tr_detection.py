@@ -75,7 +75,7 @@ class YoloDetector:
 		model_path: str,
 		confidence_threshold: float = YOLO_CONFIDENCE_THRESHOLD,
 		nms_threshold: float = YOLO_NMS_THRESHOLD,
-	):
+	) -> None:
 		"""Initialize the YOLO detector.
 
 		Args:
@@ -263,16 +263,11 @@ class YoloDetector:
 
 
 #============================================
-def create_detector(config: dict) -> YoloDetector:
-	"""Create a YOLO person detector from config settings.
+def create_detector() -> YoloDetector:
+	"""Create a YOLO person detector with the fixed application settings.
 
 	Detection thresholds (YOLO_CONFIDENCE_THRESHOLD and YOLO_NMS_THRESHOLD)
-	are fixed module constants, not read from config. The config argument is
-	accepted for API compatibility but no detection keys are consumed.
-
-	Args:
-		config: Configuration dict (detection thresholds are not read
-			from config; they are fixed module constants).
+	are fixed module constants, not per-video configuration.
 
 	Returns:
 		A YoloDetector instance.

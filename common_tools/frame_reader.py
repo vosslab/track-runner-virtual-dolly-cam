@@ -31,7 +31,9 @@ Auto-bin selection:
 """
 
 # Standard Library
+import collections.abc
 import os
+import types
 import warnings
 import dataclasses
 
@@ -56,7 +58,7 @@ _MAX_CROP_FRACTION = 0.10
 # no SCHEMA_VERSION impact.  The only per-invocation levers are --bin/--auto-bin.
 #
 # Resulting floor bin table (source_width -> bin -> analysis W x H), assuming
-# 16:9 source.  Tied tripwire test: tests/test_bin_target_table.py.
+# 16:9 source.  Tied tripwire test: tests/source/test_bin_target_table.py.
 #   floor(source_width / TARGET_DEFAULT_WIDTH_PX):
 #     3840 (4K)    -> bin 2 -> 1920 x 1080 (1080p band)
 #     2880 (2.8K)  -> bin 2 -> 1440 x  810
@@ -332,7 +334,7 @@ class FrameReader:
 		total_frames: int,
 		debug: bool = False,
 		bin_factor: int = 1,
-	):
+	) -> None:
 		"""Initialize FrameReader with a video file.
 
 		Args:
@@ -547,7 +549,7 @@ class FrameReader:
 		return self._apply_bin(frame)
 
 	#============================================
-	def __iter__(self):
+	def __iter__(self) -> collections.abc.Iterator[tuple[int, numpy.ndarray]]:
 		"""Iterate over all frames, yielding (frame_index, frame) tuples.
 
 		Resets to frame 0 at iteration start. Each frame is returned via
@@ -578,12 +580,17 @@ class FrameReader:
 			frame_index += 1
 
 	#============================================
-	def __enter__(self):
+	def __enter__(self) -> "FrameReader":
 		"""Context manager entry: return self."""
 		return self
 
 	#============================================
-	def __exit__(self, exc_type, exc_value, traceback):
+	def __exit__(
+		self,
+		exc_type: type[BaseException] | None,
+		exc_value: BaseException | None,
+		traceback: types.TracebackType | None,
+	) -> None:
 		"""Context manager exit: call close()."""
 		self.close()
 

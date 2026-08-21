@@ -8,7 +8,7 @@ This document explains the principles behind the track runner architecture.
 For the technical specification, see
 [TRACK_RUNNER_V3_SPEC.md](TRACK_RUNNER_V3_SPEC.md). For the motion-cue heat map and per-frame
 blob pipeline, see
-`MOTION_CUE_HEAT_MAP.md` (mechanism-level
+`TR_MOTION_CUE_HEAT_MAP.md` (mechanism-level
 technical doc). The short consumer-facing summary is
 [RESIDUAL_MOTION_OBSERVATIONS.md](archive/RESIDUAL_MOTION_OBSERVATIONS.md). For
 evolution history, see
@@ -26,12 +26,12 @@ Use these in prose:
 - **blended interval path** -- the output trajectory formed by combining
   the two pass paths after both complete. Output artifact only; full
   consumption rules in
-  `FWD_BWD_MODEL_METHODOLOGY.md`.
+  `TR_FWD_BWD_MODEL_METHODOLOGY.md`.
 
 The in-code identifiers match the prose: `forward_path`,
 `backward_path`, `blended_path`. See the
 "Legacy code names" subsection of
-`FWD_BWD_MODEL_METHODOLOGY.md` for the
+`TR_FWD_BWD_MODEL_METHODOLOGY.md` for the
 historical rename record.
 
 ## Core principle
@@ -63,7 +63,7 @@ Default solve runs Stages 1-4. `--hermite-only` stops after Stage 3 for diagnost
 
 ### Stage 4 internal step: per-worker per-interval residual pre-pass
 
-Inside each Stage 4 worker, before FWD/BWD blob snap runs, the worker performs a sequential pre-pass over its interval's frame range and builds a worker-local residual store keyed by `(frame_index, roi)`. The pre-pass is implemented in [residual_pre_pass.py](../track_runner/residual_pre_pass.py) and called from [interval_solver.py](../track_runner/interval_solver.py) `solve_interval_analytical`. Both FWD and BWD passes then read residuals from the store via the `precomputed_store` parameter on `observe_blob_at`; on a miss the legacy reader path still works (used by diagnostic tools).
+Inside each Stage 4 worker, before FWD/BWD blob snap runs, the worker performs a sequential pre-pass over its interval's frame range and builds a worker-local residual store keyed by `(frame_index, roi)`. The pre-pass is implemented in [residual_pre_pass.py](../track_runner/residual_pre_pass.py) and called from [interval_analytical.py](../track_runner/interval_analytical.py) `solve_interval_analytical`. Both FWD and BWD passes then read residuals from the store via the `precomputed_store` parameter on `observe_blob_at`; on a miss the direct reader path computes the required residual.
 
 This is NOT a separate pipeline stage. Per contract clause C5, intervals are independent and the pre-pass is scoped to one interval, owned by one worker, destroyed when the worker process exits. There is no global / master-side walk and no shared memory across intervals.
 
@@ -94,11 +94,11 @@ contract wins.
 Active machine evidence is interval geometry propagation coupled with
 per-frame residual-motion observations. Neither leg is adequate on its
 own; the coupling is the point. See
-`FWD_BWD_MODEL_METHODOLOGY.md` for the
+`TR_FWD_BWD_MODEL_METHODOLOGY.md` for the
 mechanics of the coupled model, and
 [RESIDUAL_MOTION_OBSERVATIONS.md](archive/RESIDUAL_MOTION_OBSERVATIONS.md) for
 the per-frame measurement pipeline (residual-motion cue map, blob
-extraction, corridor filter, per-frame observation).
+extraction, optional acceptance-box selection, per-frame observation).
 
 Appearance cues -- jersey color, HSV matching, color histograms, and
 runner-appearance template matching -- are banned as identity or
@@ -152,7 +152,7 @@ reviews reject any reintroduction of cross-frame blob state.
 Rules:
 
 - The walker's window buffer holds only image-derived raw candidate lists
-  from `BlobObserverTrace.corridor_blobs`. It never holds accepted
+  from `BlobObserverTrace.candidate_blobs`. It never holds accepted
   positions, filtered-blob lists, or Viterbi decisions from earlier windows.
 - The per-interval residual cache holds image-derived raw data only
   (residual maps, validity masks, raw extracted blobs). Never accepted
@@ -180,10 +180,11 @@ Rules:
 - Seeds load through `state_io.load_seeds` / `state_io.load_seeds_view`.
 - Scene transform is built through `camera_motion.load_motion_cache` +
   `scene_coords.SceneTransform`.
-- Race-start loads through `state_io.load_diagnostics` -- fail loud, never
+- Race-start loads through `state_io.load_interval_scores` -- fail loud, never
   silent zero.
-- Interval enumeration routes through
-  `track_runner/race_phases.enumerate_seed_to_seed_intervals`.
+- Interval preparation routes through
+  `interval_fingerprint.filter_usable_seeds_sorted` and the solver's
+  canonical interval planner.
 - Tool-only path and basename glue (artifact path mapping) may live under
   `tools/` but must call the core owners above; it must not re-implement
   them.
@@ -218,9 +219,9 @@ reason over local trajectories, not isolated frames.
 ### Mechanism
 
 The walker maintains a 9-frame rolling buffer of
-`BlobObserverTrace.corridor_blobs` candidate lists (the geometric-ROI
-filter has already run during extraction; the walker consumes the full
-list, not the per-frame winner). A Viterbi-style dynamic program over
+`BlobObserverTrace.candidate_blobs` candidate lists. The observer extracts
+raw components and can apply an explicit acceptance box; the walker consumes
+the resulting list, not a per-frame winner. A Viterbi-style dynamic program over
 the candidate lattice picks the globally optimal path under additive
 costs:
 
@@ -289,7 +290,7 @@ post-termination diagnostic rows only.
   own; the solver `SCHEMA_VERSION` lives only in `tr_schema.py`. The
   `walk_debug_log` verdict CSV is a diagnostic artifact and does not carry or
   bump the solver schema; see
-  [docs/TR_SCHEMA_VERSION_HISTORY.md](TR_SCHEMA_VERSION_HISTORY.md).
+  [TR_SCHEMA_VERSION_HISTORY.md](TR_SCHEMA_VERSION_HISTORY.md).
 
 ### What changed in walker state
 
@@ -315,7 +316,7 @@ Any later refinement step (if and when present) operates after the two
 pass paths have already produced a blended interval path; it must not
 replace the diagnostic signal. If refinement-derived geometry were used
 for scoring, it would mask real identity ambiguity under smooth geometry.
-See `FWD_BWD_MODEL_METHODOLOGY.md` and
+See `TR_FWD_BWD_MODEL_METHODOLOGY.md` and
 [TRACK_RUNNER_V3_SPEC.md](TRACK_RUNNER_V3_SPEC.md) for the current state
 of any refinement step.
 
@@ -390,7 +391,7 @@ The default bin factor is `floor(source_width / 1440)`, a project-wide constant
 bins at 2 (processed 1920x1080), 2.8K (2880) bins at 2, 1440p (2560) and 1080p
 (1920) stay at full resolution (bin=1). The entire solve runs in one coordinate
 space (PROCESSED at bin > 1) and converts to SOURCE exactly once, at the storage
-boundary, immediately before `state_io.write_torso_box_coords`. Hermite and walker
+boundary, immediately before `torso_box_coords_io.write_torso_box_coords`. Hermite and walker
 both emit correct SOURCE boxes via that single boundary. The encoder consumes SOURCE
 and decodes the original full-resolution video.
 
@@ -446,19 +447,18 @@ rearranges the workspace without restarting.
 
 ## Trajectory erasure philosophy
 
-When the runner is genuinely not visible (hidden or off-screen), the solver
-must not pretend to know where they are. Approximate seeds provide a
-directional hint (the user drew a general area) but the position is still
-uncertain, so trajectory is erased in a short radius around those seeds.
+Approximate seeds are uncertain human guidance, not erasure anchors. They
+preserve the machine-produced trajectory geometry while carrying approximate
+status and confidence (0.3); they do not assert an exact human box.
 
-For `not_in_frame` (NIF) spans the encoder no longer relies on a
-hold-last fallback. Instead, it fills the gap with edge-anchored crop
-geometry derived from the bracketing solved torso boxes: width and height
-are stable across the span, the pinned axis sits at the exit edge, and
-the non-pinned axis is interpolated. NIF context is provided in memory
-alongside the encode trajectory; the on-disk solved trajectory artifact
-is unchanged. See [OFF_FRAME_GEOMETRY.md](OFF_FRAME_GEOMETRY.md) for
-the full storage, interpretation, and inference contract.
+`not_in_frame` is the authoritative runner-absence status. A derived
+`NifSpan` covers every frame strictly between its bracketing visible or partial
+seeds (or through the known last frame for an open-ended span), and that exact
+span is erased from runner truth. Encode separately derives edge-anchored crop
+geometry from the bracketing solved boxes: width and height are stable, the
+pinned axis sits at the exit edge, and the non-pinned axis is interpolated.
+Those anchors are crop intent only, never runner geometry or persisted tracking
+truth. See [OFF_FRAME_GEOMETRY.md](OFF_FRAME_GEOMETRY.md) for the full contract.
 
 ## What this tool is not
 

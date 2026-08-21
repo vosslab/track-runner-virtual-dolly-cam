@@ -18,6 +18,7 @@ import numpy
 import common_tools.frame_reader as frame_reader
 import draw_utils
 import overlay_config
+import scene_coords
 
 
 # Crop size constant: multiplied by max(torso_w, torso_h) to get square crop side.
@@ -39,7 +40,7 @@ def render_race_start_contact_sheet(
 	total_frames: int,
 	tiles: list,
 	pre_race_reference: dict,
-	scene_transform,
+	scene_transform: scene_coords.SceneTransform,
 	output_path: str,
 	decode_source: str = None,
 ) -> None:

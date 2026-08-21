@@ -1,5 +1,5 @@
 """
-Motion gate for blob walker v2: per-frame jump acceptance gate.
+Motion gate for the production blob walker: per-frame jump acceptance gate.
 
 The motion gate decides whether a candidate blob position is physically
 plausible given the recent velocity estimate. This module is pure math: no

@@ -7,14 +7,14 @@ Provides the AnnotationWindow with mode toolbar and annotation controls.
 # (none needed)
 
 # PIP3 modules
+import numpy
 from PySide6.QtWidgets import (
 	QApplication, QLabel, QPushButton, QProgressBar,
 	QWidget, QVBoxLayout, QDialog, QTextBrowser,
 )
 from PySide6.QtCore import QSettings, Qt
 from PySide6.QtGui import (
-	QAction, QActionGroup, QFontDatabase, QIcon, QPixmap, QColor,
-	QKeySequence, QShortcut,
+	QAction, QActionGroup, QCloseEvent, QFontDatabase, QIcon, QPixmap, QColor,
 )
 
 # local repo modules
@@ -22,8 +22,8 @@ import overlay_config
 import common_tools.frame_filters as frame_filters_module
 import ui.frame_view as frame_view_module
 import ui.app_shell as app_shell_module
+import ui.keymap as keymap_module
 import ui.zoom_controls as zoom_controls_module
-import ui.heat_map_overlay as heat_map_overlay_module
 
 FrameView = frame_view_module.FrameView
 AppShell = app_shell_module.AppShell
@@ -74,15 +74,10 @@ class AnnotationWindow(AppShell):
 		layout.addWidget(self._frame_view, 1)
 		layout.addWidget(self._hint_bar, 0)
 		self.setCentralWidget(central)
-		# cache last hints so the help dialog can render the full list
+		# Cache the active mode and color; shortcut text is always rendered
+		# from ui.keymap rather than retained as a hand-written display string.
 		self._last_hint_mode = ""
-		self._last_hint_text = ""
 		self._last_hint_color = "#FFFFFF"
-		# F1 / ? opens a help dialog listing the current-mode shortcuts
-		help_shortcut_f1 = QShortcut(QKeySequence("F1"), self)
-		help_shortcut_f1.activated.connect(self._show_help_dialog)
-		help_shortcut_q = QShortcut(QKeySequence("?"), self)
-		help_shortcut_q.activated.connect(self._show_help_dialog)
 
 		# Mode colors loaded from overlay_styles.yaml
 		self._mode_colors = {
@@ -95,11 +90,10 @@ class AnnotationWindow(AppShell):
 		self._annotation_toolbar = self.addToolBar("Annotation")
 		self._annotation_toolbar.setMovable(False)
 
-		# Guard: set_controller() is called during init via setChecked signal;
-		# skip teardown logic until all widgets exist
-		self._init_complete = False
-
-		# Initialize state before mode toolbar (setChecked fires _on_mode_changed)
+		# Initialize state before mode toolbar (setChecked fires _on_mode_changed).
+		# A session is attached only after construction, so that signal has no
+		# controller lifetime work to do yet.
+		self._session: object | None = None
 		self._active_controller = None
 		self._controller_widget_action = None
 		self._current_mode = "seed"
@@ -214,18 +208,6 @@ class AnnotationWindow(AppShell):
 		)
 		self._overlay_toolbar.addWidget(self._heat_status_label)
 
-		# H keyboard shortcut toggles the heat action. Keeping a
-		# reference prevents garbage collection of the QShortcut.
-		self._heat_shortcut = QShortcut(QKeySequence("H"), self)
-		self._heat_shortcut.activated.connect(heat_action.toggle)
-
-		# Lazy-built "Loading heatmap..." dialog. Shown while the heat
-		# compute is running (STATUS_COMPUTING) and hidden the moment any
-		# other status arrives. The frame view is disabled in parallel
-		# so the user cannot click into a half-ready scene to start
-		# drawing a torso box. Constructed on first use in _set_heat_busy.
-		self._heat_busy_dialog: QDialog | None = None
-
 		# Add zoom controls to the status bar
 		self._zoom_controls = ZoomControls()
 		self.statusBar().addPermanentWidget(self._zoom_controls)
@@ -262,20 +244,20 @@ class AnnotationWindow(AppShell):
 		if geometry is not None:
 			self.restoreGeometry(geometry)
 
-		# all widgets created; set_controller() can now do full teardown
-		self._init_complete = True
-
 	#============================================
 
 	def _on_mode_changed(self, checked: bool) -> None:
 		"""Handle mode button toggled signal.
 
-		Determines which mode is now active, updates UI, and deactivates
-		current controller.
+		Determines which mode is now active, updates UI, and asks the
+		persistent session to activate its controller.
 
 		Args:
 			checked: True if action is now checked.
 		"""
+		if not checked:
+			return
+
 		# Find which mode action is now checked
 		current_mode = None
 		for mode, action in self._mode_actions.items():
@@ -293,11 +275,10 @@ class AnnotationWindow(AppShell):
 		# Apply mode color to frame view
 		self._apply_mode_color(current_mode)
 
-		# Deactivate current controller
-		self.set_controller(None)
-
 		# Update internal state
 		self._current_mode = current_mode
+		if self._session is not None:
+			self._session.activate_mode(current_mode)
 
 	#============================================
 
@@ -314,7 +295,7 @@ class AnnotationWindow(AppShell):
 
 	#============================================
 
-	def set_controller(self, controller) -> None:
+	def set_controller(self, controller: object) -> None:
 		"""Set or clear the active controller.
 
 		Deactivates the previous controller, activates the new one,
@@ -326,15 +307,10 @@ class AnnotationWindow(AppShell):
 		"""
 		# Deactivate previous controller
 		if self._active_controller is not None:
-			if hasattr(self._active_controller, "deactivate"):
-				self._active_controller.deactivate()
+			self._active_controller.deactivate()
 
 		# Store new controller
 		self._active_controller = controller
-
-		# skip widget teardown during __init__ (setChecked fires before widgets exist)
-		if not self._init_complete:
-			return
 
 		# Reset progress bar between controller swaps
 		self._progress_bar.setValue(0)
@@ -347,13 +323,8 @@ class AnnotationWindow(AppShell):
 		for key, action in self._overlay_actions.items():
 			default_checked = (key != "heat")
 			action.setChecked(default_checked)
-		# clear any stale heat status from the previous controller and
-		# force-hide the busy popup in case a mode switch interrupts an
-		# in-flight compute (the frame view must not stay disabled).
-		if hasattr(self, "_heat_status_label") and self._heat_status_label is not None:
-			self._heat_status_label.setText("")
-		if hasattr(self, "_heat_busy_dialog"):
-			self._set_heat_busy(False)
+		# Clear any stale heat status from the previous controller.
+		self._heat_status_label.setText("")
 
 		# Remove previous controller widget from toolbar (keep mode_label and filter_button)
 		if self._controller_widget_action is not None:
@@ -366,13 +337,10 @@ class AnnotationWindow(AppShell):
 
 		# Activate new controller if provided
 		if self._active_controller is not None:
-			if hasattr(self._active_controller, "activate"):
-				self._active_controller.activate(self)
-			# Add controller toolbar widget if available
-			if hasattr(self._active_controller, "toolbar_widget"):
-				widget = self._active_controller.toolbar_widget
-				if widget is not None:
-					self._controller_widget_action = self._annotation_toolbar.addWidget(widget)
+			self._active_controller.activate(self)
+			widget = self._active_controller.toolbar_widget
+			if widget is not None:
+				self._controller_widget_action = self._annotation_toolbar.addWidget(widget)
 
 	#============================================
 
@@ -404,8 +372,7 @@ class AnnotationWindow(AppShell):
 			return
 		key = action.data()
 		if self._active_controller is not None:
-			if hasattr(self._active_controller, "set_overlay_enabled"):
-				self._active_controller.set_overlay_enabled(key, checked)
+			self._active_controller.set_overlay_enabled(key, checked)
 
 	#============================================
 
@@ -413,120 +380,18 @@ class AnnotationWindow(AppShell):
 		"""Set the motion heat-map overlay status label text.
 
 		Called by BaseAnnotationController when the HeatMapOverlay emits
-		statusChanged. Empty string clears the label. Also drives the
-		modal "Loading heatmap..." popup: the popup appears on exactly
-		the STATUS_COMPUTING status and closes on every other status so
-		the user cannot click into the scene while a compute is in
-		flight.
+		statusChanged. Empty string clears the persistent label; heat
+		computation remains asynchronous and does not open a modal popup.
 
 		Args:
 			text: Status string to display next to the heat toolbar
 				action (e.g. "computing...", "ROI shown at frame 1247",
 				"no prediction for this frame").
 		"""
-		if hasattr(self, "_heat_status_label") and self._heat_status_label is not None:
-			self._heat_status_label.setText(text)
-		# drive busy popup: exactly one status opens it; every other
-		# status closes it. The drawing-pause path emits a non-computing
-		# status so the popup is never shown over an active drag.
-		is_busy = text == heat_map_overlay_module.STATUS_COMPUTING
-		self._set_heat_busy(is_busy)
+		self._heat_status_label.setText(text)
 
 	#============================================
 
-	def _set_heat_busy(self, busy: bool) -> None:
-		"""Show or hide the heat-map loading popup and gate scene clicks.
-
-		When `busy` is True, builds the popup on first use, shows it
-		centered over the frame view, and disables the frame view so
-		mouse events cannot reach the QGraphicsScene. When False,
-		hides the popup and re-enables the view. Idempotent: safe to
-		call repeatedly in the same state.
-
-		Args:
-			busy: True while a heat-map compute is in flight.
-		"""
-		if busy:
-			# build on first use; keep one persistent instance so
-			# repeated shows do not churn widget construction
-			if self._heat_busy_dialog is None:
-				self._heat_busy_dialog = self._build_heat_busy_dialog()
-			# center the popup over the frame view before showing
-			self._center_heat_busy_dialog()
-			self._heat_busy_dialog.show()
-			self._heat_busy_dialog.raise_()
-			# disabling the view blocks mouse press / move / release into
-			# the scene; keyboard shortcuts (H, arrows) still fire on the
-			# window so the user can toggle off or navigate
-			self._frame_view.setEnabled(False)
-		else:
-			if self._heat_busy_dialog is not None:
-				self._heat_busy_dialog.hide()
-			self._frame_view.setEnabled(True)
-
-	#============================================
-
-	def _build_heat_busy_dialog(self) -> QDialog:
-		"""Build the "Loading heatmap..." popup dialog.
-
-		Frameless, non-modal, styled to match the dark toolbar. Kept as
-		a persistent child of the window so show/hide is cheap. Not
-		modal in the Qt sense -- the view-disable path does the
-		click-blocking work, while the dialog stays non-modal so the
-		H shortcut and arrow-key navigation continue to fire on the
-		parent window.
-
-		Returns:
-			A ready-to-show QDialog.
-		"""
-		dlg = QDialog(self)
-		dlg.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog)
-		dlg.setAttribute(Qt.WA_StyledBackground, True)
-		dlg.setStyleSheet(
-			"QDialog { background-color: #1A1A2E; "
-			"border: 2px solid #A21CAF; border-radius: 6px; }"
-			"QLabel { color: #F8FAFC; }"
-		)
-		layout = QVBoxLayout(dlg)
-		layout.setContentsMargins(24, 18, 24, 18)
-		layout.setSpacing(4)
-		title_label = QLabel("Loading heatmap...")
-		title_font = title_label.font()
-		title_font.setPointSize(14)
-		title_font.setBold(True)
-		title_label.setFont(title_font)
-		title_label.setAlignment(Qt.AlignCenter)
-		sub_label = QLabel("Please wait")
-		sub_font = sub_label.font()
-		sub_font.setPointSize(10)
-		sub_label.setFont(sub_font)
-		sub_label.setAlignment(Qt.AlignCenter)
-		sub_label.setStyleSheet("QLabel { color: #94A3B8; }")
-		layout.addWidget(title_label)
-		layout.addWidget(sub_label)
-		dlg.setLayout(layout)
-		dlg.adjustSize()
-		return dlg
-
-	#============================================
-
-	def _center_heat_busy_dialog(self) -> None:
-		"""Center the busy popup over the frame view before show()."""
-		if self._heat_busy_dialog is None:
-			return
-		view_rect = self._frame_view.geometry()
-		# map the frame view's top-left to global coords so the dialog
-		# can be placed in the correct screen region regardless of
-		# window / toolbar layout
-		top_left_global = self._frame_view.mapToGlobal(view_rect.topLeft())
-		view_cx = top_left_global.x() + view_rect.width() // 2
-		view_cy = top_left_global.y() + view_rect.height() // 2
-		dlg_size = self._heat_busy_dialog.sizeHint()
-		dlg_x = view_cx - dlg_size.width() // 2
-		dlg_y = view_cy - dlg_size.height() // 2
-		self._heat_busy_dialog.move(dlg_x, dlg_y)
-
-	#============================================
 
 	def set_progress(self, current: int, total: int) -> None:
 		"""Update the progress bar with current/total values.
@@ -563,7 +428,7 @@ class AnnotationWindow(AppShell):
 
 	#============================================
 
-	def set_frame(self, bgr_array) -> None:
+	def set_frame(self, bgr_array: numpy.ndarray) -> None:
 		"""Set the displayed frame.
 
 		Stores the raw BGR array and applies the active display filter
@@ -581,17 +446,17 @@ class AnnotationWindow(AppShell):
 
 	#============================================
 
-	def set_hints(self, mode_label: str, hints: str, mode_color: str = "#FFFFFF") -> None:
+	def set_hints(self, mode_label: str, mode: str, mode_color: str = "#FFFFFF") -> None:
 		"""Update the persistent hint bar with current-mode shortcuts.
 
 		Args:
 			mode_label: Short mode name (e.g. "SEED", "EDIT").
-			hints: Space-separated keybinding hints string.
+			mode: Declarative keymap mode used to render shortcuts.
 			mode_color: Hex color for the mode label.
 		"""
 		self._last_hint_mode = mode_label
-		self._last_hint_text = hints
 		self._last_hint_color = mode_color
+		hints = keymap_module.hint_text(mode)
 		html = (
 			f"<span style='color: {mode_color}; font-weight: bold;'>"
 			f"{mode_label}</span>"
@@ -605,37 +470,27 @@ class AnnotationWindow(AppShell):
 	def clear_hints(self) -> None:
 		"""Clear the hint bar text (called on controller deactivation)."""
 		self._last_hint_mode = ""
-		self._last_hint_text = ""
 		self._hint_bar.setText("")
 
 	#============================================
 
-	def _show_help_dialog(self) -> None:
+	def show_keybinding_help(self) -> None:
 		"""Pop up a dialog listing the current-mode shortcuts.
 
-		Reads the last hints string set via set_hints() and renders
-		each space-run as a separate row for readability.
+		Renders table entries directly from ui.keymap; it never parses the
+		formatted hint-bar string.
 		"""
 		mode = self._last_hint_mode or "(no mode)"
-		hints = self._last_hint_text or "(no shortcuts available)"
-		# split hints into "KEY=action" tokens on whitespace runs
-		tokens = [t for t in hints.split("  ") if t.strip()]
 		rows = ""
-		for token in tokens:
-			if "=" in token:
-				key_part, action_part = token.split("=", 1)
-				rows += (
-					"<tr>"
-					f"<td style='color: #7DD3FC; padding-right: 14px; "
-					f"font-weight: bold;'>{key_part.strip()}</td>"
-					f"<td style='color: #E5E7EB;'>{action_part.strip()}</td>"
-					"</tr>"
-				)
-			else:
-				rows += (
-					f"<tr><td colspan='2' style='color: #E5E7EB;'>"
-					f"{token}</td></tr>"
-				)
+		for binding in keymap_module.bindings_for_mode(self._current_mode):
+			key_part = keymap_module.key_label(binding)
+			rows += (
+				"<tr>"
+				f"<td style='color: #7DD3FC; padding-right: 14px; "
+				f"font-weight: bold;'>{key_part}</td>"
+				f"<td style='color: #E5E7EB;'>{binding.label}</td>"
+				"</tr>"
+			)
 		html = (
 			f"<h3 style='color: {self._last_hint_color};'>"
 			f"{mode} mode shortcuts</h3>"
@@ -657,6 +512,12 @@ class AnnotationWindow(AppShell):
 
 	#============================================
 
+	def toggle_heat(self) -> None:
+		"""Toggle the declaratively bound motion heat-map action."""
+		self._overlay_actions["heat"].toggle()
+
+	#============================================
+
 	def get_frame_view(self) -> FrameView:
 		"""Get the frame view widget.
 
@@ -667,7 +528,41 @@ class AnnotationWindow(AppShell):
 
 	#============================================
 
-	def closeEvent(self, event) -> None:
+	def set_session(self, session: object) -> None:
+		"""Attach the persistent owner for controller and video lifetime.
+
+		Args:
+			session: AnnotationSession that owns this window's controllers.
+		"""
+		if self._session is not None:
+			raise RuntimeError("AnnotationWindow already has a session")
+		self._session = session
+		session.attach_window(self)
+		session.activate_mode(self._current_mode)
+
+	#============================================
+
+	def get_session(self) -> object | None:
+		"""Return the persistent annotation session, when one is attached."""
+		return self._session
+
+	#============================================
+
+	def set_session_mode(self, mode: str) -> None:
+		"""Reflect a session-owned controller transition in the mode toolbar."""
+		if mode not in self._mode_actions:
+			raise ValueError(f"Unknown annotation mode: {mode}")
+		action = self._mode_actions[mode]
+		was_blocked = action.blockSignals(True)
+		action.setChecked(True)
+		action.blockSignals(was_blocked)
+		self._current_mode = mode
+		self._mode_label.setText(f"MODE: {mode.upper()}")
+		self._apply_mode_color(mode)
+
+	#============================================
+
+	def closeEvent(self, event: QCloseEvent) -> None:
 		"""Save window state on close.
 
 		Args:
@@ -675,6 +570,8 @@ class AnnotationWindow(AppShell):
 		"""
 		settings = QSettings("emwy", "AnnotationWindow")
 		settings.setValue("geometry", self.saveGeometry())
+		if self._session is not None:
+			self._session.close()
 		super().closeEvent(event)
 
 	#============================================

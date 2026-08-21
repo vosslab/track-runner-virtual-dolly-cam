@@ -1,469 +1,162 @@
 # Motion-cue heat map
 
-This doc is subordinate to
-[TRACK_RUNNER_CONTRACT.md](TRACK_RUNNER_CONTRACT.md). On conflict, the
-contract wins and this document is corrected.
+This document is subordinate to
+[TRACK_RUNNER_CONTRACT.md](TRACK_RUNNER_CONTRACT.md). The contract wins on
+any conflict.
 
-Technical source of truth for the image-derived motion-cue field and
-the blob pipeline that turns it into candidate observations for the
-FWD/BWD propagator.
+The motion-cue heat map is the image-derived evidence input to the windowed
+blob walker. It identifies moving image components after camera compensation;
+it does not identify a runner, define a track direction, or change a human
+seed.
 
-Owns: the cue field definition, its computation, ROI geometry and
-quantization, blob extraction and fields, corridor filter,
-cue-confidence scoring, the concrete cache schema, the
-`observe_blob_at` call flow, and measurement-level failure modes.
+Primary implementation: [residual_motion.py](../track_runner/residual_motion.py).
+Image mechanics live in [residual_frame.py](../track_runner/residual_frame.py).
 
-Does not own: dual-pass invariants, pass-local gating rules, allowed
-signal flow, or the normative statement of which cache contents are
-forbidden. Those live in
-`FWD_BWD_MODEL_METHODOLOGY.md`.
+## Field definition
 
-Related docs:
+`compute_residual_for_frame()` returns a float32 residual image and a uint8
+validity mask for one full frame or one ROI. For a target frame, the reader
+loads neighboring frames, camera-aligns them into the target coordinate space,
+and computes a NaN-masked median background. The residual is the absolute
+difference between the target and that background. Pixels with insufficient
+warped support are invalid and have zero residual.
 
-- [TRACK_RUNNER_CONTRACT.md](TRACK_RUNNER_CONTRACT.md) -- rules.
-- `FWD_BWD_MODEL_METHODOLOGY.md` --
-  dual-pass invariants, raw-cache boundary, allowed signal flow.
-- [RESIDUAL_MOTION_OBSERVATIONS.md](archive/RESIDUAL_MOTION_OBSERVATIONS.md)
-  -- consumer-facing one-page summary of the observation API.
-- [TRACK_RUNNER_DESIGN.md](TRACK_RUNNER_DESIGN.md) -- why motion cues
-  matter.
+The default neighbor count is fixed and the stride is derived from FPS. This
+keeps the temporal span similar across common video frame rates without
+turning the heat map into a timing or performance gate.
 
-Primary code:
-[residual_motion.py](../track_runner/residual_motion.py).
-Display facade for the annotation UI:
-[residual_heat_map.py](../track_runner/residual_heat_map.py).
-This doc refers to named constants (for example `ROI_MULTIPLIER`,
-`ROI_QUANT`, `MIN_BLOB_AREA`, `DEFAULT_THRESHOLD`,
-`DEFAULT_HALF_WINDOW`, `TANGENT_MIN_SPAN`) without repeating their
-numeric values. Consult the code for current numbers; they are
-expected to evolve.
+The field is motion evidence only:
 
-## What the heat map is
+- It is not appearance or identity evidence.
+- It is not a runner probability.
+- It does not carry an inferred track direction.
+- It does not contain a selected path or any cross-frame state.
 
-A per-frame float32 image of motion-cue magnitude, with a matching
-uint8 validity mask. Returned by
-`compute_residual_for_frame(reader, frame_index, scene_transform,
-half_window, cache, roi)` as a `(residual, validity_mask)` tuple.
+## How the map is calculated
 
-The field has one magnitude value per ROI pixel. High magnitude means
-that pixel moved relative to the scene-stabilized background; low
-magnitude means it was well-explained by the median of aligned
-neighbors. The validity mask is zero wherever the warped neighbor
-coverage was insufficient (fewer than two contributing frames) and
-255 elsewhere; residual magnitudes at invalid pixels are forced to
-zero before return.
+For target frame `t`, `compute_residual_for_frame()` performs these steps:
 
-This is a literal floating-point image, not a thresholded binary map
-and not a visualization. The JET colorization in
-`residual_heat_map.py` is a display-only composite built on top of
-the same field for the annotation UI.
+1. Read the target frame in grayscale float32.
+2. Choose neighboring frames on both sides of `t`; the center frame itself is
+   not a neighbor.
+3. Use `SceneTransform` to build an affine warp from each neighbor into the
+   target camera position. For an ROI, the translation is shifted into ROI
+   coordinates before warping.
+4. Warp each neighbor, derive its valid support mask, and represent invalid
+   pixels as `NaN`.
+5. Stack the aligned neighbor images and calculate the per-pixel
+   `numpy.nanmedian`. That is the camera-compensated background estimate.
+6. Take `abs(target - median)` and zero pixels with fewer than two valid
+   neighbor contributions.
 
-## How the field is computed
+The result is a magnitude image, not a binary mask or a rendered overlay. The
+UI colorizes it only after this calculation.
 
-For one frame at `frame_index`:
+## FPS-aware stride
 
-1. Read the target frame in grayscale float32 (`_read_gray_frame`,
-   with an intra-call cache of prior reads).
-2. Optionally crop the target to a square ROI centered on the
-   caller's predicted position (see "ROI geometry" below).
-3. For each neighbor offset `k * stride` with `k` in
-   `[-DEFAULT_HALF_WINDOW, +DEFAULT_HALF_WINDOW] \ {0}` and
-   `stride = resolve_stride(fps)` (at 60 fps stride=1, offsets
-   `[-4, -3, -2, -1, 1, 2, 3, 4]`; at 120 fps stride=2, offsets
-   `[-8, -6, -4, -2, 2, 4, 6, 8]` -- same ~133 ms span, half the I/O):
-   - Read the neighbor frame (BGR, cached separately).
-   - Build a 2x3 affine warp matrix that transforms the neighbor
-     into the target frame's camera position. The warp uses the
-     cumulative `(cum_dx, cum_dy, cum_scale)` arrays in
-     `SceneTransform` (`build_warp_matrix`). For ROI-scoped calls the
-     warp translation is shifted by the ROI origin so the warp lands
-     in ROI pixel coordinates directly.
-   - Apply `cv2.warpAffine` to obtain the aligned neighbor crop.
-   - Build a per-pair validity mask (`compute_validity_mask`): a
-     gray-thresholded binary mask eroded by a 3x3 kernel. Pixels
-     outside the neighbor's warped support are marked invalid.
-   - Convert the warped neighbor to grayscale float32 and set
-     invalid pixels to `NaN` so the median ignores them.
-4. Stack the aligned neighbors and compute `numpy.nanmedian` along
-   the stack axis. That median image is the scene-stabilized
-   background estimate.
-5. Build the combined validity mask: pixels where at least two
-   neighbors contributed a non-NaN value are valid.
-6. Compute `residual = abs(target - median)`. Zero-out invalid
-   pixels. Return `(residual, validity_mask)`.
-
-The returned residual is the input to a downstream DoG band-pass step
-inside both `observe_blob_at` (production observer) and
-`compute_heat_map_roi` (GUI overlay). See [the DoG band-pass pre-filter
-subsection below](#dog-band-pass-pre-filter).
-
-If fewer than two aligned neighbors could be collected, the function
-returns `(None, None)`.
-
-## How the fps-invariant stride model works
-
-The background window uses a fixed neighbor count (`DEFAULT_HALF_WINDOW = 4`,
-8 actual neighbors since k=0 is skipped) and an fps-derived stride. The
-helper `resolve_stride(fps)` computes:
+The code keeps a fixed number of neighbors and derives the frame stride from
+the source FPS:
 
 ```
-stride = max(1, round(fps / REFERENCE_FPS))  # REFERENCE_FPS = 60
+stride = max(1, round(fps / REFERENCE_FPS))
 ```
 
-Neighbor offsets for the `nanmedian` stack are:
+At 60 fps the neighboring offsets are contiguous; at higher frame rates the
+offset grows so the temporal span remains similar while the number of decoded
+frames stays bounded. The current constant values live in code rather than in
+this document, preventing the documentation from becoming a second tuning
+surface.
 
-```
-[k * stride for k in range(-DEFAULT_HALF_WINDOW, DEFAULT_HALF_WINDOW + 1) if k != 0]
-```
+## DoG preparation
 
-The result:
+Before connected-component extraction, the observer applies a
+Difference-of-Gaussians filter sized from the predicted torso width. The DoG
+suppresses broad background changes and fine speckle while retaining a
+torso-scale motion component. It is applied both to the production observer
+and the GUI overlay so they describe the same residual landscape.
 
-- At 60 fps: stride=1, offsets `[-4, -3, -2, -1, 1, 2, 3, 4]`. Byte-identical
-  to the pre-M2 contiguous half_window=4 behavior.
-- At 120 fps: stride=2, offsets `[-8, -6, -4, -2, 2, 4, 6, 8]`. Same ~133 ms
-  span, half the frame I/O vs the old 17-sample window the time-seconds model
-  produced.
-- At 240 fps: stride=4, offsets `[-16, -12, -8, -4, 4, 8, 12, 16]`. Same span,
-  quarter the I/O.
-- At 30 fps: stride=1 (round(30/60)=0, clamped to 1). Contiguous window, same
-  as 60 fps.
+## ROI and cache boundary
 
-The sample count is always 8 (4 each side). The time span is always ~133 ms
-regardless of fps. The user-facing rule is "the runner has moved roughly the
-same physical distance between samples no matter what fps the camera was set to."
+`observe_blob_at()` receives a typed PROCESSED-space predicted center and
+box. It creates a quantized, frame-clamped ROI from the prediction and uses
+that ROI with the frame index as the image-evidence cache key. Tiny FWD/BWD
+prediction differences can therefore reuse raw image work, while materially
+different ROIs compute their own evidence.
 
-See plan `~/.claude/plans/memoized-percolating-moler.md` M2 for the full
-rationale. The M2 model entered production at schema v11.
+The interval-scoped cache may hold only raw image products:
 
-There is no per-frame smoothing, normalization, or contrast
-stretching on the stored field. The only preprocessing is the warp,
-the median, and the absolute difference. Visualization-time scaling
-happens in `residual_heat_map.py` and does not mutate the cached
-field.
+- `(frame_index, roi)` residual, validity, and raw blob data
+- `"_frames"` grayscale and BGR frame reads
 
-## ROI geometry and ROI quantization
+It never holds selected blobs, path positions, gate results, or temporal
+history. Reusing image evidence does not couple FWD and BWD decisions.
 
-ROIs are square, centered on a quantized version of the caller's
-predicted center, with side length
-`ROI_MULTIPLIER * pred_h` (floored to a minimum size). The ROI bounds
-are clamped to frame bounds and snapped to multiples of `ROI_QUANT`.
-`_compute_roi` returns a 4-tuple `(x1, y1, x2, y2)` used as part of
-the cache key.
+## Blob extraction
 
-Quantization design: sub-quantum differences between FWD's and BWD's
-predicted centers (a fraction of a pixel, a few pixels at most on
-straight motion) resolve to the same ROI tuple, so the two passes
-share one residual computation and one raw-blob list. Larger
-divergence -- tens of pixels, typical on tight curves, crowd edges,
-or occlusion boundaries -- produces distinct ROI tuples and the two
-passes each compute their own residual. This keeps the two passes
-independent in exactly the regimes where divergence matters, at a
-bounded cache-miss cost.
+The observer applies a Difference-of-Gaussians filter to the residual before
+connected-component extraction. `extract_frame_blobs()` returns at most the
+strongest image components by integrated magnitude. It preserves small
+components as evidence; `small_blob` is descriptive metadata rather than a
+hard discard.
 
-## DoG band-pass pre-filter
+Each raw blob contains these image-derived fields:
 
-Before connected-component extraction, the residual magnitude image is
-band-pass filtered by `dog_filter_blob_scale(mag, diameter, k=5.0)`
-(in [residual_motion.py](../track_runner/residual_motion.py)).
-This step is applied unconditionally inside both `observe_blob_at`
-(production observer) and `compute_heat_map_roi` (GUI overlay) so the
-solver and the user-visible overlay see the same magnitude landscape.
+| Field | Meaning |
+| --- | --- |
+| `centroid_x`, `centroid_y` | Component centroid in ROI pixels before restoration to full-frame pixels. |
+| `area`, `bbox`, `label_id` | Connected-component geometry. |
+| `integrated_mag` | Sum of residual magnitude over the component. |
+| `small_blob` | Whether the component is below the named noise-size threshold. |
 
-The target blob diameter is the predicted torso width. Sigma sizing
-follows the Laplacian-of-Gaussian peak-radius relation
-(Yoshioka et al. 2009, DoG Picker, eq. 4):
+The observer restores centroids to full-frame coordinates exactly once when it
+returns the selected `BlobObservation` as a typed SOURCE-space point.
 
-- `r = diameter / 2`
-- `sigma_1 = r / sqrt(2)`
-- `sigma_2 = k * sigma_1`
-- `dog = blur(mag, sigma_1) - blur(mag, sigma_2)`
-- negative-lobe response is clipped to zero
+## Observation contract
 
-Effect: blobs whose size matches the runner torso are enhanced; both
-sub-torso speckle (mis-registered background pixels) and larger
-structures (ground texture, crowd silhouettes) are suppressed. The
-threshold downstream is then `threshold` per `extract_frame_blobs`,
-applied to the DoG-filtered map.
+`observe_blob_at()` is stateless. It accepts the current frame, a predicted
+center and box, the scene transform, a reader, and the image-evidence cache.
+It can also accept a seed-local ROI, DoG diameter, and acceptance box for the
+walker bootstrap path.
 
-The k-factor default of 5.0 was chosen empirically on this project's
-residuals (the paper default k=1.1 and SIFT classic k=1.6 are too tight;
-they leave the torso blob too dim relative to sub-torso speckle). The
-torso blob is long-aspect elliptical (not perfectly round), so a wider
-DoG band better captures the elongated component shape than tighter
-settings. The diagnose tool's `-k` flag exposes the knob for sweeps but
-production uses 5.0 as the stable default.
+The production sequence is:
 
-## Blob extraction from the heat map
+1. Build or reuse the ROI residual and validity mask.
+2. Apply the DoG filter and extract raw blobs.
+3. Apply an optional acceptance box.
+4. Select the eligible blob with the greatest `integrated_mag`.
+5. Return its raw centroid and descriptive confidence metadata.
 
-`extract_frame_blobs(mag, validity_mask, threshold, top_k=10)`:
+There is no corridor filter, tangent projection, directional decomposition,
+or trajectory correction in this API. `compute_cue_confidence()` records
+strength and isotropic proximity metadata; it does not reject a blob or choose
+the winner.
 
-1. Threshold the magnitude image with `mag > threshold` and AND
-   with the validity mask to exclude invalid pixels.
-2. Run `cv2.connectedComponentsWithStats` with 8-connectivity.
-3. For each non-background component, read the area from the stats
-   array; drop components with `area < MIN_BLOB_AREA`.
-4. Compute `integrated_mag = sum(mag[component_pixels])` over the
-   component's pixels.
-5. Sort components by `integrated_mag` descending.
-6. Return the top `top_k`.
+FWD and BWD call the observer independently with their own predictions.
+Stage-3 Hermite never calls it. The Stage-4 walker decides how to use the
+optional observation after this image-only boundary.
 
-Each blob is a dict with the following fields:
+## Coordinate spaces
 
-| Field | Type | Meaning |
-| --- | --- | --- |
-| `centroid_x` | float | Component centroid x (ROI pixels on return; restored to full-frame pixels by the caller in `observe_blob_at`) |
-| `centroid_y` | float | Component centroid y, same convention |
-| `area` | int | Component pixel count |
-| `integrated_mag` | float | Sum of magnitude over component pixels |
-| `label_id` | int | Connected-component label id |
+All geometry supplied to `observe_blob_at()` is typed PROCESSED space. Its
+returned `BlobObservation.center_pixel` is typed SOURCE space. Callers must
+make the conversion explicit; the observer rejects an incorrect input type at
+its boundary.
 
-Two fields are added later by the corridor filter (see below):
-`cross_track` and `along_track`.
+## Failure behavior
 
-Centroids live in ROI coordinates on return from `extract_frame_blobs`;
-`observe_blob_at` adds `(roi_x1, roi_y1)` to restore full-frame pixel
-coordinates before any downstream gate sees them.
+The observer returns `None` when it cannot produce an image observation:
 
-## Corridor filter
+- camera-aligned neighbors are unavailable;
+- no blob survives the image threshold;
+- no blob lies inside an optional acceptance box; or
+- the predicted center is outside the processed frame.
 
-`filter_blobs_to_corridor(blobs, ref_x, ref_y, tangent,
-corridor_radius)`:
+The optional trace labels these outcomes as `no_residual`, `no_raw_blobs`,
+`acceptance_box_empty`, or `off_frame`. A `None` observation is a soft image
+miss; it does not alter a seed or assert that the runner is absent.
 
-Given a caller-supplied reference point `(ref_x, ref_y)`, a unit
-tangent/normal tuple `(tx, ty, nx, ny)`, and a corridor half-width,
-keep blobs whose cross-track distance from the reference is within
-the corridor. Cross-track and along-track are the blob displacement
-`(dx, dy)` projected onto the normal and tangent respectively. Each
-surviving blob gets `cross_track` and `along_track` added to its
-dict.
+## UI overlay
 
-Reference point and tangent come from the caller (the propagator's
-pass-local state). The corridor filter itself stores nothing.
-
-Tangent construction: `compute_trajectory_tangent(trajectory,
-frame_index)` first tries a symmetric `+/- TANGENT_MIN_SPAN` window;
-if either endpoint's confidence is below
-`TANGENT_CONFIDENCE_THRESHOLD` it widens to
-`+/- TANGENT_FALLBACK_SPAN`. On a zero-magnitude chord or a missing
-endpoint it returns the axis-aligned identity `(1, 0, 0, 1)`, which
-effectively disables anisotropic decomposition for that frame.
-
-## Cue-confidence scoring
-
-`compute_cue_confidence(blob, pred_cx, pred_cy, pred_w, pred_h,
-tangent)` returns a scalar in `[0, 1]` blending three factors. The
-current weights (0.3 strength, 0.3 size, 0.4 proximity) live in
-the function body; consult code for current values:
-
-- **Strength**: `integrated_mag` clamped against a normalization
-  constant.
-- **Size plausibility**: blob area relative to predicted box area,
-  scored by distance from an ideal ratio (the runner is normally a
-  part of the corridor, not the whole ROI).
-- **Proximity**: isotropic distance between blob centroid and
-  predicted center, normalized by the predicted-box diagonal.
-
-The `tangent` argument is accepted for API symmetry but currently
-unused in the scoring body. The scoring is post-corridor; the
-corridor has already constrained cross-track geometry.
-
-## Per-frame observation: `observe_blob_at`
-
-The single entry point used by the propagator.
-`observe_blob_at(frame_index, pred_center, pred_box, local_tangent,
-scene_transform, reader, residual_cache, threshold=...,
-half_window=DEFAULT_HALF_WINDOW, fps=None, stride=None,
-precomputed_store=None)` returns a `BlobObservation` or `None`.
-
-Optional parameters resolved at call time:
-
-- `fps` defaults to `reader.fps` when None.
-- `stride` defaults to `resolve_stride(fps)` when None: 60 fps -> 1, 119.94 fps -> 2, 240 fps -> 4. The neighbor offsets used inside the residual computation are `[k * stride for k in [-half_window..-1, 1..half_window]]`. Time span is fixed at ~133 ms across fps.
-- `precomputed_store` is a worker-local dict produced by [residual_pre_pass.py](../track_runner/residual_pre_pass.py) `precompute_interval_residuals`. When non-None, the function looks up `(frame_index, roi)`; on a hit it bypasses `compute_residual_for_frame` and reads stored uint8 residual + validity directly. On miss it falls through to the legacy reader path.
-
-`BlobObservation` fields:
-
-| Field | Type | Meaning |
-| --- | --- | --- |
-| `center_pixel` | `(float, float)` | Best blob centroid in full-frame pixels |
-| `cross_track` | float | Signed normal component of displacement from predicted center |
-| `along_track` | float | Signed tangent component of displacement from predicted center |
-| `confidence` | float | Cue confidence in `[0, 1]` |
-
-Call flow inside `observe_blob_at`:
-
-1. Compute ROI via `_compute_roi` using the caller's predicted
-   center and height. Form `cache_key = (frame_index, roi)`.
-2. Look up `residual_cache[cache_key]`. On hit, reuse the stored
-   raw-blob list. On miss, call `compute_residual_for_frame` on
-   that ROI, call `extract_frame_blobs`, translate centroids back
-   to full-frame coordinates, and store `{"raw_blobs": [...]}` in
-   the cache. A negative result (residual unavailable) stores an
-   empty `raw_blobs` list so the next caller does not retry.
-3. Filter the raw blobs to the corridor around the caller's
-   predicted center using the caller's tangent and a
-   corridor radius derived from `pred_box` (currently
-   `max(1.5 * w, 0.75 * h)`; see code for the live formula).
-4. Score surviving blobs via `compute_cue_confidence`; pick the
-   highest-scoring.
-5. Return the `BlobObservation` for the winner, or `None` if any
-   stage produced no candidate.
-
-This function is stateless. All state (the residual cache, the
-predicted center, the tangent, the box) is supplied by the caller;
-no module-level variable holds progress across frames.
-
-## Cache schema
-
-`residual_cache` is a mutable dict supplied by the caller, scoped to
-one interval. Two subkey patterns are legal:
-
-- `(frame_index, roi)` -> `{"raw_blobs": [...]}`: raw image-derived
-  output. The blob dicts here are the pre-corridor, pre-gate top-K.
-- `"_frames"` -> `{frame_index -> grayscale_float32, ("bgr",
-  frame_index) -> bgr_ndarray}`: per-frame byte-level read cache,
-  keyed by frame index alone (reads are ROI-independent).
-
-The normative rules for what the cache MUST NOT hold (accepted
-blobs, gate outcomes, selected-path positions, chained counters, etc.)
-live in
-`FWD_BWD_MODEL_METHODOLOGY.md` under
-the raw-cache boundary. This doc owns the concrete schema above.
-
-## Consumption
-
-Both FWD and BWD walker passes call `observe_blob_at` independently per
-non-endpoint frame, each using its own `pred_center`, `pred_box`,
-and `local_tangent`. Everything downstream of the return value --
-candidate selection, Viterbi path assignment, and status enum resolution --
-is owned by the windowed walker (`track_runner/blob_walk/`) and documented
-in [TRACK_RUNNER_DESIGN.md](TRACK_RUNNER_DESIGN.md) and
-`FWD_BWD_MODEL_METHODOLOGY.md`. Stage-3 Hermite dispatches (`blob_pass=False`)
-do not call `observe_blob_at`; they return a pure-Hermite `raw_pred` trajectory.
-The Stage-4/5 blob pass (`blob_pass=True`, the default for promoted intervals)
-runs the walker, which consumes `observe_blob_at` per non-endpoint frame.
-
-## What the heat map is not
-
-- Not an appearance cue. Residual magnitude is a geometric property
-  of the scene-stabilized image, not a color / jersey / template
-  signal. Appearance cues are banned per C6.
-- Not a detection probability. Magnitudes are not normalized to a
-  probability distribution and do not encode "runner vs not".
-- Not identity evidence. A high-confidence blob in the corridor
-  says "something moved here relative to the scene", not "this is
-  the tracked runner". The gates and the corridor constrain the
-  answer; the heat map on its own does not.
-- Not pre-computed for the whole frame. The field is always
-  ROI-scoped. Attempting to run the propagator against a full-frame
-  heat map is outside the current design.
-- Not YOLO-derived. Person detection plays no role in the heat map
-  or in blob extraction.
-
-## Failure modes
-
-- **No neighbors available**: near sequence boundaries (first /
-  last `half_window` frames) the aligned stack may collapse to one
-  or zero frames. `compute_residual_for_frame` returns
-  `(None, None)` and `observe_blob_at` returns `None`.
-- **All blobs below threshold or below `MIN_BLOB_AREA`**:
-  `extract_frame_blobs` returns an empty list. `observe_blob_at`
-  returns `None` and the propagator falls through to raw Hermite.
-- **Corridor empty**: blobs exist but none within the cross-track
-  corridor. `observe_blob_at` returns `None`.
-- **Degenerate tangent**: `compute_trajectory_tangent` returns the
-  axis-aligned identity when the chord magnitude is too small or
-  endpoints are missing. The corridor still works, but anisotropic
-  decomposition is disabled for that frame.
-- **Heavy camera motion + partial warp coverage**: validity_mask
-  shrinks near ROI edges; blobs in low-validity regions are
-  suppressed. Interval-level `blob_coverage_fraction` in the
-  diagnostics carries `no_candidate_blobs: true` when the whole
-  interval had zero candidates.
-- **Off-frame predicted center**: when the Hermite-predicted center lies
-  outside the frame boundary, `observe_blob_at`
-  (`track_runner/residual_motion.py`) returns `None` immediately with
-  `reject_reason="off_frame"` before any residual computation. An
-  upstream guard in `residual_pre_pass._build_rois_for_frame`
-  (`track_runner/residual_pre_pass.py`) also skips off-frame centers
-  when building the per-interval ROI list, so no degenerate ROI reaches
-  the residual reader. The walker treats the None return as a soft-miss
-  and falls back to Hermite interpolation for that frame.
-
-## Why the default window is about 0.133 seconds
-
-The background estimator is a `nanmedian` over aligned neighbors. Median
-robustness needs enough valid samples per pixel to ignore a single
-moving object passing through. The time span matters more than the frame
-count: the runner occupies a small fraction of a ~133 ms window at any
-given pixel in most scenes, so the median collapses to the stationary
-background almost everywhere.
-
-At 60 fps, this span resolves to a 9-sample window with stride=1
-(`DEFAULT_HALF_WINDOW = 4`, offsets contiguous `[-4..+4] \ {0}`):
-the runner occupies perhaps 2-3 of those eight neighbors, leaving enough
-stationary pixels for the median to work well. A shorter window (e.g.,
-5 samples) leaves only four neighbors, often too few for the median to
-reject the runner from its own path.
-
-At higher frame rates (e.g., 120 fps), the runner's per-frame
-displacement shrinks. The stride model fixes this: at 120 fps stride=2
-so the outermost sample lands at +/-8 frames (~67 ms each direction),
-identical temporal coverage to the 60 fps case. The runner must still
-move off a pixel between the center frame and each sample, so the median
-continues to suppress the runner from the background estimate.
-
-The reference anchor `REFERENCE_FPS = 60` was chosen so that the legacy
-60 fps behavior (9 contiguous frames) is preserved exactly.
-
-Trade-offs at the default:
-
-- Compute cost is constant at 8 frame reads + warps per target frame
-  regardless of fps -- the stride model halved the I/O cost at 120 fps
-  vs the old time-seconds adaptive-count model (which needed 17 reads).
-- Near sequence boundaries the available stack shrinks; the fallback
-  condition `len(aligned_stack) < 2` in the library returns
-  `(None, None)` and the propagator falls through to pure Hermite. This
-  happens on up to `DEFAULT_HALF_WINDOW * stride` frames on each end.
-  The behavioral impact is negligible because those regions are already
-  close to seeds.
-- Very fast cross-frame camera motion widens the per-pair warp residual
-  near ROI edges (more "invalid" pixels), but the median already masks
-  NaNs and the wider time span improves the odds that at least two
-  neighbors contribute a valid value at each pixel.
-
-If you see evidence that the stride model is wrong for a particular
-scene, prefer re-running `tools/diagnose_residual_motion.py` with an
-explicit `--stride` override before changing `REFERENCE_FPS`. Changing
-`REFERENCE_FPS` affects every production caller and invalidates geometry
-caches.
-
-## Version tag
-
-Per contract C9 there is exactly one schema-version authority:
-`tr_schema.SCHEMA_VERSION` in
-[tr_schema.py](../track_runner/tr_schema.py). Cache
-invalidation for observer-behavior changes (new gate, changed corridor
-geometry, changed scoring terms, the DoG band-pass step) flows through
-two coordinated structures inside `tr_schema`:
-
-- `SCHEMA_VERSION` -- bumped whenever any artifact written to disk
-  records a new schema (geometry-affecting or metadata-only).
-- `GEOMETRY_AFFECTING_SCHEMAS` -- the set of schema versions that
-  altered solved-geometry semantics. The interval-solver fingerprint
-  (`interval_fingerprint.build_geometry_tag`) embeds the highest
-  member of this set <= `SCHEMA_VERSION` as `geometry_schema_v<N>`.
-  Metadata-only bumps slide through unchanged; geometry-affecting
-  bumps invalidate cached entries naturally.
-- `SUPPORTED_ARTIFACT_SCHEMAS` -- per-artifact compatibility windows
-  used by loaders so older readable artifacts are not rejected on a
-  schema bump.
-
-There is intentionally no separate `BLOB_OBSERVER_VERSION` constant or
-similar parallel authority. To bump observer behavior in a way that
-invalidates geometry caches, increment `SCHEMA_VERSION` and add the
-new version to `GEOMETRY_AFFECTING_SCHEMAS`. The legacy `blob_snap/v1`
-fingerprint format produced before this unification is migrated to
-`geometry_schema_v3` at load time by
-`interval_fingerprint.migrate_legacy_fingerprints` (see
-[TR_SCHEMA_VERSION_HISTORY.md](TR_SCHEMA_VERSION_HISTORY.md)).
+The annotation UI calls the same residual and DoG pipeline through
+`residual_heat_map.py`. Its colorized image is display-only. It does not feed
+back into tracking state or change the cached raw evidence.

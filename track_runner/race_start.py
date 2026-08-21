@@ -1,9 +1,8 @@
 """Helpers for pre-race frame range analysis and race-start semantics.
 
-This module owns contract C2 implementation (averaged pre-race torso box,
+This module owns contract C4 implementation (averaged pre-race torso box,
 scene-anchored center; see TRACK_RUNNER_CONTRACT.md). Implements two-stage
-race-start boundary detection via Stage 1 (seed-pair displacement) and Stage 2
-(fine velocity detector on interval trajectory).
+race-start boundary detection from the Stage 1 seed-pair transition.
 
 Vocabulary used here and across the project:
 	- interval: a single seed-to-seed range (two adjacent seeds, the
@@ -12,15 +11,11 @@ Vocabulary used here and across the project:
 		intervals). Stage 1 uses windows of PRE_RACE_MIN_WINDOW_SEEDS
 		(= 3) seeds = 2 adjacent intervals to compute coherence.
 
-Stage 2 (the velocity-onset detector in race_phases.detect_race_start)
-is DEACTIVATED in production. Production picks race_start_frame as the
-deterministic midpoint of Stage 1's interval via
-pick_race_start_frame_midpoint. Stage 2 code is preserved for
-diagnostic use only; see docs/TODO.md "Stage 2 race-start refinement".
+Production picks race_start_frame as the deterministic midpoint of the
+Stage 1 interval via pick_race_start_frame_midpoint.
 
-Exports: detect_race_start, compute_window_metrics, window_triggers,
-locate_race_start_interval, pick_race_start_frame_midpoint,
-detect_race_start_in_interval, compute_pre_race_reference,
+Exports: compute_window_metrics, window_triggers, locate_race_start_interval,
+pick_race_start_frame_midpoint, compute_pre_race_reference,
 print_race_phase_summary.
 """
 
@@ -28,10 +23,10 @@ print_race_phase_summary.
 import math
 
 # local repo modules
-import race_phases
+import scene_coords
 import tr_schema
 
-# Re-export unified schema version (per contract C9). All aliases must
+# Re-export unified schema version (per contract C10). All aliases must
 # point directly at tr_schema.SCHEMA_VERSION, never chain through
 # state_io, so the single authority is visible.
 SCHEMA_VERSION = tr_schema.SCHEMA_VERSION
@@ -42,7 +37,7 @@ PRE_RACE_REFERENCE_SCHEMA_VERSION = tr_schema.SCHEMA_VERSION
 # human annotations of a stationary moment: individual pair vectors vary
 # but net direction cancels. Race-start motion is the first window where
 # vectors align coherently and cumulative displacement grows in one
-# direction, measured in torso widths per contract C1.
+# direction, measured in torso widths per contract C2.
 #
 # MIN_PRE_RACE_PAIR_DT_S: windows shorter than this in wall-clock are
 # treated as dense-annotation jitter and skipped. Adjacent-frame seeds
@@ -66,38 +61,16 @@ PRE_RACE_COHERENCE_THRESHOLD = 0.7
 
 # Frame selection offsets for race-start confirmation contact sheet.
 # 11 tiles arranged in 5/1/5 layout around the detected race_start_frame.
-#TODO: this should be a range function
 CONFIRMATION_OFFSETS_S = (-0.5, -0.4, -0.3, -0.2, -0.1,
 	0.0,
 	0.1, 0.2, 0.3, 0.4, 0.5)
 
 
 #============================================
-def detect_race_start(trajectory: list, scene_transform, fps: float) -> dict:
-	"""Thin wrapper over race_phases.detect_race_start.
-
-	Detects the frame where the target runner transitions to sustained motion.
-	Post-hoc analysis of a solved trajectory; does not modify it. Provided for
-	tests and debug paths that need the unbounded detector (Stage 2 uses this
-	internally on the bracket slice).
-
-	Args:
-		trajectory: List of per-frame state dicts (or None), indexed by frame.
-		scene_transform: SceneTransform for pixel-to-scene conversion.
-		fps: Video frame rate in frames per second.
-
-	Returns:
-		Dict with keys: race_start_frame (int or None), race_start_s (float
-		or None), confidence (float in [0.0, 1.0]), method (str), threshold_used
-		(float), debounce_frames (int).
-
-	See race_phases.detect_race_start for full documentation.
-	"""
-	return race_phases.detect_race_start(trajectory, scene_transform, fps)
-
-
-#============================================
-def _seed_scene_center(scene_transform, seed: dict) -> tuple:
+def _seed_scene_center(
+	scene_transform: scene_coords.SceneTransform,
+	seed: dict,
+) -> tuple:
 	"""Project a seed's pixel center into scene coordinates.
 
 	Args:
@@ -169,10 +142,14 @@ def window_triggers(net_torso: float, coherence_val: float) -> bool:
 
 
 #============================================
-def locate_race_start_interval(seeds: list, scene_transform, fps: float) -> tuple:
+def locate_race_start_interval(
+	seeds: list,
+	scene_transform: scene_coords.SceneTransform,
+	fps: float,
+) -> tuple:
 	"""Stage 1: Localize the interval containing race start via directional
 	coherence over a sliding window, normalized by a provisional pre-race
-	torso width (contract C1).
+	torso width (contract C2).
 
 	Pre-race seeds are independent human annotations of the stationary runner,
 	so per-pair vectors vary but their net direction cancels. Race-start
@@ -302,12 +279,7 @@ def pick_race_start_frame_midpoint(
 
 	Production picks `ceil((low + high) / 2)` as race_start_frame: the
 	midpoint between the last stationary seed (interval_low) and the
-	first moving seed (interval_high). Seed-aligned and crash-free,
-	replacing the velocity-onset Stage 2 detector which had two failure
-	modes (short interval -> baseline window underflow; ambiguous
-	velocity -> None). Stage 2 code (`detect_race_start_in_interval`,
-	`race_phases.detect_race_start`) is preserved for diagnostic use and
-	a future redesign; see [docs/TODO.md](TODO.md) Stage 2 entry.
+	first moving seed (interval_high).
 
 	Args:
 		interval_low_frame: Last stationary seed frame (Stage 1 low).
@@ -325,72 +297,6 @@ def pick_race_start_frame_midpoint(
 
 
 #============================================
-# DEPRECATED: Stage 2 is deactivated in production. Kept for diagnostic
-# tools (tools/diagnose_pre_race.py stage2_velocity.png) and a future
-# redesign. Production now calls pick_race_start_frame_midpoint instead.
-# See docs/TODO.md "Stage 2 race-start refinement" for the redesign brief.
-#============================================
-def detect_race_start_in_interval(
-	interval_trajectory: list,
-	scene_transform,
-	fps: float,
-	interval_start_frame: int
-) -> int:
-	"""Stage 2: Fine-grained race-start detection within an interval trajectory.
-
-	Wraps race_phases.detect_race_start on the interval's trajectory.
-	The interval trajectory is the solved interval from Stage 1 (the crossing
-	interval that contains the actual race-start frame).
-
-	Args:
-		interval_trajectory: Per-frame state list for the interval.
-		scene_transform: SceneTransform for pixel-to-scene conversion.
-		fps: Video frame rate in frames per second.
-		interval_start_frame: Start frame of the interval (for validation).
-
-	Returns:
-		int: The authoritative race_start_frame. Falls back to the
-			interval's end frame (Stage 1's first-moving seed) with a
-			printed warning when the velocity-onset detector cannot
-			produce a result -- e.g., the interval is shorter than the
-			detector's pre-window. Stage 1's interval boundary is a more
-			trustworthy fallback than crashing the solve.
-
-	Raises:
-		RuntimeError: if the detector returns a frame outside the interval.
-	"""
-	result = race_phases.detect_race_start(
-		interval_trajectory, scene_transform, fps
-	)
-
-	race_start_frame = result["race_start_frame"]
-	interval_end_frame = interval_start_frame + len(interval_trajectory) - 1
-
-	if race_start_frame is None:
-		# Stage 2 produced no onset (typically because the interval is
-		# too short for the detector's PRE_WINDOW_S baseline). Fall back
-		# to the interval's high frame -- Stage 1's "first moving seed"
-		# -- so solve continues with a defensible boundary.
-		print(
-			f"  WARNING: velocity-onset detector found no onset in "
-			f"interval {interval_start_frame}-{interval_end_frame} "
-			f"(length={len(interval_trajectory)} frames); "
-			f"falling back to Stage 1 interval end frame "
-			f"{interval_end_frame} as race_start_frame."
-		)
-		return interval_end_frame
-
-	# Validate the frame is within interval range
-	if not (interval_start_frame <= race_start_frame <= interval_end_frame):
-		raise RuntimeError(
-			f"internal bug: detector returned race_start_frame={race_start_frame} "
-			f"outside interval [{interval_start_frame}, {interval_end_frame}]"
-		)
-
-	return race_start_frame
-
-
-#============================================
 # race_start_interval is a (low_frame, high_frame) tuple of seed
 # frame indices. It is NOT a solver interval result dict; it only
 # names the seed-to-seed range that contains race_start_frame.
@@ -398,12 +304,12 @@ def detect_race_start_in_interval(
 def compute_pre_race_reference(
 	seeds: list,
 	race_start_frame: int,
-	scene_transform,
+	scene_transform: scene_coords.SceneTransform,
 	race_start_interval: tuple
 ) -> dict:
 	"""Compute averaged pre-race reference from qualifying seeds.
 
-	Contract C2: pre-race frames use averaged torso dimensions and
+	Contract C4: pre-race frames use averaged torso dimensions and
 	scene-anchored center, computed from seeds with frame_index < race_start_frame.
 
 	Args:

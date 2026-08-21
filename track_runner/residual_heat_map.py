@@ -165,7 +165,7 @@ def compute_heat_map_roi(
 	Qt scene at opacity 1.0.
 
 	Args:
-		reader: VideoReader-compatible reader with .width, .height,
+		reader: FrameReader-compatible reader with .width, .height,
 			.frame_count, and .read_frame(index) -> BGR numpy array.
 		frame_index: Index of the frame to compute heat for.
 		scene_transform: SceneTransform used by the residual primitive
@@ -313,7 +313,7 @@ def compute_heat_map_overlay_roi(
 	  - At or above threshold: JET-colorized residual magnitude.
 
 	Args:
-		reader: VideoReader-compatible reader with .width, .height,
+		reader: FrameReader-compatible reader with .width, .height,
 			.frame_count, and .read_frame(index) -> BGR numpy array.
 		frame_index: Index of the frame to compute overlay for.
 		scene_transform: SceneTransform used by the residual primitive

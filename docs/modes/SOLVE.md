@@ -83,26 +83,17 @@ Use `--bin 1` to force full-resolution analysis (slower). Use `--bin N` for an
 exact override. Use `--auto-bin HEIGHT` for a height-based target (different
 formula; documented in the help above).
 
-**Durable upgrade note:** The camera-motion artifact (`<video>.track_runner.camera_motion.npz`)
-keys on `bin_factor`. The first solve run after upgrading to binned-by-default behavior
-recomputes the camera-motion artifact for 4K and 2.8K sources because the prior artifact was
-computed at `bin_factor=1` and the new default differs. Subsequent runs hit the camera-motion
-cache normally. Interval cache entries are bin-invariant: a load-time migration strips any
-legacy `/bin<B>` suffix from stored keys so no full interval re-solve is needed on a bin change
-or upgrade. No SCHEMA_VERSION bump occurred; this is cache-key bookkeeping only.
-
-**First run after staging restructure (2026-04-25):** The first solve run after
-the 2026-04-25 staging restructure will print "first run after solve restructure:
-full recompute expected" because the cache namespaces are new. Subsequent runs
-hit the cache normally. Run `--hermite-only` for a quick first-pass read if full
-solve time is a concern.
+**Camera-motion reuse:** The camera-motion artifact records the processed-frame
+`bin_factor`, motion estimator, and source identity. A different bin, estimator,
+or source video recomputes Stage 1 during solve. Interval results remain keyed by
+their current seed-pair geometry and schema tag; no old-store migration runs.
 
 **`--bin N` (explicit override):** Applies a spatial downsample to the
 camera-motion (Stage 1) and residual-motion stages, leaving every persisted
 output in source-frame pixels. Goodbox crop is automatic when `bin > 1`
 (right/bottom edges only, capped at 10% per-axis loss). The entire solve runs in
 one coordinate space (PROCESSED at bin > 1) and converts to SOURCE exactly once,
-at the storage boundary before `state_io.write_torso_box_coords`. Hermite and
+at the storage boundary before `torso_box_coords_io.write_torso_box_coords`. Hermite and
 walker both produce correct SOURCE boxes via that single boundary.
 
 For the pipeline philosophy, see [../TRACK_RUNNER_DESIGN.md](../TRACK_RUNNER_DESIGN.md) (stages and signal hierarchy). For the camera motion method, see [../TR_CAMERA_MOTION_METHOD.md](../TR_CAMERA_MOTION_METHOD.md).

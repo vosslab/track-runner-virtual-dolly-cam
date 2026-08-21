@@ -2,7 +2,7 @@
 
 Read-only diagnostic, 2026-06-10. No production code changed.
 Cross-references [fwd_zero_coverage_diagnosis.md](../audits/fwd_zero_coverage_diagnosis.md)
-and [blob_walk_v2_validation_plan.md](../active/blob_walk_v2_validation_plan.md#check-2).
+and [blob_walk_v2_validation_plan.md](../../archive/blob_walk_v2_validation_plan.md#check-2).
 
 ## Claim A (from validation plan)
 

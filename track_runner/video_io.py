@@ -26,7 +26,7 @@ class VideoWriter:
 		codec: str = "libx264",
 		crf: int = 18,
 		vf_string: str = "",
-	):
+	) -> None:
 		"""Start ffmpeg pipe for encoding.
 
 		Args:
@@ -157,9 +157,9 @@ class VideoWriter:
 		self.process = None
 
 	#============================================
-	def __enter__(self):
+	def __enter__(self) -> "VideoWriter":
 		return self
 
 	#============================================
-	def __exit__(self, *args):
+	def __exit__(self, *args) -> None:
 		self.close()

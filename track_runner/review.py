@@ -9,25 +9,9 @@ more seeds. Provides human-readable summaries and refinement target lists.
 
 
 #============================================
-# Reasons recognized in the failure_reasons list from scoring.py
-# Listed here for documentation and validation
-_KNOWN_REASONS = (
-	"low_agreement",
-	"low_separation",
-	"likely_identity_swap",
-	"weak_appearance",
-	"weak_motion_model",
-	"long_occlusion",
-	"low_motion_quality",
-	"sparse_support",
-)
-
 # Human-readable explanation for each failure reason
 _REASON_EXPLANATIONS = {
 	"low_agreement": "forward/backward trajectories diverge",
-	"low_separation": "target and competitor scores are too close",
-	"likely_identity_swap": "competitor consistently outscores target",
-	"weak_appearance": "target appearance match is unreliable",
 	"weak_motion_model": "velocity model fit is weak or inconsistent",
 	"long_occlusion": "long occlusion span reduces reliability",
 	"low_motion_quality": "camera motion estimates are poor quality",
@@ -36,22 +20,48 @@ _REASON_EXPLANATIONS = {
 
 
 #============================================
-def get_confidence_label(score: dict) -> str:
-	"""Extract confidence label from v2 or v3 interval score.
+def format_blend_commitment_review_item(state: dict | None) -> str | None:
+	"""Return the review text for one in-memory blend decision.
+
+	The blend owner supplies direction and transition alpha on in-memory
+	trajectory states.  Review derives the explanation here instead of adding a
+	persisted commitment-reason field to either trajectory artifact.
 
 	Args:
-		score: Interval score dict (legacy or analytical format).
+		state: Optional blended trajectory state for one frame.
+
+	Returns:
+		Human-readable commitment text, or None when this frame is not part of
+		a disagreement run.  An unavailable decision stays neutral: it names no
+		winning direction and says that the baseline was retained.
+	"""
+	if state is None or not state.get("blend_flag", False):
+		return None
+	direction = state.get("commitment_direction")
+	if direction == "unavailable":
+		result = "Blend commitment unavailable; evidence unavailable; baseline retained"
+		return result
+	if direction not in ("fwd", "bwd"):
+		return None
+	alpha = float(state.get("commitment_alpha", 0.0))
+	result = (
+		f"Blend committed to {direction.upper()} at {alpha:.0%} transition; "
+		"residual-motion evidence"
+	)
+	return result
+
+
+#============================================
+def get_confidence_label(score: dict) -> str:
+	"""Extract confidence label from a current interval score.
+
+	Args:
+		score: Current nested interval score dict.
 
 	Returns:
 		Confidence label string (high, good, fair, or low).
 	"""
-	# v3 analytical format uses confidence_tier
-	if "confidence_tier" in score:
-		result = score["confidence_tier"]
-		return result
-	# v2 legacy format uses confidence
-	result = score.get("confidence", "low")
-	return result
+	return score["confidence_tier"]
 
 
 #============================================
@@ -78,7 +88,6 @@ def _reason_to_suggestion(
 	"""Build a single seed suggestion from a failure reason.
 
 	Places the suggestion at the midpoint of the interval by default.
-	For identity_swap reason, places it earlier (at 1/3 of interval).
 
 	Args:
 		reason: Failure reason string.
@@ -89,12 +98,7 @@ def _reason_to_suggestion(
 	Returns:
 		Seed suggestion dict with frame, time_s, reason, competitor_summary.
 	"""
-	interval_len = end_frame - start_frame
-
-	if reason == "likely_identity_swap":
-		# suggest earlier frame where swap may have started
-		frame = start_frame + max(1, interval_len // 3)
-	elif reason == "low_agreement":
+	if reason == "low_agreement":
 		# disagreement often peaks in the middle
 		frame = _midpoint_frame(start_frame, end_frame)
 	else:
@@ -127,10 +131,7 @@ _SHORT_INTERVAL_FRAMES = 10
 def classify_interval_severity(interval: dict, fps: float) -> str:
 	"""Classify an interval's weakness severity as high, medium, or low.
 
-	Uses interval_score from analytical or optical-flow solver. For
-	analytical mode, scores from agreement, confidence_tier, and
-	failure_reasons. For optical-flow (legacy), reconstructs from
-	agreement_score and margin.
+	Uses the current interval_score fields: agreement and confidence_tier.
 
 	Pre-race intervals are synthesized geometry with perfect consistency
 	metrics and are not quality-ranked; returns None for pre_race tiers
@@ -151,48 +152,14 @@ def classify_interval_severity(interval: dict, fps: float) -> str:
 	end_frame = int(interval["end_frame"])
 	interval_frames = end_frame - start_frame
 
-	# check if this is analytical mode (has confidence_tier) or optical-flow (has agreement_score)
-	if "confidence_tier" in score:
-		# analytical mode: rule based on agreement + confidence_tier.
-		# identity swap always overrides to high, regardless of other
-		# signals.
-		failure_reasons = score.get("failure_reasons", [])
-		agreement = float(score.get("agreement", 0.0))
-		confidence_tier = score.get("confidence_tier", "low")
-
-		if "likely_identity_swap" in failure_reasons:
-			severity = "high"
-		elif agreement >= 0.40 and confidence_tier in ("good", "high"):
-			severity = "low"
-		elif agreement < 0.20 or confidence_tier == "low":
-			severity = "high"
-		else:
-			severity = "medium"
-
-		# Severity comes from agreement and confidence tier only. The base
-		# rule above already handles agreement-weakness and tier-weakness.
-
+	agreement = float(score.get("agreement", 0.0))
+	confidence_tier = score["confidence_tier"]
+	if agreement >= 0.40 and confidence_tier in ("good", "high"):
+		severity = "low"
+	elif agreement < 0.20 or confidence_tier == "low":
+		severity = "high"
 	else:
-		# optical-flow mode (legacy): reconstruct from agreement and margin
-		agreement = float(score.get("agreement_score", 0.0))
-		margin = float(score.get("competitor_margin", 0.0))
-		failure_reasons = score.get("failure_reasons", [])
-
-		# score-based classification
-		# agreement < 0.2 means FWD/BWD strongly disagree -- high severity
-		# agreement ~0.5 is already pretty good alignment
-		if agreement < 0.2 or "likely_identity_swap" in failure_reasons:
-			severity = "high"
-		elif margin < 0.2 and agreement < 0.4:
-			# low margin combined with poor agreement -- high severity
-			severity = "high"
-		elif agreement < 0.4:
-			severity = "medium"
-		elif margin < 0.2:
-			# low margin but decent agreement (nearby competitor, tracking correct)
-			severity = "medium"
-		else:
-			severity = "low"
+		severity = "medium"
 
 	# short-interval demotion: intervals under 10 frames are noisy,
 	# demote high -> medium unconditionally
@@ -241,42 +208,11 @@ def rank_key(interval: dict) -> tuple:
 
 
 #============================================
-def _find_occlusion_exits(interval: dict) -> list:
-	"""Find frames where occlusion risk drops from True to False.
-
-	These are the best seed targets near occlusion events because
-	they are the first frame after the runner re-emerges cleanly.
-
-	Args:
-		interval: Interval dict with blended_path list of state dicts.
-
-	Returns:
-		List of absolute frame indices where occlusion exits.
-	"""
-	blended_path = interval.get("blended_path", [])
-	start_frame = int(interval["start_frame"])
-	exits = []
-	prev_risk = False
-	for i, state in enumerate(blended_path):
-		if not isinstance(state, dict):
-			prev_risk = False
-			continue
-		curr_risk = bool(state.get("occlusion_risk", False))
-		# transition from risk to no-risk = occlusion exit
-		if prev_risk and not curr_risk:
-			exits.append(start_frame + i)
-		prev_risk = curr_risk
-	return exits
-
-
-#============================================
 def identify_weak_spans(diagnostics: dict) -> list:
 	"""Walk interval results and return seed suggestions for weak intervals.
 
 	For each interval whose confidence is "low" or "fair", generates one or more
 	seed suggestions with a specific frame, time, reason, and competitor summary.
-	Also detects occlusion exits and generates targeted seed suggestions.
-
 	Args:
 		diagnostics: Dict returned by interval_solver.solve_all_intervals().
 			Must have "intervals" key with list of interval result dicts.
@@ -302,70 +238,17 @@ def identify_weak_spans(diagnostics: dict) -> list:
 
 		failure_reasons = list(score.get("failure_reasons", []))
 
-		# check for occlusion frames in the blended interval path
-		blended_path = interval.get("blended_path", [])
-		occlusion_count = sum(
-			1 for s in blended_path
-			if isinstance(s, dict) and s.get("occlusion_risk", False)
-		)
-		has_occlusion = occlusion_count > 0
-
-		# add likely_occlusion as a failure reason if not already present
-		if has_occlusion and "likely_occlusion" not in failure_reasons:
-			failure_reasons.append("likely_occlusion")
-			# promote severity when occlusion co-occurs with low agreement
-			agreement = float(score.get("agreement_score", 0.0))
-			if agreement < 0.4 and confidence not in ("high", "good"):
-				# mark interval as high severity for occlusion + low agreement
-				score["_occlusion_high_severity"] = True
-
 		# only suggest seeds for low/fair confidence intervals
 		if confidence in ("high", "good"):
-			# still generate occlusion exit suggestions for good intervals
-			if has_occlusion:
-				exits = _find_occlusion_exits(interval)
-				for frame in exits:
-					time_s = frame / max(1.0, fps)
-					suggestion = {
-						"frame_index": frame,
-						"time_s": time_s,
-						"reason": "likely_occlusion",
-						"competitor_summary": (
-							"occlusion exit: runner re-emerges"
-						),
-					}
-					suggestions.append(suggestion)
 			continue
 
 		if failure_reasons:
 			# one suggestion per failure reason
 			for reason in failure_reasons:
-				if reason == "likely_occlusion" and has_occlusion:
-					# for occlusion, place seeds at exit points
-					exits = _find_occlusion_exits(interval)
-					if exits:
-						for frame in exits:
-							time_s = frame / max(1.0, fps)
-							suggestion = {
-								"frame_index": frame,
-								"time_s": time_s,
-								"reason": "likely_occlusion",
-								"competitor_summary": (
-									"occlusion exit: runner re-emerges"
-								),
-							}
-							suggestions.append(suggestion)
-					else:
-						# no clean exit found, use midpoint
-						suggestion = _reason_to_suggestion(
-							reason, start_frame, end_frame, fps,
-						)
-						suggestions.append(suggestion)
-				else:
-					suggestion = _reason_to_suggestion(
-						reason, start_frame, end_frame, fps,
-					)
-					suggestions.append(suggestion)
+				suggestion = _reason_to_suggestion(
+					reason, start_frame, end_frame, fps,
+				)
+				suggestions.append(suggestion)
 		else:
 			# no specific reason: suggest midpoint
 			frame = _midpoint_frame(start_frame, end_frame)
@@ -548,8 +431,8 @@ def _enforce_severity_gap(
 ) -> list:
 	"""Filter high-severity targets so no two are within gap_seconds.
 
-	When two frames are too close, keeps the one with the lower
-	agreement_score (worse tracking = higher priority for a new seed).
+	When two frames are too close, keeps the one with lower agreement
+	(worse tracking = higher priority for a new seed).
 
 	Args:
 		targets: Sorted list of target frame numbers.
@@ -563,15 +446,15 @@ def _enforce_severity_gap(
 	intervals = diagnostics.get("intervals", [])
 	min_gap_frames = int(gap_seconds * fps)
 
-	# build a lookup from frame to parent interval agreement_score
+	# Build a lookup from frame to parent interval agreement.
 	def _lookup_agreement(frame: int) -> float:
-		"""Return agreement_score for the interval containing frame."""
+		"""Return agreement for the interval containing frame."""
 		for iv in intervals:
 			start = int(iv["start_frame"])
 			end = int(iv["end_frame"])
 			if start <= frame <= end:
 				score = iv.get("interval_score", {})
-				agreement = float(score.get("agreement_score", 0.0))
+				agreement = float(score.get("agreement", 0.0))
 				return agreement
 		# frame not in any interval: treat as worst possible
 		return 0.0
@@ -642,13 +525,9 @@ def rank_target_frames_by_severity(
 				# synthesized intervals sort to the end with a sentinel score
 				agreement = float('inf')
 				margin = 0.0
-			# v3 analytical or v2 legacy metrics
-			elif "confidence_tier" in best_score:
+			else:
 				agreement = float(best_score.get("agreement", 0.0))
 				margin = float(best_score.get("velocity_consistency", 0.0))
-			else:
-				agreement = float(best_score.get("agreement_score", 0.0))
-				margin = float(best_score.get("competitor_margin", 0.0))
 		# round to bin nearby scores into the same tier
 		frame_scores[frame] = (round(agreement, 2), round(margin, 2))
 
@@ -750,27 +629,14 @@ def format_review_summary(diagnostics: dict) -> str:
 			reason_str = ", ".join(reasons) if reasons else "low_confidence"
 			verdict = f"[{tag}: {reason_str}]"
 
-		# format metrics line based on scoring mode
-		if "confidence_tier" in score:
-			# analytical v3 metrics
-			agree = float(score.get("agreement", 0.0))
-			vel_cons = float(score.get("velocity_consistency", 0.0))
-			size_cons = float(score.get("size_consistency", 0.0))
-			metrics_str = (
-				f"agree={agree:.2f}  "
-				f"vel_cons={vel_cons:.2f}  "
-				f"size_cons={size_cons:.2f}"
-			)
-		else:
-			# legacy v2 metrics
-			agree = float(score.get("agreement_score", 0.0))
-			identity = float(score.get("identity_score", 0.0))
-			margin = float(score.get("competitor_margin", 0.0))
-			metrics_str = (
-				f"agree={agree:.2f}  "
-				f"margin={margin:.2f}  "
-				f"identity={identity:.2f}"
-			)
+		agree = float(score.get("agreement", 0.0))
+		vel_cons = float(score.get("velocity_consistency", 0.0))
+		size_cons = float(score.get("size_consistency", 0.0))
+		metrics_str = (
+			f"agree={agree:.2f}  "
+			f"vel_cons={vel_cons:.2f}  "
+			f"size_cons={size_cons:.2f}"
+		)
 
 		line = (
 			f"  interval {start_frame:5d}-{end_frame:5d} "
@@ -817,97 +683,3 @@ def needs_refinement(diagnostics: dict) -> bool:
 		if confidence in ("low", "fair"):
 			return True
 	return False
-
-
-# simple assertion tests
-_test_diag = {
-	"fps": 30.0,
-	"intervals": [
-		{
-			"start_frame": 0,
-			"end_frame": 300,
-			"interval_score": {
-				"confidence": "high",
-				"failure_reasons": [],
-				"agreement_score": 0.9,
-				"identity_score": 0.8,
-				"competitor_margin": 0.7,
-			},
-		},
-		{
-			"start_frame": 300,
-			"end_frame": 600,
-			"interval_score": {
-				"confidence": "fair",
-				"failure_reasons": ["low_agreement"],
-				"agreement_score": 0.3,
-				"identity_score": 0.8,
-				"competitor_margin": 0.7,
-			},
-		},
-	],
-}
-assert needs_refinement(_test_diag) is True
-
-_suggestions = identify_weak_spans(_test_diag)
-assert len(_suggestions) == 1
-assert _suggestions[0]["reason"] == "low_agreement"
-
-_targets = generate_refinement_targets(_test_diag, mode="suggested")
-assert len(_targets) == 1
-
-# severity classification: agreement=0.3 is medium severity
-_sev = classify_interval_severity(_test_diag["intervals"][1], 30.0)
-assert _sev == "medium"
-
-# short-interval demotion: 3-frame interval with agreement=0.1 demoted to medium
-_short_high_interval = {
-	"start_frame": 100,
-	"end_frame": 103,
-	"interval_score": {
-		"confidence": "low",
-		"agreement_score": 0.1,
-		"competitor_margin": 0.1,
-		"failure_reasons": [],
-	},
-}
-_sev_short = classify_interval_severity(_short_high_interval, 30.0)
-assert _sev_short == "medium", f"expected medium, got {_sev_short}"
-
-# short-interval with identity swap also demoted to medium
-_short_swap_interval = {
-	"start_frame": 100,
-	"end_frame": 103,
-	"interval_score": {
-		"confidence": "low",
-		"agreement_score": 0.1,
-		"competitor_margin": 0.1,
-		"failure_reasons": ["likely_identity_swap"],
-	},
-}
-_sev_swap = classify_interval_severity(_short_swap_interval, 30.0)
-assert _sev_swap == "medium", f"expected medium, got {_sev_swap}"
-
-# severity filtering: medium+ should include the fair interval
-_targets_med = generate_refinement_targets(_test_diag, mode="suggested", severity="medium")
-assert len(_targets_med) == 1
-
-# "good" confidence should NOT generate seed suggestions
-_test_diag_good = {
-	"fps": 30.0,
-	"intervals": [
-		{
-			"start_frame": 0,
-			"end_frame": 300,
-			"interval_score": {
-				"confidence": "good",
-				"failure_reasons": ["low_separation"],
-				"agreement_score": 0.7,
-				"identity_score": 0.8,
-				"competitor_margin": 0.3,
-			},
-		},
-	],
-}
-assert needs_refinement(_test_diag_good) is False
-assert identify_weak_spans(_test_diag_good) == []

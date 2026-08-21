@@ -1,43 +1,41 @@
 """Per-worker per-interval sequential residual pre-pass.
 
-Eliminates scattered random-access reads in Stage 4 by walking an
-interval's frame range sequentially, building an in-memory residual
-store keyed by (frame_index, roi). The FrameReader strategy-0 fast-path
-fires for every read after the first because the access pattern is
-monotonically increasing.
+Reduces scattered random-access reads in Stage 4 by walking each contiguous
+requested residual neighborhood sequentially, building an in-memory residual
+store keyed by (frame_index, roi). Separated startup neighborhoods require one
+seek between them instead of decoding the unrequested interval between seeds.
 
-The returned dict is consumed by observe_blob_at in residual_motion.py
+The returned store is consumed by observe_blob_at in residual_motion.py
 via the precomputed_store parameter. On a hit the function bypasses
 compute_residual_for_frame entirely; on a miss it falls through to the
-legacy reader path.
+direct-reader path.
 
 Byte-identical residual contract (PyAV canonical): the precomputed store is
 byte-identical to the on-the-fly compute_residual_for_frame path when both
 use the same backend (PyAV or cv2). The PyAV backend is the canonical
 reference.
 
-Memory safety (2026-05-04 OOM hotfix):
-- An earlier version held the entire interval+padding range of frames in a
-  single dict with no eviction. At --bin 2 across 7 workers this multiplied
-  to ~40 GB; at --bin 1 ~157 GB. The user's MacStudio (36 GB) crashed.
-- The current implementation splits BGR and gray storage into two dicts and
-  evicts each by numeric frame index after every drain step, so the rolling
-  buffer stays within the neighbor footprint regardless of interval length.
-- MAX_PREPASS_BUFFER_FRAMES is the safety net cap on each buffer; it
-  matches the MAX_GRAY_CACHE_FRAMES = 40 cap in residual_motion.py for
-  one mental model. Should never fire under normal operation; surfaces
-  algorithmic regressions immediately as a clear RuntimeError instead
-  of a system OOM.
+Memory safety:
+- The rolling BGR and grayscale buffers are evicted by numeric frame index
+  after every drain step, so they stay within the neighbor footprint
+  regardless of interval length. Gray frames remain uint8; conversion to
+  float32 happens only in compute_residual_for_frame.
+- Each worker reserves at most PREPASS_RESULT_STORE_MAX_BYTES (512 MiB) for
+  cached residual and validity arrays. The store evicts least-recently-used
+  entries by array byte count before adding a new entry. A miss uses direct
+  residual computation in observe_blob_at.
+- MAX_PREPASS_BUFFER_FRAMES is a safety-net cap for each rolling buffer. It
+  should never fire under normal operation and turns an algorithmic regression
+  into a clear RuntimeError instead of a system OOM.
 
 Design notes:
 - Per C5: the store is scoped to a single interval. It lives only
   for the duration of solve_interval_analytical and is destroyed when
   the worker process exits (pool uses max_tasks_per_child=1).
-- Per C11: no frame-based state escapes this call; the dict is pure
+- Per C11: no frame-based state escapes this call; the store is pure
   image-derived data (residual + validity arrays).
 - fps-invariant stride model: padding is half_window * stride so the BGR
-  cache covers the wider time-span window at high fps. At 60 fps stride=1
-  and padding is identical to the legacy behavior.
+  cache covers the wider time-span window at high fps.
 """
 
 # Standard Library
@@ -59,13 +57,115 @@ import residual_motion
 # Matches residual_motion.MAX_GRAY_CACHE_FRAMES = 40 so a single mental
 # model covers both modules.
 #
-# Per worker peak memory at the cap:
-#   --bin 4: 40 * (1.56 MB BGR + 2.07 MB gray) = ~145 MB
-#   --bin 2: 40 * (6.22 MB + 8.29 MB)          = ~582 MB
-#   --bin 1: 40 * (24.9 MB + 33.2 MB)          = ~2.32 GB
-# Across 7 workers at --bin 1 the worst case is ~16 GB on a 36 GB system.
-# Realistic peak under the algorithm sits near 33; the cap is failsafe.
 MAX_PREPASS_BUFFER_FRAMES = 40
+
+# Per-worker upper bound for cached result arrays. This count deliberately
+# includes residual and validity arrays only: they dominate each cache entry,
+# while dict/key overhead is small and not data-shape dependent.
+PREPASS_RESULT_STORE_MAX_BYTES = 512 * 1024 * 1024
+
+
+#============================================
+def _required_read_ranges(
+	centers: list[int],
+	pad_extent: int,
+	frame_count: int,
+) -> list[tuple[int, int]]:
+	"""Return merged inclusive frame ranges needed by requested centers.
+
+	Each residual center needs neighbors through ``pad_extent`` on both sides.
+	Overlapping or adjacent neighborhoods are merged so reads remain sequential
+	inside a range. A gap stays a gap: decoding frames no requested center uses
+	would add a complete extra video pass for sparse walker-startup requests.
+
+	Args:
+		centers: Strictly increasing requested center-frame indices.
+		pad_extent: Maximum neighbor distance in frames.
+		frame_count: Advertised video frame count.
+
+	Returns:
+		Merged inclusive ``(lo, hi)`` ranges in increasing order.
+	"""
+	ranges = []
+	for center in centers:
+		lo = max(0, center - pad_extent)
+		hi = min(frame_count - 1, center + pad_extent)
+		if ranges and lo <= ranges[-1][1] + 1:
+			prior_lo, prior_hi = ranges[-1]
+			ranges[-1] = (prior_lo, max(prior_hi, hi))
+		else:
+			ranges.append((lo, hi))
+	return ranges
+
+
+#============================================
+class _ByteBoundedLruStore(collections.OrderedDict):
+	"""Read-mostly residual store with array-byte LRU eviction.
+
+	The store is compatible with the mapping protocol consumed by
+	residual_motion.observe_blob_at. Membership checks record genuine consumer
+	cache hits and misses, while __getitem__ refreshes an entry's LRU position.
+	Pre-pass construction uses contains_without_accounting so its duplicate
+	guard does not distort runtime cache-miss measurements.
+	"""
+	def __init__(self, max_bytes: int) -> None:
+		super().__init__()
+		self.max_bytes = max_bytes
+		self.total_bytes = 0
+		self.lookup_count = 0
+		self.miss_count = 0
+		self.eviction_count = 0
+		self.oversize_count = 0
+
+	def __contains__(self, key: object) -> bool:
+		self.lookup_count += 1
+		found = super().__contains__(key)
+		if not found:
+			self.miss_count += 1
+		return found
+
+	def __getitem__(self, key: object) -> tuple:
+		value = super().__getitem__(key)
+		self.move_to_end(key)
+		return value
+
+	def contains_without_accounting(self, key: object) -> bool:
+		"""Return membership for construction-time duplicate protection."""
+		found = super().__contains__(key)
+		return found
+
+	def store_result(self, key: tuple, value: tuple) -> None:
+		"""Store one residual pair, evicting least-recently-used pairs first."""
+		entry_bytes = value[0].nbytes + value[1].nbytes
+		if entry_bytes > self.max_bytes:
+			self.oversize_count += 1
+			return
+		# Replacing an existing entry makes the new value most recent. Remove
+		# its old byte contribution before deciding whether other entries need
+		# eviction; an existing valid entry stays intact for an oversize update.
+		if super().__contains__(key):
+			old_value = super().__getitem__(key)
+			self.total_bytes -= old_value[0].nbytes + old_value[1].nbytes
+			super().__delitem__(key)
+		while self and self.total_bytes + entry_bytes > self.max_bytes:
+			_old_key, old_value = self.popitem(last=False)
+			self.total_bytes -= old_value[0].nbytes + old_value[1].nbytes
+			self.eviction_count += 1
+		super().__setitem__(key, value)
+		self.total_bytes += entry_bytes
+
+	@property
+	def miss_rate(self) -> float:
+		"""Return consumer lookup misses as a fraction of consumer lookups."""
+		if self.lookup_count == 0:
+			return 0.0
+		rate = self.miss_count / self.lookup_count
+		return rate
+
+	def clear(self) -> None:
+		"""Clear cached arrays and their byte accounting together."""
+		super().clear()
+		self.total_bytes = 0
 
 
 #============================================
@@ -81,13 +181,15 @@ def precompute_interval_residuals(
 	stride: int = 1,
 	debug_stats: dict = None,
 	read_log: list = None,
-) -> dict | None:
-	"""Pre-compute residuals for an entire interval via a sequential frame read.
+	rois_for_frame: dict | None = None,
+) -> _ByteBoundedLruStore | None:
+	"""Pre-compute residuals for requested centers via sequential frame reads.
 
-	Walks frame range pad_lo..pad_hi in monotonic order so FrameReader's
-	strategy-0 fast-path fires for every read after the first (sequential,
-	no scattered seeks). Builds an in-memory dict keyed by
-	(frame_index, roi) -> (residual_uint8, validity_uint8).
+	Walks only the merged neighborhoods needed by requested centers. Reads are
+	monotonic inside each neighborhood, with one seek between separated
+	neighborhoods; unrequested gaps are not decoded. Builds an in-memory
+	byte-bounded LRU store keyed by (frame_index, roi) ->
+	(residual_float32, validity_uint8).
 
 	Memory is bounded by an interleaved walk-drain-evict loop:
 	  - read one frame, store BGR (and gray for centers only),
@@ -97,10 +199,9 @@ def precompute_interval_residuals(
 	At any moment each buffer holds at most 2 * half_window * stride + 1
 	frames; MAX_PREPASS_BUFFER_FRAMES = 40 is the safety-net cap.
 
-	The dict is consumed by residual_motion.observe_blob_at via its
+	The store is consumed by residual_motion.observe_blob_at via its
 	precomputed_store parameter. On a cache hit the function bypasses
-	compute_residual_for_frame; on a miss it falls through to the legacy
-	reader path.
+	compute_residual_for_frame; on a miss it uses the direct-reader path.
 
 	Byte-identical residual contract: the output is byte-identical to the
 	on-the-fly compute_residual_for_frame path for all (frame_index, roi)
@@ -112,9 +213,9 @@ def precompute_interval_residuals(
 		scene_transform: SceneTransform for warp matrix construction.
 		seed_start: Seed dict with frame_index, cx, cy, w, h.
 		seed_end: Seed dict with frame_index, cx, cy, w, h.
-		fwd_curve: FWD raw_pred list from _compute_raw_pred_forward.
+		fwd_curve: FWD raw_pred list from the direction-parameterized builder.
 			Each entry is (frame_index, cx, cy, w, h, conf).
-		bwd_curve: BWD raw_pred list from _compute_raw_pred_backward.
+		bwd_curve: BWD raw_pred list from the direction-parameterized builder.
 			Same shape as fwd_curve.
 		half_window: Per-side neighbor count for residual computation.
 			Must match what compute_residual_for_frame would use.
@@ -130,12 +231,15 @@ def precompute_interval_residuals(
 			every time reader.read_frame is called from the sequential
 			walk. Used by tests to verify no fallback reads occur during
 			compute. Production callers leave None.
+		rois_for_frame: Optional exact frame -> ROI-set map. When supplied,
+			it replaces Hermite-derived ROI construction. Used by the walker
+			pre-pass so only deterministic seed-local observations are cached.
 
 	Returns:
-		Dict mapping (frame_index, roi_tuple) ->
-			(residual_uint8 ndarray, validity_uint8 ndarray).
+		Byte-bounded LRU store mapping (frame_index, roi_tuple) ->
+			(residual_float32 ndarray, validity_uint8 ndarray).
 		Returns None when reader is None.
-		Returns empty dict when interval span < 2 frames.
+		Returns an empty store when no residuals are requested.
 
 	Raises:
 		RuntimeError: when either bgr_buf or gray_buf exceeds
@@ -148,70 +252,78 @@ def precompute_interval_residuals(
 	start_frame = int(seed_start["frame_index"])
 	end_frame = int(seed_end["frame_index"])
 
-	# degenerate interval: caller handles normally
-	if end_frame - start_frame < 2:
-		return {}
+	# Degenerate short interval: caller handles normally. Explicit ROIs may
+	# still include a usable bootstrap observation on a short interval.
+	if rois_for_frame is None and end_frame - start_frame < 2:
+		return _ByteBoundedLruStore(PREPASS_RESULT_STORE_MAX_BYTES)
 
 	frame_count = reader.frame_count
 	# padding: half_window * stride covers the widest neighbor offset at
-	# any fps. At stride=1 this equals the old half_window padding.
+	# any fps.
 	pad_extent = half_window * stride
-	pad_lo = max(0, start_frame - pad_extent)
-	pad_hi = min(frame_count - 1, end_frame + pad_extent)
+	if rois_for_frame is not None and not rois_for_frame:
+		return _ByteBoundedLruStore(PREPASS_RESULT_STORE_MAX_BYTES)
 
 	frame_w = reader.width
 	frame_h = reader.height
 
-	# geometry for bin conversion (same path as observe_blob_at)
-	geometry = getattr(reader, "geometry", None)
-
-	# index pass-curves by absolute frame index for O(1) ROI lookup
-	fwd_by_frame = {}
-	for entry in fwd_curve:
-		fi, cx, cy, w, h, _conf = entry
-		fwd_by_frame[int(fi)] = (float(cx), float(cy), float(h))
-	bwd_by_frame = {}
-	for entry in bwd_curve:
-		fi, cx, cy, w, h, _conf = entry
-		bwd_by_frame[int(fi)] = (float(cx), float(cy), float(h))
-
-	# pre-build rois_for_frame[t] -> set of (rx1, ry1, rx2, ry2) tuples
-	# so the drain loop just iterates the set instead of recomputing.
-	rois_for_frame = _build_rois_for_frame(
-		start_frame, end_frame, fwd_by_frame, bwd_by_frame,
-		geometry, frame_w, frame_h,
-	)
-
-	# pending centers (interval frames) in strict ascending order. The
-	# eviction logic depends on this ordering; assert it explicitly so a
-	# future caller passing an unsorted list fails loudly.
-	pending = list(range(start_frame, end_frame + 1))
-	for i in range(1, len(pending)):
-		assert pending[i] > pending[i - 1], (
-			"residual pre-pass requires strictly ascending pending "
-			"centers; got " + repr(pending)
+	if rois_for_frame is None:
+		# geometry for bin conversion (same path as observe_blob_at)
+		geometry = getattr(reader, "geometry", None)
+		# index pass-curves by absolute frame index for O(1) ROI lookup
+		fwd_by_frame = {}
+		for entry in fwd_curve:
+			fi, cx, cy, w, h, _conf = entry
+			fwd_by_frame[int(fi)] = (float(cx), float(cy), float(h))
+		bwd_by_frame = {}
+		for entry in bwd_curve:
+			fi, cx, cy, w, h, _conf = entry
+			bwd_by_frame[int(fi)] = (float(cx), float(cy), float(h))
+		# pre-build ROIs once before the walk.
+		rois_for_frame = _build_rois_for_frame(
+			start_frame, end_frame, fwd_by_frame, bwd_by_frame,
+			geometry, frame_w, frame_h,
 		)
+	else:
+		# Copy outer mapping so caller mutation cannot change this pre-pass.
+		rois_for_frame = {
+			int(frame): set(rois)
+			for frame, rois in rois_for_frame.items()
+		}
+
+	# Mapping keys are unique; sorting them produces the ascending order the
+	# eviction logic requires.
+	pending = sorted(rois_for_frame)
+	read_ranges = _required_read_ranges(pending, pad_extent, frame_count)
+	if not read_ranges:
+		return _ByteBoundedLruStore(PREPASS_RESULT_STORE_MAX_BYTES)
+	last_read_frame = read_ranges[-1][1]
+	read_frames = (
+		frame_index
+		for range_lo, range_hi in read_ranges
+		for frame_index in range(range_lo, range_hi + 1)
+	)
 	next_idx = 0
 
 	# Two separate buffers so the cap is meaningful (one entry per unique
 	# frame index per buffer). Mixed-key dicts make len() ambiguous and
 	# eviction unsafe across interleaved key types.
 	bgr_buf = collections.OrderedDict()  # fi -> BGR uint8 ndarray
-	gray_buf = {}                        # fi -> gray float32, CENTERS ONLY
+	gray_buf = {}                        # fi -> gray uint8, CENTERS ONLY
 
-	# result store: (frame_index, roi) -> (residual_uint8, validity_uint8)
-	store = {}
+	# result store: (frame_index, roi) -> (residual_float32, validity_uint8)
+	store = _ByteBoundedLruStore(PREPASS_RESULT_STORE_MAX_BYTES)
 
-	# sequential walk: read fi, drain ready centers, evict stale frames.
-	# Read progress drives the walk; compute progress drives eviction.
-	for fi in range(pad_lo, pad_hi + 1):
+	# segmented sequential walk: read fi, drain ready centers, evict stale
+	# frames. Read progress drives the walk; compute progress drives eviction.
+	for fi in read_frames:
 		bgr = reader.read_frame(fi)
 		if read_log is not None:
 			read_log.append(fi)
 		bgr_buf[fi] = bgr
-		if start_frame <= fi <= end_frame:
+		if fi in rois_for_frame:
 			gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
-			gray_buf[fi] = gray.astype(numpy.float32)
+			gray_buf[fi] = gray
 
 		# drain: any pending center whose right neighbor is now in
 		# bgr_buf is ready to compute.
@@ -233,7 +345,7 @@ def precompute_interval_residuals(
 			leftmost_needed = max(0, next_t - half_window * stride)
 		else:
 			# all centers done; clear everything
-			leftmost_needed = pad_hi + 1
+			leftmost_needed = last_read_frame + 1
 
 		# evict by numeric frame index on each buffer independently
 		while bgr_buf:
@@ -300,6 +412,63 @@ def _center_in_frame(
 	if geometry is not None:
 		return coord_space.ProcessedPoint(cx=cx_p, cy=cy_p).in_bounds(geometry)
 	return 0 <= cx_p < frame_w and 0 <= cy_p < frame_h
+
+
+#============================================
+def build_walker_initial_rois(
+	seed_start: dict,
+	seed_end: dict,
+	reader: object,
+	stride: int,
+	window_frames: int,
+) -> dict:
+	"""Return exact seed-local ROIs queried before walker anchoring adapts.
+
+	This mirrors ``walk_walker._compute_roi_and_observe`` exactly: the
+	bootstrap and first ``window_frames`` non-seed observations in each
+	direction retain their own anchor seed. Once Viterbi emits, later anchors
+	may adapt, so they deliberately remain cache misses and use direct
+	computation rather than risk a wrong-ROI residual.
+
+	Seeds must already be in PROCESSED coordinates, matching the walker.
+	Frame/ROI collisions between FWD and BWD are deduplicated into one set.
+	"""
+	rois_by_frame = {}
+
+	def add_pass(seed: dict, neighbor_seed: dict, sign: int) -> None:
+		seed_frame = int(seed["frame_index"])
+		neighbor_frame = int(neighbor_seed["frame_index"])
+		anchor_cx = float(seed["cx"])
+		anchor_cy = float(seed["cy"])
+		seed_w = float(seed["w"])
+		seed_h = float(seed["h"])
+		if not _center_in_frame(
+			anchor_cx, anchor_cy, getattr(reader, "geometry", None),
+			reader.width, reader.height,
+		):
+			return
+		accept_x1 = anchor_cx - 0.5 * seed_w
+		accept_y1 = anchor_cy - 0.75 * seed_h
+		accept_x2 = anchor_cx + 0.5 * seed_w
+		accept_y2 = anchor_cy + 0.75 * seed_h
+		roi_pad = max(20, seed_w)
+		roi = (
+			max(0, int(accept_x1 - roi_pad)),
+			max(0, int(accept_y1 - roi_pad)),
+			min(reader.width, int(accept_x2 + roi_pad)),
+			min(reader.height, int(accept_y2 + roi_pad)),
+		)
+		for step in range(window_frames + 1):
+			frame_index = seed_frame + sign * step * stride
+			if frame_index < 0 or frame_index >= reader.frame_count:
+				break
+			if sign * (frame_index - neighbor_frame) >= 0 and step > 0:
+				break
+			rois_by_frame.setdefault(frame_index, set()).add(roi)
+
+	add_pass(seed_start, seed_end, 1)
+	add_pass(seed_end, seed_start, -1)
+	return rois_by_frame
 
 
 #============================================
@@ -402,8 +571,9 @@ def _compute_center(
 		t: Center frame index.
 		rois: Iterable of ROI 4-tuples to compute at this center.
 		bgr_buf: Rolling BGR buffer; reads only.
-		gray_buf: Rolling gray buffer; reads only.
-		store: Output dict; writes (frame_index, roi) -> (uint8, uint8).
+		gray_buf: Rolling uint8 gray buffer; reads only.
+		store: Byte-bounded output store; writes (frame_index, roi) ->
+			(float32, uint8).
 		reader: FrameReader (passed through to compute_residual_for_frame).
 		scene_transform: SceneTransform instance.
 		half_window: Per-side neighbor count.
@@ -423,12 +593,14 @@ def _compute_center(
 	# defensive center BGR
 	if t in bgr_buf:
 		compute_cache[("bgr", t)] = bgr_buf[t]
-	# center gray (the key shape compute_residual_for_frame reads first)
-	compute_cache[t] = gray_buf[t]
+	# center gray (the key shape compute_residual_for_frame reads first).
+	# Convert this one live center only for residual computation, matching the
+	# direct-reader path without retaining float32 frames in the rolling buffer.
+	compute_cache[t] = gray_buf[t].astype(numpy.float32)
 
 	for roi in rois:
 		cache_key = (t, roi)
-		if cache_key in store:
+		if store.contains_without_accounting(cache_key):
 			continue
 		residual, validity_mask = residual_motion.compute_residual_for_frame(
 			reader=reader,
@@ -440,9 +612,9 @@ def _compute_center(
 			fps=fps,
 			stride=stride,
 		)
-		# quantize to uint8 (atol=1 in the parity test). The store consumer
-		# (observe_blob_at) converts back to float32 before passing to
-		# DoG/blob extraction.
-		residual_u8 = numpy.clip(residual, 0, 255).astype(numpy.uint8)
+		# Preserve the live residual exactly. DoG/blob extraction operates on
+		# float32, so uint8 quantization here would make a pre-pass cache hit
+		# semantically different from direct residual computation.
+		residual_f32 = residual.astype(numpy.float32, copy=False)
 		validity_u8 = validity_mask.astype(numpy.uint8)
-		store[cache_key] = (residual_u8, validity_u8)
+		store.store_result(cache_key, (residual_f32, validity_u8))

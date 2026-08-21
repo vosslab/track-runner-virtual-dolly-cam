@@ -10,6 +10,7 @@ output_smoke/
 corpus_walk/
 # === UNIVERSAL ===
 output*/
+/graphify-out/
 _temp*.?*
 /OTHER_REPOS/
 /LOCAL_ONLY/

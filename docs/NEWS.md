@@ -9,7 +9,7 @@ see [CHANGELOG.md](CHANGELOG.md).
   4K HEVC source to an H.264 fast-read working copy. Working modes decode from
   the fast-read video; the final encode always uses the original. Reduces
   per-frame decode cost from 450-575 ms to 6-14 ms on 4K HEVC Main-10 HDR
-  sources. See [docs/modes/PREPARE.md](modes/PREPARE.md).
+  sources. See [PREPARE.md](modes/PREPARE.md).
 
 - **Windowed Viterbi walker (default)**: the pairwise velocity-delta cost model
   replaced the earlier first-order displacement cost. Pairwise velocity deltas

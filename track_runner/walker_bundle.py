@@ -26,7 +26,7 @@ a reader present). `interval_solver.solve_interval_analytical` calls
 
 # Standard Library
 import dataclasses
-import typing
+import collections.abc
 
 # local repo modules
 import blob_walk.walk_walker as walk_walker
@@ -67,7 +67,7 @@ class WalkerInputBundle:
 	contract C9 (FWD/BWD independence).
 
 	The candidate lattice is not a pre-built array. It is the per-frame
-	`corridor_blobs` list the walker gathers internally via
+	`candidate_blobs` list the walker gathers internally via
 	`residual_motion.observe_blob_at` + trace_sink. The bundle therefore
 	carries the lattice *source* plumbing (reader, scene_transform, fps,
 	stride, residual sampling parameters) rather than a materialized lattice.
@@ -194,7 +194,7 @@ def build_walker_bundles_for_interval(
 #============================================
 def run_walker_pass(
 	bundle: WalkerInputBundle,
-	walker_callable: typing.Callable,
+	walker_callable: collections.abc.Callable,
 ) -> object:
 	"""Run one walker pass by handing a bundle to an injectable walker.
 
@@ -204,9 +204,8 @@ def run_walker_pass(
 	is wired separately; this seam only establishes the interface, so default
 	solve behavior is unchanged.
 
-	The seam intentionally does NOT route through the I/O-heavy
-	`walk_driver.run_interval_walk` (which writes CSV/PNG tiles). The real
-	caller invokes `walk_one_direction` directly without those render side effects.
+	The solver calls `walk_one_direction` directly and keeps no diagnostic
+	artifact-writing side effects in this path.
 
 	Args:
 		bundle: The WalkerInputBundle for one direction.
@@ -229,8 +228,7 @@ class _NullDebugLog:
 	emits per-frame CSV telemetry. The real DebugLogWriter opens a CSV file. In
 	the solver (Stage 4) path we want the walker's geometry, not its diagnostic
 	CSV, so this duck-typed sink swallows every row and writes nothing to disk.
-	This is how the solver seam stays free of the driver's CSV/PNG side effects
-	(it does NOT route through walk_driver.run_interval_walk).
+	This keeps the solver path free of diagnostic artifact-writing side effects.
 	"""
 
 	def write_row(self, row: object) -> None:
@@ -490,12 +488,9 @@ def walk_bundle_to_path(bundle: WalkerInputBundle) -> list:
 	the production driver projects SOURCE seeds via reader.geometry before
 	building the bundle. At bin_factor == 1 both projections are identity.
 
-	precomputed_store note (perf only): walk_one_direction builds its own
-	per-walk residual_cache and does not accept the solver's precomputed_store
-	through its current public signature. Threading it in would require a core
-	API change that risks the no-Hermite import boundary, so it is deliberately
-	left for a later pass. Correctness is unaffected; only the Stage 4
-	sequential-read optimization is not reused on the walker path.
+	The bundle's optional precomputed_store is forwarded to the walker as a
+	read-only source of image-derived residuals. Each direction still creates
+	its own mutable residual_cache, preserving C9 decision independence.
 
 	Args:
 		bundle: WalkerInputBundle for one direction (FWD or BWD).
@@ -526,6 +521,7 @@ def walk_bundle_to_path(bundle: WalkerInputBundle) -> list:
 		neighbor_seed_cy=float(neighbor_seed["cy"]),
 		neighbor_seed_w=float(neighbor_seed["w"]),
 		neighbor_seed_h=float(neighbor_seed["h"]),
+		precomputed_store=bundle.precomputed_store,
 	)
 
 	# The endpoints come from the interval's two seeds regardless of direction.
@@ -562,7 +558,7 @@ def walk_bundle_to_path_with_coverage(bundle: WalkerInputBundle) -> tuple:
 	A bootstrap-only stall carries no post-seed trajectory evidence and
 	must fall back to Hermite even though accepted_count is 1.
 
-	Hermite independence (test_blob_walk_v2_no_hermite): this function reads
+	Hermite independence: this function reads
 	only the walker's own output. The fallback decision lives in the caller
 	(interval_solver), which already owns velocity_model; walker_bundle stays
 	free of any Hermite import.
@@ -593,6 +589,7 @@ def walk_bundle_to_path_with_coverage(bundle: WalkerInputBundle) -> tuple:
 		neighbor_seed_cy=float(neighbor_seed["cy"]),
 		neighbor_seed_w=float(neighbor_seed["w"]),
 		neighbor_seed_h=float(neighbor_seed["h"]),
+		precomputed_store=bundle.precomputed_store,
 	)
 
 	if bundle.direction_sign >= 0:

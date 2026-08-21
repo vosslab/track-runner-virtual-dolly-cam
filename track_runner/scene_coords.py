@@ -27,7 +27,7 @@ class SceneTransform:
 	def __init__(
 		self,
 		motion_track: object,
-	):
+	) -> None:
 		"""Initialize SceneTransform from motion track.
 
 		Args:

@@ -1,9 +1,9 @@
 """Low-level interval fingerprint and seed-filter helpers.
 
 Holds the fingerprint primitives for the per-interval solved-result store
-(`SOLVER_FINGERPRINT_TAG`, `compute_interval_fingerprint`) and the seed-filter
-(`filter_usable_seeds_sorted`) that callers use to compute identical
-interval fingerprints.
+(`GEOMETRY_TAG`, `compute_interval_fingerprint`) and the seed-filter
+(`filter_usable_seeds_sorted`) that callers use to compute identical interval
+fingerprints.
 
 This module exists so the queue driver (`solve_queue`) and refine-mode
 CLI can depend on the fingerprint helpers without pulling in the heavy
@@ -14,58 +14,41 @@ Scope lock: fingerprinting + seed-filter ONLY. Do not grow this module
 into a junk drawer of generic interval utilities.
 """
 
-# Standard Library
-import re
-
 # local repo modules
 import tr_schema
 import state_io
 
 
-# Legacy bin-tagged key suffix: a `||schema_v<N>/bin<B>` tail predates the
-# bin-invariant key. The migration strips the trailing `/bin<B>` segment so
-# the key becomes `||schema_v<N>` and matches a fresh compute. Anchored on the
-# end of the string so only the bin segment is removed.
-_LEGACY_BIN_SUFFIX_RE = re.compile(r"/bin\d+$")
-
-
 #============================================
 # Fingerprint tags.
 #
-# The unified geometry tag per contract C9 encodes the latest geometry-
-# affecting schema version. An interval's identity is determined by its
-# seed-pair geometry (frame indices and positions) plus schema version.
+# The unified geometry tag per contract C9 encodes the current readable schema
+# version. An interval's identity is determined by its seed-pair geometry
+# (frame indices and positions) plus schema version.
 # How the interval was solved (hermite vs blob propagator) is metadata
 # on the result, not part of the fingerprint key.
 #
-# * GEOMETRY_TAG -- the unified fingerprint suffix, keyed off the latest
-#   geometry-affecting schema (from tr_schema.GEOMETRY_AFFECTING_SCHEMAS).
-#   Format: `schema_v<N>` where N is the geometry-affecting schema version.
+# * GEOMETRY_TAG -- the unified fingerprint suffix. Format: `schema_v<N>`
+#   where N is the current readable schema version.
 #   bin_factor is a per-run performance setting and stays OUT of the key
 #   (stored boxes are always unbinned SOURCE-frame).
 #
-# * SOLVER_FINGERPRINT_TAG -- the informational/telemetry tag. Includes
-#   GEOMETRY_TAG plus full `/schema/<SCHEMA_VERSION>`. Used for diagnostics
-#   headers and log lines. NEVER used as a fingerprint key.
-#
-# Fingerprint invalidation rules:
-#   - Adding a version to GEOMETRY_AFFECTING_SCHEMAS (e.g. for an
-#     observer or solver algorithm change) bumps GEOMETRY_TAG.
-#   - Bumping SCHEMA_VERSION alone (without adding to the affecting set)
-#     is metadata-only and does not invalidate the tag.
+# Fingerprint invalidation rule: a stored-format change updates
+# SCHEMA_VERSION and therefore this tag. Method changes refresh output through
+# solve without changing the stored format or this key.
 # Per contract C9, do NOT introduce parallel version constants
 # (BLOB_OBSERVER_VERSION, etc.) to bypass this scheme.
 
 def build_geometry_tag() -> str:
 	"""Build the unified geometry fingerprint tag.
 
-	Encodes the latest geometry-affecting schema version only. Tuning
-	blob-snap constants or changing which propagator ran does not change the
-	tag -- only a real geometry-affecting schema bump does.
+	Encodes the current readable schema version. Tuning method constants or
+	changing which propagator ran does not change the tag; only a real stored
+	geometry-format bump does.
 
 	The reuse key carries exactly three inputs (seed frame indices, the
-	human-authored SOURCE seed box coords, and this geometry-affecting schema
-	tag). bin_factor is a performance setting of the current run and is NOT
+	human-authored SOURCE seed box coords, and this current schema tag).
+	bin_factor is a performance setting of the current run and is NOT
 	part of the key: stored torso boxes are always unbinned SOURCE-frame, so
 	bin cannot be part of a durable result's identity. See the reuse-identity
 	rule in `docs/TR_SCHEMA_VERSION_HISTORY.md`.
@@ -73,28 +56,11 @@ def build_geometry_tag() -> str:
 	Returns:
 		Geometry tag string: `schema_v<N>`.
 	"""
-	geom_v = tr_schema.latest_geometry_affecting_schema()
-	tag = f"schema_v{geom_v}"
+	tag = f"schema_v{tr_schema.SCHEMA_VERSION}"
 	return tag
 
 
 GEOMETRY_TAG = build_geometry_tag()
-
-
-def build_solver_fingerprint_tag() -> str:
-	"""Build the full informational tag (geometry + schema).
-
-	Use for diagnostics headers and telemetry, NOT fingerprint keys.
-
-	Returns:
-		Full tag including `/schema/<SCHEMA_VERSION>`.
-	"""
-	tag = f"{GEOMETRY_TAG}/schema/{tr_schema.SCHEMA_VERSION}"
-	return tag
-
-
-SOLVER_FINGERPRINT_TAG = build_solver_fingerprint_tag()
-
 
 
 #============================================
@@ -107,10 +73,7 @@ def compute_interval_fingerprint(
 	Every caller that computes an interval fingerprint MUST go through this
 	helper (or pass the tag to `state_io.interval_fingerprint` directly)
 	so solve-mode and refine-mode fingerprints line up byte-for-byte.
-	Do NOT pass `SOLVER_FINGERPRINT_TAG` here -- that tag carries
-	schema-version metadata and would couple fingerprints to schema bumps.
-
-	The key is seed-pair SOURCE geometry plus the geometry-affecting schema
+	The key is seed-pair SOURCE geometry plus the current schema
 	tag only. bin_factor is NOT part of the key: stored coordinates are
 	always unbinned SOURCE-frame, so the same seed pair returns an identical
 	fingerprint regardless of which bin the run uses. Solve mode and refine
@@ -133,60 +96,6 @@ def compute_interval_fingerprint(
 
 
 #============================================
-def migrate_legacy_fingerprints(solved: dict) -> tuple:
-	"""Strip the legacy `/bin<B>` suffix from bin-tagged store keys.
-
-	bin_factor used to ride inside the geometry tag as a trailing
-	`/bin<B>` segment, so an interval solved at bin 3 stored under
-	`X||schema_v<N>/bin3`. The key is now bin-invariant (`X||schema_v<N>`),
-	so a freshly computed key would never match a legacy bin-tagged key and
-	the store would prune to empty, forcing a one-time full re-solve. This
-	migration rewrites any key ending `||schema_v<N>/bin<B>` to
-	`||schema_v<N>` so the existing solved work is reused.
-
-	Keys are rewritten in memory; the caller decides whether to persist
-	(see the write-back gating in `cli.py`).
-
-	Collision policy: a single solve run uses exactly one bin and writes one
-	key per seed pair, and the store is a fingerprint->result dict (no
-	write-order or timestamp metadata on entries -- see the manifest in
-	`state_io.write_torso_box_coords`). Two stripped keys colliding therefore
-	signals a corrupt store (the same seed pair stored twice at different
-	bins), which cannot arise from a normal run. A collision fails loud
-	rather than silently dropping an entry.
-
-	Args:
-		solved: Mapping of fingerprint -> solved-interval result dict.
-
-	Returns:
-		Tuple `(migrated, n_changed)` where `migrated` is a new dict with any
-		`/bin<B>` suffixes stripped and `n_changed` is the count of keys
-		rewritten. When nothing matched, `migrated` is content-equal to the
-		input and `n_changed` is 0.
-
-	Raises:
-		RuntimeError: If two distinct legacy keys strip to the same key,
-			indicating a corrupt store with duplicate bin entries.
-	"""
-	migrated = {}
-	n_changed = 0
-	for fingerprint, entry in solved.items():
-		stripped = _LEGACY_BIN_SUFFIX_RE.sub("", fingerprint)
-		if stripped != fingerprint:
-			n_changed += 1
-		# A collision means the same seed pair was stored under two bins,
-		# which a one-bin-per-run store cannot produce. Fail loud.
-		if stripped in migrated:
-			raise RuntimeError(
-				f"corrupt interval store: legacy key '{fingerprint}' strips to "
-				f"'{stripped}', which already exists; the store holds duplicate "
-				f"bin entries for one seed pair. Re-solve the video."
-			)
-		migrated[stripped] = entry
-	return (migrated, n_changed)
-
-
-#============================================
 def _prepare_usable_seed(seed: dict) -> dict:
 	"""Copy seed and set default conf=0.3 for approx seeds.
 
@@ -195,14 +104,13 @@ def _prepare_usable_seed(seed: dict) -> dict:
 	gap but confidence is low because the exact position is unknown.
 
 	Args:
-		seed: Seed dict, possibly with status "approximate" or legacy
-			"obstructed".
+		seed: Seed dict, possibly with status "approximate".
 
 	Returns:
 		Original seed if not approx, or a copy with conf=0.3 if
 		approx and conf was not already set.
 	"""
-	if seed["status"] in ("approximate", "obstructed") and seed.get("conf") is None:
+	if seed["status"] == "approximate" and seed.get("conf") is None:
 		prepared = dict(seed)
 		# approx area, uncertain position -- lower confidence
 		prepared["conf"] = 0.3
@@ -215,7 +123,7 @@ def filter_usable_seeds_sorted(seeds: list, verbose: bool = True) -> list:
 	"""Filter, sort, and deduplicate seeds to their interval-endpoint form.
 
 	This is the single source of truth for which seeds become interval
-	endpoints. `solve_all_intervals` and `cli._mode_refine` both reach this
+	endpoints. `solve_all_intervals` and `modes.refine.run` both reach this
 	helper (directly or via `solve_queue.plan_interval_work`) so they
 	compute identical `state_io.interval_fingerprint` keys.
 
@@ -228,12 +136,10 @@ def filter_usable_seeds_sorted(seeds: list, verbose: bool = True) -> list:
 		frame_index, deduplicated by frame_index (keeping the latest pass).
 		May be empty if fewer than 2 usable seeds remain.
 	"""
-	# accept visible/partial/approximate unconditionally; accept legacy
-	# obstructed only when a torso_box is present
+	# Only current canonical seed statuses can become interval endpoints.
 	usable_seeds = [
 		_prepare_usable_seed(s) for s in seeds
 		if s["status"] in ("visible", "partial", "approximate")
-		or (s["status"] == "obstructed" and s.get("torso_box") is not None)
 	]
 	if not usable_seeds:
 		return []

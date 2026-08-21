@@ -40,8 +40,8 @@ def emit_status_from_path(
 		last_accepted_cx: x-pixel of the most recent accepted position before this window.
 		last_accepted_cy: y-pixel of the most recent accepted position before this window.
 		size_at_frame: Optional callable frame_index -> (w, h) returning the
-		    seed-derived torso box size for that frame. When None, w and h are
-		    left None on every result (legacy/diagnostic callers). The walker
+			seed-derived torso box size for that frame. When None, w and h are
+		    left None on every result for callers that need positions only. The walker
 		    solves position; size is seed-derived geometry, not a size solve.
 
 	Returns:
@@ -126,8 +126,8 @@ def emit_status_from_path(
 
 		# Attach seed-derived torso size (w, h) for this frame. The walker
 		# solves position; size is geometry interpolated from the bracketing
-		# seed boxes by the caller-supplied size_at_frame (None for legacy
-		# diagnostic callers that do not assemble a box path).
+		# seed boxes by the caller-supplied size_at_frame (None for callers
+		# that do not assemble a box path).
 		if size_at_frame is not None:
 			box_w, box_h = size_at_frame(frame_index)
 		else:

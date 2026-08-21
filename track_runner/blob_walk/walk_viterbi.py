@@ -29,7 +29,7 @@ Cost terms (per contract C2, all spatial terms in torso-width units):
     per-frame speed limit;
   - speed-delta transition: WEIGHT_SPEED_DELTA * |speed2 - speed1| between two
     consecutive real-node velocities;
-  - heading-delta transition: WEIGHT_HEADING_DELTA * angle(v1, v2) in radians;
+  - heading-delta transition: WEIGHT_HEADING_DELTA * velocity-angle in radians;
   - normalized evidence: WEIGHT_EVIDENCE_NORM * (1 - normalized integrated_mag)
     per real node, bounded [0, WEIGHT_EVIDENCE_NORM].
 
@@ -115,6 +115,77 @@ def _active_weights() -> dict:
 
 
 #============================================
+class WalkCostMemo:
+	"""Bounded cost memo shared by the rolling windows of one walker pass.
+
+	Candidate positions, evidence, torso width, fps, and fixed weights do not
+	change during one walk. Candidate lists are frozen to tuples by
+	``walk_walker._build_window_entry`` before entering the rolling buffer, so a
+	candidate index identifies the same blob while its frame remains buffered.
+
+	``edge_costs`` is keyed by both absolute frame numbers and both candidate
+	indices. Its centroid inputs are fixed by that immutable candidate tuple;
+	``torso_w``, ``fps``, and the six fixed weights are walk constants;
+	``evidence_b`` comes from ``evidence_costs`` for the same absolute frame and
+	candidate index. ``_edge_cost`` uses only ``frame_b - frame_a``; that
+	window-position gap is unchanged for an overlapping node pair, so it is
+	position-invariant even though each node's local index shifts by one.
+	``evidence_costs`` is keyed by absolute frame because its only non-constant
+	input is that frame's immutable candidate tuple. The required blob fields
+	are snapshotted and checked on every memoized solve; mutation is rejected
+	before a stale cached cost can be used.
+
+	The memo is bounded to the current rolling window. Pruning before each solve
+	preserves all values in a one-frame overlap without a walk-length history.
+	"""
+
+	def __init__(self) -> None:
+		self.edge_costs = {}
+		self.evidence_costs = {}
+		self.frame_input_snapshots = {}
+
+	def check_frame_inputs(self, frame_index: int, candidates: list) -> None:
+		"""Reject a changed cached-cost input for a frame still in this walk.
+
+		The edge evaluator reads candidate centroid_x/centroid_y and the
+		evidence evaluator reads integrated_mag. Snapshotting exactly those
+		fields makes the memo safe without replacing the blob dicts that path
+		selection returns to downstream walker consumers.
+		"""
+		snapshot = tuple(
+			(cand["centroid_x"], cand["centroid_y"], cand["integrated_mag"])
+			for cand in candidates
+		)
+		previous = self.frame_input_snapshots.get(frame_index)
+		if previous is None:
+			self.frame_input_snapshots[frame_index] = snapshot
+		elif previous != snapshot:
+			raise RuntimeError(
+				"walker candidate inputs changed while their cost memo was live: "
+				f"frame_index={frame_index}"
+			)
+
+	def retain_frames(self, frame_indices: list) -> None:
+		"""Discard cached values outside the current rolling window."""
+		active_frames = set(frame_indices)
+		self.edge_costs = {
+			key: cost
+			for key, cost in self.edge_costs.items()
+			if key[0] in active_frames and key[2] in active_frames
+		}
+		self.evidence_costs = {
+			frame: costs
+			for frame, costs in self.evidence_costs.items()
+			if frame in active_frames
+		}
+		self.frame_input_snapshots = {
+			frame: snapshot
+			for frame, snapshot in self.frame_input_snapshots.items()
+			if frame in active_frames
+		}
+
+
+#============================================
 def _node_velocity(
 	cx_a: float,
 	cy_a: float,
@@ -149,7 +220,7 @@ def _node_velocity(
 
 
 #============================================
-def _angle_between(v1: tuple, v2: tuple) -> float:
+def _angle_between(velocity_a: tuple, velocity_b: tuple) -> float:
 	"""Angle in radians between two velocity vectors, 0 if either is near-zero.
 
 	The heading term is undefined for a near-stationary velocity, so it is
@@ -157,18 +228,18 @@ def _angle_between(v1: tuple, v2: tuple) -> float:
 	contract). The cosine is clamped to [-1, 1] for numerical safety.
 
 	Args:
-		v1: (vx, vy) first velocity (torso/frame).
-		v2: (vx, vy) second velocity (torso/frame).
+		velocity_a: (vx, vy) first velocity (torso/frame).
+		velocity_b: (vx, vy) second velocity (torso/frame).
 
 	Returns:
 		Angle in radians in [0, pi].
 	"""
-	mag1 = math.hypot(v1[0], v1[1])
-	mag2 = math.hypot(v2[0], v2[1])
+	mag1 = math.hypot(velocity_a[0], velocity_a[1])
+	mag2 = math.hypot(velocity_b[0], velocity_b[1])
 	# Heading is undefined when either velocity is essentially stationary.
 	if mag1 < SPEED_EPSILON_W or mag2 < SPEED_EPSILON_W:
 		return 0.0
-	dot = v1[0] * v2[0] + v1[1] * v2[1]
+	dot = velocity_a[0] * velocity_b[0] + velocity_a[1] * velocity_b[1]
 	cos_theta = dot / (mag1 * mag2)
 	# Clamp against floating-point drift past the valid acos domain.
 	if cos_theta > 1.0:
@@ -278,6 +349,8 @@ def select_path(
 	window_candidates: list,
 	torso_w: float,
 	fps: float,
+	frame_indices: list | None = None,
+	cost_memo: WalkCostMemo | None = None,
 ) -> list:
 	"""Run pairwise velocity-delta DP path selection over a window.
 
@@ -302,6 +375,10 @@ def select_path(
 			frame order of the window. An empty sub-list means no candidates.
 		torso_w: Torso width in pixels (scale unit per C2).
 		fps: Source video frame rate.
+		frame_indices: Absolute frame indices aligned with ``window_candidates``.
+			Defaults to window-relative indices for standalone callers.
+		cost_memo: Optional memo owned by one rolling walker pass; never share it
+			between independent walks.
 
 	Returns:
 		List of N items: each is a blob dict (selected) or None (skip).
@@ -309,15 +386,29 @@ def select_path(
 	n = len(window_candidates)
 	if n == 0:
 		return []
+	if frame_indices is None:
+		frame_indices = list(range(n))
+	if len(frame_indices) != n:
+		raise ValueError("frame_indices must align 1:1 with window_candidates")
 
 	weights = _active_weights()
 	skip_cost = weights["SKIP_COST"]
+	if cost_memo is not None:
+		cost_memo.retain_frames(frame_indices)
 
 	# Precompute per-frame, per-candidate evidence costs once.
-	evidence_by_frame = [
-		_evidence_costs_for_frame(candidates, weights)
-		for candidates in window_candidates
-	]
+	evidence_by_frame = []
+	for t, candidates in enumerate(window_candidates):
+		absolute_frame = frame_indices[t]
+		if cost_memo is not None:
+			cost_memo.check_frame_inputs(absolute_frame, candidates)
+		if cost_memo is not None and absolute_frame in cost_memo.evidence_costs:
+			frame_costs = cost_memo.evidence_costs[absolute_frame]
+		else:
+			frame_costs = _evidence_costs_for_frame(candidates, weights)
+			if cost_memo is not None:
+				cost_memo.evidence_costs[absolute_frame] = frame_costs
+		evidence_by_frame.append(frame_costs)
 
 	# real_nodes[t] = list of (cand_index, blob_dict) real candidates at frame t.
 	# Window frame index t maps to the per-frame gap arithmetic directly: the
@@ -338,6 +429,13 @@ def select_path(
 	# To keep it tractable we store costs keyed by the LAST EDGE's endpoints
 	# plus, for the velocity (transition) term, the velocity coming into the
 	# last node. The DP state is (prev_frame, prev_cand, curr_frame, curr_cand).
+	#
+	# Deliberate non-reuse finding: an exact ``best_pair`` value cannot be carried
+	# to the next one-frame slide. Its minimum may have a first real node in the
+	# departing frame, so that path is invalid in the new window; the state key
+	# does not retain the first node needed to filter it. Reusing it would change
+	# the recurrence, while adding that history would expand the state space.
+	# Edge/evidence values above are position-invariant, so only they are reused.
 
 	# best_single[(t, j)] = (cost, leading_skip_count)
 	# A first real node pays only its evidence cost plus the leading skip charge
@@ -374,9 +472,21 @@ def select_path(
 			ev_b = evidence_by_frame[tb][jb]
 			for ta in range(tb):
 				for ja, blob_a in real_nodes[ta]:
-					edge = _edge_cost(
-						blob_a, blob_b, ta, tb, torso_w, fps, ev_b, weights,
-					)
+					absolute_frame_a = frame_indices[ta]
+					absolute_frame_b = frame_indices[tb]
+					edge_key = (absolute_frame_a, ja, absolute_frame_b, jb)
+					if cost_memo is not None and edge_key in cost_memo.edge_costs:
+						edge = cost_memo.edge_costs[edge_key]
+					else:
+						edge = _edge_cost(
+							# Preserve the established recurrence: edge timing is in
+							# walker-window steps, not source-video frame numbers. For
+							# overlapping nodes ta/tb both shift by one, preserving gap.
+							blob_a, blob_b, ta, tb,
+							torso_w, fps, ev_b, weights,
+						)
+						if cost_memo is not None:
+							cost_memo.edge_costs[edge_key] = edge
 					if edge == float("inf"):
 						continue
 					# Velocity entering node b along edge a->b.
@@ -515,7 +625,7 @@ def compute_path_term_breakdown(
 			candidate lists select_path saw. When provided, the evidence term is
 			computed exactly as the DP computed it (per-frame normalization
 			against the frame's full candidate list), so sum(step_costs) equals
-			the DP-selected path cost. When None (legacy callers without the
+			the DP-selected path cost. When None (callers without the
 			candidate lists), evidence terms are 0.0 and the sum invariant holds
 			against the geometry+skip subset of the cost.
 

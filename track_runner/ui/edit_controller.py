@@ -4,11 +4,10 @@ Manages the workflow for reviewing, deleting, redrawn, and changing status
 of existing seeds. Handles keyboard shortcuts and mouse drawing.
 """
 
-# Standard Library
-# (none)
+import collections.abc
 
 # PIP3 modules
-from PySide6.QtCore import Qt, QThread
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QFontDatabase
 from PySide6.QtWidgets import QLabel, QWidget, QHBoxLayout, QPushButton
 
@@ -17,40 +16,13 @@ import overlay_config
 import ui.overlay_items as overlay_items_module
 import ui.status_presenter as status_presenter_module
 import ui.base_controller as base_controller_module
+import ui.edit_polish as edit_polish_module
+import ui.frame_source as frame_source_module
+import ui.seed_controller as seed_controller_module
 
-PreviewBoxItem = overlay_items_module.PreviewBoxItem
 RectItem = overlay_items_module.RectItem
 StatusPresenter = status_presenter_module.StatusPresenter
 BaseAnnotationController = base_controller_module.BaseAnnotationController
-
-#============================================
-
-
-class _YoloLoaderThread(QThread):
-	"""Background thread for loading YOLO detector.
-
-	Loads YOLO weights in a non-blocking thread to avoid freezing the
-	event loop during initialization.
-	"""
-
-	def __init__(self, detector_list: list, config: dict) -> None:
-		"""Initialize the YOLO loader thread.
-
-		Args:
-			detector_list: Mutable list [None] to store loaded detector.
-			config: Configuration dict for detector creation.
-		"""
-		super().__init__()
-		self._detector_list = detector_list
-		self._config = config
-
-	#============================================
-
-	def run(self) -> None:
-		"""Load YOLO detector in background thread."""
-		import tr_detection as detection_module
-		det = detection_module.create_detector(self._config)
-		self._detector_list[0] = det
 
 #============================================
 
@@ -66,10 +38,10 @@ class EditController(BaseAnnotationController):
 		self,
 		work_seeds: list,
 		filtered_indices: list,
-		reader: object,
+		reader: frame_source_module.FrameSource,
 		fps: float,
 		config: dict,
-		save_callback: object,
+		save_callback: collections.abc.Callable[[list], None],
 		predictions: dict | None = None,
 		seed_confidences: dict | None = None,
 		yolo_detector_list: list | None = None,
@@ -81,7 +53,7 @@ class EditController(BaseAnnotationController):
 		Args:
 			work_seeds: Mutable list of all seeds (modified in-place for edits).
 			filtered_indices: List of indices into work_seeds to iterate over.
-			reader: FrameReader instance with read_frame(idx) method.
+			reader: FrameSource that asynchronously provides requested frames.
 			fps: Frames per second of the video.
 			config: Configuration dict.
 			save_callback: Callable(work_seeds) to save incremental changes.
@@ -98,6 +70,8 @@ class EditController(BaseAnnotationController):
 			save_callback=save_callback,
 			predictions=predictions,
 		)
+		self._frame_source_connected = False
+		self._connect_frame_source()
 
 		self._work_seeds = work_seeds
 		self._filtered_indices = filtered_indices
@@ -120,6 +94,7 @@ class EditController(BaseAnnotationController):
 
 		# Status presenter
 		self._status_presenter = StatusPresenter()
+		self._session_feedback: str | None = None
 
 		# Seed box display
 		self._seed_rect_item: object = None
@@ -187,6 +162,7 @@ class EditController(BaseAnnotationController):
 
 	def _on_activated(self) -> None:
 		"""Set up status presenter and load the first seed."""
+		self._connect_frame_source()
 		# Add status presenter to toolbar
 		toolbar_widget = self._status_presenter.get_widget()
 		self._window.statusBar().addWidget(toolbar_widget)
@@ -221,6 +197,7 @@ class EditController(BaseAnnotationController):
 
 	def _on_deactivated(self) -> None:
 		"""Clean up edit-specific state."""
+		self._disconnect_frame_source()
 		# Remove edit-specific overlays (seed rect, polish preview)
 		if self._window is not None:
 			scene = self._window.get_frame_view().scene()
@@ -244,6 +221,22 @@ class EditController(BaseAnnotationController):
 
 	#============================================
 
+	def _connect_frame_source(self) -> None:
+		"""Subscribe only while this controller can own window updates."""
+		if not self._frame_source_connected:
+			self._reader.frame_ready.connect(self._on_frame_ready)
+			self._frame_source_connected = True
+
+	#============================================
+
+	def _disconnect_frame_source(self) -> None:
+		"""Prevent late worker results reaching a deactivated controller."""
+		if self._frame_source_connected:
+			self._reader.frame_ready.disconnect(self._on_frame_ready)
+			self._frame_source_connected = False
+
+	#============================================
+
 	def _get_default_status_text(self) -> str:
 		"""Short mode summary for the status bar.
 
@@ -251,21 +244,6 @@ class EditController(BaseAnnotationController):
 			String with mode summary.
 		"""
 		return "Edit mode - review seeds"
-
-	#============================================
-
-	def _get_keybinding_hints(self) -> str:
-		"""Keybinding hints for the key hint overlay.
-
-		Returns:
-			String with keybinding hints.
-		"""
-		hints = (
-			"SPACE/R=keep  LEFT=prev  D=del  Y=yolo  F=avg  "
-			"[/]=jump  L=low  U=add  P=part  A=approx  "
-			"V=hide preds  H=heat  Z=zoom  ESC=done"
-		)
-		return hints
 
 	#============================================
 
@@ -302,7 +280,14 @@ class EditController(BaseAnnotationController):
 		Args:
 			text: Message to display.
 		"""
-		self._status_presenter.get_widget().setText(text)
+		self._status_presenter.show_feedback(text)
+
+	#============================================
+
+	def show_session_feedback(self, text: str) -> None:
+		"""Display feedback retained by AnnotationSession across a mode swap."""
+		self._session_feedback = text
+		self._set_status_text(text)
 
 	#============================================
 
@@ -314,6 +299,9 @@ class EditController(BaseAnnotationController):
 
 	def _load_current_seed(self) -> None:
 		"""Load and display the current seed frame."""
+		# Navigation is the next user action after a returned add-mode summary.
+		# It may replace that summary with the selected seed's normal metadata.
+		self._session_feedback = None
 		if self._nav_idx >= len(self._filtered_indices):
 			self._on_quit()
 			return
@@ -323,8 +311,18 @@ class EditController(BaseAnnotationController):
 		self._current_seed = seed
 		frame_index = int(seed["frame_index"])
 
-		# Read the frame
-		frame = self._reader.read_frame(frame_index)
+		# Decode requests never block the annotation event loop.
+		self._reader.request_frame(frame_index)
+
+	#============================================
+
+	def _on_frame_ready(self, frame_index: int, frame: object) -> None:
+		"""Display the current seed only when its queued decode completes."""
+		if self._current_seed is None:
+			return
+		if frame_index != int(self._current_seed["frame_index"]):
+			return
+		seed = self._current_seed
 		if frame is None:
 			self._nav_idx += 1
 			self._load_current_seed()
@@ -359,6 +357,8 @@ class EditController(BaseAnnotationController):
 			seed, self._nav_idx, len(self._filtered_indices),
 			self._fps, seed_confidence, interval_info,
 		)
+		if self._session_feedback is not None:
+			self._set_status_text(self._session_feedback)
 
 		# Update scale bar
 		self._update_scale_bar()
@@ -445,79 +445,110 @@ class EditController(BaseAnnotationController):
 	#============================================
 
 	def handle_key_press(self, key: int, modifiers: object = None) -> bool:
-		"""Handle keyboard events.
-
-		Args:
-			key: Qt key code.
-			modifiers: Qt keyboard modifiers (for detecting Shift, etc.).
-
-		Returns:
-			True if event was handled.
-		"""
-		# Check for Shift modifier on arrow keys for frame advance
-		shift_held = False
-		if modifiers is not None:
-			shift_held = bool(modifiers & Qt.KeyboardModifier.ShiftModifier)
-
-		# Reject polish preview on any non-SPACE key
+		"""Dispatch a keyboard event through the declarative key map."""
+		# Reject polish preview on any non-SPACE key before its next action.
 		if self._polish_mode == "pending" and key != Qt.Key.Key_Space:
 			self._clear_polish_preview()
 			self._update_status_presenter()
+		handled = self._dispatch_keybinding(key, modifiers)
+		return handled
 
-		# Common keys (ESC/Q, P, A, Z)
-		result = self._handle_common_key(key, modifiers)
-		if result is not None:
-			return result
+	#============================================
 
-		if key == Qt.Key.Key_Space:
-			if self._polish_mode == "pending":
-				self._on_accept_polish()
-				return True
-			self._on_keep()
+	def _key_action_keep_or_accept_polish(self, binding: object, key: int, modifiers: object) -> bool:
+		"""Keep the seed, or accept a pending polish preview."""
+		_ = binding, key, modifiers
+		if self._polish_mode == "pending":
+			self._on_accept_polish()
 			return True
-		elif key == Qt.Key.Key_Right:
-			if shift_held:
-				# Shift+RIGHT always does time nav (keep/accept)
-				if self._polish_mode == "pending":
-					self._on_accept_polish()
-					return True
-				self._on_keep()
-				return True
-			# plain RIGHT: let QGraphicsView handle pan (no-op at fit-zoom)
-			return False
-		elif key == Qt.Key.Key_Left:
-			if shift_held:
-				# Shift+LEFT always does time nav (previous seed)
-				self._on_prev()
-				return True
-			# plain LEFT: let QGraphicsView handle pan (no-op at fit-zoom)
-			return False
-		elif key == Qt.Key.Key_D:
-			self._on_delete()
-			return True
-		elif key == Qt.Key.Key_N:
-			self._on_status_change("not_in_frame")
-			return True
-		elif key == Qt.Key.Key_Y:
-			self._on_yolo_polish()
-			return True
-		elif key == Qt.Key.Key_F:
-			self._on_consensus_polish()
-			return True
-		elif key == Qt.Key.Key_BracketRight:
-			self._on_jump_forward()
-			return True
-		elif key == Qt.Key.Key_BracketLeft:
-			self._on_jump_backward()
-			return True
-		elif key == Qt.Key.Key_L:
-			self._on_jump_low_conf()
-			return True
-		elif key == Qt.Key.Key_U:
-			self._on_enter_add_mode()
-			return True
+		self._on_keep()
+		return True
 
+	#============================================
+
+	def _key_action_pan_left(self, binding: object, key: int, modifiers: object) -> bool:
+		"""Leave plain LEFT to QGraphicsView pan handling."""
+		_ = binding, key, modifiers
 		return False
+
+	#============================================
+
+	def _key_action_pan_right(self, binding: object, key: int, modifiers: object) -> bool:
+		"""Leave plain RIGHT to QGraphicsView pan handling."""
+		_ = binding, key, modifiers
+		return False
+
+	#============================================
+
+	def _key_action_previous_seed(self, binding: object, key: int, modifiers: object) -> bool:
+		"""Move to the previous reviewed seed."""
+		_ = binding, key, modifiers
+		self._on_prev()
+		return True
+
+	#============================================
+
+	def _key_action_delete_seed(self, binding: object, key: int, modifiers: object) -> bool:
+		"""Delete the current seed."""
+		_ = binding, key, modifiers
+		self._on_delete()
+		return True
+
+	#============================================
+
+	def _key_action_not_in_frame(self, binding: object, key: int, modifiers: object) -> bool:
+		"""Mark the current seed as not in frame."""
+		_ = binding, key, modifiers
+		self._on_status_change("not_in_frame")
+		return True
+
+	#============================================
+
+	def _key_action_yolo_polish(self, binding: object, key: int, modifiers: object) -> bool:
+		"""Generate a YOLO polish preview."""
+		_ = binding, key, modifiers
+		self._on_yolo_polish()
+		return True
+
+	#============================================
+
+	def _key_action_consensus_polish(self, binding: object, key: int, modifiers: object) -> bool:
+		"""Generate an FWD/BWD consensus polish preview."""
+		_ = binding, key, modifiers
+		self._on_consensus_polish()
+		return True
+
+	#============================================
+
+	def _key_action_jump_forward(self, binding: object, key: int, modifiers: object) -> bool:
+		"""Jump forward through the filtered seeds."""
+		_ = binding, key, modifiers
+		self._on_jump_forward()
+		return True
+
+	#============================================
+
+	def _key_action_jump_backward(self, binding: object, key: int, modifiers: object) -> bool:
+		"""Jump backward through the filtered seeds."""
+		_ = binding, key, modifiers
+		self._on_jump_backward()
+		return True
+
+	#============================================
+
+	def _key_action_jump_low_confidence(self, binding: object, key: int, modifiers: object) -> bool:
+		"""Jump to the next low-confidence seed."""
+		_ = binding, key, modifiers
+		self._on_jump_low_conf()
+		return True
+
+	#============================================
+
+	def _key_action_enter_add_mode(self, binding: object, key: int, modifiers: object) -> bool:
+		"""Enter seed mode to add annotations."""
+		_ = binding, key, modifiers
+		self._on_enter_add_mode()
+		return True
 
 	#============================================
 
@@ -537,7 +568,7 @@ class EditController(BaseAnnotationController):
 			self._approx_mode = False
 			self._update_mode_badge()
 			norm_box = seed_color.normalize_seed_box(box, self._config)
-			new_seed = seed_color._build_seed_dict(
+			new_seed = seed_color.build_seed_dict(
 				frame_index,
 				norm_box,
 				seed["pass"],
@@ -556,7 +587,7 @@ class EditController(BaseAnnotationController):
 			self._partial_mode = False
 			self._update_mode_badge()
 			norm_box = seed_color.normalize_seed_box(box, self._config)
-			new_seed = seed_color._build_seed_dict(
+			new_seed = seed_color.build_seed_dict(
 				frame_index,
 				norm_box,
 				seed["pass"],
@@ -571,10 +602,11 @@ class EditController(BaseAnnotationController):
 			self._advance()
 		else:
 			norm_box = seed_color.normalize_seed_box(box, self._config)
-			new_seed = seed_color._build_seed_dict(
+			new_seed = seed_color.build_seed_dict(
 				frame_index,
 				norm_box,
 				seed["pass"],
+				status="visible",
 			)
 			self._reviewed += 1
 			self._redrawn += 1
@@ -645,80 +677,25 @@ class EditController(BaseAnnotationController):
 
 	def _on_yolo_polish(self) -> None:
 		"""Run YOLO polish on current seed and show preview."""
-		if self._current_seed is None:
-			return
-		status = self._current_seed.get("status", "visible")
-		if status in ("not_in_frame",):
-			return
-		# Lazily load YOLO on first press
-		if self._yolo_loading:
-			return
-		det = self._yolo_detector_list[0] if self._yolo_detector_list else None
-		if det is None and not self._yolo_tried:
-			self._start_yolo_load()
-			return
-		if det is None:
-			# Load failed
-			self._status_presenter.get_widget().setText(
-				"YOLO: load failed"
-			)
-			return
-		# Run refinement
-		import seed_editor as seed_editor_module
-		refined = seed_editor_module._refine_box_yolo(
-			self._current_bgr, self._current_seed, self._config, det,
-		)
-		if refined is None:
-			self._status_presenter.get_widget().setText(
-				"YOLO: no refinement available"
-			)
-			return
-		# Show preview as PreviewBoxItem
-		self._show_polish_preview(refined, "YOLO polish: SPACE=accept, other=reject")
+		edit_polish_module.on_yolo_polish(self)
 
 	#============================================
 
 	def _start_yolo_load(self) -> None:
 		"""Start background YOLO loading in QThread."""
-		self._yolo_loading = True
-		self._yolo_tried = True
-		status_widget = self._status_presenter.get_widget()
-		status_widget.setText("Loading YOLO...")
-		self._yolo_thread = _YoloLoaderThread(self._yolo_detector_list, self._config)
-		self._yolo_thread.finished.connect(self._on_yolo_loaded)
-		self._yolo_thread.start()
+		edit_polish_module.start_yolo_load(self)
 
 	#============================================
 
 	def _on_yolo_loaded(self) -> None:
 		"""Handle YOLO loading completion."""
-		self._yolo_loading = False
-		det = self._yolo_detector_list[0] if self._yolo_detector_list else None
-		if det is None:
-			self._status_presenter.get_widget().setText("YOLO: load failed")
-		else:
-			self._status_presenter.get_widget().setText("YOLO: ready - press y again")
+		edit_polish_module.on_yolo_loaded(self)
 
 	#============================================
 
 	def _on_consensus_polish(self) -> None:
 		"""Run FWD/BWD consensus polish and show preview."""
-		if self._current_seed is None:
-			return
-		status = self._current_seed.get("status", "visible")
-		if status in ("not_in_frame",):
-			return
-		import seed_editor as seed_editor_module
-		frame_index = int(self._current_seed["frame_index"])
-		refined = seed_editor_module._refine_box_consensus(
-			self._current_seed, self._predictions, frame_index,
-		)
-		if refined is None:
-			self._status_presenter.get_widget().setText(
-				"FWD/BWD: no predictions available"
-			)
-			return
-		self._show_polish_preview(refined, "FWD/BWD polish: SPACE=accept, other=reject")
+		edit_polish_module.on_consensus_polish(self)
 
 	#============================================
 
@@ -729,60 +706,19 @@ class EditController(BaseAnnotationController):
 			refined: Refined box dict with cx, cy, w, h keys.
 			message: Status message to display.
 		"""
-		# Clear existing preview
-		self._clear_polish_preview()
-		# Compute box coordinates from cx, cy, w, h
-		cx = float(refined["cx"])
-		cy = float(refined["cy"])
-		w = float(refined["w"])
-		h = float(refined["h"])
-		x = int(cx - w / 2.0)
-		y = int(cy - h / 2.0)
-		scene = self._window.get_frame_view().scene()
-		self._polish_preview_item = PreviewBoxItem(x, y, int(w), int(h))
-		scene.addItem(self._polish_preview_item)
-		# Store refined box for accept
-		self._pending_refined = refined
-		self._polish_mode = "pending"
-		# Update status label
-		self._status_presenter.get_widget().setText(message)
+		edit_polish_module.show_polish_preview(self, refined, message)
 
 	#============================================
 
 	def _clear_polish_preview(self) -> None:
 		"""Clear the polish preview item from the scene."""
-		if self._polish_preview_item is not None:
-			scene = self._window.get_frame_view().scene()
-			scene.removeItem(self._polish_preview_item)
-			self._polish_preview_item = None
-		self._pending_refined = None
-		self._polish_mode = None
+		edit_polish_module.clear_polish_preview(self)
 
 	#============================================
 
 	def _on_accept_polish(self) -> None:
 		"""Accept the polish preview and update seed."""
-		if self._pending_refined is None:
-			return
-		refined = self._pending_refined
-		seed = self._current_seed
-		frame_index = int(seed["frame_index"])
-		rx = int(refined["cx"] - refined["w"] / 2.0)
-		ry = int(refined["cy"] - refined["h"] / 2.0)
-		polish_box = [rx, ry, int(refined["w"]), int(refined["h"])]
-		import seed_color
-		norm_box = seed_color.normalize_seed_box(polish_box, self._config)
-		new_seed = seed_color._build_seed_dict(
-			frame_index, norm_box, seed["pass"],
-		)
-		seed_list_idx = self._filtered_indices[self._nav_idx]
-		self._work_seeds[seed_list_idx] = new_seed
-		self._redrawn += 1
-		self._reviewed += 1
-		self._changed_frames.add(frame_index)
-		self._save_callback(self._work_seeds)
-		self._clear_polish_preview()
-		self._advance()
+		edit_polish_module.accept_polish(self)
 
 	#============================================
 
@@ -810,6 +746,8 @@ class EditController(BaseAnnotationController):
 			self._current_seed, self._nav_idx, len(self._filtered_indices),
 			self._fps, conf, interval_info,
 		)
+		if self._session_feedback is not None:
+			self._set_status_text(self._session_feedback)
 
 	#============================================
 
@@ -848,7 +786,7 @@ class EditController(BaseAnnotationController):
 		score below 0.5. Wraps around to the beginning if needed.
 		"""
 		if self._seed_confidences is None:
-			print("  no confidence data available")
+			self._set_status_text("No confidence data available")
 			return
 
 		total = len(self._filtered_indices)
@@ -864,7 +802,7 @@ class EditController(BaseAnnotationController):
 				self._load_current_seed()
 				return
 
-		print("  no low-confidence seeds found")
+		self._set_status_text("No low-confidence seeds found")
 
 	#============================================
 
@@ -879,52 +817,67 @@ class EditController(BaseAnnotationController):
 	def _on_enter_add_mode(self) -> None:
 		"""Enter seed-add mode via SeedController.
 
-		Saves the current frame position, creates a SeedController with
-		a return callback, and swaps controllers.
+		Saves the current frame position and asks the persistent session to
+		construct the add-seed controller.
 		"""
-		import ui.seed_controller as seed_controller_module
-
 		# Save current frame for position restoration on return
 		self._saved_frame_index = self._current_frame
-
-		# Collect frame indices of existing seeds for duplicate filtering
-		existing_frames = set()
-		for seed in self._work_seeds:
-			existing_frames.add(int(seed["frame_index"]))
-
-		# Build a list of all frame indices the user could scrub to
-		# (use the reader's total frame count as the range)
-		total_frames = self._reader._total_frames
-		# Start the seed controller at the current frame
-		seed_frame_indices = list(range(total_frames))
-
-		controller = seed_controller_module.SeedController(
-			seed_frame_indices=seed_frame_indices,
-			reader=self._reader,
-			fps=self._fps,
-			config=self._config,
-			all_seeds=self._work_seeds,
-			save_callback=self._save_callback,
-			pass_number=1,
-			mode_str="edit_add",
-			predictions=self._predictions,
-			return_callback=self._resume_from_add_mode,
-			start_frame=self._current_frame,
-		)
-
-		# Swap controllers via the window
-		self._window.set_controller(controller)
-		# Update mode indicator
-		if hasattr(self._window, "_mode_actions"):
-			self._window._mode_actions["seed"].setChecked(True)
+		session = self._window.get_session()
+		if session is None:
+			raise RuntimeError("Edit add-seed mode requires an AnnotationSession")
+		session.begin_add_seed(self)
 
 	#============================================
 
-	def _resume_from_add_mode(self, new_seeds: list) -> None:
+	def create_add_seed_controller(
+		self,
+		total_frames: int,
+		seed_store: list,
+		prediction_store: dict | None,
+	) -> object:
+		"""Build the add-seed controller for this pending Edit transaction.
+
+		Args:
+			total_frames: Number of frames available for annotation.
+			seed_store: Session-owned committed seed list.
+			prediction_store: Session-owned predictions, if available.
+		"""
+		controller = seed_controller_module.SeedController(
+			seed_frame_indices=list(range(total_frames)),
+			reader=self._reader,
+			fps=self._fps,
+			config=self._config,
+			all_seeds=seed_store,
+			save_callback=self._save_callback,
+			mode_str="edit_add",
+			predictions=prediction_store,
+			return_callback=self.resume_from_add_mode,
+			start_frame=self._current_frame,
+		)
+		return controller
+
+	#============================================
+
+	def resume_from_add_mode(self, new_seeds: list) -> None:
 		"""Resume edit mode after returning from add-seed mode.
 
 		Args:
 			new_seeds: List of newly collected seeds from seed mode.
+		"""
+		session = self._window.get_session()
+		if session is None:
+			raise RuntimeError("Edit add-seed return requires an AnnotationSession")
+		self._complete_add_mode(new_seeds)
+		self._save_callback(self._work_seeds)
+		session.resume_edit_after_add(self, self._work_seeds)
+
+	#============================================
+
+	def _complete_add_mode(self, new_seeds: list) -> None:
+		"""Merge add-mode commits while retaining pending edit state.
+
+		Args:
+			new_seeds: Newly committed seed dicts returned by Seed mode.
 		"""
 		# 1. Purge deleted seeds
 		if self._delete_indices:
@@ -943,13 +896,6 @@ class EditController(BaseAnnotationController):
 
 		# 4. Restore position: first seed with frame_index >= saved
 		self._restore_nav_position()
-
-		# 5. Swap back to edit mode
-		self._window.set_controller(self)
-		if hasattr(self._window, "_mode_actions"):
-			self._window._mode_actions["edit"].setChecked(True)
-
-	#============================================
 
 	def _rebuild_filtered_indices(self) -> None:
 		"""Rebuild filtered indices after seed list changes.

@@ -81,7 +81,7 @@ def make_video_identity(input_file: str, video_info: dict) -> dict:
 
 	Args:
 		input_file: Path to the input video file.
-		video_info: Dict from _probe_video() with keys:
+		video_info: Dict from modes.video_artifacts.probe_video() with keys:
 			width, height, fps, frame_count, duration_s.
 
 	Returns:

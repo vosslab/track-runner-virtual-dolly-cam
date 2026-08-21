@@ -5,26 +5,28 @@ mouse drawing, overlay management, zoom, draw mode toggles,
 scale bar, and activation lifecycle.
 """
 
-# Standard Library
+import collections.abc
 import time
 
 # PIP3 modules
-from PySide6.QtCore import QObject, Qt, QTimer
+from PySide6.QtCore import QObject, QTimer
 from PySide6.QtWidgets import QWidget, QPushButton
 import numpy
 
 # local repo modules
-import camera_motion
+import common_tools.coord_space
 import overlay_config
-import scene_coords
-import ui.heat_map_overlay as heat_map_overlay_module
+import ui.heat_map_support as heat_map_support_module
+import ui.keymap as keymap_module
+import ui.mode_status_support as mode_status_support_module
 import ui.overlay_items as overlay_items_module
+import ui.frame_source as frame_source_module
+import ui.workspace as workspace_module
 
 PreviewBoxItem = overlay_items_module.PreviewBoxItem
 RectItem = overlay_items_module.RectItem
 ScaleBarItem = overlay_items_module.ScaleBarItem
 PredictionLegendItem = overlay_items_module.PredictionLegendItem
-HeatMapOverlay = heat_map_overlay_module.HeatMapOverlay
 
 #============================================
 
@@ -56,16 +58,17 @@ class BaseAnnotationController(QObject):
 
 	def __init__(
 		self,
-		reader: object,
+		reader: frame_source_module.FrameSource,
 		fps: float,
 		config: dict,
-		save_callback: object,
+		save_callback: collections.abc.Callable[[list], None] | None,
 		predictions: dict | None = None,
 	) -> None:
 		"""Initialize common controller state.
 
 		Args:
-			reader: FrameReader instance with read_frame(idx) method.
+			reader: FrameSource that queues frame and heat requests while its
+				worker thread owns the FrameReader.
 			fps: Frames per second of the video.
 			config: Configuration dict.
 			save_callback: Callable for saving state.
@@ -80,7 +83,7 @@ class BaseAnnotationController(QObject):
 		self._predictions = predictions
 
 		# Window and UI state
-		self._window: object = None
+		self._window: workspace_module.AnnotationWindow | None = None
 		self._current_frame: int = 0
 		self._current_bgr: numpy.ndarray | None = None
 		self._done: bool = False
@@ -118,7 +121,7 @@ class BaseAnnotationController(QObject):
 			"consensus": True, "legend": True, "heat": False,
 		}
 		# Heat-map overlay (created in activate() when the scene exists)
-		self._heat_map_overlay: HeatMapOverlay | None = None
+		self._heat_map_overlay: object | None = None
 
 		# Toolbar widgets
 		self._toolbar_widget: QWidget | None = None
@@ -138,7 +141,7 @@ class BaseAnnotationController(QObject):
 
 	#============================================
 
-	def activate(self, window: object) -> None:
+	def activate(self, window: workspace_module.AnnotationWindow) -> None:
 		"""Activate the controller and connect to window events.
 
 		Args:
@@ -176,29 +179,19 @@ class BaseAnnotationController(QObject):
 		# matches (fresh video, never solved), falls back to identity and
 		# the "camera motion not compensated" badge appears under the
 		# ROI so the user knows the residual may ghost on pan.
-		heat_style = overlay_config.get_heat_map_style()
-		scene_transform, transform_ok = self._load_scene_transform_for_gui()
-		self._heat_map_overlay = HeatMapOverlay(
-			reader=self._reader,
-			scene_transform=scene_transform,
-			scene=scene,
-			style=heat_style,
-			get_pred_fn=self._get_heat_prediction,
-			scene_transform_available=transform_ok,
-			is_drawing_fn=self._is_drawing,
+		self._heat_map_overlay = heat_map_support_module.create_heat_map_overlay(
+			self._reader, self._config, scene, self._get_heat_prediction,
+			self._is_drawing, self._on_heat_status,
 		)
-		self._heat_map_overlay.statusChanged.connect(self._on_heat_status)
 
-		# Populate the persistent hint bar below the frame view.
-		# Previously this was an in-scene QGraphicsItem whose font scaled
-		# with the frame and became unreadable on high-res video.
+		# Populate the persistent hint bar from the shared binding registry.
 		mode_color = overlay_config.get_workspace_mode_color(
 			self._get_mode_name()
 		)
 		if hasattr(self._window, "set_hints"):
 			self._window.set_hints(
 				self._get_mode_name().upper(),
-				self._get_keybinding_hints(),
+				self._get_mode_name(),
 				mode_color,
 			)
 
@@ -441,15 +434,11 @@ class BaseAnnotationController(QObject):
 
 		if box_area < min_area:
 			if self._window is not None:
-				self._window.statusBar().showMessage(
-					"Box too small -- draw a larger rectangle", 3000
-				)
+				self._set_status_text("Box too small -- draw a larger rectangle")
 			return
 		if box_area > max_area:
 			if self._window is not None:
-				self._window.statusBar().showMessage(
-					"Box too large -- draw a smaller rectangle", 3000
-				)
+				self._set_status_text("Box too large -- draw a smaller rectangle")
 			return
 
 		box = [int(x), int(y), int(w), int(h)]
@@ -457,43 +446,79 @@ class BaseAnnotationController(QObject):
 
 	#============================================
 
-	def _handle_common_key(self, key: int, modifiers: object) -> bool | None:
-		"""Handle keys common to all controllers.
+	def _dispatch_keybinding(self, key: int, modifiers: object = None) -> bool:
+		"""Find and invoke the declarative binding for the current mode."""
+		binding = keymap_module.find_binding(self._get_mode_name(), key, modifiers)
+		if binding is None:
+			return False
+		handler = getattr(self, f"_key_action_{binding.action}", None)
+		if handler is None:
+			return False
+		handled = handler(binding, key, modifiers)
+		return handled
 
-		Handles ESC/Q, P (partial), A (approx), Z (zoom).
+	#============================================
 
-		Args:
-			key: Qt key code.
-			modifiers: Qt keyboard modifiers.
+	def _key_action_quit(self, binding: object, key: int, modifiers: object) -> bool:
+		"""Handle the shared quit action."""
+		_ = binding, key, modifiers
+		now = time.monotonic()
+		# require double-press within 2 seconds to quit
+		if now - self._quit_pending_time < 2.0:
+			self._on_quit()
+		else:
+			self._quit_pending_time = now
+			if self._window is not None:
+				self._set_status_text("Press ESC/Q again to quit")
+		return True
 
-		Returns:
-			True if handled, None if not.
-		"""
-		if key == Qt.Key.Key_Escape or key == Qt.Key.Key_Q:
-			now = time.monotonic()
-			# require double-press within 2 seconds to quit
-			if now - self._quit_pending_time < 2.0:
-				self._on_quit()
-			else:
-				self._quit_pending_time = now
-				if self._window is not None:
-					self._window.statusBar().showMessage(
-						"Press ESC/Q again to quit", 2000
-					)
-			return True
-		elif key == Qt.Key.Key_P:
-			self._on_partial_toggle()
-			return True
-		elif key == Qt.Key.Key_A:
-			self._on_approx_toggle()
-			return True
-		elif key == Qt.Key.Key_Z:
-			self._on_zoom_toggle()
-			return True
-		elif key == Qt.Key.Key_V:
-			self._suppress_predictions()
-			return True
-		return None
+	#============================================
+
+	def _key_action_partial_toggle(self, binding: object, key: int, modifiers: object) -> bool:
+		"""Handle the shared partial-draw action."""
+		_ = binding, key, modifiers
+		self._on_partial_toggle()
+		return True
+
+	#============================================
+
+	def _key_action_approx_toggle(self, binding: object, key: int, modifiers: object) -> bool:
+		"""Handle the shared approximate-draw action."""
+		_ = binding, key, modifiers
+		self._on_approx_toggle()
+		return True
+
+	#============================================
+
+	def _key_action_zoom_cycle(self, binding: object, key: int, modifiers: object) -> bool:
+		"""Handle the shared zoom-cycle action."""
+		_ = binding, key, modifiers
+		self._on_zoom_toggle()
+		return True
+
+	#============================================
+
+	def _key_action_hide_predictions(self, binding: object, key: int, modifiers: object) -> bool:
+		"""Handle the shared prediction-peek action."""
+		_ = binding, key, modifiers
+		self._suppress_predictions()
+		return True
+
+	#============================================
+
+	def _key_action_toggle_heat(self, binding: object, key: int, modifiers: object) -> bool:
+		"""Handle the shared heat-map action through the workspace toggle."""
+		_ = binding, key, modifiers
+		self._window.toggle_heat()
+		return True
+
+	#============================================
+
+	def _key_action_show_help(self, binding: object, key: int, modifiers: object) -> bool:
+		"""Open the workspace help dialog from a declared binding."""
+		_ = binding, key, modifiers
+		self._window.show_keybinding_help()
+		return True
 
 	#============================================
 
@@ -515,16 +540,19 @@ class BaseAnnotationController(QObject):
 		# Prefer REFINED (blended second-pass) center
 		blended = preds.get("blended")
 		if blended is not None:
-			return (float(blended["cx"]), float(blended["cy"]))
+			box = common_tools.coord_space.require_source_box(blended)
+			return (box.cx, box.cy)
 
 		# Fall back to averaging FWD/BWD centers
 		centers = []
 		fwd = preds.get("forward")
 		if fwd is not None:
-			centers.append((float(fwd["cx"]), float(fwd["cy"])))
+			box = common_tools.coord_space.require_source_box(fwd)
+			centers.append((box.cx, box.cy))
 		bwd = preds.get("backward")
 		if bwd is not None:
-			centers.append((float(bwd["cx"]), float(bwd["cy"])))
+			box = common_tools.coord_space.require_source_box(bwd)
+			centers.append((box.cx, box.cy))
 
 		if not centers:
 			return None
@@ -561,97 +589,37 @@ class BaseAnnotationController(QObject):
 		if preds is None:
 			return
 
-		# Consensus overlay (AVG of FWD/BWD) -- Z=3, below others
-		cons = preds.get("consensus")
-		if cons is not None:
-			cons_style = overlay_config.get_prediction_style("consensus")
-			cx = float(cons["cx"])
-			cy = float(cons["cy"])
-			w = float(cons["w"])
-			h = float(cons["h"])
-			x = int(cx - w / 2.0)
-			y = int(cy - h / 2.0)
-			self._consensus_item = RectItem(
-				x, y, int(w), int(h),
-				color_str=cons_style["color"],
-				label="AVG",
-				fill_alpha=int(cons_style["fill_opacity"] * 255),
-				dashed=(cons_style["line_style"] == "dotted"),
-				label_slot=4,
+		for key, label, z_value, label_slot, attribute in (
+			("consensus", "AVG", 3, 4, "_consensus_item"),
+			("blended", "REFINED", 4, 1, "_blended_item"),
+			("forward", "FWD", 5, 2, "_fwd_item"),
+			("backward", "BWD", 5, 3, "_bwd_item"),
+		):
+			prediction = preds.get(key)
+			if prediction is None:
+				continue
+			box = common_tools.coord_space.require_source_box(prediction)
+			style = overlay_config.get_prediction_style(key)
+			x1, y1, _x2, _y2 = box.edges()
+			item = RectItem(
+				int(x1), int(y1), int(box.w), int(box.h),
+				color_str=style["color"], label=label,
+				fill_alpha=int(style["fill_opacity"] * 255),
+				dashed=(style["line_style"] == "dashed"),
+				label_slot=label_slot,
 			)
-			self._consensus_item.setZValue(3)
-			self._add_overlay(self._consensus_item)
-
-		# Fused (refined second-pass) overlay -- Z=4
-		blended = preds.get("blended")
-		if blended is not None:
-			blended_style = overlay_config.get_prediction_style("blended")
-			cx = float(blended["cx"])
-			cy = float(blended["cy"])
-			w = float(blended["w"])
-			h = float(blended["h"])
-			x = int(cx - w / 2.0)
-			y = int(cy - h / 2.0)
-			self._blended_item = RectItem(
-				x, y, int(w), int(h),
-				color_str=blended_style["color"],
-				label="REFINED",
-				fill_alpha=int(blended_style["fill_opacity"] * 255),
-				dashed=(blended_style["line_style"] == "dashed"),
-				label_slot=1,
-			)
-			self._blended_item.setZValue(4)
-			self._add_overlay(self._blended_item)
-
-		# FWD prediction -- Z=5
-		fwd = preds.get("forward")
-		if fwd is not None:
-			fwd_style = overlay_config.get_prediction_style("forward")
-			cx = float(fwd["cx"])
-			cy = float(fwd["cy"])
-			w = float(fwd["w"])
-			h = float(fwd["h"])
-			x = int(cx - w / 2.0)
-			y = int(cy - h / 2.0)
-			self._fwd_item = RectItem(
-				x, y, int(w), int(h),
-				color_str=fwd_style["color"],
-				label="FWD",
-				fill_alpha=int(fwd_style["fill_opacity"] * 255),
-				dashed=(fwd_style["line_style"] == "dashed"),
-				label_slot=2,
-			)
-			self._fwd_item.setZValue(5)
-			self._add_overlay(self._fwd_item)
-
-		# BWD prediction -- Z=5
-		bwd = preds.get("backward")
-		if bwd is not None:
-			bwd_style = overlay_config.get_prediction_style("backward")
-			cx = float(bwd["cx"])
-			cy = float(bwd["cy"])
-			w = float(bwd["w"])
-			h = float(bwd["h"])
-			x = int(cx - w / 2.0)
-			y = int(cy - h / 2.0)
-			self._bwd_item = RectItem(
-				x, y, int(w), int(h),
-				color_str=bwd_style["color"],
-				label="BWD",
-				fill_alpha=int(bwd_style["fill_opacity"] * 255),
-				dashed=(bwd_style["line_style"] == "dashed"),
-				label_slot=3,
-			)
-			self._bwd_item.setZValue(5)
-			self._add_overlay(self._bwd_item)
+			item.setZValue(z_value)
+			setattr(self, attribute, item)
+			self._add_overlay(item)
 
 		# reposition legend to the corner farthest from the tracked box
 		if self._legend_item is not None:
 			# use consensus center as the bbox reference point
 			cons = preds.get("consensus")
 			if cons is not None:
-				bbox_cx = float(cons["cx"])
-				bbox_cy = float(cons["cy"])
+				box = common_tools.coord_space.require_source_box(cons)
+				bbox_cx = box.cx
+				bbox_cy = box.cy
 			else:
 				bbox_cx = -1
 				bbox_cy = -1
@@ -740,12 +708,10 @@ class BaseAnnotationController(QObject):
 		if self._partial_mode:
 			self._partial_mode = False
 			self._update_mode_badge()
-			print("  partial mode cancelled")
 		else:
 			self._partial_mode = True
 			self._approx_mode = False
 			self._update_mode_badge()
-			print("  partial mode: draw the runner's torso box (press p again to cancel)")
 
 	#============================================
 
@@ -754,12 +720,10 @@ class BaseAnnotationController(QObject):
 		if self._approx_mode:
 			self._approx_mode = False
 			self._update_mode_badge()
-			print("  approx mode cancelled")
 		else:
 			self._approx_mode = True
 			self._partial_mode = False
 			self._update_mode_badge()
-			print("  approx mode: draw approximate box for obstructed position")
 
 	#============================================
 
@@ -828,14 +792,10 @@ class BaseAnnotationController(QObject):
 		once the drag ends. The paused state is communicated via the
 		STATUS_DRAWING_PAUSE status emitted by pause_for_drawing().
 		"""
-		if self._heat_map_overlay is None:
-			return
-		if self._drawing:
-			return
-		if self._overlay_visibility.get("heat", False):
-			self._heat_map_overlay.request_show(int(self._current_frame))
-		else:
-			self._heat_map_overlay.hide()
+		heat_map_support_module.apply_heat_overlay(
+			self._heat_map_overlay, self._drawing, self._overlay_visibility,
+			self._current_frame,
+		)
 
 	#============================================
 
@@ -855,152 +815,60 @@ class BaseAnnotationController(QObject):
 	#============================================
 
 	def _get_heat_prediction(self, frame_index: int) -> tuple | None:
-		"""Return ((cx, cy), (w, h)) for the heat ROI, or None.
-
-		Chooses the most trustworthy available prediction: blended over
-		consensus over forward. Returns None when no prediction is
-		available (pre-race, unsolved intervals, edge frames).
-
-		Args:
-			frame_index: Frame to look up a prediction for.
-
-		Returns:
-			Tuple ((cx, cy), (w, h)) in full-frame pixels, or None.
-		"""
-		if self._predictions is None:
-			return None
-		preds = self._predictions.get(frame_index)
-		if preds is None:
-			return None
-		# priority order: blended > consensus > forward. Use explicit
-		# None checks so a legitimately falsy dict (e.g. an empty one)
-		# does not silently fall through to a less-preferred source.
-		pick = None
-		if preds.get("blended") is not None:
-			pick = preds["blended"]
-		elif preds.get("consensus") is not None:
-			pick = preds["consensus"]
-		elif preds.get("forward") is not None:
-			pick = preds["forward"]
-		if pick is None:
-			return None
-		cx = float(pick["cx"])
-		cy = float(pick["cy"])
-		w = float(pick["w"])
-		h = float(pick["h"])
-		pred = ((cx, cy), (w, h))
-		return pred
+		"""Return the preferred heat-ROI prediction, or None."""
+		prediction = heat_map_support_module.get_heat_prediction(
+			self._predictions, frame_index,
+		)
+		return prediction
 
 	#============================================
 
 	def _on_heat_status(self, text: str) -> None:
-		"""Relay heat-map status strings to the window's status label.
-
-		Args:
-			text: Status string emitted by HeatMapOverlay.statusChanged.
-		"""
+		"""Relay heat-map status strings to the window status label."""
 		if self._window is not None and hasattr(self._window, "set_heat_status"):
 			self._window.set_heat_status(text)
 
 	#============================================
 
 	def _load_scene_transform_for_gui(self) -> tuple:
-		"""Find and load the solver's persisted motion track for the heat map.
-
-		Loads the canonical camera-motion artifact. If the motion_model
-		does not match the config, or the file is missing, returns an
-		identity transform so the GUI still opens on fresh videos and
-		the "camera motion not compensated" disclosure badge fires.
-
-		Returns:
-			Tuple (scene_transform, available: bool). available is True
-			only when a real artifact was loaded; False means identity and
-			triggers the "camera motion not compensated" disclosure badge.
-		"""
-		n_frames = max(int(self._reader.frame_count), 1)
-		motion_track = None
-		video_path = getattr(self._reader, "video_path", None)
-		if video_path is not None:
-			try:
-				motion_track = camera_motion.load_active_camera_motion_or_fail(
-					video_path, self._config
-				)
-			except RuntimeError:
-				motion_track = None
-		if motion_track is not None:
-			transform = scene_coords.SceneTransform(motion_track)
-			return (transform, True)
-		# identity fallback
-		identity_motion = camera_motion.MotionTrack(
-			dx=numpy.zeros(n_frames, dtype=numpy.float32),
-			dy=numpy.zeros(n_frames, dtype=numpy.float32),
-			scale=numpy.ones(n_frames, dtype=numpy.float32),
-			quality=numpy.ones(n_frames, dtype=numpy.float32),
+		"""Load the persisted heat-map scene transform or its identity fallback."""
+		result = heat_map_support_module.load_scene_transform_for_gui(
+			self._reader, self._config,
 		)
-		transform = scene_coords.SceneTransform(identity_motion)
-		return (transform, False)
+		return result
 
 	#============================================
 
 	def _sync_toolbar_buttons(self) -> None:
 		"""Sync toolbar button checked state with internal mode flags."""
-		if self._btn_partial is not None:
-			self._btn_partial.setChecked(self._partial_mode)
-		if self._btn_approx is not None:
-			self._btn_approx.setChecked(self._approx_mode)
+		mode_status_support_module.sync_toolbar_buttons(
+			self._btn_partial, self._btn_approx,
+			self._partial_mode, self._approx_mode,
+		)
 
 	#============================================
 
 	def _update_mode_badge(self) -> None:
-		"""Update the status bar to show active draw mode (partial/approx).
-
-		Calls _sync_toolbar_buttons, applies badge styling, and falls
-		back to _get_default_status_text() for normal state.
-		"""
+		"""Update the status bar to show active draw mode (partial/approx)."""
 		self._sync_toolbar_buttons()
-		if self._window is None:
-			return
-		if self._approx_mode:
-			approx_color = overlay_config.get_draw_mode_badge_color("approximate")
-			self._window.statusBar().setStyleSheet(
-				f"background-color: {approx_color}; color: #000000; font-weight: bold;"
-			)
-			self._set_status_text(
-				"** APPROX MODE ** draw approximate box (press 'a' to cancel)"
-			)
-		elif self._partial_mode:
-			partial_color = overlay_config.get_draw_mode_badge_color("partial")
-			self._window.statusBar().setStyleSheet(
-				f"background-color: {partial_color}; color: #000000; font-weight: bold;"
-			)
-			self._set_status_text(
-				"** PARTIAL MODE ** draw visible torso (press 'p' to cancel)"
-			)
-		else:
-			self._window.statusBar().setStyleSheet("")
-			self._restore_default_status()
+		mode_status_support_module.update_mode_badge(
+			self._window, self._partial_mode, self._approx_mode,
+			self._set_status_text, self._restore_default_status,
+		)
 
 	#============================================
 
 	def _set_status_text(self, text: str) -> None:
-		"""Set the status bar message text.
-
-		Subclasses may override if they use a custom status widget.
-
-		Args:
-			text: Message to display.
-		"""
-		self._window.statusBar().showMessage(text)
+		"""Set the status-bar message; subclasses may override."""
+		mode_status_support_module.set_status_text(self._window, text)
 
 	#============================================
 
 	def _restore_default_status(self) -> None:
-		"""Restore the default status text.
-
-		Subclasses may override to update their own status widget.
-		"""
-		text = self._get_default_status_text()
-		self._window.statusBar().showMessage(text)
+		"""Restore the default status text; subclasses may override."""
+		mode_status_support_module.set_status_text(
+			self._window, self._get_default_status_text(),
+		)
 
 	#============================================
 	# Abstract methods -- subclasses must implement
@@ -1048,16 +916,6 @@ class BaseAnnotationController(QObject):
 
 		Returns:
 			String with mode summary.
-		"""
-		raise NotImplementedError
-
-	#============================================
-
-	def _get_keybinding_hints(self) -> str:
-		"""Keybinding hint string for the key hint overlay. Subclass must implement.
-
-		Returns:
-			String with keybinding hints (without mode label prefix).
 		"""
 		raise NotImplementedError
 

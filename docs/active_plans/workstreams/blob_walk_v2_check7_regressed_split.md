@@ -1,7 +1,7 @@
 # Check 7: regressed-bucket split (claim C)
 
 Plan reference:
-[blob_walk_v2_validation_plan.md](../active/blob_walk_v2_validation_plan.md#check-7-regressed-bucket-split-claim-c)
+[blob_walk_v2_validation_plan.md](../../archive/blob_walk_v2_validation_plan.md#check-7-regressed-bucket-split-claim-c)
 
 Date: 2026-06-10.
 

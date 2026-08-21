@@ -1,12 +1,11 @@
-"""Interactive seed editor for track_runner v2.
+"""Interactive seed editor for track_runner.
 
 Review, fix, delete, and redraw existing seed points. Shows each seed
 on its original frame with optional forward/backward prediction overlays
 and lets the user navigate, delete, change status, or redraw the box.
 """
 
-# Standard Library
-# (none)
+import collections.abc
 
 # PIP3 modules
 import cv2
@@ -15,17 +14,25 @@ from PySide6.QtWidgets import QApplication
 
 # local repo modules
 import box_utils
+import common_tools.coord_space
 import overlay_config
 
 # local repo modules
-import common_tools.frame_reader as frame_reader
 import common_tools.probe_video as probe_video
 import seed_color
 import ui.workspace as workspace_module
 import ui.edit_controller as edit_controller_module
+import ui.seed_controller as seed_controller_module
+import ui.target_controller as target_controller_module
+import ui.session as session_module
+import ui.frame_source as frame_source_module
 
 AnnotationWindow = workspace_module.AnnotationWindow
 EditController = edit_controller_module.EditController
+SeedController = seed_controller_module.SeedController
+TargetController = target_controller_module.TargetController
+AnnotationSession = session_module.AnnotationSession
+FrameSource = frame_source_module.FrameSource
 
 
 #============================================
@@ -51,7 +58,7 @@ def _draw_seed_overlay(
 		status = seed.get("status", "visible")
 		color = overlay_config.get_seed_status_bgr(status)
 	status = seed["status"]
-	if status in ("not_in_frame", "approximate", "obstructed"):
+	if status in ("not_in_frame", "approximate"):
 		# draw status label in the center of the frame
 		h, w = frame.shape[:2]
 		label = f"[{status}]"
@@ -97,11 +104,12 @@ def _draw_predictions_overlay(
 	# forward prediction
 	fwd = frame_preds.get("forward")
 	if fwd is not None:
+		fwd = common_tools.coord_space.require_source_box(fwd)
 		fwd_bgr = overlay_config.get_prediction_bgr("forward")
-		cx = float(fwd["cx"])
-		cy = float(fwd["cy"])
-		w = float(fwd["w"])
-		h = float(fwd["h"])
+		cx = fwd.cx
+		cy = fwd.cy
+		w = fwd.w
+		h = fwd.h
 		x1 = int(cx - w / 2.0)
 		y1 = int(cy - h / 2.0)
 		x2 = int(cx + w / 2.0)
@@ -114,11 +122,12 @@ def _draw_predictions_overlay(
 	# backward prediction
 	bwd = frame_preds.get("backward")
 	if bwd is not None:
+		bwd = common_tools.coord_space.require_source_box(bwd)
 		bwd_bgr = overlay_config.get_prediction_bgr("backward")
-		cx = float(bwd["cx"])
-		cy = float(bwd["cy"])
-		w = float(bwd["w"])
-		h = float(bwd["h"])
+		cx = bwd.cx
+		cy = bwd.cy
+		w = bwd.w
+		h = bwd.h
 		x1 = int(cx - w / 2.0)
 		y1 = int(cy - h / 2.0)
 		x2 = int(cx + w / 2.0)
@@ -264,29 +273,33 @@ def _refine_box_consensus(
 	sh = float(seed["h"])
 	fwd = frame_preds.get("forward")
 	bwd = frame_preds.get("backward")
+	if fwd is not None:
+		fwd = common_tools.coord_space.require_source_box(fwd)
+	if bwd is not None:
+		bwd = common_tools.coord_space.require_source_box(bwd)
 	if fwd is not None and bwd is not None:
 		# both available: 60% seed + 20% fwd + 20% bwd
 		refined = {
-			"cx": 0.6 * cx + 0.2 * float(fwd["cx"]) + 0.2 * float(bwd["cx"]),
-			"cy": 0.6 * cy + 0.2 * float(fwd["cy"]) + 0.2 * float(bwd["cy"]),
-			"w": 0.6 * sw + 0.2 * float(fwd["w"]) + 0.2 * float(bwd["w"]),
-			"h": 0.6 * sh + 0.2 * float(fwd["h"]) + 0.2 * float(bwd["h"]),
+			"cx": 0.6 * cx + 0.2 * fwd.cx + 0.2 * bwd.cx,
+			"cy": 0.6 * cy + 0.2 * fwd.cy + 0.2 * bwd.cy,
+			"w": 0.6 * sw + 0.2 * fwd.w + 0.2 * bwd.w,
+			"h": 0.6 * sh + 0.2 * fwd.h + 0.2 * bwd.h,
 		}
 	elif fwd is not None:
 		# only forward: 70% seed + 30% fwd
 		refined = {
-			"cx": 0.7 * cx + 0.3 * float(fwd["cx"]),
-			"cy": 0.7 * cy + 0.3 * float(fwd["cy"]),
-			"w": 0.7 * sw + 0.3 * float(fwd["w"]),
-			"h": 0.7 * sh + 0.3 * float(fwd["h"]),
+			"cx": 0.7 * cx + 0.3 * fwd.cx,
+			"cy": 0.7 * cy + 0.3 * fwd.cy,
+			"w": 0.7 * sw + 0.3 * fwd.w,
+			"h": 0.7 * sh + 0.3 * fwd.h,
 		}
 	elif bwd is not None:
 		# only backward: 70% seed + 30% bwd
 		refined = {
-			"cx": 0.7 * cx + 0.3 * float(bwd["cx"]),
-			"cy": 0.7 * cy + 0.3 * float(bwd["cy"]),
-			"w": 0.7 * sw + 0.3 * float(bwd["w"]),
-			"h": 0.7 * sh + 0.3 * float(bwd["h"]),
+			"cx": 0.7 * cx + 0.3 * bwd.cx,
+			"cy": 0.7 * cy + 0.3 * bwd.cy,
+			"w": 0.7 * sw + 0.3 * bwd.w,
+			"h": 0.7 * sh + 0.3 * bwd.h,
 		}
 	else:
 		return None
@@ -331,7 +344,7 @@ def edit_seeds(
 	frame_filter: set | None = None,
 	seed_confidences: dict | None = None,
 	debug: bool = False,
-	save_callback: object = None,
+	save_callback: collections.abc.Callable[[list], None] | None = None,
 	start_frame: int | None = None,
 ) -> tuple:
 	"""Main loop for reviewing and editing seeds interactively.
@@ -383,8 +396,14 @@ def edit_seeds(
 	fps = probe_info["fps"]
 	total_frames = probe_info["frame_count"]
 
-	# create reliable frame reader
-	reader = frame_reader.FrameReader(decode_video_path, fps, total_frames, debug=debug)
+	# FrameSource constructs and owns the reader on its decode thread.
+	reader = FrameSource({
+		"video_path": decode_video_path,
+		"fps": fps,
+		"total_frames": total_frames,
+		"bin_factor": 1,
+		"debug": debug,
+	})
 
 	# lazy YOLO detector for bbox polish (created on first y-key press)
 	yolo_detector = [None]
@@ -397,29 +416,78 @@ def edit_seeds(
 	if app is None:
 		app = QApplication([])
 
-	# Create controller and window
-	controller = EditController(
-		work_seeds=work_seeds,
-		filtered_indices=filtered_indices,
+	def make_seed_controller() -> SeedController:
+		return SeedController(
+			seed_frame_indices=list(range(total_frames)),
+			reader=reader,
+			fps=fps,
+			config=config,
+			all_seeds=work_seeds,
+			save_callback=save_callback,
+			mode_str="edit_add",
+			predictions=predictions,
+			start_frame=start_frame,
+		)
+
+	def make_target_controller() -> TargetController:
+		return TargetController(
+			sorted_targets=list(range(total_frames)),
+			reader=reader,
+			fps=fps,
+			config=config,
+			all_seeds=work_seeds,
+			save_callback=save_callback,
+			predictions=predictions,
+			start_frame=start_frame,
+		)
+
+	def make_edit_controller() -> EditController:
+		current_indices = [
+			i for i, seed in enumerate(work_seeds)
+			if frame_filter is None or int(seed["frame_index"]) in frame_filter
+		]
+		return EditController(
+			work_seeds=work_seeds,
+			filtered_indices=current_indices,
+			reader=reader,
+			fps=fps,
+			config=config,
+			save_callback=save_callback or (lambda ws: None),
+			predictions=predictions,
+			seed_confidences=seed_confidences,
+			yolo_detector_list=yolo_detector,
+			frame_filter=frame_filter,
+			start_frame=start_frame,
+		)
+
+	session = AnnotationSession(
+		video_context={"fps": fps, "total_frames": total_frames, "config": config},
 		reader=reader,
-		fps=fps,
-		config=config,
-		save_callback=save_callback or (lambda ws: None),
-		predictions=predictions,
-		seed_confidences=seed_confidences,
-		yolo_detector_list=yolo_detector,
-		frame_filter=frame_filter,
-		start_frame=start_frame,
+		seed_store=work_seeds,
+		prediction_store=predictions,
+		controller_factories={
+			"seed": make_seed_controller,
+			"target": make_target_controller,
+			"edit": make_edit_controller,
+		},
 	)
 	window = AnnotationWindow("Track Runner - Seed Editor", initial_mode="edit")
-	window.set_controller(controller)
+	window.set_session(session)
 	window.show()
 	app.exec()
 
-	reader.close()
+	session.close()
 
 	# Get final results
-	edited_seeds, summary = controller.get_summary()
+	edited_seeds = list(session.seed_store)
+	if isinstance(session.last_controller, EditController):
+		edited_seeds, summary = session.last_controller.get_summary()
+	else:
+		summary = {
+			"reviewed": 0, "kept": 0, "redrawn": 0,
+			"deleted": 0, "status_changed": 0,
+			"changed_frames": set(),
+		}
 
 	# print edit summary
 	print(f"  edit summary: {summary['reviewed']} reviewed, "

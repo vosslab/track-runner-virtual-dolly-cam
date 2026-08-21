@@ -1,6 +1,6 @@
 # Track runner YAML config reference
 
-The track runner config file controls detection, crop behavior, and encoding
+The track runner config file controls camera motion, crop behavior, and encoding
 for the crop-and-follow pipeline. It is auto-created at
 `tr_config/{video}.track_runner.config.yaml` on first run.
 
@@ -8,7 +8,6 @@ for the crop-and-follow pipeline. It is auto-created at
 
 ```yaml
 track_runner: 3
-detection:
 processing:
   crop_aspect: '16:9'
   torso_height_multiple: 8
@@ -24,17 +23,8 @@ processing:
 
 | Key | Required | Description |
 | --- | --- | --- |
-| `track_runner` | yes | Schema version, must be `3` (v2 auto-migrates at load) |
-| `detection` | yes | Object detection model settings |
+| `track_runner` | yes | Config format version, must be `3` |
 | `processing` | yes | Crop, codec, and filter settings |
-
-## Detection section
-
-The `detection` section is required but currently has no user-tunable keys.
-Detection model (`yolov8n`), confidence threshold (0.25), and NMS threshold
-(0.45) are fixed constants in `tr_detection.py` (human decision 2026-06-13:
-too obscure for per-video config). Include the empty section header in your
-config YAML to satisfy the schema validator.
 
 ## Processing section
 
@@ -52,23 +42,20 @@ config YAML to satisfy the schema validator.
 
 | Key | Default | Description |
 | --- | --- | --- |
-| `crop_mode` | `smooth` | Crop algorithm: `smooth`, `direct_center`, or `smart` |
+| `crop_mode` | `dolly` | Crop algorithm: `dolly`, `smooth`, or `direct_center` |
 
-**`smooth`** (default): Online controller that tracks the subject with exponential
+**`dolly`** (default): Offline whole-path solve for crop center and log size. It
+uses future and past trajectory samples, settles the existing containment rule,
+and falls back to `smooth` if that bounded solve cannot converge.
+
+**`smooth`**: Online controller that tracks the subject with exponential
 smoothing, deadband, and velocity capping. Reacts to the trajectory frame by frame.
 Good general-purpose choice but assumes reasonably stable input. Can be combined
 with offline post-smoothing for better results on shaky footage.
 
-**`direct_center`**: Offline algorithm that centers the crop directly on the solved
-trajectory, then applies forward-backward EMA smoothing. Sees the full trajectory
-(past and future) before deciding crop positions, so it handles sudden jumps
-better than `smooth` mode. Recommended for handheld or shaky camera footage.
-
-**`smart`**: Experimental regime-switching crop controller. Classifies trajectory
-spans into regimes (clear, uncertain, distance) and applies different crop targets
-per regime. Uses `direct_center`-style offline processing with per-frame torso
-multiple and zoom rate from the regime policy. Includes vertical asymmetry and torso
-protection composition rules. Thresholds are provisional.
+**`direct_center`**: Offline baseline that centers each crop on the solved
+trajectory. It uses the full path and forward-backward EMA smoothing for crop
+size only; center coordinates are not post-smoothed or velocity-capped.
 
 ### Smooth mode tuning
 
@@ -85,12 +72,12 @@ These keys only apply when `crop_mode: smooth`.
 ### Direct center mode tuning
 
 `crop_mode: direct_center` has no user-tunable smoothing keys. The
-forward-backward EMA position smoothing and velocity cap are fixed constants
-in `tr_crop.py` (human decision 2026-06-13: too obscure for per-video config).
+forward-backward EMA applies to crop size only; crop-center smoothing and
+velocity capping are not part of this mode. These are fixed implementation
+choices in `tr_crop.py`, not per-video config keys.
 The `crop_post_smooth_strength`, `crop_post_smooth_size_strength`,
 `crop_post_smooth_max_velocity`, and `crop_min_size` keys were removed from
-the config schema. Old configs that still carry these keys load without errors;
-the keys are silently ignored.
+the config schema.
 
 ### Encode filters
 
@@ -130,19 +117,7 @@ active, the resizing interpolation upgrades from bilinear to Lanczos.
 The `walker_costs` config section was removed (2026-06-13). Viterbi cost-model
 weights for the windowed blob walker are now fixed constants in
 `track_runner/blob_walk/walk_viterbi.py` (human decision 2026-06-13: too
-obscure for per-video user config). Old configs that still carry a
-`walker_costs` section load without errors; the section is silently ignored.
-
-## Migrating from v2
-
-Schema v2 used `crop_fill_ratio`, the inverted reciprocal of the new
-`torso_height_multiple`. v2 configs load unchanged; the loader converts
-`crop_fill_ratio` to `torso_height_multiple = 1 / crop_fill_ratio` in
-memory and prints a one-line deprecation notice. To silence the notice,
-update your per-video YAML to use the new key.
-
-Examples: `crop_fill_ratio: 0.30` becomes `torso_height_multiple: 3.33`;
-`crop_fill_ratio: 0.1` becomes `torso_height_multiple: 10`.
+obscure for per-video user config).
 
 ## CLI flags that override config
 

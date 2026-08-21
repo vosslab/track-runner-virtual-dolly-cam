@@ -8,7 +8,7 @@ The implementation audit
 ([../audits/blob_walk_v2_implementation_audit.md](../audits/blob_walk_v2_implementation_audit.md))
 identified twelve assumptions (A through L) about walker behavior that were
 likely-but-unverified. The validation plan
-([../active/blob_walk_v2_validation_plan.md](../active/blob_walk_v2_validation_plan.md))
+([blob_walk_v2_validation_plan.md](../../archive/blob_walk_v2_validation_plan.md))
 scheduled nine checks (Check 0 through Check 8) to move each claim to proven,
 refuted, or still unknown. This report is the plan's deliverable: it records the
 verdict for each claim, synthesizes cross-cutting findings, and provides an

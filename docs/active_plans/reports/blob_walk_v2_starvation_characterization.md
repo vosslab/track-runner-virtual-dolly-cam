@@ -7,7 +7,7 @@ Status: COMPLETE
 Sources (all read-only, no video decode):
 
 - [blob_walk_v2_check7_regressed_split.md](../workstreams/blob_walk_v2_check7_regressed_split.md)
-- [blob_walk_v2_cost_model_ab.md](../workstreams/blob_walk_v2_cost_model_ab.md)
+- [blob_walk_v2_cost_model_ab.md](../../archive/blob_walk_v2_cost_model_ab.md)
 - [blob_walk_v2_corpus120_run_2026_06_10.md](../workstreams/blob_walk_v2_corpus120_run_2026_06_10.md)
 - [blob_walk_v2_validation_report.md](blob_walk_v2_validation_report.md) (claims A/D/I sections)
 - [blob_walk_v2_check5_normalized_cy.md](../workstreams/blob_walk_v2_check5_normalized_cy.md)

@@ -4,17 +4,21 @@ Manages the Seed mode annotation workflow with keyboard shortcuts and
 mouse drawing for seed collection.
 """
 
-# Standard Library
-# (none)
+import collections.abc
 
 # PIP3 modules
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QWidget, QHBoxLayout, QLabel, QPushButton
 
 # local repo modules
+import seed_color
+import common_tools.coord_space
 import ui.base_controller as base_controller_module
+import ui.frame_source as frame_source_module
+import ui.status_presenter as status_presenter_module
 
 BaseAnnotationController = base_controller_module.BaseAnnotationController
+StatusPresenter = status_presenter_module.StatusPresenter
 
 #============================================
 
@@ -28,22 +32,22 @@ class SeedController(BaseAnnotationController):
 	def __init__(
 		self,
 		seed_frame_indices: list,
-		reader: object,
+		reader: frame_source_module.FrameSource,
 		fps: float,
 		config: dict,
 		all_seeds: list,
-		save_callback: object,
+		save_callback: collections.abc.Callable[[list], None] | None,
 		pass_number: int = 1,
 		mode_str: str = "initial",
 		predictions: dict | None = None,
-		return_callback: object = None,
+		return_callback: collections.abc.Callable[[list], None] | None = None,
 		start_frame: int | None = None,
 	) -> None:
 		"""Initialize the SeedController.
 
 		Args:
 			seed_frame_indices: List of frame indices to collect seeds at.
-			reader: Frame reader instance with read_frame(idx) method.
+			reader: FrameSource that asynchronously provides requested frames.
 			fps: Frames per second of the video.
 			config: Configuration dict.
 			all_seeds: List of existing seeds to preserve.
@@ -61,6 +65,8 @@ class SeedController(BaseAnnotationController):
 			save_callback=save_callback,
 			predictions=predictions,
 		)
+		self._frame_source_connected = False
+		self._connect_frame_source()
 
 		self._seed_frame_indices = seed_frame_indices
 		self._all_seeds = all_seeds
@@ -83,6 +89,9 @@ class SeedController(BaseAnnotationController):
 		self._detector: object = None
 		self._detector_unavailable: bool = False
 		self._detection_cache: dict = {}
+		# QWidget construction belongs to activation, after QApplication
+		# exists. Controller construction also happens in headless tests.
+		self._status_presenter: StatusPresenter | None = None
 
 	#============================================
 
@@ -152,8 +161,11 @@ class SeedController(BaseAnnotationController):
 
 	def _on_activated(self) -> None:
 		"""Show keybinding instructions and load the first frame."""
-		# Show keybinding instructions in the status bar
-		self._window.statusBar().showMessage(self._get_default_status_text())
+		self._connect_frame_source()
+		# Keep all annotation results in the window's persistent status area.
+		self._status_presenter = StatusPresenter()
+		self._window.statusBar().addWidget(self._status_presenter.get_widget())
+		self._set_status_text(self._get_default_status_text())
 
 		# One-shot seek to start_frame if provided
 		if self._start_frame is not None and not self._start_frame_used:
@@ -176,8 +188,30 @@ class SeedController(BaseAnnotationController):
 
 	def _on_deactivated(self) -> None:
 		"""Clean up seed-specific state (counters, etc)."""
-		# No seed-specific cleanup needed beyond what base handles
-		pass
+		self._disconnect_frame_source()
+		if self._window is not None and self._status_presenter is not None:
+			self._window.statusBar().removeWidget(
+				self._status_presenter.get_widget()
+			)
+		if self._status_presenter is not None:
+			self._status_presenter.clear()
+			self._status_presenter = None
+
+	#============================================
+
+	def _connect_frame_source(self) -> None:
+		"""Subscribe only while this controller can own window updates."""
+		if not self._frame_source_connected:
+			self._reader.frame_ready.connect(self._on_frame_ready)
+			self._frame_source_connected = True
+
+	#============================================
+
+	def _disconnect_frame_source(self) -> None:
+		"""Prevent late worker results reaching a deactivated controller."""
+		if self._frame_source_connected:
+			self._reader.frame_ready.disconnect(self._on_frame_ready)
+			self._frame_source_connected = False
 
 	#============================================
 
@@ -195,35 +229,6 @@ class SeedController(BaseAnnotationController):
 
 	#============================================
 
-	def _get_keybinding_hints(self) -> str:
-		"""Keybinding hints for the key hint overlay.
-
-		Returns:
-			String with keybinding hints.
-		"""
-		hints = (
-			"Shift+LR=frames  LR=pan  []=step  SPACE=skip  N=not-in-frame  "
-			"F=avg  P=part  A=approx  V=hide preds  H=heat  Z=zoom"
-		)
-		# add ENTER hint if suggestion available
-		if self._suggestion is not None:
-			suggestion_idx = self._suggestion.get(
-				"suggestion_index"
-			)
-			if suggestion_idx is not None:
-				hints += "  ENTER=accept"
-			# add number keys hint if candidates available
-			candidates = self._suggestion.get("candidates", [])
-			if len(candidates) > 1:
-				hints += "  1-9=select"
-		if self._return_callback is not None:
-			hints += "  ESC=return"
-		else:
-			hints += "  ESC=done"
-		return hints
-
-	#============================================
-
 	def _get_mode_name(self) -> str:
 		"""Mode name for display.
 
@@ -234,9 +239,30 @@ class SeedController(BaseAnnotationController):
 
 	#============================================
 
+	def _set_status_text(self, text: str) -> None:
+		"""Route annotation feedback through the persistent GUI presenter."""
+		if self._status_presenter is not None:
+			self._status_presenter.show_feedback(text)
+
+	#============================================
+
+	def _show_seed_feedback(self, text: str) -> None:
+		"""Show a user-facing seed result in the persistent status area."""
+		if self._window is not None:
+			self._set_status_text(text)
+
+	#============================================
+
 	def _refresh_frame(self) -> None:
-		"""Load and display the current frame."""
-		frame = self._reader.read_frame(self._current_frame)
+		"""Request the current frame without blocking the Qt event loop."""
+		self._reader.request_frame(self._current_frame)
+
+	#============================================
+
+	def _on_frame_ready(self, frame_index: int, frame: object) -> None:
+		"""Display the asynchronously decoded current frame."""
+		if frame_index != self._current_frame:
+			return
 		if frame is not None:
 			self._window.set_frame(frame)
 			self._current_bgr = frame
@@ -332,9 +358,6 @@ class SeedController(BaseAnnotationController):
 			self._detection_cache[self._current_frame] = self._suggestion
 			return
 
-		# import seeding module for suggestion function
-		import seed_color
-
 		# get confirmed seeds from all_seeds + new_seeds
 		confirmed_seeds = self._all_seeds + self._new_seeds
 
@@ -366,10 +389,10 @@ class SeedController(BaseAnnotationController):
 			title += f" | {quality_text}"
 		self._window.setWindowTitle(title)
 
-		# show targeting reasons in status bar when available
+		# Show targeting reasons in the persistent annotation status area.
 		reason_text = self._get_targeting_reason_text()
 		if reason_text:
-			self._window.statusBar().showMessage(reason_text, 0)
+			self._show_seed_feedback(reason_text)
 
 	#============================================
 
@@ -377,7 +400,7 @@ class SeedController(BaseAnnotationController):
 		"""Build a short quality string from the current frame's interval info.
 
 		Returns:
-			String like "HIGH: agree=0.12 margin=0.08 (FWD/BWD diverge)"
+			String like "HIGH: agree=0.12 velocity=0.08 (FWD/BWD diverge)"
 			or empty string if no info is available.
 		"""
 		if self._predictions is None:
@@ -394,9 +417,12 @@ class SeedController(BaseAnnotationController):
 		raw_severity = info["severity"]
 		severity = raw_severity.upper() if raw_severity else "PRE-RACE"
 		agreement = info["agreement"]
-		margin = info["margin"]
+		velocity_consistency = info["velocity_consistency"]
 		# start with severity and key scores
-		text = f"{severity}: agree={agreement:.2f} margin={margin:.2f}"
+		text = (
+			f"{severity}: agree={agreement:.2f} "
+			f"velocity={velocity_consistency:.2f}"
+		)
 		# append short failure reasons if present
 		reasons = info.get("reasons", [])
 		if reasons:
@@ -445,67 +471,104 @@ class SeedController(BaseAnnotationController):
 	#============================================
 
 	def handle_key_press(self, key: int, modifiers: object = None) -> bool:
-		"""Handle keyboard events.
+		"""Dispatch a keyboard event through the declarative key map."""
+		handled = self._dispatch_keybinding(key, modifiers)
+		return handled
 
-		Args:
-			key: Qt key code.
-			modifiers: Qt keyboard modifiers (for detecting Shift, etc.).
+	#============================================
 
-		Returns:
-			True if event was handled.
-		"""
-		# Check for Shift modifier on arrow keys for frame advance
-		shift_held = False
-		if modifiers is not None:
-			shift_held = bool(modifiers & Qt.KeyboardModifier.ShiftModifier)
+	def _key_action_accept_suggestion(self, binding: object, key: int, modifiers: object) -> bool:
+		"""Accept the current suggestion when ENTER is requested."""
+		_ = binding, key, modifiers
+		self._accept_suggestion_if_available()
+		return True
 
-		# Common keys (ESC/Q, P, A, Z)
-		result = self._handle_common_key(key, modifiers)
-		if result is not None:
-			return result
+	#============================================
 
-		# ENTER/RETURN: accept current suggestion if available
-		if key == Qt.Key.Key_Return or key == Qt.Key.Key_Enter:
-			self._accept_suggestion_if_available()
-			return True
-		# number keys 1-9: select candidate by index
-		elif key >= Qt.Key.Key_1 and key <= Qt.Key.Key_9:
-			candidate_idx = int(key) - int(Qt.Key.Key_1)
-			self._accept_candidate(candidate_idx)
-			return True
-		elif key == Qt.Key.Key_Space:
-			self._on_skip()
-			return True
-		elif key == Qt.Key.Key_Left:
-			if shift_held or self._window.get_frame_view().is_fit_zoom():
-				# Shift+LEFT always scrubs; plain LEFT scrubs when pan is unavailable.
-				mult = self._step_multiplier(modifiers)
-				self._on_prev(mult)
-				return True
-			# plain LEFT while zoomed in: let QGraphicsView handle pan
+	def _key_action_select_candidate(self, binding: object, key: int, modifiers: object) -> bool:
+		"""Accept the declared numeric suggestion candidate."""
+		_ = binding, modifiers
+		candidate_idx = int(key) - int(Qt.Key.Key_1)
+		self._accept_candidate(candidate_idx)
+		return True
+
+	#============================================
+
+	def _key_action_skip(self, binding: object, key: int, modifiers: object) -> bool:
+		"""Skip the current seed frame."""
+		_ = binding, key, modifiers
+		self._on_skip()
+		return True
+
+	#============================================
+
+	def _key_action_scrub_previous_or_pan(self, binding: object, key: int, modifiers: object) -> bool:
+		"""Scrub at fit zoom and otherwise leave LEFT to the frame view."""
+		_ = binding, key
+		if not self._window.get_frame_view().is_fit_zoom():
 			return False
-		elif key == Qt.Key.Key_Right:
-			if shift_held or self._window.get_frame_view().is_fit_zoom():
-				# Shift+RIGHT always scrubs; plain RIGHT scrubs when pan is unavailable.
-				mult = self._step_multiplier(modifiers)
-				self._on_next(mult)
-				return True
-			# plain RIGHT while zoomed in: let QGraphicsView handle pan
-			return False
-		elif key == Qt.Key.Key_BracketLeft:
-			self._decrease_step()
-			return True
-		elif key == Qt.Key.Key_BracketRight:
-			self._increase_step()
-			return True
-		elif key == Qt.Key.Key_N:
-			self._on_not_in_frame()
-			return True
-		elif key == Qt.Key.Key_F:
-			self._on_fwd_bwd_avg()
-			return True
+		mult = self._step_multiplier(modifiers)
+		self._on_prev(mult)
+		return True
 
-		return False
+	#============================================
+
+	def _key_action_scrub_next_or_pan(self, binding: object, key: int, modifiers: object) -> bool:
+		"""Scrub at fit zoom and otherwise leave RIGHT to the frame view."""
+		_ = binding, key
+		if not self._window.get_frame_view().is_fit_zoom():
+			return False
+		mult = self._step_multiplier(modifiers)
+		self._on_next(mult)
+		return True
+
+	#============================================
+
+	def _key_action_scrub_previous(self, binding: object, key: int, modifiers: object) -> bool:
+		"""Scrub backward for a declared shifted binding."""
+		_ = binding, key
+		self._on_prev(self._step_multiplier(modifiers))
+		return True
+
+	#============================================
+
+	def _key_action_scrub_next(self, binding: object, key: int, modifiers: object) -> bool:
+		"""Scrub forward for a declared shifted binding."""
+		_ = binding, key
+		self._on_next(self._step_multiplier(modifiers))
+		return True
+
+	#============================================
+
+	def _key_action_decrease_step(self, binding: object, key: int, modifiers: object) -> bool:
+		"""Decrease the scrub step."""
+		_ = binding, key, modifiers
+		self._decrease_step()
+		return True
+
+	#============================================
+
+	def _key_action_increase_step(self, binding: object, key: int, modifiers: object) -> bool:
+		"""Increase the scrub step."""
+		_ = binding, key, modifiers
+		self._increase_step()
+		return True
+
+	#============================================
+
+	def _key_action_not_in_frame(self, binding: object, key: int, modifiers: object) -> bool:
+		"""Mark the current seed position as not in frame."""
+		_ = binding, key, modifiers
+		self._on_not_in_frame()
+		return True
+
+	#============================================
+
+	def _key_action_fwd_bwd_average(self, binding: object, key: int, modifiers: object) -> bool:
+		"""Use the FWD/BWD average as the current seed."""
+		_ = binding, key, modifiers
+		self._on_fwd_bwd_avg()
+		return True
 
 	#============================================
 
@@ -539,27 +602,24 @@ class SeedController(BaseAnnotationController):
 		# check for duplicate seed at this frame first
 		for seed in self._all_seeds:
 			if int(seed["frame_index"]) == self._current_frame:
-				if self._window is not None:
-					self._window.statusBar().showMessage(
-						"seed already exists at this frame"
-					)
+				self._show_seed_feedback(
+					"Seed already exists at this frame"
+				)
 				return
 		for seed in self._new_seeds:
 			if int(seed["frame_index"]) == self._current_frame:
-				if self._window is not None:
-					self._window.statusBar().showMessage(
-						"seed already exists at this frame"
-					)
+				self._show_seed_feedback(
+					"Seed already exists at this frame"
+				)
 				return
 
 		# extract torso_box and build canonical v3 seed
 		torso_box = candidate["torso_box"]
-		import seed_color
-
-		seed = seed_color._build_seed_dict(
+		seed = seed_color.build_seed_dict(
 			self._current_frame,
 			torso_box,
 			self._pass_number,
+			"visible",
 		)
 		self._commit_seed(seed)
 		self._advance()
@@ -575,58 +635,36 @@ class SeedController(BaseAnnotationController):
 		# Check for duplicate seed at this frame
 		for seed in self._all_seeds:
 			if int(seed["frame_index"]) == self._current_frame:
-				print(f"  seed already exists at frame {self._current_frame}")
-				if self._window is not None:
-					self._window.statusBar().showMessage(
-						"seed already exists at this frame"
-					)
+				self._show_seed_feedback(
+					"Seed already exists at this frame"
+				)
 				return
 		for seed in self._new_seeds:
 			if int(seed["frame_index"]) == self._current_frame:
-				print(f"  seed already exists at frame {self._current_frame}")
-				if self._window is not None:
-					self._window.statusBar().showMessage(
-						"seed already exists at this frame"
-					)
+				self._show_seed_feedback(
+					"Seed already exists at this frame"
+				)
 				return
 
-		# Import here to avoid circular dependency
-		import seed_color
-
+		status = "visible"
 		if self._approx_mode:
 			self._approx_mode = False
 			self._update_mode_badge()
-			norm_box = seed_color.normalize_seed_box(box, self._config)
-			seed = seed_color._build_seed_dict(
-				self._current_frame,
-				norm_box,
-				self._pass_number,
-				status="approximate",
-			)
-			self._commit_seed(seed)
-			self._advance()
-			return
+			status = "approximate"
 		elif self._partial_mode:
 			self._partial_mode = False
 			self._update_mode_badge()
-			norm_box = seed_color.normalize_seed_box(box, self._config)
-			seed = seed_color._build_seed_dict(
-				self._current_frame,
-				norm_box,
-				self._pass_number,
-				status="partial",
-			)
-			self._commit_seed(seed)
-			self._advance()
-		else:
-			norm_box = seed_color.normalize_seed_box(box, self._config)
-			seed = seed_color._build_seed_dict(
-				self._current_frame,
-				norm_box,
-				self._pass_number,
-			)
-			self._commit_seed(seed)
-			self._advance()
+			status = "partial"
+
+		norm_box = seed_color.normalize_seed_box(box, self._config)
+		seed = seed_color.build_seed_dict(
+			self._current_frame,
+			norm_box,
+			self._pass_number,
+			status,
+		)
+		self._commit_seed(seed)
+		self._advance()
 
 	#============================================
 
@@ -664,10 +702,13 @@ class SeedController(BaseAnnotationController):
 				f"  user quit at frame {self._current_frame} "
 				f"({self._list_idx + 1}/{total})"
 			)
-		# print seed statistics summary
+		# Keep the summary in both the GUI and the run log. The latter is
+		# useful after an unattended/batch annotation pass has closed.
 		all_seeds = self._all_seeds + self._new_seeds
-		self._print_seed_stats(all_seeds)
+		stats_text = self._print_seed_stats(all_seeds)
+		self._show_seed_feedback(stats_text)
 		if self._return_callback is not None:
+			self._preserve_completion_feedback(stats_text)
 			# Return to edit mode with collected seeds
 			self._return_callback(self._new_seeds)
 			return
@@ -676,8 +717,18 @@ class SeedController(BaseAnnotationController):
 
 	#============================================
 
-	def _print_seed_stats(self, seeds: list) -> None:
-		"""Print seed coverage statistics to console.
+	def _preserve_completion_feedback(self, text: str) -> None:
+		"""Retain add-mode feedback until the resumed controller can display it."""
+		if self._window is None or not hasattr(self._window, "get_session"):
+			return
+		session = self._window.get_session()
+		if session is not None and hasattr(session, "set_annotation_feedback"):
+			session.set_annotation_feedback(text)
+
+	#============================================
+
+	def _print_seed_stats(self, seeds: list) -> str:
+		"""Present and log seed coverage statistics.
 
 		Shows total count, average spacing, and largest gap to help
 		the user judge whether coverage is sufficient.
@@ -696,13 +747,16 @@ class SeedController(BaseAnnotationController):
 		approximate = sum(
 			1 for s in seeds if s.get("status") == "approximate"
 		)
-		print(f"  seed stats: {len(seeds)} total, "
+		stats_text = (f"Seed stats: {len(seeds)} total, "
 			f"{len(usable)} usable, "
 			f"{not_in_frame} not-in-frame, "
 			f"{approximate} approximate")
+		print(f"  {stats_text.lower()}")
 		if len(usable) < 2:
-			print("  warning: need at least 2 usable seeds to solve")
-			return
+			warning = "Warning: need at least 2 usable seeds to solve"
+			print(f"  {warning.lower()}")
+			result = f"{stats_text} -- {warning}"
+			return result
 		# compute gaps between usable seeds sorted by frame index
 		sorted_frames = sorted(
 			float(s["frame_index"]) for s in usable
@@ -713,13 +767,18 @@ class SeedController(BaseAnnotationController):
 			gaps.append(gap_s)
 		avg_gap = sum(gaps) / len(gaps)
 		max_gap = max(gaps)
-		print(f"  average spacing: {avg_gap:.1f}s, "
+		spacing_text = (f"average spacing: {avg_gap:.1f}s, "
 			f"largest gap: {max_gap:.1f}s")
+		print(f"  {spacing_text}")
+		result = f"{stats_text} -- {spacing_text}"
 		# warn if largest gap is more than double the average
 		if max_gap > avg_gap * 2.5:
-			print(f"  warning: largest gap ({max_gap:.1f}s) is "
+			warning = (f"Warning: largest gap ({max_gap:.1f}s) is "
 				f"much larger than average ({avg_gap:.1f}s) "
 				f"-- consider adding seeds in that region")
+			print(f"  {warning.lower()}")
+			result += f" -- {warning}"
+		return result
 
 	#============================================
 
@@ -844,38 +903,33 @@ class SeedController(BaseAnnotationController):
 	def _on_fwd_bwd_avg(self) -> None:
 		"""Auto-accept average of FWD/BWD predictions if overlap sufficient."""
 		if self._predictions is None:
-			if self._window is not None:
-				self._window.statusBar().showMessage(
-					"No predictions available for F-key", 3000
-				)
+			self._show_seed_feedback("No predictions available for F-key")
 			return
 
 		preds = self._predictions.get(self._current_frame)
 		if preds is None:
-			if self._window is not None:
-				self._window.statusBar().showMessage(
-					"No predictions available for F-key", 3000
-				)
+			self._show_seed_feedback("No predictions available for F-key")
 			return
 
 		fwd = preds.get("forward")
 		bwd = preds.get("backward")
 		if fwd is None or bwd is None:
-			if self._window is not None:
-				self._window.statusBar().showMessage(
-					"Need both FWD and BWD predictions for F-key", 3000
-				)
+			self._show_seed_feedback(
+				"Need both FWD and BWD predictions for F-key"
+			)
 			return
 
 		# Compute FWD and BWD boxes
-		fwd_cx = float(fwd["cx"])
-		fwd_cy = float(fwd["cy"])
-		fwd_w = float(fwd["w"])
-		fwd_h = float(fwd["h"])
-		bwd_cx = float(bwd["cx"])
-		bwd_cy = float(bwd["cy"])
-		bwd_w = float(bwd["w"])
-		bwd_h = float(bwd["h"])
+		fwd = common_tools.coord_space.require_source_box(fwd)
+		bwd = common_tools.coord_space.require_source_box(bwd)
+		fwd_cx = fwd.cx
+		fwd_cy = fwd.cy
+		fwd_w = fwd.w
+		fwd_h = fwd.h
+		bwd_cx = bwd.cx
+		bwd_cy = bwd.cy
+		bwd_w = bwd.w
+		bwd_h = bwd.h
 
 		# Compute intersection area
 		f_x1 = fwd_cx - fwd_w / 2.0
@@ -895,10 +949,9 @@ class SeedController(BaseAnnotationController):
 
 		# Check overlap ratio
 		if total <= 0 or intersection / total < 0.1:
-			if self._window is not None:
-				self._window.statusBar().showMessage(
-					"FWD/BWD overlap too low to auto-accept", 3000
-				)
+			self._show_seed_feedback(
+				"FWD/BWD overlap too low to auto-accept"
+			)
 			return
 
 		# Compute average box

@@ -1,6 +1,6 @@
 # Track Runner Schema Version History
 
-This document logs the evolution of `SCHEMA_VERSION` across releases. The version controls on-disk format changes to diagnostics files, interval scores, pre-race references, and solver diagnostic headers.
+This document logs the evolution of `SCHEMA_VERSION` across releases. The version controls on-disk format changes to `interval_scores.json`, `torso_box_coords.npz`, and their required metadata.
 
 Per contract C10, there is one unified `SCHEMA_VERSION` for the entire track_runner project, defined in [tr_schema.py](../track_runner/tr_schema.py). All schema references must use this constant; independent versions are forbidden. This file records the versioning history specifically, separate from the changelog which records code changes. A new version number is issued when the persisted artifact contract changes. Use `solve` for method-derived stale values and diagnostic history for telemetry.
 
@@ -26,7 +26,8 @@ Choose the correct path first: use schema review for persisted artifact contract
 
 Get explicit human approval before changing the persisted artifact contract or `SCHEMA_VERSION`.
 
-Every schema-history entry must answer this checklist: what stored field/contract changed, geometry-affecting yes/no, and the human approver.
+Every schema-history entry must state the stored field or contract changed and
+the human approver.
 
 A manager proposing any `SCHEMA_VERSION` change completes these affirmative steps in order:
 
@@ -47,13 +48,11 @@ A manager proposing any `SCHEMA_VERSION` change completes these affirmative step
    approved per-video persisted variable.
 6. Get explicit human approval for the stored-contract change before editing
    `SCHEMA_VERSION` (C10). State it in its own request so the approver sees it.
-7. Bump `SCHEMA_VERSION` by one in `tr_schema.py` (the single authority); add it to
-   `GEOMETRY_AFFECTING_SCHEMAS` when the stored geometry artifact contract or
-   coordinate semantics changed; update `SUPPORTED_ARTIFACT_SCHEMAS` (drop older
-   versions when the on-disk layout genuinely changed).
+7. Bump `SCHEMA_VERSION` by one in `tr_schema.py` (the single authority) and
+   update `SUPPORTED_ARTIFACT_SCHEMAS` so readers accept the new layout only.
 8. Add a one-line `TR_SCHEMA_VERSION_HISTORY.md` entry that answers this checklist:
-   version, date, the stored field/contract that changed, geometry-affecting
-   yes/no, and the human approver.
+   version, date, the stored field or contract that changed, and the human
+   approver.
 9. Update the governance tripwire test's expected version in the same change, so
    the bump stays intentional and reviewed.
 
@@ -68,14 +67,13 @@ Schema-owned (justifies a bump when the field/meaning/encoding changes):
 | Stored item | Artifact | Why it is schema-owned |
 | --- | --- | --- |
 | `blended` cx/cy/w/h per interval | torso_box_coords.npz | The solved geometry readers consume; its presence and key names are the read contract |
-| `fwd`/`bwd` cx/cy/w/h per interval (post-race only) | torso_box_coords.npz | Optional independent-pass arrays; readers must know they exist and when they are absent |
 | dtype/encoding (uint16, pixel-snapped) | torso_box_coords.npz | Readers must decode the bytes correctly; the v10 float32->uint16 change was exactly this |
 | coordinate semantics (SOURCE-space cx/cy/w/h) | torso_box_coords.npz | The same bytes would mean different geometry if the space or meaning changed |
 | manifest (fingerprint, start/end frame, array_index) | torso_box_coords.npz | Readers reassemble per-interval arrays and map frames from it |
 | `schema_version` | torso_box_coords.npz | The validate contract itself |
 | `video_identity` | torso_box_coords.npz | Guards artifact-to-video compatibility; the field/meaning is schema-owned (its per-video value is not) |
 | `solve_complete` | torso_box_coords.npz | Determines whether the artifact is complete output or a partial resume |
-| `interval_score` fields (agreement, velocity/size consistency, confidence_tier, severity, failure_reasons, warning_flags) | interval-scores JSON | Persisted score contract that downstream review/target reads |
+| `interval_score` fields (agreement, velocity/size consistency, motion quality, occlusion fraction, confidence tier, failure reasons, warning flags) | interval-scores JSON | Persisted score contract that downstream review/target reads |
 | `pre_race_reference` fields (race_start_frame, torso dims, scene anchor, race_start_interval, warnings) | interval-scores JSON | Persisted pre-race reference contract |
 
 Method-owned (changes computed values; use `solve` when the stored contract is unchanged):
@@ -105,8 +103,7 @@ The interval reuse key (interval fingerprint) carries exactly three inputs:
 2. Human-authored **SOURCE-frame seed geometry** -- the x, y, w, h box coords of
    each bracketing seed. Redrawing a box at the same frame index produces a
    different key.
-3. The approved **geometry-affecting schema tag** returned by
-   `tr_schema.latest_geometry_affecting_schema()`.
+3. The current `SCHEMA_VERSION` tag.
 
 Anything not on this allow-list stays out of the key. Examples of values that
 must never enter the key:
@@ -131,29 +128,26 @@ that justifies it. If the proposed input is a runtime-performance setting, a
 computation method detail, or anything not stored in the SOURCE-frame artifact,
 it does not belong in the key.
 
-This rule is backed by contract invariants C10 (unified schema) and C13 (minimal
-artifacts). The allow-list shape gate is
-[tests/test_fingerprint_anti_drift.py](../tests/test_fingerprint_anti_drift.py):
-it inspects `build_geometry_tag`'s signature and fails if any parameter is
-re-added, routing the author back to this allow-list. The behavioral companion
-[tests/test_tr_interval_fingerprint_bin.py](../tests/test_tr_interval_fingerprint_bin.py)
-covers bin-invariance and legacy `/bin<B>` migration correctness.
+This rule is backed by contract invariants C10 (unified schema) and C13
+(minimal artifacts). The behavioral interval-fingerprint tests cover seed
+geometry and bin-invariance for current fingerprints.
 
 ## Schema bumps and the solved-geometry cache
 
-Schema bumps are metadata-only by default: they do NOT invalidate solved-geometry cache entries. The solver cache key lives in `track_runner/interval_fingerprint.py` as `GEOMETRY_TAG`, which embeds the highest member of `tr_schema.GEOMETRY_AFFECTING_SCHEMAS` <= `SCHEMA_VERSION` as a `geometry_schema_v<N>` token. A separate informational tag, `SOLVER_FINGERPRINT_TAG`, includes `/schema/<SCHEMA_VERSION>` and is used for diagnostics headers only.
-
-Use `solve` to refresh geometry caches after observer/solver method changes. Add to `GEOMETRY_AFFECTING_SCHEMAS` only when an approved schema change alters the stored geometry artifact contract or coordinate semantics. Loaders consult `tr_schema.SUPPORTED_ARTIFACT_SCHEMAS` to decide which on-disk versions remain readable, so a schema bump does not automatically reject older artifacts.
-
-When an old cache carries a schema-tagged fingerprint (e.g. `/schema/5`), a pre-unification tail (`/score_schema/4/prerace/4`), or the legacy `blob_snap/v1/...` form, `migrate_legacy_fingerprints` rewrites the key into the unified `geometry_schema_v<N>` namespace at load time. Each entry below marks whether it was geometry-affecting; only geometry-affecting bumps are cache invalidators.
+The solver cache key in `track_runner/interval_fingerprint.py` embeds the
+current `SCHEMA_VERSION` as `schema_v<N>`. A stored-format change therefore
+creates a fresh cache namespace. Method changes keep the schema fixed and use
+`solve` to refresh derived values. Loaders accept only the declared current
+artifact layouts; unsupported data is replaced by a fresh solve, never
+converted in place.
 
 ## Config-key removals (2026-06-13, no schema bump)
 
 **Walker costs, detection thresholds, and crop alphas moved to code constants. Config shape is not under SCHEMA_VERSION.**
 Geometry-affecting: no. No schema bump.
 
-`SCHEMA_VERSION` governs on-disk solver artifacts (diagnostics JSON,
-`torso_box_coords.npz`, and the geometry fingerprint cache key). The YAML
+`SCHEMA_VERSION` governs on-disk solver artifacts (`interval_scores.json`,
+`torso_box_coords.npz`, and the geometry fingerprint key). The YAML
 config files are runtime inputs, not stored artifacts versioned by this
 system. Removing keys from the config schema does not change any on-disk
 artifact layout and does not require a `SCHEMA_VERSION` bump under C10.
@@ -178,10 +172,9 @@ artifact layout and does not require a `SCHEMA_VERSION` bump under C10.
 - `processing.crop_min_size` removed from config; was already absent (removed
   2026-05-02); only doc references remained.
 
-**Old-config compatibility:** Stale per-video configs that still carry any of
-these keys load and validate without errors. `validate_config` checks only for
-required sections and the `torso_height_multiple` contract; unknown keys at
-any level are silently ignored. No per-video migration is needed.
+**Current-config policy:** Configs must carry the current header and required
+keys. Removed keys do not supply an alternate behavior; update the config to
+the documented current shape before running a mode.
 
 **What was kept:** The crop `smooth` path (`crop_mode == "smooth"`,
 `CropController`, and the five smooth-only knobs `crop_smoothing_attack`,
@@ -217,7 +210,7 @@ The checklist above is the current rule. Older entries preserve historical ratio
 - Hard-cut cache policy: `SUPPORTED_ARTIFACT_SCHEMAS["torso_box_coords"]` is now `{10}` only; v8 and v9 are dropped. User must re-solve all intervals. This is acceptable per user feedback: "everything else is gonna have to be recalculated anyway" when schema changes affect geometry.
 - Writer [state_io.py](../track_runner/state_io.py) `write_torso_box_coords()` rounds float coords to nearest int, clips to [0, 65535], and casts to uint16 before storage. Defensive clipping guards against future >16K source frames.
 - Loader [state_io.py](../track_runner/state_io.py) `load_torso_box_coords()` reconstructs loaded uint16 arrays as Python `int` (not numpy types) so downstream consumers do not silently overflow on arithmetic. Improved error message for rejected schemas directs users to re-solve.
-- Tests [test_tr_state_io.py](../tests/test_tr_state_io.py) verify round-trip rounding tolerance (+-1), uint16 on-disk dtype, and v9 rejection with clear error.
+- Tests [test_tr_state_io.py](../tests/storage/test_tr_state_io.py) verify round-trip rounding tolerance (+-1), uint16 on-disk dtype, and v9 rejection with clear error.
 - `GEOMETRY_AFFECTING_SCHEMAS` now includes 10 (was {3, 6, 7, 8, 9}).
 - `SUPPORTED_ARTIFACT_SCHEMAS["diagnostics"]` adds 10 (stable metadata JSON shape); `SUPPORTED_ARTIFACT_SCHEMAS["torso_box_coords"]` hard-cuts to {10}.
 
@@ -227,7 +220,7 @@ The checklist above is the current rule. Older entries preserve historical ratio
 
 - The motion-cue background window is now resolved from `(window_seconds, fps)` via `resolve_half_window()` instead of a fixed `half_window=4` frame count. This fixes silent collapse of the heat map at higher frame rates: 120 fps daughter-clip footage previously returned all-zero residuals because the runner's pixels overlapped across all 9 neighbors in a ~4-frame window, polluting the nanmedian background estimate. See [residual_motion.py](../track_runner/residual_motion.py) `DEFAULT_BACKGROUND_WINDOW_SECONDS` (8.0/60.0 ~ 133 ms) and `resolve_half_window()` helper.
 - `compute_residual_for_frame()` and `observe_blob_at()` now accept `window_seconds` and `fps` keywords (resolving `half_window` via the helper when `half_window=None`). Production caller [velocity_model.py](../track_runner/velocity_model.py) routes `reader.fps` automatically; call sites retain backward compatibility via optional keyword defaults.
-- Cached intervals computed under the prior fixed `half_window=4` frame-count window are invalidated. Hermite recomputation is negligible; no legacy migration path is provided.
+- Cached intervals computed under the prior fixed `half_window=4` frame-count window are invalidated. Hermite recomputation is negligible; no conversion path is provided.
 - `GEOMETRY_AFFECTING_SCHEMAS` now includes 9 (was {3, 6, 7, 8}).
 - `SUPPORTED_ARTIFACT_SCHEMAS` adds 9 to both artifact sets (diagnostics and torso_box_coords) with stable on-disk layout through v9.
 - Design link: plan `~/.claude/plans/federated-knitting-tome.md`, WS-1 Patch 2.
@@ -238,7 +231,7 @@ The checklist above is the current rule. Older entries preserve historical ratio
 
 - Two distinct cache-key tags now exist: `HERMITE_GEOMETRY_TAG` (geometry-schema v<N> only, for Stage 3 Hermite-cached intervals) and `BLOB_GEOMETRY_TAG` (geometry-schema v<N> plus the six blob-snap numeric constants, for Stages 1-2 and 4-5). Tuning a blob constant no longer invalidates Hermite cache entries; tuning a geometry-affecting schema constant invalidates both tags. See [interval_fingerprint.py](../track_runner/interval_fingerprint.py) `build_hermite_geometry_tag()` and `build_blob_geometry_tag()`.
 - `compute_interval_fingerprint` and `state_io.interval_fingerprint` both gain a `stage` parameter ("hermite" or "blob", default "blob") to route cache lookups to the appropriate tag and (future work) stage-specific cache subdirectories. Back-compat alias `GEOMETRY_TAG = BLOB_GEOMETRY_TAG` preserves existing call sites.
-- Rationale: The split enables Stage 3 (Hermite-only refinement) and Stages 4-5 (full solve or refinement with blob observation) to maintain independent caches without ambiguity about which stage produced a cached entry. Hermite recomputation is negligible (~3 ms per 100-frame interval per M0 findings); no legacy migration path is provided for v6->v7, so existing v6 blob cache entries are invalidated on first run after upgrade. This matches the plan's first-run cold-solve expectation.
+- Rationale: The split enables Stage 3 (Hermite-only refinement) and Stages 4-5 (full solve or refinement with blob observation) to maintain independent caches without ambiguity about which stage produced a cached entry. Hermite recomputation is negligible (~3 ms per 100-frame interval per M0 findings); no conversion path is provided for v6->v7, so existing v6 blob cache entries are invalidated on first run after upgrade. This matches the plan's first-run cold-solve expectation.
 - `GEOMETRY_AFFECTING_SCHEMAS` now includes 7 (was {3, 6}).
 - `SUPPORTED_ARTIFACT_SCHEMAS` adds 7 to all three artifact sets (diagnostics, geometry_cache, debug_paths) with stable on-disk layout through v7.
 
@@ -249,11 +242,11 @@ The checklist above is the current rule. Older entries preserve historical ratio
 - DoG band-pass pre-filter (`dog_filter_blob_scale`) wired into `observe_blob_at` and `compute_heat_map_roi`. Enhances torso-scale blobs and suppresses sub-torso speckle. Default `k=3.0`.
 - Versioning refactor for contract C9 compliance: introduces [tr_schema.py](../track_runner/tr_schema.py) as the single schema-version authority. New constants: `SCHEMA_VERSION`, `GEOMETRY_AFFECTING_SCHEMAS = {3, 6}`, `SUPPORTED_ARTIFACT_SCHEMAS`, helpers `latest_geometry_affecting_schema()` and `is_supported_artifact_schema()`.
 - Removes the parallel `BLOB_OBSERVER_VERSION = "v1"` constant from [residual_motion.py](../track_runner/residual_motion.py); cache invalidation for observer changes now flows through `GEOMETRY_AFFECTING_SCHEMAS` keyed off the unified `SCHEMA_VERSION`.
-- Geometry tag format changes from `blob_snap/v1/...` to `geometry_schema_v<N>/...`. `migrate_legacy_fingerprints` rewrites legacy `blob_snap/v1` keys to `geometry_schema_v3` (the schema version current when v1 ruled); migrated v3-era keys correctly fail the v6 match and are re-solved.
+- Geometry tag format changed from `blob_snap/v1/...` to `geometry_schema_v<N>/...`. Those old keys are unsupported and a fresh solve replaces them.
 - Loaders for diagnostics, geometry_cache.npz, and debug_paths.npz no longer test equality against current; they consult `tr_schema.is_supported_artifact_schema(...)` against the per-artifact compatibility set.
 - `GEOMETRY_CACHE_SCHEMA_VERSION` and `DEBUG_PATHS_SCHEMA_VERSION` are now aliases of `tr_schema.SCHEMA_VERSION`, not independent constants.
 - `race_start.py` and `scoring.py` aliases now import `tr_schema` directly instead of chaining through `state_io`.
-- Drift-prevention test [test_tr_schema_version_single_source.py](../tests/test_tr_schema_version_single_source.py) tightened to flag any module-level `*(SCHEMA|CACHE|OBSERVER|FINGERPRINT)_VERSION` constant outside `tr_schema.py` that is not a literal re-export, with a whitelist-only exemption mechanism.
+- Drift-prevention test `test_tr_schema_version_single_source.py` tightened to flag any module-level `*(SCHEMA|CACHE|OBSERVER|FINGERPRINT)_VERSION` constant outside `tr_schema.py` that is not a literal re-export, with a whitelist-only exemption mechanism.
 
 ## 5 (2026-04-24)
 
@@ -261,7 +254,7 @@ The checklist above is the current rule. Older entries preserve historical ratio
 
 - Collapses three independent version constants (`DIAGNOSTICS_HEADER_VALUE`, `INTERVAL_SCORE_SCHEMA_VERSION`, `PRE_RACE_REFERENCE_SCHEMA_VERSION`) into a single unified `SCHEMA_VERSION` across [state_io.py](../track_runner/state_io.py), [scoring.py](../track_runner/scoring.py), and [race_start.py](../track_runner/race_start.py).
 - Adds new fields to `pre_race_reference` dict: `race_start_interval` (list of two frame indices) for the detected race-start seed pair.
-- Cache impact (post-migration split): schema bump alone does NOT invalidate solved-geometry entries. The cache key (`GEOMETRY_TAG`) depends only on blob-snap geometry constants; `/schema/N` moved out of the cache key into `SOLVER_FINGERPRINT_TAG` (telemetry only). `migrate_legacy_fingerprints` rewrites pre-unification tails (`/score_schema/4/prerace/4`) and schema-tagged tails (`/schema/5`) to the current `GEOMETRY_TAG` at load time.
+- Cache impact: schema bump alone does NOT invalidate solved-geometry entries. The cache key (`GEOMETRY_TAG`) depends only on blob-snap geometry constants; `/schema/N` moved out of the cache key into `SOLVER_FINGERPRINT_TAG` (telemetry only). Old pre-unification keys are unsupported and are replaced by a fresh solve.
 
 ## 4 (2026-04-23)
 
@@ -278,10 +271,12 @@ The checklist above is the current rule. Older entries preserve historical ratio
 
 - Establishes nested `interval_score` dict with v3 fields: `agreement`, `velocity_consistency`, `size_consistency`, `confidence_tier`, `severity`, `failure_reasons`, `warning_flags`. Replaces flat v2 field layout.
 - Introduces `INTERVAL_SCORE_SCHEMA_VERSION` constant in [scoring.py](../track_runner/scoring.py) to version the nested structure.
-- Writer [state_io.py](../track_runner/state_io.py) emits v3 nested shape only; on load migrates legacy v2 flat shape to v3 in memory.
+- Writer [state_io.py](../track_runner/state_io.py) emits v3 nested shape only. The former flat shape is no longer readable.
 - Introduces `DIAGNOSTICS_HEADER_VALUE` versioning in [state_io.py](../track_runner/state_io.py) (value=3) to distinguish v2 flat layout from v3 nested layout.
 - `SOLVER_FINGERPRINT_TAG` first includes `/score_schema/3` fragment so cache invalidates on schema changes.
 
 ## 2 and earlier
 
-Pre-history: not logged prospectively. Version 1 predates the analytical solver; version 2 is the legacy optical-flow solver schema with flat per-interval fields (`confidence`, `agreement_score`, `competitor_margin`, etc.). Schemas 1 and 2 are obsolete; they are not reconstructed here to avoid guessing. If git history is needed for legacy schema details, consult `git log --all` entries prior to 2026-03-24 or review the `tests/test_seed_schema_v3.py` migration helpers which capture some v2/v3 shape differences for testing purposes.
+Pre-history: not logged prospectively. Versions 1 and 2 predate the current
+analytical solver contract. They are unsupported; the repository keeps no
+readers, converters, or test fixtures for them.

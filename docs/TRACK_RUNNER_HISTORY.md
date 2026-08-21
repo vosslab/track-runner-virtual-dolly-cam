@@ -156,10 +156,10 @@ over-correction.
 
 ### Consolidated trajectory erasure
 
-Erasure logic was unified into `_apply_trajectory_erasure()` after a bug
-where the solve path and encode path made different erasure decisions. Now
-both paths pass all seeds and the function decides what to erase based on
-status and torso_box presence.
+The earlier status/radius helper was retired after it could erase frames
+outside human-authored absence brackets. `NifSpan` now derives the exact
+strict-between absence set for solve, Analyze, and Encode; crop edge anchors
+remain separate from runner truth.
 
 ### Encode filter pipeline
 

@@ -8,7 +8,7 @@ QGraphicsView for displaying video frames with zoom and coordinate mapping.
 # PIP3 modules
 import numpy
 from PySide6 import QtGui, QtWidgets
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QPointF, Qt, Signal
 from PySide6.QtWidgets import QGraphicsView, QGraphicsScene
 from PySide6.QtGui import QImage, QPixmap, QColor, QTransform, QPainter
 
@@ -66,7 +66,7 @@ class FrameView(QGraphicsView):
 		"""
 		Update the displayed frame.
 
-		Converts BGR numpy array to QImage then to QPixmap and displays it.
+		Wraps BGR numpy array data in a QImage then displays it as a QPixmap.
 
 		Args:
 			bgr_array: BGR image as numpy array (H x W x 3, uint8).
@@ -76,16 +76,15 @@ class FrameView(QGraphicsView):
 
 		height, width = bgr_array.shape[:2]
 
-		# Convert BGR to RGB by swapping channels
-		rgb_array = bgr_array[:, :, ::-1].copy()
-
-		# Create QImage from RGB data
+		# QImage supports OpenCV's native BGR channel order, avoiding a per-frame
+		# channel-swap copy. QPixmap.fromImage() takes its own Qt-managed image data,
+		# so the displayed pixmap remains valid after this method returns.
 		q_image = QImage(
-			rgb_array.data,
+			bgr_array.data,
 			width,
 			height,
-			3 * width,
-			QImage.Format.Format_RGB888
+			bgr_array.strides[0],
+			QImage.Format.Format_BGR888
 		)
 
 		# Convert to QPixmap and display
@@ -94,11 +93,11 @@ class FrameView(QGraphicsView):
 		# Track whether this is the first frame (pixmap was None)
 		is_first_frame = (self.pixmap_item is None)
 
-		if self.pixmap_item is not None:
-			self.scene_obj.removeItem(self.pixmap_item)
-
-		self.pixmap_item = self.scene_obj.addPixmap(pixmap)
-		self.scene_obj.setSceneRect(pixmap.rect())
+		if is_first_frame:
+			self.pixmap_item = self.scene_obj.addPixmap(pixmap)
+			self.scene_obj.setSceneRect(pixmap.rect())
+		else:
+			self.pixmap_item.setPixmap(pixmap)
 
 		# Schedule initial fit when the first frame arrives
 		if is_first_frame:
@@ -228,7 +227,6 @@ class FrameView(QGraphicsView):
 		self.setTransform(QTransform().scale(self.zoom_factor, self.zoom_factor))
 		# center the view on the requested scene point
 		if center_x >= 0 and center_y >= 0:
-			from PySide6.QtCore import QPointF
 			self.centerOn(QPointF(center_x, center_y))
 		self.zoom_changed.emit(self.zoom_factor * 100.0)
 

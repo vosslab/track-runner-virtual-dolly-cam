@@ -113,32 +113,6 @@ encoder_overlay:
   box_opacity: 0.55
   text_opacity: 0.70
 
-# -- Blob walker v2 tile overlays --
-# Used by tools/blob_walk_v2/walk_render.py to render per-frame PNG tiles
-# with blob ellipses, prior markers, and acceptance-box outlines.
-walker_overlays:
-  winner: "#FFD000"
-  corridor_non_winner: "#06B6D4"
-  raw_outside_corridor: "#808080"
-  rejected_winner: "#FF6464"
-  prior_cross: "#FF00FF"
-  acceptance_box: "#FBBF24"
-  audit_disagreement: "#FFFFFF"
-
-# -- Blob walker v2 overlay palette (per-tile PNG-baked vector overlays) --
-# Used by tools/blob_walk_v2/walk_render.py to bake velocity vectors,
-# allowed-jump circles, and residual lines directly into PNG tiles.
-# Also used by tools/blob_walk_v2/walk_html.py for trajectory PNG generation
-# (FWD/BWD polylines, seed markers).
-walk_overlays:
-  velocity_vector: "#FBBF24"
-  allowed_jump_circle: "#06B6D4"
-  residual_accept: "#10B981"
-  residual_reject: "#EF4444"
-  trajectory_fwd: "#FFD000"
-  trajectory_bwd: "#FF00FF"
-  seed_marker: "#FFFFFF"
-
 # -- Motion heat-map overlay (GUI diagnostic view aid) --
 # Sticky-mode ROI overlay rendered by track_runner/ui/heat_map_overlay.py,
 # composed by track_runner/residual_heat_map.py. Below-threshold pixels
@@ -157,48 +131,3 @@ heat_map:
   outline_rgb: [160, 160, 160]
   legend_text: "motion low -> high: blue -> cyan -> yellow -> red"
   missing_transform_note: "camera motion not compensated"
-
-# -- Blob walker v2 tile layer draw order --
-# Controls the z-order of overlays drawn onto the per-frame debug tile PNG.
-# Layers are drawn bottom-first (first entry drawn first, last entry on top).
-# source_frame is the implicit canvas base and is NOT listed here.
-# Closed set of allowed layer names: heat, seed_box, solved_box, blob_ellipses,
-# plus_marker, acceptance_box, audit_square, residual_line,
-# allowed_jump_circle, velocity_vector.
-# Missing key: renderer falls back to the built-in default order below.
-# Unknown name, duplicate name, or omitted known layer: renderer raises loudly.
-walk_tile_layer_order:
-  - seed_box
-  - solved_box
-  - blob_ellipses
-  - plus_marker
-  - acceptance_box
-  - audit_square
-  - residual_line
-  - allowed_jump_circle
-  - velocity_vector
-  - heat
-
-# -- Blob walker v2 SVG overlay status colors --
-# Used by walk_html.py legend and any SVG-based per-frame overlays.
-# Five primary statuses per schema v13; two legacy v12 statuses for read compat.
-walk_svg_overlays:
-  status_colors:
-    # v13 primary statuses
-    accepted: "#00cc00"
-    # accepted: confirmed on path (bright green)
-    interpolated: "#60b4e8"
-    # interpolated: inferred between accepted bracket (pale blue)
-    extrapolated: "#e8c840"
-    # extrapolated: velocity-projected past last accept (yellow)
-    soft_miss_no_blob: "#888888"
-    # soft_miss_no_blob: extraction returned empty list (gray)
-    soft_miss_no_path: "#e87060"
-    # soft_miss_no_path: candidates present but no plausible path survived (pale red)
-    # Terminal markers
-    after_walk_terminated: "#444444"
-    hit_neighbor_seed: "#444444"
-    boundary: "#444444"
-    # Legacy v12 values (never emitted by v13 walker; backward read compat only)
-    rejected_motion_gate: "#ff0000"
-    soft_miss_low_conf: "#ff8800"

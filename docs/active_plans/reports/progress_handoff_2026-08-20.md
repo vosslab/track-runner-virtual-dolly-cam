@@ -3,7 +3,7 @@
 ## Purpose
 
 This is the restart point for the seven goals in
-[interaction_shell_and_trajectory_truth.md](../active/interaction_shell_and_trajectory_truth.md).
+[interaction_shell_and_trajectory_truth.md](../../archive/interaction_shell_and_trajectory_truth.md).
 The plan's goals and functional scope are unchanged. Its completion method is now repository-local
 and autonomous: private-video receipts, historical snapshots, manual review, arbitrary timing
 thresholds, and Git staging are not gates.
@@ -14,8 +14,7 @@ thresholds, and Git staging are not gates.
   experiment was reverted and is not accepted work; annotation-only maintenance is separate.
 - Skip Jason permanently. Do not recover, select, diagnose, or run it.
 - Keep permanent tests offline, deterministic, and self-contained.
-- Use inline/generated inputs, fake readers, deterministic residual fields, `tmp_path`, and small
-  retained numeric fixtures.
+- Use inline/generated inputs, fake readers, deterministic residual fields, and `tmp_path`.
 - Treat local videos and `/private/tmp` receipts as optional diagnostics only.
 - Apply exact equality only to exact contracts, especially C3 seed geometry and schema round trips.
 - Use semantic properties and relative improvement for output-changing algorithms.
@@ -63,13 +62,15 @@ thresholds, and Git staging are not gates.
   additional controlled-allocation window, while decoder/runtime RSS remains telemetry. Independent
   review accepted the bounded caches, ledger, and policy without local-video measurements.
 
-### M5 shared tangents
+### M5 pair-local interpolation
 
-- Tangent support uses frame-distance windows.
-- One immutable tangent per shared seed is computed before dispatch.
-- FWD/BWD propagation uses one direction-parameterized implementation.
-- Generated curves with known derivatives accept the shared-tangent/chord decision; no historical
-  comparator or runtime selector is required.
+- Each analytical interval reads only its two endpoint seed boxes.
+- The endpoint chord supplies both Hermite derivatives, so no human-box
+  velocity or size slope is inferred.
+- FWD/BWD propagation uses one direction-parameterized implementation with
+  independent confidence anchors.
+- No neighboring seed can alter a cached interval without changing one of its
+  fingerprinted endpoints.
 
 ### M6 persistent interaction shell
 
@@ -111,7 +112,7 @@ thresholds, and Git staging are not gates.
 
 All seven original product goals are accepted by portable implementation, focused tests, and fresh
 independent review. M1 covers cache reuse; M2, M3, and M6 pass the portable audit; M4 accepts the
-source-ledger worker policy; M5 accepts the generated known-derivative decision; M7 selects the
+source-ledger worker policy; M5 uses pair-local endpoint interpolation; M7 selects the
 `dolly` default; and M8 accepts real parser plus `cli.main()` dispatch.
 
 No plan work remains. Keep Stage 1 estimation behavior and algorithm unchanged and outside scope,
@@ -129,14 +130,15 @@ requires staging.
 The pre-audit completion snapshot passed 272 focused product tests and 1,332 hygiene checks. The
 later user-promoted source-file ownership maintenance work is complete: a direct
 `rg`/`wc` scan finds every worktree Python file below the exclusive 1,000-line
-limit, with the largest at 994 lines, and the portable suite passes 4,559 tests.
+limit, with the largest at 994 lines, and the portable suite passes without a
+collection-count gate.
 Extractions separate interval progress/analysis/seed anchoring, residual
 frames/blob traces, walker engine/observer/summary, torso-box I/O, crop
 math/direct/controller, Encode reports/audio/pool control, UI heat/edit/status
 support, mode video/seed support, and walk-report tools. They make no output
 or performance claim. `camera_motion_artifact` owns artifacts/cache only, so
 Stage 1 estimation algorithms remain unchanged. Review also found and corrected
-canonical approximate/legacy-obstructed seed eligibility with a real NPZ
+canonical approximate seed eligibility with a real NPZ
 identity round-trip, and parallel Encode quit now terminates and reaps its
 pool. Refreshed Graphify reports 2,306 nodes, 3,450 edges, and 164 communities,
 with a 44.6x average token reduction benchmark. Jason, private-video, manual,
@@ -166,5 +168,6 @@ python3 -m pytest tests/test_markdown_links.py
 ```
 
 `pytest tests/` is a health report, not a product-milestone gate. The completed
-portable run passes 4,559 tests, including the source-line-limit checks.
+portable run includes the source-line-limit checks; its collection size is not
+a product requirement.
 Version-control preparation belongs to the human.

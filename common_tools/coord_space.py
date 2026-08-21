@@ -215,7 +215,7 @@ class ProcessedBox:
 # Boundary guards
 #============================================
 
-def require_source_point(obj) -> SourcePoint:
+def require_source_point(obj: object) -> SourcePoint:
 	"""Return obj if it is a SourcePoint, else raise ValueError (loud)."""
 	if not isinstance(obj, SourcePoint):
 		raise ValueError(f"expected SourcePoint (SOURCE space), got {type(obj).__name__}")
@@ -223,7 +223,7 @@ def require_source_point(obj) -> SourcePoint:
 
 
 #============================================
-def require_processed_point(obj) -> ProcessedPoint:
+def require_processed_point(obj: object) -> ProcessedPoint:
 	"""Return obj if it is a ProcessedPoint, else raise ValueError (loud)."""
 	if not isinstance(obj, ProcessedPoint):
 		raise ValueError(f"expected ProcessedPoint (PROCESSED space), got {type(obj).__name__}")
@@ -231,7 +231,7 @@ def require_processed_point(obj) -> ProcessedPoint:
 
 
 #============================================
-def require_source_box(obj) -> SourceBox:
+def require_source_box(obj: object) -> SourceBox:
 	"""Return obj if it is a SourceBox, else raise ValueError (loud)."""
 	if not isinstance(obj, SourceBox):
 		raise ValueError(f"expected SourceBox (SOURCE space), got {type(obj).__name__}")
@@ -239,7 +239,7 @@ def require_source_box(obj) -> SourceBox:
 
 
 #============================================
-def require_processed_box(obj) -> ProcessedBox:
+def require_processed_box(obj: object) -> ProcessedBox:
 	"""Return obj if it is a ProcessedBox, else raise ValueError (loud)."""
 	if not isinstance(obj, ProcessedBox):
 		raise ValueError(f"expected ProcessedBox (PROCESSED space), got {type(obj).__name__}")

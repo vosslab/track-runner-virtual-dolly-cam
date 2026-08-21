@@ -55,7 +55,7 @@ can see the scope of every claim.
   Jason clip is pending the M2/M3 sweep over the remaining TRUST 0%
   intervals. Supported by 46 visual frames in one interval and one video,
   cross-referenced against 72 Conant intervals.
-- [BLOB_SEED_DISTANCE_FINDINGS.md](../../BLOB_SEED_DISTANCE_FINDINGS.md),
+- removed nonportable seed-distance findings,
   Orion seed-distance gradient (good-rate climbs 30% to 59% from bin 1 to
   bin 11-20): the gradient claim cannot yet be confirmed on the Jason clip
   because the M3 per-bucket histogram is restricted to one interval.

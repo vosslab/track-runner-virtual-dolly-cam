@@ -14,12 +14,12 @@ coupling patterns.
 Does not own: how the motion-cue field is computed, ROI geometry,
 blob extraction, cue-confidence scoring, or the concrete cache
 schema. Those live in
-`MOTION_CUE_HEAT_MAP.md`.
+`TR_MOTION_CUE_HEAT_MAP.md`.
 
 Rules for preserving the dual-pass independence invariant in the
 track-runner interval solver. For the motion-cue field, blob
 extraction pipeline, ROI geometry, and `observe_blob_at` measurement
-model, see `MOTION_CUE_HEAT_MAP.md`. For the
+model, see `TR_MOTION_CUE_HEAT_MAP.md`. For the
 shorter consumer-facing summary of the observation API, see
 [RESIDUAL_MOTION_OBSERVATIONS.md](archive/RESIDUAL_MOTION_OBSERVATIONS.md).
 
@@ -46,14 +46,13 @@ Use them in prose and in new identifiers.
 
 Supporting terms:
 
-- **`raw_pred`** -- the frozen Hermite-only prediction inside one pass.
-  Pass-local; the only trajectory the walker's gates are allowed to read.
-- **debug interval paths** -- the per-interval forward and backward
-  interval paths persisted to the opt-in
-  `<video>.track_runner.debug_tracks.npz` sidecar (legacy filename) when
-  solve runs with `--debug-tracks`. Saved for overlay and inspection
-  only; never read by solve, refine, or scoring. Governed by contract
-  clause C8.
+- **`raw_pred`** -- the pair-local Hermite-only fallback prediction inside one
+  pass. The Stage-4 walker does not read it; it gathers image evidence from
+  its endpoint seed and candidate lattice.
+- **agreement-debug summary** -- optional per-interval FWD/BWD agreement
+  measurements emitted to `<video>.track_runner.agreement_debug.json` by a
+  debug solve. It supports investigation only and is never an input to solve,
+  refine, target, or scoring.
 
 Why "interval path" and not "track": "track" reads as whole-video and
 collides with the track-and-field source material. Each of these three
@@ -64,8 +63,8 @@ honest name.
 
 Every seed-to-seed interval is solved by TWO independent propagations: a
 forward (FWD) pass that starts at the left seed and a backward (BWD) pass
-that starts at the right seed. Each pass builds its own directionally
-asymmetric Hermite curve and produces its own `raw_pred` trajectory. By
+that starts at the right seed. Each pass builds a pair-local Hermite fallback
+from the same two endpoint boxes and keeps its own confidence anchor. By
 default the propagator emits a pure-Hermite interval path on Stage 3 and on
 non-promoted intervals. On Stage-4-promoted intervals (low/fair confidence,
 reader present) the windowed Viterbi walker (`track_runner/blob_walk/`) runs by
@@ -86,45 +85,43 @@ that narrows it without evidence is a regression.
 
 ## Why two passes
 
-- FWD fits a Hermite curve whose left-endpoint slope comes from a BACKWARD
-  linear regression through the left seed and its earlier neighbors; the
-  right-endpoint slope is the interval chord. BWD does the mirror: right
-  slope from a FORWARD regression, left slope from the chord. See
-  `estimate_directional_slope` and `fit_interval_curves` in
-  [velocity_model.py](../track_runner/velocity_model.py).
-- The two curves are DIFFERENT interpolants of the same two endpoints. On
-  straight motion they agree almost exactly; on curvature, occlusion, or
-  identity ambiguity they disagree, and the disagreement is the signal.
+- Each Hermite fallback uses only its two endpoint seed boxes. The endpoint
+  chord supplies both derivatives, which is linear for center position and
+  log-linear for size. No neighboring seed supplies an inferred slope. See
+  `fit_interval_curves` in [velocity_model.py](../track_runner/velocity_model.py).
+- The independent passes use separate confidence anchors and, when promoted,
+  separate image-derived walker paths. Walker disagreement under occlusion or
+  identity ambiguity is the uncertainty signal.
 - Without both passes there is no cheap per-interval uncertainty probe
   and the confidence tier in [scoring.py](../track_runner/scoring.py)
   collapses to a guess.
 
 ## Core invariants
 
-- **Walker gates read only `raw_pred`.** The windowed walker reads the
-  frozen `raw_pred` array produced by the propagator. Any gate or cost
-  term that reads a selected-path position or a previous accepted blob
-  re-introduces cross-frame state and fails review.
+- **Walker decisions use image evidence only.** The windowed walker does not
+  consume the Hermite fallback or a selected-path position. A cost term that
+  reads a previous accepted blob re-introduces cross-frame state and fails
+  review.
 - **No cross-pass blob decisions are stored anywhere.** The residual
   cache stores raw blobs only. For the concrete cache schema and the
   ROI-key mechanics see
-  `MOTION_CUE_HEAT_MAP.md`; this doc owns only
+  `TR_MOTION_CUE_HEAT_MAP.md`; this doc owns only
   the normative "no decisions in the cache" rule. Locked by
   `test_blob_accepted_at_frame_t_does_not_influence_frame_t_plus_one`.
 - **Residual cache holds image-derived data only.** Sharing IMAGES is
   not sharing DECISIONS. ROI quantization collapses sub-quantum FWD
   vs BWD jitter to one cache entry and leaves meaningful divergence
   with distinct entries; the concrete `ROI_QUANT` mechanics live in
-  `MOTION_CUE_HEAT_MAP.md`. Locked by
+  `TR_MOTION_CUE_HEAT_MAP.md`. Locked by
   `test_roi_quantization_collapses_subpixel_jitter`.
 - **Worker-local pre-pass store is image-derived data, not state.**
   Inside `solve_interval_analytical`, before either pass runs, the
   worker sequentially walks its interval's frames and builds a local
   `precomputed_store` dict keyed by `(frame_index, roi)` -> `(residual
-  uint8, validity uint8)`. Both FWD and BWD's `observe_blob_at` calls
+  float32, validity uint8)`. Both FWD and BWD's `observe_blob_at` calls
   read from this dict via the `precomputed_store` parameter; on a hit
   the per-frame residual computation is skipped, on a miss the call
-  falls through to the legacy reader path. The store contains pure
+  falls through to the direct reader path. The store contains pure
   image-derived residuals (same data the residual_cache holds, just
   pre-computed); no FWD/BWD decisions, no per-pass state, no
   cross-interval information. Per contract clause C5 the store lives
@@ -199,7 +196,7 @@ forward_path, backward_path
 blend_paths(forward_path, backward_path)                [OUTPUT]
   |
   v
-stitch_trajectories -> anchor_to_seeds -> _apply_trajectory_erasure
+stitch_trajectories -> anchor_to_seeds -> NifSpan runner-truth erasure
   |
   v
 encoder / crop
@@ -213,8 +210,9 @@ the RIGHT branch and is strictly an output concern.
 
 Per-frame blob observation is provided by `residual_motion.observe_blob_at`.
 The measurement pipeline (heat-map construction, ROI geometry, blob
-extraction, corridor filter, cue-confidence scoring) is documented in
-`MOTION_CUE_HEAT_MAP.md`.
+extraction, optional acceptance-box filtering, and descriptive confidence)
+is documented in
+`TR_MOTION_CUE_HEAT_MAP.md`.
 
 On Stage 3 and on non-promoted intervals, the propagator does NOT call
 `observe_blob_at`. It produces a pure-Hermite `raw_pred` trajectory and returns
@@ -223,7 +221,7 @@ it as the interval path.
 On Stage-4-promoted intervals the windowed Viterbi walker
 (`track_runner/blob_walk/`) runs by default (`blob_pass=True` for that path).
 The walker calls `observe_blob_at` at each
-non-endpoint frame, retrieves `corridor_blobs` candidates from the trace, and
+non-endpoint frame, retrieves raw image candidates from the trace, and
 runs a window-level Viterbi DP to select a globally consistent path. A pass with
 `post_seed_accepted == 0` (no accepted frame beyond the seed, covering both
 zero-accept stall and seed-only stall) falls back to its Hermite path, keeping
@@ -238,7 +236,7 @@ walker section of [TRACK_RUNNER_DESIGN.md](TRACK_RUNNER_DESIGN.md) and in
 **ROI coupling.** FWD and BWD share the same `residual_cache` and
 may share raw blobs when their ROIs coincide; they compute
 independently when the ROIs diverge. The detailed ROI-key mechanics
-live in `MOTION_CUE_HEAT_MAP.md`. The rule
+live in `TR_MOTION_CUE_HEAT_MAP.md`. The rule
 this doc owns is simpler: sharing IMAGES is allowed, sharing
 DECISIONS is not.
 
@@ -295,9 +293,10 @@ with a pure-stall Hermite fallback.
 
 - [TRACK_RUNNER_CONTRACT.md](TRACK_RUNNER_CONTRACT.md) -- primary
   truth document; non-negotiable rules.
-- `MOTION_CUE_HEAT_MAP.md` --
+- `TR_MOTION_CUE_HEAT_MAP.md` --
   mechanism-level technical doc: heat-map construction, ROI
-  geometry, blob extraction, corridor filter, cue-confidence scoring,
+  geometry, blob extraction, optional acceptance-box filtering, and
+  descriptive confidence,
   concrete cache schema.
 - [TRACK_RUNNER_DESIGN.md](TRACK_RUNNER_DESIGN.md) -- signal
   hierarchy, dual scoring philosophy, separation of concerns.
@@ -307,5 +306,3 @@ with a pure-stall Hermite fallback.
   -- thin consumer-facing summary of the observation API.
 - [CHANGELOG.md](CHANGELOG.md) -- 2026-04-17 motion-cue removal
   and blob-snap landing entries.
-- `~/.claude/plans/happy-forging-valiant.md` -- design plan for the
-  per-frame blob snap inside the propagator.

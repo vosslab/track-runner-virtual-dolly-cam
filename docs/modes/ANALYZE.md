@@ -38,7 +38,7 @@ zoom the x-range (synced across all panels); double-click anywhere to reset
 zoom; per-panel checkbox row toggles series visibility.
 
 For deeper architecture and per-panel interpretation guidance, see
-[docs/TRACK_RUNNER_ANALYZE_AND_ENCODE.md](../TRACK_RUNNER_ANALYZE_AND_ENCODE.md).
+[TRACK_RUNNER_ANALYZE_AND_ENCODE.md](../TRACK_RUNNER_ANALYZE_AND_ENCODE.md).
 
 ## Command line reference
 

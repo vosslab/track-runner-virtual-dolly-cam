@@ -17,7 +17,7 @@ Notable shipped qualities:
   stall.
 - **prepare mode** for fast-read video creation. Reduces 4K HEVC random-read
   cost from 450-575 ms to 6-14 ms per frame. See
-  [docs/modes/PREPARE.md](modes/PREPARE.md).
+  [PREPARE.md](modes/PREPARE.md).
 - **Stage-4 worker pool dispatch**: Stage-4 promoted intervals use the same
   parallel worker pool as Stage 3.
 - **Viterbi cost weights**: fixed constants in

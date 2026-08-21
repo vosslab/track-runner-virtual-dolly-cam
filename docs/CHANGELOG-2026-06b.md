@@ -3,7 +3,7 @@
 ### Additions and New Features
 
 - Published blob walk v2 fix-phase roadmap at
-  [active_plans/active/blob_walk_v2_fix_phase_roadmap.md](active_plans/active/blob_walk_v2_fix_phase_roadmap.md)
+  [archive/blob_walk_v2_fix_phase_roadmap.md](archive/blob_walk_v2_fix_phase_roadmap.md)
   as the fix-phase index. Evidence basis: implementation audit, validation
   report, and Check 0-8 / Check G workstream docs. The roadmap orders five
   milestones -- M1 P10 fallback correction, M2 re-baseline and ranking
@@ -99,7 +99,7 @@
   so the stride>1 stepping/termination bug (audit P12) is LIVE on 1 of 6
   corpus videos, not latent. Walker results on that video are suspect until
   the stepping fix lands.
-- Added [active_plans/active/blob_walk_v2_validation_plan.md](active_plans/active/blob_walk_v2_validation_plan.md):
+- Added [archive/blob_walk_v2_validation_plan.md](archive/blob_walk_v2_validation_plan.md):
   ordered smallest-first checks for the audit's assumption table (P15
   telemetry truthfulness first as the only code change, then rejected-blob
   overlays, bootstrap-accept masking counts, anchor-lag telemetry,
@@ -252,7 +252,7 @@
   `tools/blob_walk_v2/core/walk_walker.py` references in
   [walker_npz_coord_contract.md](active_plans/decisions/walker_npz_coord_contract.md)
   and
-  [typed_coordinate_space_plan.md](active_plans/active/typed_coordinate_space_plan.md)
+  [typed_coordinate_space_plan.md](archive/typed_coordinate_space_plan.md)
   to `track_runner/blob_walk/walk_io.py` and
   `track_runner/blob_walk/walk_walker.py`.
 - Rotated [CHANGELOG.md](CHANGELOG.md): 1256 lines exceeded the

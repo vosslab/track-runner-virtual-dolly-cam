@@ -76,8 +76,8 @@ wrote Matroska bytes to a `.MOV`-named file because the input was
 ```
 solved interval set
   -> trajectory_to_crop_rects (per-frame solved torso box -> crop rect)
-  -> direct_center_crop_trajectory (W+H averaging, smoothing, fit-to-source)
-  -> apply_experiment_overrides (optional: fixed_crop / slow_size)
+  -> dolly_crop_trajectory (default whole-path virtual-dolly solve)
+  -> smooth CropController only if the bounded dolly solve does not converge
   -> validate_torso_within_central_window (pre-flight gate)
   -> for each frame:
        decode -> apply_crop -> resize to output res
@@ -91,12 +91,20 @@ The hot path is parallelizable: `encode_cropped_video_parallel`
 splits frames into chunks, each worker decodes and encodes its slice
 to a temporary segment, then `mkvmerge` concatenates the segments.
 
-## Crop trajectory: `direct_center_crop_trajectory`
+## Crop trajectories
 
-This is the production crop path. The legacy `CropController` (an
-online, stateful smooth crop) still exists for the smooth-mode crop
-path, but `direct_center` is the default and where day-to-day work
-happens.
+`dolly` is the production and default crop mode. It solves the full crop path
+offline, then applies its bounded containment fixed point. If that solve does
+not converge within its fixed iteration limit, Encode uses the existing
+`smooth` path as its defined fallback. An explicit `smooth` configuration uses
+that online `CropController` path directly; an explicit `direct_center`
+configuration centers each crop directly on the solved trajectory. Both remain
+supported baseline modes and neither is selected implicitly when dolly
+converges.
+
+`direct_center_crop_trajectory` supplies the direct-center baseline described
+below. Dolly derives the same per-frame crop targets before its whole-path
+solve.
 
 ### W+H averaging contract
 

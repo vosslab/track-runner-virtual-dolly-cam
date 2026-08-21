@@ -31,8 +31,6 @@ from PySide6.QtWidgets import (
 )
 
 # local repo modules
-import residual_heat_map
-
 
 # Z-values chosen to interleave cleanly with every other overlay item
 # in the scene. Heat composite sits BELOW every box layer so torso /
@@ -123,7 +121,7 @@ class HeatMapOverlay(QObject):
 	current overlay state without polling.
 
 	Args:
-		reader: VideoReader with .width, .height, .frame_count, .read_frame, .fps.
+		reader: FrameSource providing immutable metadata and queued heat requests.
 		scene_transform: SceneTransform passed through to the facade. An
 			identity transform is acceptable; the overlay sets
 			scene_transform_available=False to show the disclosure badge.
@@ -149,7 +147,7 @@ class HeatMapOverlay(QObject):
 		get_pred_fn: object,
 		scene_transform_available: bool = False,
 		is_drawing_fn: object = None,
-	):
+	) -> None:
 		"""Create hidden overlay items and attach them to the scene.
 
 		Args:
@@ -168,6 +166,9 @@ class HeatMapOverlay(QObject):
 		self._get_pred_fn = get_pred_fn
 		self._transform_available = bool(scene_transform_available)
 		self._is_drawing_fn = is_drawing_fn
+		self._heat_request_id: int | None = None
+		self._heat_generation: int = 0
+		self._reader.heat_ready.connect(self._on_heat_ready)
 
 		# Build hidden graphics items. Pixmap, outline, legend are
 		# positioned at compute time; they start offscreen (at 0,0)
@@ -267,6 +268,7 @@ class HeatMapOverlay(QObject):
 	#============================================
 	def hide(self) -> None:
 		"""Hide the overlay and cancel any pending compute (toggle OFF path)."""
+		self._request_generation += 1
 		self._pending_frame = None
 		self._timer.stop()
 		self._hide_items()
@@ -287,6 +289,7 @@ class HeatMapOverlay(QObject):
 		Emits a status string so the user can see the mode is still
 		ON and merely paused by their own action.
 		"""
+		self._request_generation += 1
 		self._pending_frame = None
 		self._timer.stop()
 		self.statusChanged.emit(STATUS_DRAWING_PAUSE)
@@ -294,6 +297,7 @@ class HeatMapOverlay(QObject):
 	#============================================
 	def clear(self) -> None:
 		"""Remove overlay items from the scene. Safe to call twice."""
+		self._request_generation += 1
 		self._pending_frame = None
 		self._timer.stop()
 		for item in (
@@ -313,13 +317,13 @@ class HeatMapOverlay(QObject):
 		# snapshot the generation so _compute_and_display can detect a
 		# newer request_show that lands while this compute runs.
 		generation_at_start = self._request_generation
-		self._compute_and_display(frame_index, generation_at_start)
+		self._dispatch_compute(frame_index, generation_at_start)
 
 	#============================================
-	def _compute_and_display(
+	def _dispatch_compute(
 		self, frame_index: int, generation_at_start: int = 0,
 	) -> None:
-		"""Run the compute and render the overlay (or emit a status).
+		"""Queue one decode-thread heat calculation for the current prediction.
 
 		Three branches in order:
 			1. get_pred_fn returns None -> STATUS_NO_PREDICTION, hidden.
@@ -348,18 +352,18 @@ class HeatMapOverlay(QObject):
 			return
 		pred_center, pred_box = pred
 
-		result = residual_heat_map.compute_heat_map_roi(
-			self._reader, frame_index, self._scene_transform,
-			pred_center, pred_box,
-			fps=self._reader.fps,
-			threshold=self._style["threshold"],
-			fixed_max=self._style["fixed_max"],
-			blend_alpha=self._style["blend_alpha"],
+		self._heat_generation = generation_at_start
+		self._heat_frame_index = frame_index
+		self._heat_request_id = self._reader.request_heat(
+			frame_index, self._scene_transform, pred_center, pred_box, self._style,
 		)
-		if result is None:
-			self.statusChanged.emit(STATUS_EDGE_FRAME)
-			return
 
+	#============================================
+
+	def _on_heat_ready(self, request_id: int, result: object) -> None:
+		"""Apply only the current decode-thread result after stale guards."""
+		if request_id != self._heat_request_id:
+			return
 		# stale-result guard 1: if the user started drawing while this
 		# compute was in flight, drop the result. Applying it would
 		# overwrite the frozen view mid-drag and disrupt the box-draw
@@ -372,7 +376,10 @@ class HeatMapOverlay(QObject):
 		# this compute ran, the user has moved to a different frame and
 		# this result is for the wrong one. Drop it silently; the newer
 		# compute will emit its own status when it completes.
-		if self._request_generation != generation_at_start:
+		if self._request_generation != self._heat_generation:
+			return
+		if result is None:
+			self.statusChanged.emit(STATUS_EDGE_FRAME)
 			return
 		bgr, origin = result
 
@@ -421,7 +428,7 @@ class HeatMapOverlay(QObject):
 			self._badge_bg_item.setVisible(True)
 			self._badge_item.setVisible(True)
 
-		success_status = _status_for_success(frame_index)
+		success_status = _status_for_success(self._heat_frame_index)
 		self.statusChanged.emit(success_status)
 
 	#============================================

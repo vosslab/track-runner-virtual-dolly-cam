@@ -6,10 +6,10 @@ frame pairs using phase correlation. Stores results as durable artifacts for reu
 
 # Standard Library
 import concurrent.futures
+import collections.abc
 import multiprocessing
 import os
 import time
-from dataclasses import dataclass
 
 # PIP3 modules
 import cv2
@@ -17,10 +17,23 @@ import numpy
 import rich.progress
 
 # local repo modules
-import tr_paths
 import interval_solver
+import tr_paths
 import tr_video_identity
 import common_tools.frame_reader
+import camera_motion_artifact
+
+# Compatibility re-exports for established camera_motion callers.
+MotionTrack = camera_motion_artifact.MotionTrack
+MOTION_MODEL_FIXED = camera_motion_artifact.MOTION_MODEL_FIXED
+MOTION_MODEL_DISCRETE = camera_motion_artifact.MOTION_MODEL_DISCRETE
+MOTION_MODEL_CONTINUOUS = camera_motion_artifact.MOTION_MODEL_CONTINUOUS
+VALID_MOTION_MODELS = camera_motion_artifact.VALID_MOTION_MODELS
+_estimator_type_to_model = camera_motion_artifact._estimator_type_to_model
+_motion_model_from_config = camera_motion_artifact._motion_model_from_config
+save_motion_cache = camera_motion_artifact.save_motion_cache
+load_motion_cache = camera_motion_artifact.load_motion_cache
+load_active_camera_motion_or_fail = camera_motion_artifact.load_active_camera_motion_or_fail
 
 
 #============================================
@@ -28,7 +41,7 @@ def _reader_geometry(reader: object) -> tuple[int, int, int]:
 	"""Return (bin_factor, processed_width, processed_height) for any reader.
 
 	FrameReader exposes a `.geometry` attribute via FrameGeometry; other
-	readers (VideoReader, synthetic test stubs) report the source frame
+	readers (FrameReader, synthetic test stubs) report the source frame
 	dims and bin_factor=1.
 	"""
 	geom = getattr(reader, "geometry", None)
@@ -54,29 +67,6 @@ def _make_motion_progress() -> rich.progress.Progress:
 		manager and call `add_task("  camera motion", total=...)`.
 	"""
 	return interval_solver.make_solve_progress()
-
-
-#============================================
-@dataclass
-class MotionTrack:
-	"""Per-frame camera motion and quality metrics.
-
-	All arrays have length total_frames (number of frames in the video).
-
-	Attributes:
-		dx: numpy array of per-frame x translations (pixels).
-		dy: numpy array of per-frame y translations (pixels).
-		scale: numpy array of per-frame scale factors (1.0 = no change).
-			For `fixed_zoom`, this is always 1.0 and is not persisted to
-			disk, but the field is kept in memory so downstream
-			SceneTransform code works uniformly across motion models.
-		quality: numpy array of per-frame confidence (phase correlation
-			response). Consumed by scoring.py for `motion_quality`.
-	"""
-	dx: numpy.ndarray
-	dy: numpy.ndarray
-	scale: numpy.ndarray
-	quality: numpy.ndarray
 
 
 #============================================
@@ -133,19 +123,6 @@ def _pair_scale_logpolar(
 	return scale_ratio
 
 
-#============================================
-# Motion model identifiers used by the persisted artifact and the chunked workers.
-# Defined here (above the estimators) so they are picklable through the
-# multiprocessing boundary alongside _measure_pairs_in_range without
-# forward-reference gymnastics.
-MOTION_MODEL_FIXED = "fixed_zoom"
-MOTION_MODEL_DISCRETE = "discrete_zoom"
-MOTION_MODEL_CONTINUOUS = "continuous_zoom"
-
-VALID_MOTION_MODELS = frozenset({
-	MOTION_MODEL_FIXED, MOTION_MODEL_DISCRETE, MOTION_MODEL_CONTINUOUS,
-})
-
 # Hann-window gate for fixed_zoom. Matches the long-standing rule
 # in FixedZoomEstimator: build a Hann window only when the frame is
 # square and at most this size; otherwise pass None to phaseCorrelate.
@@ -177,7 +154,7 @@ _PROGRESS_FLUSH_SECONDS = 10.0
 
 
 #============================================
-def _worker_init_progress(counter) -> None:
+def _worker_init_progress(counter: object) -> None:
 	"""ProcessPool initializer: stash the shared progress counter.
 
 	Called once per worker process at pool spawn. The counter is a
@@ -248,11 +225,11 @@ def _build_hann_for_model(
 
 #============================================
 def _measure_pairs_in_range(
-	reader,
+	reader: object,
 	start_idx: int,
 	end_idx: int,
 	model_name: str,
-	on_pair=None,
+	on_pair: collections.abc.Callable[[], None] | None = None,
 ) -> tuple:
 	"""Measure consecutive frame pairs over [start_idx, end_idx).
 
@@ -272,7 +249,7 @@ def _measure_pairs_in_range(
 	Args:
 		reader: Frame reader with `read_frame(idx)` returning a BGR
 			numpy array (or None past end). Pickling is irrelevant
-			here -- workers always pass a freshly-opened VideoReader.
+			here -- workers always pass a freshly-opened FrameReader.
 		start_idx: First frame index whose pair to measure (>= 1).
 		end_idx: One past the last frame index to measure.
 		model_name: Selects translation/scale handling.
@@ -312,7 +289,7 @@ def _measure_pairs_in_range(
 	frame_h, frame_w = prev_gray.shape
 	hann_window = _build_hann_for_model(model_name, frame_w, frame_h)
 	# walk forward; the reader's sequential fast-path (FrameReader
-	# strategy 0 / VideoReader _next_frame) avoids cap.set() per
+	# strategy 0 / FrameReader sequential path) avoids cap.set() per
 	# frame so consecutive read_frame calls only do one cv2 read.
 	for k in range(n):
 		frame_idx = start_idx + k
@@ -357,7 +334,7 @@ def _measure_pairs_in_range(
 
 #============================================
 def _estimate_chunk_pairs(args: tuple) -> tuple:
-	"""ProcessPool worker: open a VideoReader and measure one chunk.
+	"""ProcessPool worker: open a FrameReader and measure one chunk.
 
 	Designed for `concurrent.futures.ProcessPoolExecutor.map` /
 	`submit`. All arguments are simple picklable values; the reader is
@@ -565,7 +542,7 @@ def _estimate_parallel(
 
 #============================================
 def _run_measurement(
-	reader,
+	reader: object,
 	total_frames: int,
 	model_name: str,
 	n_chunks: int,
@@ -581,7 +558,7 @@ def _run_measurement(
 
 	When `n_chunks > 1` the reader must expose a `video_path`
 	attribute so workers can reopen the file in their own processes.
-	`video_io.VideoReader` provides this; synthetic test readers do
+	`common_tools.frame_reader.FrameReader` provides this; synthetic test readers do
 	not, so they must use `n_chunks=1`.
 
 	Args:
@@ -645,7 +622,7 @@ class MotionEstimator:
 	#============================================
 	def estimate(
 		self,
-		reader,
+		reader: object,
 		config: dict,
 	) -> MotionTrack:
 		"""Estimate per-frame camera motion from video frames.
@@ -678,7 +655,7 @@ class FixedZoomEstimator(MotionEstimator):
 	"""
 
 	#============================================
-	def __init__(self, window_size: int = 64):
+	def __init__(self, window_size: int = 64) -> None:
 		"""Initialize FixedZoomEstimator.
 
 		Args:
@@ -689,7 +666,7 @@ class FixedZoomEstimator(MotionEstimator):
 	#============================================
 	def estimate(
 		self,
-		reader,
+		reader: object,
 		config: dict,
 		n_chunks: int = 1,
 	) -> MotionTrack:
@@ -702,7 +679,7 @@ class FixedZoomEstimator(MotionEstimator):
 			n_chunks: Internal knob. `1` -> existing serial measurement
 				path. `>1` -> dispatch chunk workers via
 				`_estimate_parallel`; the reader must expose a
-				`video_path` attribute (any `video_io.VideoReader` does).
+			`video_path` attribute (as provided by FrameReader).
 
 		Returns:
 			MotionTrack with translation and quality metrics.
@@ -932,253 +909,8 @@ class ContinuousZoomEstimator(MotionEstimator):
 
 
 #============================================
-
-# Per-model required array sets. Fixed zoom carries no scale because
-# it is constant 1.0 by construction; writing it would be pure ballast.
-# (Motion-model identifiers MOTION_MODEL_FIXED / DISCRETE / CONTINUOUS
-# and VALID_MOTION_MODELS are defined near the top of the module so
-# they are available to the chunked-worker code path.)
-_REQUIRED_ARRAYS = {
-	MOTION_MODEL_FIXED: ("dx", "dy", "quality"),
-	MOTION_MODEL_DISCRETE: ("dx", "dy", "scale", "quality"),
-	MOTION_MODEL_CONTINUOUS: ("dx", "dy", "scale", "quality"),
-}
-
-
-def _estimator_type_to_model(estimator_type: str) -> str:
-	"""Map a config-level estimator type string to a motion_model label."""
-	if estimator_type in ("FixedZoomEstimator", "fixed"):
-		return MOTION_MODEL_FIXED
-	if estimator_type in (
-		"DiscreteZoomEstimator", "discrete", "iphone_discrete",
-	):
-		return MOTION_MODEL_DISCRETE
-	if estimator_type in ("ContinuousZoomEstimator", "continuous"):
-		return MOTION_MODEL_CONTINUOUS
-	raise ValueError(f"unsupported estimator type: {estimator_type}")
-
-
-def _motion_model_from_config(config: dict) -> str:
-	"""Resolve the motion_model label implied by the current config.
-
-	Reads `motion.estimator.type` if present; otherwise falls back to the
-	`camera.zoom_type` alias (`fixed`/`discrete`/`continuous`); otherwise
-	defaults to `fixed`. Both keys are optional in the YAML schema, so
-	chained-default `.get(...)` is intentional here.
-	"""
-	estimator_config = config.get("motion", {}).get("estimator", {})
-	estimator_type = estimator_config.get("type")
-	if estimator_type is None:
-		estimator_type = config.get("camera", {}).get("zoom_type", "fixed")
-	motion_model = _estimator_type_to_model(estimator_type)
-	return motion_model
-
-
-#============================================
-def save_motion_cache(
-	motion_track: MotionTrack,
-	cache_path: str,
-	motion_model: str,
-	video_identity: dict,
-	bin_factor: int = 1,
-) -> None:
-	"""Save motion track to the canonical camera_motion.npz file.
-
-	Writes per-model arrays (fixed_zoom omits `scale`; discrete and
-	continuous include it) plus `motion_model`, `video_identity_basename`,
-	`frame_count`, and `bin_factor` as artifact-identity metadata. All
-	per-frame arrays are stored as float32. No `event_flags`. This is a
-	durable solved-result artifact, not cache.
-
-	bin_factor is persisted as identity metadata (cache-key bookkeeping,
-	NOT an on-disk schema change). The phase-correlation estimator runs on
-	PROCESSED frames and upscales dx/dy by bin_factor to SOURCE before
-	storage, so the stored SOURCE track depends on the analysis bin even
-	though its units are SOURCE. A bin change must recompute camera motion;
-	`load_motion_cache` treats a bin mismatch as a stale artifact.
-
-	Args:
-		motion_track: MotionTrack instance to save.
-		cache_path: Target NPZ file path at
-			`<video>.track_runner.camera_motion.npz`. This is the
-			canonical single-file solved artifact per video. If motion_model
-			differs from the stored value on load, the stored version is
-			treated as stale and recomputed.
-		motion_model: One of MOTION_MODEL_{FIXED,DISCRETE,CONTINUOUS}.
-		video_identity: dict carrying at least `basename` and
-			`frame_count`; persisted so a stale artifact can be detected
-			without re-probing the video.
-	"""
-	if motion_model not in VALID_MOTION_MODELS:
-		raise ValueError(f"unknown motion_model: {motion_model}")
-	tr_paths.ensure_parent_dir(cache_path)
-	arrays = {
-		"motion_model": numpy.frombuffer(
-			motion_model.encode("utf-8"), dtype=numpy.uint8
-		),
-		"video_identity_basename": numpy.frombuffer(
-			str(video_identity["basename"]).encode("utf-8"),
-			dtype=numpy.uint8,
-		),
-		"frame_count": numpy.asarray(
-			int(video_identity["frame_count"]), dtype=numpy.int64,
-		),
-		"bin_factor": numpy.asarray(int(bin_factor), dtype=numpy.int64),
-		"dx": numpy.asarray(motion_track.dx, dtype=numpy.float32),
-		"dy": numpy.asarray(motion_track.dy, dtype=numpy.float32),
-		"quality": numpy.asarray(motion_track.quality, dtype=numpy.float32),
-	}
-	# fixed zoom omits scale; other models include it
-	if motion_model != MOTION_MODEL_FIXED:
-		arrays["scale"] = numpy.asarray(
-			motion_track.scale, dtype=numpy.float32,
-		)
-	numpy.savez(cache_path, **arrays)
-
-
-#============================================
-def load_motion_cache(
-	cache_path: str,
-	expected_motion_model: str | None = None,
-	expected_bin_factor: int | None = None,
-) -> MotionTrack | None:
-	"""Load motion track from camera_motion.npz.
-
-	Returns None if the file does not exist OR the persisted
-	`motion_model` differs from `expected_motion_model` OR the persisted
-	`bin_factor` differs from `expected_bin_factor`. A stale artifact
-	(mismatched motion_model or bin_factor) is treated as absent so the
-	caller recomputes and overwrites atomically. No merge, no partial reuse.
-
-	The phase-correlation estimator runs on PROCESSED frames, so the stored
-	SOURCE dx/dy depend on the analysis bin even though their units are
-	SOURCE. A bin change must recompute camera motion. A legacy artifact
-	written before bin_factor was persisted has no `bin_factor` key; it is
-	treated as a bin_factor=1 solve.
-
-	For `fixed_zoom`, the on-disk file carries no `scale` array; the
-	loader synthesizes an all-ones scale array so downstream
-	SceneTransform code sees the same shape regardless of model.
-
-	Args:
-		cache_path: Path to `<video>.track_runner.camera_motion.npz`.
-		expected_motion_model: Current motion_model derived from config
-			(one of MOTION_MODEL_*); if provided and disagreeing with
-			the stored value, the artifact is treated as stale and None
-			is returned.
-
-	Returns:
-		MotionTrack instance, or None if missing / stale / unknown
-		motion_model.
-
-	Raises:
-		RuntimeError: If the file exists but a required per-model
-			array is missing.
-	"""
-	if not os.path.isfile(cache_path):
-		return None
-	with numpy.load(cache_path, allow_pickle=False) as npz:
-		motion_model = bytes(npz["motion_model"]).decode("utf-8")
-		if motion_model not in VALID_MOTION_MODELS:
-			raise RuntimeError(
-				f"unknown motion_model {motion_model!r} in {cache_path}; "
-				f"run tools/_migrate_tr_config.py to archive and regenerate"
-			)
-		# stale artifact: behave as if file is absent so caller recomputes
-		if expected_motion_model is not None and motion_model != expected_motion_model:
-			return None
-		# bin staleness: a legacy artifact (no bin_factor key) is a bin=1
-		# solve. A bin mismatch means the stored SOURCE track was computed at
-		# a different analysis resolution, so it is stale and must recompute.
-		if expected_bin_factor is not None:
-			if "bin_factor" in npz.files:
-				stored_bin_factor = int(npz["bin_factor"])
-			else:
-				stored_bin_factor = 1
-			if stored_bin_factor != int(expected_bin_factor):
-				return None
-		required = _REQUIRED_ARRAYS[motion_model]
-		for key in required:
-			if key not in npz.files:
-				raise RuntimeError(
-					f"motion artifact missing required array {key!r} "
-					f"for model {motion_model} in {cache_path}"
-				)
-		dx = numpy.asarray(npz["dx"], dtype=numpy.float32)
-		dy = numpy.asarray(npz["dy"], dtype=numpy.float32)
-		quality = numpy.asarray(npz["quality"], dtype=numpy.float32)
-		if motion_model == MOTION_MODEL_FIXED:
-			# synthesize a constant-1.0 scale so downstream code sees
-			# a uniform MotionTrack shape regardless of model
-			scale = numpy.ones(len(dx), dtype=numpy.float32)
-		else:
-			scale = numpy.asarray(npz["scale"], dtype=numpy.float32)
-		# Internal consistency check: if frame_count is persisted, verify
-		# it agrees with the length of the dx array. Mismatches indicate
-		# file corruption or a partially-written file.
-		if "frame_count" in npz.files:
-			persisted_frame_count = int(npz["frame_count"])
-			actual_length = len(dx)
-			if persisted_frame_count != actual_length:
-				raise RuntimeError(
-					f"camera_motion.npz frame_count={persisted_frame_count} "
-					f"but dx array has {actual_length} entries; file is corrupt"
-				)
-	motion = MotionTrack(dx=dx, dy=dy, scale=scale, quality=quality)
-	return motion
-
-
-#============================================
-def load_active_camera_motion_or_fail(
-	input_file: str,
-	config: dict,
-	expected_bin_factor: int | None = None,
-) -> MotionTrack:
-	"""Load the canonical camera-motion artifact from disk.
-
-	Refine entry point. Loads the canonical solved artifact file
-	`<video>.track_runner.camera_motion.npz`. Refine never recomputes
-	Stage 1, so a missing file, a stored motion_model that disagrees with
-	the current config, or a stored bin_factor that disagrees with the
-	refine run's bin raises with a "run solve first" message.
-
-	Args:
-		input_file: Path to the input video.
-		config: Configuration dict with motion estimator settings.
-		expected_bin_factor: The refine run's bin_factor. When provided and
-			it disagrees with the stored bin, the artifact is treated as
-			stale (the stored SOURCE track was computed at a different
-			analysis resolution) and the load fails. None skips the check.
-
-	Returns:
-		MotionTrack from the canonical solved artifact file.
-
-	Raises:
-		RuntimeError: If the artifact file is missing or its stored
-			motion_model / bin_factor does not match. Tells the caller to
-			run solve first.
-	"""
-	expected_motion_model = _motion_model_from_config(config)
-	cache_path = tr_paths.default_camera_motion_path(input_file)
-	if not os.path.isfile(cache_path):
-		raise RuntimeError(
-			"Camera-motion artifact for this solve is missing."
-			" Run solve first."
-		)
-	cached = load_motion_cache(
-		cache_path, expected_motion_model, expected_bin_factor,
-	)
-	if cached is None:
-		raise RuntimeError(
-			"Camera-motion artifact for this solve is missing."
-			" Run solve first."
-		)
-	return cached
-
-
-#============================================
 def precompute_camera_motion(
-	reader,
+	reader: object,
 	config: dict,
 	input_file: str,
 	video_info: dict,
@@ -1215,6 +947,7 @@ def precompute_camera_motion(
 		canonical_path,
 		expected_motion_model=motion_model,
 		expected_bin_factor=bin_factor,
+		expected_video_identity=video_identity,
 	)
 	if cached_motion is not None:
 		return cached_motion
@@ -1233,8 +966,7 @@ def precompute_camera_motion(
 	motion = estimator.estimate(
 		reader, config, n_chunks=n_chunks,
 	)
-	# save to canonical artifact path atomically (numpy.savez overwrites
-	# in place).
+	# Save to the canonical artifact through the same-directory atomic writer.
 	save_motion_cache(
 		motion, canonical_path, motion_model, video_identity,
 		bin_factor=bin_factor,

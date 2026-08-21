@@ -36,8 +36,8 @@ for seed in raw['seeds']:
     cx = box[0] + box[2] / 2.0     # manual derivation, easy to get wrong
 ```
 
-`state_io.load_seeds` migrates legacy schema versions, strips banned
-fields, and calls `_derive_seed_geometry` on every seed so `cx/cy/w/h`
+`state_io.load_seeds` validates the current seed schema, rejects banned
+stored fields, and calls `_derive_seed_geometry` on every seed so `cx/cy/w/h`
 are attached in memory as floats. Source: `track_runner/state_io.py`
 constants `CANONICAL_SEED_KEYS` and `DERIVED_SEED_KEYS`. Schema details
 live in [TR_CONFIG_FILES.md](TR_CONFIG_FILES.md).
@@ -100,8 +100,8 @@ Do this:
 ```python
 import camera_motion
 import scene_coords
-motion_track = camera_motion.load_motion_cache(
-    f'tr_config/{video_basename}.track_runner.camera_motion.npz'
+motion_track = camera_motion.load_active_camera_motion_or_fail(
+    input_file, config, expected_bin_factor=bin_factor, video_info=video_info,
 )
 scene_transform = scene_coords.SceneTransform(motion_track)
 ```
@@ -210,12 +210,12 @@ crop encodes transparency so the blending is correct on the first try.
 ## Use observe_blob_at for blob extraction with gates
 
 ```python
+import common_tools.coord_space as coord_space
 import residual_motion
 obs = residual_motion.observe_blob_at(
     frame_index=frame_index,
-    pred_center=(cx, cy),
-    pred_box=(w, h),
-    local_tangent=(tx, ty, nx, ny),
+    pred_center=coord_space.ProcessedPoint(cx=cx, cy=cy),
+    pred_box=coord_space.ProcessedBox(cx=cx, cy=cy, w=w, h=h),
     scene_transform=scene_transform,
     reader=reader,
     residual_cache={},
@@ -227,15 +227,14 @@ obs = residual_motion.observe_blob_at(
     trace_sink=None,
 )
 if obs is not None:
-    bcx, bcy = obs.center_pixel
+    bcx, bcy = obs.center_pixel.cx, obs.center_pixel.cy
     conf = obs.confidence
 ```
 
 `observe_blob_at` runs the production pipeline: ROI crop -> residual ->
-DoG band-pass -> extract_frame_blobs -> corridor filter -> winner
-selection. It returns a `BlobObservation` or None. Every gate input is
-derived from your `pred_center`, `pred_box`, and `local_tangent`, so the
-function is Hermite-clean when the caller supplies a Hermite-free prior.
+DoG band-pass -> extract_frame_blobs -> optional acceptance box -> strongest
+eligible image component. It returns a `BlobObservation` or None. The API
+does not infer a track direction or modify trajectory geometry.
 
 Do not bypass it by calling `compute_residual_for_frame` +
 `extract_frame_blobs` directly. The pipeline composition matters: a
@@ -275,7 +274,7 @@ prefer one of these in order:
 1. Pass `out_arrays` or `trace_sink` if the primitive accepts one.
    `compute_heat_map_roi` accepts `out_arrays` for the four intermediate
    stages; `observe_blob_at` accepts `trace_sink` for residual + raw
-   blobs + corridor blobs + winner + DoG + validity mask.
+   blobs + candidate blobs + winner + DoG + validity mask.
 2. Extend the primitive in `track_runner/` with a tested patch.
 3. Last resort: copy the primitive into a `_temp_*` experiment file
    with a comment naming the source function and the divergence reason.

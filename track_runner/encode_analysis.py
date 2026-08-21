@@ -10,11 +10,10 @@ kind they are. It does not auto-configure encode settings.
 
 # Standard Library
 import math
-import os
 import statistics
 
-# PIP3 modules
-import yaml
+# local repo modules
+import encode_analysis_report
 
 
 # instability region cause categories (heuristic labels)
@@ -766,8 +765,8 @@ def analyze_solver_context(
 ) -> dict:
 	"""Solver-quality metrics from intervals, diagnostics, and seeds.
 
-	Extracts FWD/BWD convergence error, seed density, desert count,
-	identity score, and competitor margin statistics.
+	Extracts FWD/BWD agreement, seed density, desert count, and current
+	velocity, size, and motion-quality statistics.
 
 	Args:
 		interval_results: List of solved interval result dicts, sorted
@@ -783,10 +782,12 @@ def analyze_solver_context(
 		return {
 			"seed_density": 0.0,
 			"desert_count": 0,
-			"fwd_bwd_convergence_median": 0.0,
-			"fwd_bwd_convergence_p90": 0.0,
-			"identity_score_median": 0.0,
-			"competitor_margin_median": 0.0,
+			"seed_gap_mean_s": 0.0,
+			"seed_gap_max_s": 0.0,
+			"top_seed_gaps": [],
+			"velocity_consistency_median": 0.0,
+			"size_consistency_median": 0.0,
+			"motion_quality_median": 0.0,
 		}
 	# compute total duration from intervals
 	first_start = int(interval_results[0]["start_frame"])
@@ -835,7 +836,7 @@ def analyze_solver_context(
 			range(1, len(seed_frames)),
 			key=lambda i: -(seed_frames[i] - seed_frames[i - 1]),
 		)
-		for i in ranked[:ANALYZE_TOP_DEFAULT]:
+		for i in ranked[:encode_analysis_report.ANALYZE_TOP_DEFAULT]:
 			start_f = int(seed_frames[i - 1])
 			end_f = int(seed_frames[i])
 			top_seed_gaps.append({
@@ -844,47 +845,16 @@ def analyze_solver_context(
 				"midpoint_frame": (start_f + end_f) // 2,
 				"gap_s": round((end_f - start_f) / fps, 1),
 			})
-	# extract per-interval scores from interval_score dict
-	# analytical mode (v3): has velocity_consistency, size_consistency
-	# optical-flow mode (v2): has identity_score, competitor_margin, meeting_point_error
-	convergence_errors = []
+	# Extract current per-interval score fields.
 	velocity_consistencies = []
 	size_consistencies = []
 	motion_qualities = []
-	# legacy v2 fields
-	identity_scores = []
-	competitor_margins = []
-	# detect if analytical or legacy mode from first interval
-	is_analytical = False
 	for result_item in interval_results:
-		iscore = result_item.get("interval_score", {})
-		if "velocity_consistency" in iscore:
-			is_analytical = True
-		break
-	for result_item in interval_results:
-		iscore = result_item.get("interval_score", {})
-		if is_analytical:
-			# analytical mode (v3): direct field extraction
-			vel_cons = iscore.get("velocity_consistency", 0.5)
-			velocity_consistencies.append(float(vel_cons))
-			size_cons = iscore.get("size_consistency", 0.5)
-			size_consistencies.append(float(size_cons))
-			mq = iscore.get("motion_quality", 1.0)
-			motion_qualities.append(float(mq))
-		else:
-			# legacy v2: old field names
-			mpe_list = iscore.get("meeting_point_error", [])
-			for mpe in mpe_list:
-				center_err = mpe.get("center_err_px")
-				if center_err is not None:
-					convergence_errors.append(float(center_err))
-			id_score = iscore.get("identity_score")
-			if id_score is not None:
-				identity_scores.append(float(id_score))
-			margin = iscore.get("competitor_margin")
-			if margin is not None:
-				competitor_margins.append(float(margin))
-	# compute stats based on mode
+		iscore = result_item["interval_score"]
+		velocity_consistencies.append(float(iscore.get("velocity_consistency", 0.5)))
+		size_consistencies.append(float(iscore.get("size_consistency", 0.5)))
+		motion_qualities.append(float(iscore.get("motion_quality", 1.0)))
+	# Compute current score summaries.
 	result = {
 		"seed_density": seed_density,
 		"desert_count": desert_count,
@@ -892,432 +862,13 @@ def analyze_solver_context(
 		"seed_gap_max_s": seed_gap_max_s,
 		"top_seed_gaps": top_seed_gaps,
 	}
-	if is_analytical:
-		# analytical metrics
-		vel_median = 0.0
-		if velocity_consistencies:
-			vel_median = round(
-				statistics.median(velocity_consistencies), 3,
-			)
-		size_median = 0.0
-		if size_consistencies:
-			size_median = round(
-				statistics.median(size_consistencies), 3,
-			)
-		mq_median = 0.0
-		if motion_qualities:
-			mq_median = round(statistics.median(motion_qualities), 3)
-		result["velocity_consistency_median"] = vel_median
-		result["size_consistency_median"] = size_median
-		result["motion_quality_median"] = mq_median
-	else:
-		# legacy metrics
-		conv_median = 0.0
-		conv_p90 = 0.0
-		if convergence_errors:
-			conv_median = round(
-				statistics.median(convergence_errors), 2,
-			)
-			conv_p90 = round(
-				_percentile(convergence_errors, 0.90), 2,
-			)
-		id_median = 0.0
-		if identity_scores:
-			id_median = round(statistics.median(identity_scores), 3)
-		margin_median = 0.0
-		if competitor_margins:
-			margin_median = round(
-				statistics.median(competitor_margins), 3,
-			)
-		result["fwd_bwd_convergence_median"] = conv_median
-		result["fwd_bwd_convergence_p90"] = conv_p90
-		result["identity_score_median"] = id_median
-		result["competitor_margin_median"] = margin_median
+	result["velocity_consistency_median"] = round(
+		statistics.median(velocity_consistencies), 3,
+	) if velocity_consistencies else 0.0
+	result["size_consistency_median"] = round(
+		statistics.median(size_consistencies), 3,
+	) if size_consistencies else 0.0
+	result["motion_quality_median"] = round(
+		statistics.median(motion_qualities), 3,
+	) if motion_qualities else 0.0
 	return result
-
-
-#============================================
-def format_analysis_report(
-	analysis: dict,
-	solver_context: dict,
-	output_yaml_path: str,
-	regime_summary_line: str = "",
-	canonical_source: str | None = None,
-	decode_source: str | None = None,
-) -> str:
-	"""Format the analysis results as a human-readable console report.
-
-	Args:
-		analysis: Dict from analyze_crop_stability().
-		solver_context: Dict from analyze_solver_context().
-		output_yaml_path: Path where the YAML report was written.
-		regime_summary_line: Optional one-line regime summary string.
-		canonical_source: Original-video basename recorded as the canonical
-			source. When None the line is omitted.
-		decode_source: Decode-video label (fast-read basename, or "original"
-			when no fast-read is in use). When None the line is omitted.
-
-	Returns:
-		Formatted multi-line string for console output.
-	"""
-	summary = analysis["summary"]
-	motion = analysis["motion_stability"]
-	conf = analysis["confidence"]
-	regions = analysis["instability_regions"]
-	dominant = analysis["dominant_symptom"]
-	seeds_suggested = analysis["seed_suggestions"]
-	lines = []
-	lines.append("=== crop path analysis ===")
-	# video provenance: canonical source (original) + decode source label
-	if canonical_source is not None:
-		lines.append(f"  canonical source:   {canonical_source}")
-	if decode_source is not None:
-		lines.append(f"  decode source:      {decode_source}")
-	lines.append(f"  frames:             {summary['frames']}"
-		+ f" ({summary['duration_s']:.1f}s at {summary['fps']:.0f}fps)")
-	lines.append(f"  output size:        {summary['output_size'][0]}x{summary['output_size'][1]}")
-	lines.append("")
-	lines.append("  motion stability:")
-	lines.append(f"    center jerk:      median {motion['center_jerk_p50']} px/f"
-		+ f", p95 {motion['center_jerk_p95']} px/f")
-	lines.append(f"    height jerk:      median {motion['height_jerk_p50']} px/f"
-		+ f", p95 {motion['height_jerk_p95']} px/f")
-	lines.append(f"    crop size CV:     {motion['crop_size_cv']}")
-	lines.append(f"    quant chatter:    {motion['quantization_chatter_fraction'] * 100:.1f}% of frames")
-	lines.append("")
-	lines.append("  confidence:")
-	lines.append(f"    mean:             {conf['mean']}")
-	lines.append(f"    low-conf frames:  {conf['low_conf_fraction'] * 100:.1f}%")
-	lines.append("")
-	# solver context
-	lines.append("  solver context:")
-	lines.append(f"    seed density:     {solver_context['seed_density']} seeds/min")
-	lines.append(f"    desert count:     {solver_context['desert_count']}")
-	lines.append(
-		f"    seed gaps:        mean {solver_context['seed_gap_mean_s']}s, "
-		f"max {solver_context['seed_gap_max_s']}s"
-	)
-	# render metrics based on solver mode
-	if "velocity_consistency_median" in solver_context:
-		# analytical v3 metrics
-		lines.append(
-			f"    velocity consistency: {solver_context['velocity_consistency_median']}",
-		)
-		lines.append(
-			f"    size consistency:     {solver_context['size_consistency_median']}",
-		)
-		mq = solver_context.get("motion_quality_median", "n/a")
-		lines.append(f"    motion quality:      {mq}")
-	else:
-		# legacy v2 metrics
-		lines.append(
-			f"    FWD/BWD conv:     median {solver_context['fwd_bwd_convergence_median']} px"
-			+ f", p90 {solver_context['fwd_bwd_convergence_p90']} px",
-		)
-		lines.append(
-			f"    identity score:   {solver_context['identity_score_median']}",
-		)
-		lines.append(
-			f"    competitor margin: {solver_context['competitor_margin_median']}",
-		)
-	lines.append("")
-	# largest seed gaps (top N): always print so coverage holes show
-	# up alongside instability regions, even on a `analyze`-only run
-	top_gaps = solver_context.get("top_seed_gaps") or []
-	if top_gaps:
-		shown_gaps = top_gaps[:ANALYZE_TOP_DEFAULT]
-		lines.append(f"  largest seed gaps (top {len(shown_gaps)}):")
-		for g in shown_gaps:
-			lines.append(
-				f"    frames {g['start_frame']}-{g['end_frame']}: "
-				f"{g['gap_s']}s (midpoint {g['midpoint_frame']})"
-			)
-		lines.append("")
-	# instability regions (top N)
-	if regions:
-		top_regions = regions[:ANALYZE_TOP_DEFAULT]
-		lines.append(f"  instability regions (top {len(top_regions)}):")
-		for region in top_regions:
-			lines.append(
-				f"    frames {region['start_frame']}-{region['end_frame']}:"
-				+ f" {region['cause']}"
-				+ f" (conf {region['mean_confidence']}"
-				+ f", jerk p95 {region['jerk_p95']})"
-			)
-	else:
-		lines.append("  instability regions: none detected")
-	lines.append("")
-	# diagnosis
-	lines.append("  diagnosis:")
-	lines.append(f"    dominant symptom: {dominant}")
-	if regions:
-		primary = regions[0]
-		lines.append(f"    primary issue: {primary['cause']} (heuristic)")
-		affected = primary["end_frame"] - primary["start_frame"]
-		lines.append(f"    affected frames: {affected}")
-	if seeds_suggested:
-		frame_list = ", ".join(str(f) for f in seeds_suggested[:ANALYZE_TOP_DEFAULT])
-		lines.append(f"    suggested seed frames: {frame_list}")
-	# chatter note
-	chatter = motion["quantization_chatter_fraction"]
-	if chatter > 0.03:
-		lines.append("    secondary: quantization chatter in stationary sections")
-		lines.append("    suggestion: crop controller subpixel smoothing")
-	# regime classification summary (smart mode)
-	if regime_summary_line:
-		lines.append("")
-		lines.append(f"  {regime_summary_line}")
-	lines.append("")
-	lines.append(f"  wrote: {output_yaml_path}")
-	report = "\n".join(lines)
-	return report
-
-
-# Default cap for both the printed report ("instability regions (top N)",
-# "suggested seed frames: ...") and the analyze->seed bridge. The console
-# and the seeding-UI target list stay in sync: what you see is what you
-# seed. Override per-invocation with target/analyze --top N.
-ANALYZE_TOP_DEFAULT = 10
-
-# Minimum spacing (seconds) between target frames emitted by the
-# analyze->seed bridge. Adjacent instability regions can land their
-# peak frames within a few frames of each other; without spacing the
-# user's seeding session ends up with back-to-back targets that all
-# annotate the same moment. 0.5 s is enough to land in a different
-# stride at typical run paces while still allowing two targets per
-# distinct problem area.
-ANALYZE_MIN_SPACING_S = 0.5
-
-# Multiplier on mean seed-gap above which the analyze->seed bridge
-# injects a gap-midpoint target (matches the spirit of the post-session
-# "largest gap" warning, but with a higher bar to avoid pulling targets
-# into already-decent stretches). 2x triggers on routine variance; 4x
-# triggers only on real coverage holes that meaningfully hurt the
-# trajectory.
-ANALYZE_GAP_RATIO_THRESHOLD = 4.0
-
-
-#============================================
-def load_analyze_target_frames(
-	analysis_path: str,
-	frame_count: int,
-	top_n: int = ANALYZE_TOP_DEFAULT,
-	existing_seed_frames: list = None,
-	gap_top_n: int = 0,
-) -> list:
-	"""Read worst-N instability-region peak frames from analyze YAML.
-
-	Bridges the analyze report to the seeding UI. Walks
-	`instability_regions` in worst-first order (sorted descending by
-	`mean_instability` in `_find_instability_regions`) and emits one
-	frame per kept region: `peak_frame`, the max-instability frame
-	inside the region. Falls back to the region midpoint for older
-	YAMLs that predate `peak_frame`.
-
-	Adjacent regions can land their peaks a handful of frames apart,
-	so a min-spacing filter (`ANALYZE_MIN_SPACING_S` seconds, scaled by
-	`summary.fps` from the YAML) skips any region whose peak sits
-	within that window of an already-kept frame. The user gets `top_n`
-	requested *spaced-out* targets, not `top_n` clustered ones from a
-	single dense problem area. Output is sorted ascending by frame for
-	the seeding UI.
-
-	Why not slice `seed_suggestions[:top_n]`: that list is the same
-	per-region peak frames, but it is intentionally sorted ASCENDING by
-	frame number (`_suggest_seed_frames`) for the printed report, so
-	slicing it picks the earliest N problem spots in time, not the N
-	worst by instability. Walking `instability_regions[:top_n]` keeps
-	the worst-first ordering.
-
-	Args:
-		analysis_path: Path to the encode_analysis.yaml file written by
-			`analyze` mode.
-		frame_count: Total frames in the video; used to clamp out-of-range
-			suggestions defensively.
-		top_n: Maximum number of worst-ranked regions to keep AFTER the
-			min-spacing filter (defaults to ANALYZE_TOP_DEFAULT). Use a
-			large number to take everything.
-		gap_top_n: Number of largest seed-gap midpoints to include
-			explicitly (corresponds to the analyze/target `-g/--gaps N`
-			flag). 0 disables explicit gap targets; the auto-injection
-			of one gap target when the largest gap exceeds
-			ANALYZE_GAP_RATIO_THRESHOLD * mean still applies regardless.
-
-	Returns:
-		Sorted, deduplicated list of frame indices to seed at. Empty
-		list if the file has no regions.
-	"""
-	if not os.path.isfile(analysis_path):
-		raise RuntimeError(
-			f"no encode_analysis.yaml found at {analysis_path}; "
-			f"run 'analyze' first"
-		)
-	with open(analysis_path) as f:
-		doc = yaml.safe_load(f)
-	if not isinstance(doc, dict):
-		raise RuntimeError(f"malformed encode_analysis.yaml at {analysis_path}")
-	# fps is required to convert ANALYZE_MIN_SPACING_S into a frame
-	# threshold; the analyze writer always sets summary.fps so a missing
-	# field means the YAML is from a non-analyze writer or corrupted.
-	summary = doc.get("summary") or {}
-	fps = float(summary["fps"])
-	min_gap_frames = int(round(ANALYZE_MIN_SPACING_S * fps))
-	# treat already-seeded frames as "kept" for the spacing filter so
-	# `-t N` returns N un-seeded targets, not N regions some of which the
-	# UI will silently drop. Caller passes the current seed frame list;
-	# missing/None means "do not filter against seeds".
-	existing = sorted(existing_seed_frames) if existing_seed_frames else []
-	kept = []
-	# Gap-coverage target: if there's a seed gap more than 2x the
-	# average (matching the post-session "largest gap" warning in
-	# seed_controller._print_seed_stats), prepend its midpoint as the
-	# top-priority target. Coverage matters at least as much as local
-	# instability -- if the runner is unseeded for 3 seconds, fixing
-	# that gap usually helps the trajectory more than touching up
-	# another peak in an already-dense region. One gap target per call;
-	# the user can re-run analyze after seeding it to surface the next.
-	if len(existing) >= 2:
-		gaps = [
-			(existing[i] - existing[i - 1], i)
-			for i in range(1, len(existing))
-		]
-		max_gap, max_idx = max(gaps)
-		mean_gap = sum(g for g, _ in gaps) / len(gaps)
-		if max_gap > ANALYZE_GAP_RATIO_THRESHOLD * mean_gap and max_gap > min_gap_frames * 2:
-			gap_mid = (existing[max_idx - 1] + existing[max_idx]) // 2
-			if 0 <= gap_mid < frame_count:
-				gap_s = max_gap / fps
-				mean_s = mean_gap / fps
-				print(
-					f"  injected gap-coverage target at frame {gap_mid} "
-					f"(gap {gap_s:.1f}s vs mean {mean_s:.1f}s, "
-					f">{ANALYZE_GAP_RATIO_THRESHOLD:.0f}x)"
-				)
-				kept.append(gap_mid)
-	# Explicit `--gaps N` targets: read the pre-ranked top_seed_gaps
-	# block from the YAML's solver_context. Semantics: "ensure the top
-	# N gaps are in the target list" -- iterate `top_seed_gaps[:N]`
-	# and add each midpoint unless an existing kept frame is already
-	# within min_gap_frames of it. So `-t 4 -g 4` with the largest
-	# gap also auto-injected gives 4 peaks + 4 gap midpoints minus the
-	# auto/explicit duplicate = 7 distinct frames, matching the user's
-	# mental model. No threshold on gap size -- explicit ask, explicit
-	# delivery.
-	if gap_top_n > 0:
-		top_gaps = (
-			(doc.get("solver_context") or {}).get("top_seed_gaps") or []
-		)
-		for g in top_gaps[:gap_top_n]:
-			mid = int(g["midpoint_frame"])
-			if not (0 <= mid < frame_count):
-				continue
-			if any(abs(mid - k) < min_gap_frames for k in kept):
-				continue
-			kept.append(mid)
-	# Peak budget: track peaks added separately from total kept so the
-	# auto-injected gap and any explicit `-g N` entries do not eat into
-	# the `-t N` peak count. `-t 3` means up to 3 region peaks, walking
-	# the full region list (worst-first) until we either find 3 peaks
-	# that pass the spacing/seed filters or exhaust the list.
-	peaks_added = 0
-	for region in doc.get("instability_regions") or []:
-		if peaks_added >= top_n:
-			break
-		start = int(region["start_frame"])
-		end = int(region["end_frame"])
-		# peak_frame field added 2026-04-27; older YAMLs lack it
-		if "peak_frame" in region:
-			peak = int(region["peak_frame"])
-		else:
-			peak = (start + end) // 2
-		if not (0 <= peak < frame_count):
-			continue
-		# spacing filter: regions arrive worst-first, earlier wins on
-		# ties; existing seeds also count so we never re-emit a target
-		# the UI will dedupe away.
-		near_kept = any(abs(peak - k) < min_gap_frames for k in kept)
-		near_seed = any(abs(peak - s) < min_gap_frames for s in existing)
-		if near_kept or near_seed:
-			continue
-		kept.append(peak)
-		peaks_added += 1
-	return sorted(kept)
-
-
-#============================================
-def write_analysis_yaml(
-	analysis: dict,
-	solver_context: dict,
-	output_path: str,
-	regime_spans: list = None,
-	canonical_source: str | None = None,
-	decode_source: str | None = None,
-) -> None:
-	"""Write the analysis results as a diagnostic YAML file.
-
-	Args:
-		analysis: Dict from analyze_crop_stability().
-		solver_context: Dict from analyze_solver_context().
-		output_path: File path for the YAML output.
-		regime_spans: Optional list of regime span dicts to include.
-		canonical_source: Original-video basename recorded as the canonical
-			source. When None the field is omitted.
-		decode_source: Decode-video label (fast-read basename, or "original"
-			when no fast-read is in use). When None the field is omitted.
-	"""
-	# build output dict; record video provenance first so report consumers
-	# see both the canonical source (original) and the decode source.
-	doc = {
-		"track_runner_encode_analysis": 1,
-	}
-	if canonical_source is not None:
-		doc["canonical_source"] = canonical_source
-	if decode_source is not None:
-		doc["decode_source"] = decode_source
-	doc.update({
-		"summary": analysis["summary"],
-		"motion_stability": analysis["motion_stability"],
-		"confidence": analysis["confidence"],
-		"instability_regions": analysis["instability_regions"],
-		"dominant_symptom": analysis["dominant_symptom"],
-		"solver_context": solver_context,
-		"seed_suggestions": analysis["seed_suggestions"],
-	})
-	# build diagnosis section
-	regions = analysis["instability_regions"]
-	diagnosis = {}
-	if regions:
-		primary = regions[0]
-		diagnosis["primary_issue"] = f"{primary['cause']} (heuristic)"
-		diagnosis["affected_frames"] = primary["end_frame"] - primary["start_frame"]
-		diagnosis["suggestion_method"] = "instability_region_max_frame"
-	chatter = analysis["motion_stability"]["quantization_chatter_fraction"]
-	if chatter > 0.03:
-		diagnosis["secondary_issue"] = "quantization_chatter (heuristic)"
-		diagnosis["suggestion_secondary"] = "crop controller subpixel smoothing"
-	if diagnosis:
-		doc["diagnosis"] = diagnosis
-	# add regime classification if available
-	if regime_spans:
-		total_frames = analysis["summary"]["frames"]
-		# compute per-regime frame counts
-		regime_counts = {}
-		for span in regime_spans:
-			regime = span["regime"]
-			span_len = span["end_frame"] - span["start_frame"]
-			regime_counts[regime] = regime_counts.get(regime, 0) + span_len
-		regime_pcts = {}
-		for regime, count in regime_counts.items():
-			regime_pcts[regime] = round(100.0 * count / total_frames, 1)
-		doc["regime_summary"] = {
-			"frame_percentages": regime_pcts,
-			"num_transitions": max(0, len(regime_spans) - 1),
-			"spans": regime_spans,
-		}
-	# write with comment header
-	parent_dir = os.path.dirname(os.path.abspath(output_path))
-	os.makedirs(parent_dir, exist_ok=True)
-	with open(output_path, "w") as f:
-		f.write("# auto-generated by track_runner analyze\n")
-		f.write("# this is a diagnostic report, not an encode settings file\n")
-		yaml.safe_dump(doc, f, default_flow_style=False, sort_keys=False)

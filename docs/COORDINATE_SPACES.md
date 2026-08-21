@@ -6,7 +6,7 @@ the other thing is the bug to fix.
 
 This contract was settled on 2026-05-29 ("Option A"). It replaces the older
 "model B" comment (all public coords are SOURCE) that lived in
-[common_tools/frame_reader.py](../common_tools/frame_reader.py); that comment
+[frame_reader.py](../common_tools/frame_reader.py); that comment
 is now deleted.
 
 ## The two spaces
@@ -14,8 +14,8 @@ is now deleted.
 There are exactly two pixel spaces in the analysis pipeline:
 
 - SOURCE -- full-frame pixels at the video's native resolution. This is the
-  storage and consumption space: the per-frame torso-box npz (written and read
-  via `track_runner/state_io.py`) is SOURCE, and the encoder consumes SOURCE.
+  storage and consumption space: the per-frame torso-box NPZ (written and read
+  via `track_runner/torso_box_coords_io.py`) is SOURCE, and the encoder consumes SOURCE.
 - PROCESSED -- post-bin plus goodbox-snap pixels. This is the analysis space:
   the walker decodes frames here, steps here, and draws here. `reader.width`
   and `reader.height` are PROCESSED dimensions.
@@ -48,7 +48,7 @@ Use `--bin N` for an exact override or `--bin 1` as an escape hatch. Use
 
 The entire solve runs in ONE coordinate space (PROCESSED at bin > 1). Conversion
 to SOURCE happens exactly once, at the storage boundary, immediately before
-`state_io.write_torso_box_coords`, via `geometry.processed_to_source` (centers)
+`torso_box_coords_io.write_torso_box_coords`, via `geometry.processed_to_source` (centers)
 and `geometry.processed_to_source_delta` (width/height). Hermite produces SOURCE
 coordinates directly (its `MotionTrack.dx/dy` are stored in SOURCE pixels). The
 walker produces PROCESSED coordinates and must always cross the boundary before
@@ -105,11 +105,11 @@ not a degenerate ROI deep inside the observer.
 | Walker stepping / ROI construction | PROCESSED |
 | `residual_motion.observe_blob_at` INPUTS (`pred_center`, `pred_box`, `roi_override`, `dog_diameter_override`, `acceptance_box`) | PROCESSED |
 | `residual_motion.observe_blob_at` RETURN centroid | SOURCE |
-| `observe_blob_at` trace `corridor_blobs` centroids (`centroid_x`, `centroid_y`) | PROCESSED (full-frame, ROI origin already added back) |
+| `observe_blob_at` trace `candidate_blobs` centroids (`centroid_x`, `centroid_y`) | PROCESSED (full-frame, ROI origin already added back) |
 | `common_tools.in_box_heat.measure_in_box_heat` inputs (`residual_dog`, `validity_mask`, `roi_origin`, `box`) | PROCESSED |
 | `SeedsView.source` | SOURCE (original seed dict, unchanged) |
 | `SeedsView.seeds` | PROCESSED (lazy, via held `FrameGeometry`) |
-| Torso-box npz (`state_io` write/load) | SOURCE |
+| Torso-box NPZ (`torso_box_coords_io` write/load) | SOURCE |
 | `reader.width` / `reader.height` | PROCESSED |
 | Encoder trajectory / crop geometry | SOURCE |
 
@@ -138,7 +138,7 @@ centroid back into a PROCESSED stepping loop.
 ## Enforcement: types are spaces
 
 The enforcement mechanism is typed primitives in
-[common_tools/coord_space.py](../common_tools/coord_space.py)
+[coord_space.py](../common_tools/coord_space.py)
 (`SourcePoint`, `ProcessedPoint`, `SourceBox`, `ProcessedBox`). The rule is:
 
 - The TYPE encodes the SPACE. A `ProcessedPoint` is a processed-space point;

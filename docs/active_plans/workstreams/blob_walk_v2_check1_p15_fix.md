@@ -1,7 +1,7 @@
 # Blob walk v2 Check 1: P15 telemetry-truthfulness fix
 
 Workstream artifact for Check 1 of the blob_walk_v2 validation plan
-([blob_walk_v2_validation_plan.md](../active/blob_walk_v2_validation_plan.md)),
+([blob_walk_v2_validation_plan.md](../../archive/blob_walk_v2_validation_plan.md)),
 addressing audit finding P15
 ([blob_walk_v2_implementation_audit.md](../audits/blob_walk_v2_implementation_audit.md)).
 

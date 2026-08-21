@@ -260,7 +260,7 @@ def _build_parser() -> argparse.ArgumentParser:
 	# Global options go on the main parser so they can precede the
 	# subcommand: track_runner.py -i VIDEO seed --start 45
 	parser = argparse.ArgumentParser(
-		description="track_runner v2: multi-pass runner tracking and crop tool.",
+		description="track_runner: multi-pass runner tracking and crop tool.",
 		epilog=(
 			"Global options (-i, -d, --time-range, etc.) must appear "
 			"before the subcommand. "
@@ -475,7 +475,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 #============================================
 def parse_args() -> argparse.Namespace:
-	"""Parse command-line arguments with subcommands for track_runner v2.
+	"""Parse command-line arguments with subcommands for track_runner.
 
 	Returns:
 		Parsed argparse.Namespace with a 'mode' attribute.

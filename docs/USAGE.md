@@ -1,109 +1,86 @@
-# USAGE.md
+# Usage
 
-How to run the tools in this repository.
+Track Runner follows one selected athlete through a track-meet video. Human
+seed boxes establish runner identity; solve creates the trajectory; encode
+produces the cropped output video.
 
-## reset_repo.py
+## Quick start
 
-`reset_repo.py` is the bootstrap entry point for a new consumer repo cloned from this
-template. It runs an interactive interview (project type, code license, docs license,
-PyPI intent, stage, commit), writes the `REPO_TYPE` marker, installs license files,
-seeds `pyproject.toml` when PyPI is requested, runs propagation, and removes
-template-meta paths.
-
-### Normal use (interactive)
+Use an MKV source. Run the commands from the repository root after installing
+the dependencies described in [INSTALL.md](INSTALL.md).
 
 ```bash
-source source_me.sh && python3 reset_repo.py
+source source_me.sh
+python3 track_runner/track_runner.py -i RACE.mkv setup
+python3 track_runner/track_runner.py -i RACE.mkv seed
+python3 track_runner/track_runner.py -i RACE.mkv solve
+python3 track_runner/track_runner.py -i RACE.mkv encode
 ```
 
-The script interviews you in your terminal. No flags are required for normal use.
+`setup` creates the per-video configuration. `seed` collects human torso-box
+anchors. `solve` writes the current interval-score, torso-coordinate, and
+camera-motion artifacts under `tr_config/`. `encode` reads those artifacts and
+writes the tracked video beside the source unless `-o` selects another path.
 
-### CLI flags
-
-| Flag | Description |
-| --- | --- |
-| `--config <file>` | Supply interview answers from a JSON file (testing/reproducibility mode) |
-| `--dry-run` | Log planned actions without writing any files |
-| `-h` | Show help and exit |
-
-### Config mode (testing/reproducibility interface)
-
-`--config` is intended for automated testing and reproducible resets, not for
-routine human use. Pass a JSON file with the interview answers:
+For a 4K HEVC source, create the optional fast-read decode before setup:
 
 ```bash
-source source_me.sh && python3 reset_repo.py --config my_config.json
+source source_me.sh
+python3 track_runner/track_runner.py -i RACE.mkv prepare
 ```
 
-Config mode is non-interactive: the script reads answers from the file and proceeds
-without prompting. This replaces the interactive interview for the run.
+## Refine a solve
 
-#### JSON schema
-
-| Key | Required | Values | Notes |
-| --- | --- | --- | --- |
-| `project_type` | YES | `python` / `p`, `typescript` / `t`, `rust` / `r`, `other` / `o` | Short alias or full token |
-| `code_license` | YES | SPDX identifier or alias (e.g. `MIT`, `m`, `GPL-3.0`, `g`) | Resolved via `resolve_license` |
-| `docs_license` | no | SPDX identifier or alias | Default: `CC-BY-4.0` |
-| `pypi` | no | `true` / `false` | Default: `false`; Python-only |
-| `stage` | no | `true` / `false` | Default: `true` |
-| `commit` | no | `true` / `false` | Default: `false` |
-
-#### Minimal example
-
-```json
-{
-  "project_type": "python",
-  "code_license": "GPL-3.0"
-}
-```
-
-#### Full example
-
-```json
-{
-  "project_type": "typescript",
-  "code_license": "MIT",
-  "docs_license": "CC-BY-4.0",
-  "stage": false,
-  "commit": false
-}
-```
-
-### Folder-name guard
-
-The script refuses to run when the repo root directory is named exactly
-`starter-repo-template`. This protects the template development checkout from
-accidental destruction.
-
-If you see this error, clone or rename the repo to your project name first:
-
-```
-This repo is named starter-repo-template. Clone or rename it to the consumer project name before running reset.
-```
-
-The guard checks the folder name only; it does not inspect remotes or origin URLs.
-
-### Outside a git repo
-
-Running `reset_repo.py` outside a git repository exits with a clear message
-instead of a raw subprocess traceback.
-
-## E2E test harness
-
-For the clone-based reset E2E harness (LOCAL and REMOTE modes), see
-[E2E_TESTS.md](E2E_TESTS.md) and the inline documentation in
-`tests/meta/e2e/e2e_reset_routing.py`. The harness is template-meta:
-it lives under `tests/meta/e2e/` and is removed by reset.
-
-Run all offline E2E tests:
+Use `target` to find weak intervals and add more seeds. `refine` recalculates
+only the intervals changed by those seeds. `analyze` reports crop-path and
+solver diagnostics without encoding a video. `edit` changes existing seed
+annotations directly.
 
 ```bash
-bash tests/meta/e2e/run_all.sh
+source source_me.sh
+python3 track_runner/track_runner.py -i RACE.mkv target
+python3 track_runner/track_runner.py -i RACE.mkv refine
+python3 track_runner/track_runner.py -i RACE.mkv analyze
+python3 track_runner/track_runner.py -i RACE.mkv encode
 ```
 
-Run a single E2E test:
+## Common commands
 
 ```bash
-source source_me.sh && python3 tests/meta/e2e/e2e_reset_routing.py
+# Show global options and mode names.
+python3 track_runner/track_runner.py --help
+
+# Show options for one mode.
+python3 track_runner/track_runner.py -i RACE.mkv solve --help
+
+# Re-solve without an interactive clear prompt.
+python3 track_runner/track_runner.py -i RACE.mkv solve --yes
+
+# Choose the output path and container.
+python3 track_runner/track_runner.py -i RACE.mkv -o RACE_tracked.mp4 encode
 ```
+
+Global options, including `-i`, `-c`, `-w`, and `--time-range`, appear before
+the mode name. Each mode page in [MODES.md](MODES.md) contains its complete
+current option reference.
+
+## Inputs and outputs
+
+- Input video: one `.mkv` source video.
+- Human input: seed torso boxes in the seed, target, or edit interface.
+- Per-video state: current configuration, seeds, interval scores, torso paths,
+  and camera motion under `tr_config/`.
+- Output video: a cropped tracked MKV by default, or MP4 when the output path
+  uses `.mp4`.
+
+Current artifacts remain bound to their source geometry. A consuming mode
+rejects coordinates or scores from a video with different dimensions or frame
+count; run `solve` to regenerate derived output for the current video.
+
+## More detail
+
+- [MODES.md](MODES.md) lists the workflow and every mode page.
+- [TRACK_RUNNER_KEYBINDINGS.md](TRACK_RUNNER_KEYBINDINGS.md) lists annotation
+  shortcuts.
+- [TR_CONFIG_FILES.md](TR_CONFIG_FILES.md) documents persisted artifacts.
+- [TROUBLESHOOTING.md](TROUBLESHOOTING.md) covers supported recovery steps.

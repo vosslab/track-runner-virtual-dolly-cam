@@ -6,7 +6,7 @@ A Python tool for track-meet videographers that produces a cropped, stabilized v
 
 ## What it produces
 
-Given a wide track meet video, track runner emits a cropped MKV (or MP4 with `--mp4`) that stays centered on the chosen athlete with smooth virtual-dolly motion. Sample inputs and outputs live under `TRACK_VIDEOS/` (gitignored) on a working install. See [docs/modes/ENCODE.md](docs/modes/ENCODE.md) for the encode pipeline and [docs/TRACK_RUNNER_ANALYZE_AND_ENCODE.md](docs/TRACK_RUNNER_ANALYZE_AND_ENCODE.md) for output format details.
+Given a wide track meet video, track runner emits a cropped MKV (or MP4 with `--mp4`) that stays centered on the chosen athlete with smooth virtual-dolly motion. Supply your own video; local media is private and is not included in the repository. See [docs/modes/ENCODE.md](docs/modes/ENCODE.md) for the encode pipeline and [docs/TRACK_RUNNER_ANALYZE_AND_ENCODE.md](docs/TRACK_RUNNER_ANALYZE_AND_ENCODE.md) for output format details.
 
 ## Design philosophy
 

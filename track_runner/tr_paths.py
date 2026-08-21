@@ -93,14 +93,10 @@ def default_seeds_path(input_file: str) -> str:
 
 #============================================
 
-def default_diagnostics_path(input_file: str) -> str:
+def default_interval_scores_path(input_file: str) -> str:
 	"""Return the default interval-scores JSON file path for a given input file.
 
-	File extension renamed from `.diagnostics.json` to
-	`.interval_scores.json` to match the file's sole responsibility
-	(per-interval scoring summary). Function name retained for
-	callsite compatibility; callers continue to refer to this as the
-	"diagnostics path" but the on-disk filename is the new one.
+	The file stores the current per-interval scoring summary.
 
 	Args:
 		input_file: Input media file path.
@@ -110,25 +106,6 @@ def default_diagnostics_path(input_file: str) -> str:
 	"""
 	scores_path = _data_file_path(input_file, ".track_runner.interval_scores.json")
 	return scores_path
-
-#============================================
-
-def default_intervals_path(input_file: str) -> str:
-	"""Return the default torso_box_coords NPZ file path for a given input file.
-
-	Unified artifact containing all per-frame torso boxes (forward, backward,
-	blended interval paths) from stage 1-5 solve.
-	Function name retained for callsite compatibility; the returned path
-	points at the current unified NPZ file.
-
-	Args:
-		input_file: Input media file path.
-
-	Returns:
-		str: Torso-box-coords NPZ file path inside tr_config/.
-	"""
-	coords_path = _data_file_path(input_file, ".track_runner.torso_box_coords.npz")
-	return coords_path
 
 #============================================
 
@@ -220,7 +197,7 @@ def default_camera_motion_path(input_file: str) -> str:
 
 	This is the single authoritative location for the camera-motion
 	NPZ file. The motion_model is recorded as in-NPZ metadata. On load,
-	mismatch with the current camera.zoom_type config triggers recompute
+	mismatch with the current motion estimator config triggers recompute
 	and atomic overwrite.
 
 	Args:

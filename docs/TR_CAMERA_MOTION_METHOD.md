@@ -20,10 +20,9 @@ single scene coordinate system anchored at frame 0. Without this
 prerequisite, seed positions and runner trajectories would be tangled
 with camera pan and zoom.
 
-Stage 1 is the only stage that runs single-threaded in the driver
-process. Its output is then handed to every solver worker via the
-process-pool initializer (see
-[cli.py](../track_runner/cli.py) lines 812-829 and 886-895).
+Stage 1 coordinates per-pair measurement and builds one motion track before
+the interval solver starts. Its output is then handed to every solver worker
+through the process-pool initializer.
 
 ## Output: `MotionTrack`
 
@@ -193,31 +192,31 @@ tr_config/<basename>.track_runner.camera_motion.npz
 
 - `motion_model` (utf-8 bytes): one of `fixed_zoom`, `discrete_zoom`,
   `continuous_zoom`.
-- `video_identity_basename` (utf-8 bytes): video basename, used to
-  detect mistaken cross-video reuse without re-probing.
+- `video_identity` (utf-8 JSON): complete source-video identity, used to
+  reject cache reuse for a different source video.
 - `frame_count` (int64): expected length of the per-frame arrays.
+- `bin_factor` (int64): processed-frame bin used for measurement and required
+  for reuse.
 - `dx`, `dy`, `quality`: float32, length `frame_count`.
 - `scale`: float32, length `frame_count`. Omitted for `fixed_zoom`,
   since it is constant 1.0 by construction.
 
-`load_motion_cache` returns `None` if the file is missing or its
-persisted `motion_model` differs from the current config-derived
-`expected_motion_model`. A stale model is treated as artifact absence
-so the next call recomputes and overwrites the file in place
-(`numpy.savez` is atomic enough for this purpose). There is no merge
-or partial reuse. For `fixed_zoom`, the loader synthesizes a constant
-ones `scale` array so downstream `SceneTransform` code sees the same
-shape regardless of model.
+`load_motion_cache` returns `None` if the file is missing or its persisted
+model, analysis bin, or complete source-video identity disagrees with the
+current run. A stale artifact is treated as absent so `solve` recomputes and
+replaces it; other consuming modes direct the user to run `solve`. There is
+no merge or partial reuse. For `fixed_zoom`, the loader synthesizes a constant
+ones `scale` array so downstream `SceneTransform` code sees the same shape
+regardless of model.
 
 Note: `camera_motion.npz` is **not** tracked in
 `tr_schema.SUPPORTED_ARTIFACT_SCHEMAS`; it does not participate in
 the unified `SCHEMA_VERSION` (see
 [TRACK_RUNNER_CONTRACT.md](TRACK_RUNNER_CONTRACT.md) C9).
-Staleness is determined by comparing the persisted `motion_model`
-against the current configuration. If a future change makes
-camera motion influence the meaning of derived artifacts, that
-contract change is what would justify pulling it under
-`SCHEMA_VERSION`.
+Staleness is determined by comparing the persisted motion model, bin factor,
+and source-video identity with the current run. Camera-motion method changes
+retain this artifact layout and refresh through `solve`; they do not create a
+separate schema-version track.
 
 ## Downstream use
 
@@ -240,18 +239,15 @@ need direct access to `quality`.
   delta in frame-N pixel space. This warp lets residual-motion
   observation cancel out camera pan and zoom before extracting
   motion blobs (see
-  `MOTION_CUE_HEAT_MAP.md`).
+  `TR_MOTION_CUE_HEAT_MAP.md`).
 - The `quality` array feeds confidence scoring as `motion_quality`,
   surfacing intervals where the camera-motion estimate itself was
   shaky.
 
 ## Configuration
 
-Stage 1 reads its estimator selection from the run config. The modern
-key is `motion.estimator.type`; an older alias `camera.zoom_type` is
-honored for back-compat
-([camera_motion.py](../track_runner/camera_motion.py)
-lines 698-704). Accepted values map to the three estimators:
+Stage 1 reads its estimator selection from `motion.estimator.type` in the run
+config. Accepted values map to the three estimators:
 
 | Config value | Estimator |
 | --- | --- |
@@ -259,15 +255,15 @@ lines 698-704). Accepted values map to the three estimators:
 | `DiscreteZoomEstimator`, `discrete`, `iphone_discrete` | `DiscreteZoomEstimator` |
 | `ContinuousZoomEstimator`, `continuous` | `ContinuousZoomEstimator` |
 
-The repo default is `fixed`, set in
-[track_runner.config.yaml](../track_runner/track_runner.config.yaml)
-lines 24-27:
+The repo default is `fixed`. A configuration that selects a non-fixed model
+records that choice explicitly:
 
 ```yaml
+motion:
+  estimator:
+    type: discrete
 camera:
-  zoom_type: fixed
-  zoom_levels:
-  - 1
+  zoom_levels: [2, 5]
 ```
 
 `camera.zoom_levels` is consumed only by the discrete estimator; it
@@ -277,11 +273,11 @@ defines the snap targets for the zoom-jump detector.
 
 - Stage 1 dispatches per-pair measurement to a chunked
   `concurrent.futures.ProcessPoolExecutor`. The frame-pair range
-  `[test_tr_camera_motion.py](../tests/test_tr_camera_motion.py)
+  `[test_tr_camera_motion.py](../tests/source/test_tr_camera_motion.py)
   covers estimator behavior on synthetic frames, the per-model cache
-  contract (fixed omits `scale`, discrete preserves it), config-hash
+  contract (fixed omits `scale`, discrete preserves it), source-identity
   staleness handling, and median-filter outlier suppression.
-- [test_tr_scene_coords.py](../tests/test_tr_scene_coords.py)
+- [test_tr_scene_coords.py](../tests/geometry/test_tr_scene_coords.py)
   covers `SceneTransform` round-trip invariants and zoom-jump
   composition.
 
@@ -293,6 +289,6 @@ defines the snap targets for the zoom-jump detector.
   outside this scheme).
 - [TRACK_RUNNER_DESIGN.md](TRACK_RUNNER_DESIGN.md): five-stage
   pipeline overview and the role of Stage 1 within it.
-- `MOTION_CUE_HEAT_MAP.md`: residual
+- `TR_MOTION_CUE_HEAT_MAP.md`: residual
   motion pipeline that consumes the per-pair warp matrix derived
   from the scene transform.

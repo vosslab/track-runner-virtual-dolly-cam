@@ -1,6 +1,8 @@
 # encode mode
 
-Produce the final cropped and stabilized video from the existing solved trajectory. Encode applies smart crop, filter pipeline, and ffmpeg encoding to render the output file.
+Produce the final cropped and stabilized video from the existing solved trajectory.
+Encode defaults to the offline whole-path `dolly` crop, applies the configured
+filter pipeline, and uses ffmpeg to render the output file.
 
 ## When to use it
 
@@ -80,6 +82,15 @@ encoded video.
 
 See the auto-generated "Command line reference" block above for the full flag list.
 
-Encode reuses the same trajectory and crop-rectangle bookkeeping that `analyze` would use. The final output is an ffmpeg-encoded video with optional smart-crop positioning and stabilization.
+Encode reuses the solved trajectory, but it has additional crop-only handling
+for `not_in_frame` spans: temporary edge anchors guide output framing and are
+not interpolated runner geometry or persisted tracking state. The default
+`dolly` crop uses the full solved path and falls back to `smooth` only if its
+bounded containment solve does not converge. The final output is an
+ffmpeg-encoded video with configured crop positioning, stabilization, and
+optional filters.
 
-For deeper reference on analyze and encode architecture, see [../TRACK_RUNNER_ANALYZE_AND_ENCODE.md](../TRACK_RUNNER_ANALYZE_AND_ENCODE.md). For default config settings (codec, CRF, default filters), see [../TRACK_RUNNER_YAML_CONFIG.md](../TRACK_RUNNER_YAML_CONFIG.md).
+For deeper reference on analyze and encode architecture, see
+[../TRACK_RUNNER_ANALYZE_AND_ENCODE.md](../TRACK_RUNNER_ANALYZE_AND_ENCODE.md).
+For default config settings (codec, CRF, default filters), see
+[../TRACK_RUNNER_YAML_CONFIG.md](../TRACK_RUNNER_YAML_CONFIG.md).

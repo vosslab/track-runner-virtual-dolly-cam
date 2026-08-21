@@ -8,7 +8,7 @@ contains the completed bin-1 receipt and the current bin-2 pre-pool decoder
 gate. It makes no M4 or M5 closure claim.
 
 The corresponding accepted WP-M1 implementation status is maintained in the
-[active plan](../active/interaction_shell_and_trajectory_truth.md). This report
+[interaction_shell_and_trajectory_truth.md](../../archive/interaction_shell_and_trajectory_truth.md). This report
 does not reopen that implementation review; it records only the remaining
 measurement and worker-sizing gates.
 

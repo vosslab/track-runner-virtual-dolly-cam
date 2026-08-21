@@ -5,9 +5,15 @@ import subprocess
 import sys
 from pathlib import Path
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_ROOT / "track_runner"))
+
+# local repo modules
+import ui.keymap as keymap_module
+
 MODES = ["prepare", "setup", "seed", "solve", "target", "refine", "edit", "encode", "analyze"]
 
-def get_repo_root():
+def get_repo_root() -> str:
 	"""Get repository root using git."""
 	result = subprocess.run(
 		["git", "rev-parse", "--show-toplevel"],
@@ -17,7 +23,7 @@ def get_repo_root():
 	)
 	return result.stdout.strip()
 
-def get_help_text(repo_root, mode):
+def get_help_text(repo_root: str, mode: str) -> str:
 	"""Run track_runner.py <mode> -h and capture output."""
 	result = subprocess.run(
 		["python3", "track_runner/track_runner.py", "-i", "_dummy.mp4", mode, "-h"],
@@ -30,7 +36,7 @@ def get_help_text(repo_root, mode):
 	output = result.stdout + result.stderr
 	return output
 
-def normalize_help_text(text):
+def normalize_help_text(text: str) -> str:
 	"""Normalize help text for idempotency."""
 	# Split into lines, rstrip each line, rejoin
 	lines = text.split('\n')
@@ -43,7 +49,7 @@ def normalize_help_text(text):
 	# Rejoin with single trailing newline
 	return '\n'.join(lines) + '\n'
 
-def refresh_mode_doc(repo_root, mode):
+def refresh_mode_doc(repo_root: str, mode: str) -> None:
 	"""Refresh docs/modes/<MODE>.md with help text for mode."""
 	mode_upper = mode.upper()
 	doc_path = Path(repo_root) / "docs" / "modes" / f"{mode_upper}.md"
@@ -89,9 +95,36 @@ def refresh_mode_doc(repo_root, mode):
 	doc_path.write_text(new_content)
 	print(f"refreshed docs/modes/{mode_upper}.md")
 
-def main():
+
+def refresh_keybindings_doc(repo_root: str, check_only: bool = False) -> None:
+	"""Generate or verify the keybinding reference from ui.keymap."""
+	doc_path = Path(repo_root) / "docs" / "TRACK_RUNNER_KEYBINDINGS.md"
+	generated = keymap_module.render_keybindings_markdown()
+	current = doc_path.read_text()
+	if current == generated:
+		print("unchanged docs/TRACK_RUNNER_KEYBINDINGS.md")
+		return
+	if check_only:
+		raise SystemExit(
+			"ERROR: docs/TRACK_RUNNER_KEYBINDINGS.md is out of date; "
+			"run tools/refresh_mode_docs.py --keybindings"
+		)
+	doc_path.write_text(generated)
+	print("refreshed docs/TRACK_RUNNER_KEYBINDINGS.md")
+
+def main() -> None:
 	"""Refresh all mode docs."""
 	repo_root = get_repo_root()
+	if len(sys.argv) == 2 and sys.argv[1] == "--keybindings":
+		refresh_keybindings_doc(repo_root)
+		return
+	if len(sys.argv) == 2 and sys.argv[1] == "--check-keybindings":
+		refresh_keybindings_doc(repo_root, check_only=True)
+		return
+	if len(sys.argv) != 1:
+		raise SystemExit(
+			"Usage: refresh_mode_docs.py [--keybindings|--check-keybindings]"
+		)
 
 	for mode in MODES:
 		try:
