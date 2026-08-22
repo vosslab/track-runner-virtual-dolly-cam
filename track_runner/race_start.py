@@ -321,7 +321,7 @@ def compute_pre_race_reference(
 
 	Returns:
 		Dict with keys: race_start_frame, race_start_interval, torso_w, torso_h,
-		scene_anchor_x, scene_anchor_y, source_frame_indices, source_count, method, warnings.
+		scene_anchor_x, scene_anchor_y, method, warnings.
 
 	Raises:
 		RuntimeError: if no visible/partial pre-race seeds with torso_box.
@@ -369,8 +369,6 @@ def compute_pre_race_reference(
 		"torso_h": torso_h,
 		"scene_anchor_x": scene_anchor_x,
 		"scene_anchor_y": scene_anchor_y,
-		"source_frame_indices": [s["frame_index"] for s in qualifying],
-		"source_count": len(qualifying),
 		"method": "seed_scene_displacement",
 		"warnings": warnings,
 	}
@@ -378,15 +376,57 @@ def compute_pre_race_reference(
 
 
 #============================================
+def load_race_start_from_artifact(solve_artifact: dict) -> dict:
+	"""Return the complete race-start block for a caller that requires it.
+
+	The torso-coordinate artifact, not interval-scores diagnostics, owns this
+	C4 input after schema 15. Ordinary modes accept an absent block as no
+	detected pre-race phase; race-start-specific behavior calls this validator
+	and fails loudly when the block is absent or malformed.
+	"""
+	reference = solve_artifact.get("race_start")
+	if not isinstance(reference, dict):
+		raise RuntimeError(
+			"solve artifact lacks race_start; run solve first to create a "
+			"current race-start reference"
+		)
+	required = {
+		"race_start_frame", "race_start_interval", "torso_w", "torso_h",
+		"scene_anchor_x", "scene_anchor_y", "method", "warnings",
+	}
+	missing = sorted(required - set(reference))
+	if missing:
+		raise RuntimeError(
+			"solve artifact race_start is incomplete: " + ", ".join(missing)
+		)
+	interval = reference["race_start_interval"]
+	if not isinstance(interval, list) or len(interval) != 2:
+		raise RuntimeError(
+			"solve artifact race_start_interval must have two frames; re-solve"
+		)
+	low = int(interval[0])
+	high = int(interval[1])
+	if high <= low:
+		raise RuntimeError(
+			"solve artifact race_start_interval has non-positive width; re-solve"
+		)
+	if not isinstance(reference["warnings"], list):
+		raise RuntimeError("solve artifact race_start warnings must be a list")
+	return reference
+
+
+#============================================
 def print_race_phase_summary(
 	pre_race_reference: dict,
 	fps: float = None,
+	seeds: list | None = None,
 ) -> None:
 	"""Print a multi-line summary of race-start detection at the end of solve.
 
-	Reads race_start_frame, race_start_interval, source_count, torso
-	dimensions, and warnings from the pre_race_reference dict (output
-	of compute_pre_race_reference or loaded from diagnostics). Prints
+	Reads race_start_frame, race_start_interval, torso dimensions, and warnings
+	from the pre_race_reference dict. The summary derives its qualifying-seed
+	count from the supplied current seeds rather than persisting diagnostics-only
+	provenance. Prints
 	4-5 lines giving the user a self-contained verdict without having
 	to inspect the diagnostics JSON or the contact sheet PNG.
 
@@ -396,6 +436,7 @@ def print_race_phase_summary(
 		fps: Video frame rate; used to render race_start_frame as a
 			timestamp in seconds. Optional; the timestamp line is
 			omitted when fps is None.
+		seeds: Current human seed records used to derive the pre-race count.
 	"""
 	print()
 	print("=" * 60)
@@ -408,7 +449,14 @@ def print_race_phase_summary(
 
 	frame = pre_race_reference["race_start_frame"]
 	interval = pre_race_reference["race_start_interval"]
-	source_count = pre_race_reference["source_count"]
+	qualifying_seed_count = 0
+	if seeds is not None:
+		qualifying_seed_count = sum(
+			1 for seed in seeds
+			if seed.get("status") in ("visible", "partial")
+			and seed.get("torso_box") is not None
+			and int(seed["frame_index"]) < int(frame)
+		)
 	torso_w = pre_race_reference["torso_w"]
 	torso_h = pre_race_reference["torso_h"]
 	warnings = pre_race_reference["warnings"]
@@ -423,7 +471,7 @@ def print_race_phase_summary(
 
 	print(f"  race_start_frame: {frame}{timestamp_tail}")
 	print(f"  Stage 1 interval: ({low}, {high}) -- width {width} frames")
-	print(f"  pre-race anchor:  {source_count} seeds, "
+	print(f"  pre-race anchor:  {qualifying_seed_count} seeds, "
 		f"torso {torso_w:.1f}x{torso_h:.1f} px")
 	if warnings:
 		print(f"  warnings: {warnings}")

@@ -28,13 +28,9 @@ import torso_box_coords_io
 def _current_video_identity() -> dict:
 	"""Build a current source identity for temporary coordinate storage."""
 	identity = {
-		"basename": "test.mkv",
-		"size_bytes": 1,
 		"width": 640,
 		"height": 480,
-		"fps": 30.0,
 		"frame_count": 30,
-		"duration_s": 1.0,
 	}
 	return identity
 
@@ -66,6 +62,33 @@ def test_target_parser_from_analyze_shortcut() -> None:
 def test_target_parser_rejects_conflicting_severity_shortcuts() -> None:
 	with pytest.raises(SystemExit):
 		_parse_target_args(["--high", "--low"])
+
+
+#============================================
+def test_target_risk_view_orders_by_risk_then_start_frame() -> None:
+	"""Target placement uses current promotion risk, not legacy confidence rank."""
+	risk_view = {
+		(10, 20): {
+			"risk": 1.0, "severity": "high",
+		},
+		(30, 40): {
+			"risk": 2.0, "severity": "low",
+		},
+		(50, 60): {
+			"risk": 2.0, "severity": "medium",
+		},
+		(70, 80): {
+			"risk": 0.0, "severity": "high",
+		},
+		(90, 100): {
+			"risk": 3.0, "severity": "pre_race",
+		},
+	}
+	intervals = target_mode.review.target_intervals_from_risk_view(risk_view)
+	assert intervals == [(2.0, 30, 40), (2.0, 50, 60), (1.0, 10, 20)]
+	assert target_mode.review.target_intervals_from_risk_view(
+		risk_view, top_n=4,
+	) == [(2.0, 30, 40), (2.0, 50, 60), (1.0, 10, 20), (0.0, 70, 80)]
 
 
 #============================================
@@ -119,8 +142,8 @@ def test_build_predictions_with_both_fwd_bwd() -> None:
 def test_build_predictions_with_blended_only() -> None:
 	"""Predictions include blended when FWD/BWD are missing but blended present.
 
-	This is the C10 regression fix: target mode no longer skips intervals
-	that lack FWD/BWD but have blended_path. The blended path is rendered.
+	Schema 15 may omit quantization-identical FWD/BWD paths while retaining the
+	durable blended path used for the target overlay.
 	"""
 	diagnostics = {
 		"fps": 30.0,
@@ -145,8 +168,8 @@ def test_build_predictions_with_blended_only() -> None:
 
 	predictions = mode_predictions.build_predictions_from_solved_intervals(diagnostics)
 
-	# Behavioral: every interior frame carries blended (the C10 regression
-	# fix) but no FWD/BWD/consensus when those paths are missing.
+	# Behavioral: every interior frame carries blended but no
+	# FWD/BWD/consensus when those paths are missing.
 	expected_frames = set(range(10, 15))
 	assert expected_frames.issubset(predictions.keys())
 	for frame_idx in expected_frames:
@@ -163,7 +186,7 @@ def test_build_predictions_with_blended_only() -> None:
 
 #============================================
 def test_live_blend_commitment_review_items_reach_frame_predictions() -> None:
-	"""Live committed and unavailable M3 states have distinct review text."""
+	"""Committed and unavailable blend states have distinct review text."""
 	diagnostics = {
 		"fps": 30.0,
 		"intervals": [
@@ -212,10 +235,10 @@ def test_live_blend_commitment_review_items_reach_frame_predictions() -> None:
 
 
 #============================================
-def test_reloaded_predictions_require_current_interval_scores(
+def test_reloaded_predictions_allow_absent_advisory_scores(
 	tmp_path: pathlib.Path,
 ) -> None:
-	"""Coordinate storage without matching scores is not prediction guidance."""
+	"""Coordinate storage still supplies overlays without advisory scores."""
 	intervals_path = tmp_path / "demo.track_runner.torso_box_coords.npz"
 	torso_box_coords_io.write_torso_box_coords(
 		str(intervals_path),
@@ -244,10 +267,10 @@ def test_reloaded_predictions_require_current_interval_scores(
 		},
 	)
 
-	with pytest.raises(RuntimeError, match="interval scores are missing"):
-		mode_predictions.predictions_from_torso_box_coords(
-			str(intervals_path), str(tmp_path / "missing_scores.json"), 30.0,
-		)
+	predictions = mode_predictions.predictions_from_torso_box_coords(
+		str(intervals_path), str(tmp_path / "missing_scores.json"), 30.0,
+	)
+	assert predictions[10]["interval_info"]["confidence"] == "unknown"
 
 
 #============================================
@@ -351,16 +374,10 @@ def test_build_predictions_skips_empty_intervals() -> None:
 #============================================
 def test_target_race_start_frame_selection() -> None:
 	"""Race-start frame selection: endpoints present, sorted, unique, in-range."""
-	diagnostics = {
-		state_io.INTERVAL_SCORES_HEADER_KEY: state_io.INTERVAL_SCORES_HEADER_VALUE,
-		"pre_race_reference": {
-			"race_start_frame": 100,
-			"race_start_interval": [50, 150],
-		},
-	}
+	race_start_reference = {"race_start_frame": 100, "race_start_interval": [50, 150]}
 
 	target_frames = target_mode._generate_race_start_target_frames(
-		diagnostics, fps=30.0, frame_count=1000,
+		race_start_reference, fps=30.0, frame_count=1000,
 	)
 
 	assert 50 in target_frames
@@ -376,15 +393,9 @@ def test_target_race_start_converges_on_tiny_interval() -> None:
 	interval. Earlier fixed-second offsets (+/-0.5 s) produced frames
 	60+ frames outside a 4-frame interval, defeating refinement.
 	"""
-	diagnostics = {
-		state_io.INTERVAL_SCORES_HEADER_KEY: state_io.INTERVAL_SCORES_HEADER_VALUE,
-		"pre_race_reference": {
-			"race_start_frame": 102,
-			"race_start_interval": [100, 104],
-		},
-	}
+	race_start_reference = {"race_start_frame": 102, "race_start_interval": [100, 104]}
 	target_frames = target_mode._generate_race_start_target_frames(
-		diagnostics, fps=60.0, frame_count=10000,
+		race_start_reference, fps=60.0, frame_count=10000,
 	)
 	assert all(100 <= f <= 104 for f in target_frames)
 	assert 100 in target_frames
@@ -398,16 +409,10 @@ def test_target_race_start_converges_on_tiny_interval() -> None:
 #============================================
 def test_target_race_start_clamped() -> None:
 	"""When race_start_frame is near the start, frames clamp to >= 0 and endpoints survive."""
-	diagnostics = {
-		state_io.INTERVAL_SCORES_HEADER_KEY: state_io.INTERVAL_SCORES_HEADER_VALUE,
-		"pre_race_reference": {
-			"race_start_frame": 10,
-			"race_start_interval": [5, 50],
-		},
-	}
+	race_start_reference = {"race_start_frame": 10, "race_start_interval": [5, 50]}
 
 	target_frames = target_mode._generate_race_start_target_frames(
-		diagnostics, fps=30.0, frame_count=1000,
+		race_start_reference, fps=30.0, frame_count=1000,
 	)
 
 	assert all(f >= 0 for f in target_frames)
@@ -416,45 +421,16 @@ def test_target_race_start_clamped() -> None:
 
 
 #============================================
-def test_target_race_start_missing_schema_raises() -> None:
-	"""Outdated diagnostics schema raises a re-solve directive."""
-	diagnostics = {
-		state_io.INTERVAL_SCORES_HEADER_KEY: state_io.INTERVAL_SCORES_HEADER_VALUE - 1,
-		"pre_race_reference": {
-			"race_start_frame": 100,
-			"race_start_interval": [50, 150],
-		},
-	}
-
-	with pytest.raises(RuntimeError) as exc_info:
-		target_mode._generate_race_start_target_frames(diagnostics, fps=30.0, frame_count=1000)
-	assert "schema" in str(exc_info.value).lower()
-	assert "solve" in str(exc_info.value).lower()
-
-
-#============================================
 def test_target_race_start_missing_reference_raises() -> None:
-	"""Missing pre_race_reference is a hard error."""
-	diagnostics = {
-		state_io.INTERVAL_SCORES_HEADER_KEY: state_io.INTERVAL_SCORES_HEADER_VALUE,
-		# Missing pre_race_reference
-	}
-
-	with pytest.raises(RuntimeError) as exc_info:
-		target_mode._generate_race_start_target_frames(diagnostics, fps=30.0, frame_count=1000)
-	assert "pre_race_reference" in str(exc_info.value).lower()
+	"""Missing solve-artifact race_start is a hard error."""
+	with pytest.raises((KeyError, RuntimeError)):
+		target_mode._generate_race_start_target_frames({}, fps=30.0, frame_count=1000)
 
 
 #============================================
 def test_target_race_start_missing_interval_raises() -> None:
-	"""Current diagnostics require a complete race-start interval."""
-	diagnostics = {
-		state_io.INTERVAL_SCORES_HEADER_KEY: state_io.INTERVAL_SCORES_HEADER_VALUE,
-		"pre_race_reference": {
-			"race_start_frame": 100,
-			# Missing race_start_interval
-		},
-	}
+	"""Current solve artifacts require a complete race-start interval."""
+	race_start_reference = {"race_start_frame": 100}
 
 	with pytest.raises((KeyError, RuntimeError)):
-		target_mode._generate_race_start_target_frames(diagnostics, fps=30.0, frame_count=1000)
+		target_mode._generate_race_start_target_frames(race_start_reference, fps=30.0, frame_count=1000)

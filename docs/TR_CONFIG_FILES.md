@@ -131,10 +131,13 @@ writer `torso_box_coords_io.write_torso_box_coords`.
 
 | Key | Type | Notes |
 | --- | --- | --- |
-| `schema_version` | int32 | Current writer emits `10`; readers accept `{10}` (per `tr_schema.SUPPORTED_ARTIFACT_SCHEMAS["torso_box_coords"]`). The uint16 coordinate layout has been fixed since v10. Method-only changes (residual sampling, walker DP) keep this number fixed and refresh stale values with `solve`. |
+| `schema_version` | int32 | Current writer emits `15`; readers accept `{15}`. Older layouts require a fresh `solve`. |
 | `manifest` | bytes (JSON-encoded) | List of per-interval entries mapping fingerprint to an `array_index` plus `start_frame`/`end_frame`. |
-| `i<k>_cx`, `i<k>_cy`, `i<k>_w`, `i<k>_h` | uint16 arrays | Per-interval blended-interval-path arrays (the combined FWD+BWD output trajectory); `<k>` is the manifest's `array_index` for that interval. Array length equals `end_frame - start_frame + 1`. Pixel-snapped integers, range [0, 65535]. |
+| `i<k>_blended_cx`, `i<k>_blended_cy`, `i<k>_blended_w`, `i<k>_blended_h` | uint16 arrays | Required blended SOURCE-coordinate path. Array length equals `end_frame - start_frame + 1`; values are pixel-snapped to [0, 65535]. |
+| `i<k>_conf` | uint8 array | Required per-frame raw-pass agreement transport. Values map [0, 255] to [0, 1]. |
+| `i<k>_fwd_*`, `i<k>_bwd_*` | uint16 arrays | Optional paired raw paths. Both groups are written only when their quantized geometry differs; neither group may appear alone. |
 | `video_identity` | bytes (JSON-encoded) | Required source identity. |
+| `race_start` | bytes (JSON-encoded) | Optional detected race-start block. Absence means no pre-race phase was detected. |
 | `solve_complete` | bool | Whether the solve completed vs. was interrupted. |
 
 ### In-memory shape
@@ -148,6 +151,8 @@ writer `torso_box_coords_io.write_torso_box_coords`.
         "<fingerprint>": {
             "start_frame": int,
             "end_frame": int,
+            "forward_path": list | None,
+            "backward_path": list | None,
             "blended_path": [
                 # blended interval path: combined FWD+BWD output
                 # trajectory for this interval. Output artifact only;
@@ -155,25 +160,23 @@ writer `torso_box_coords_io.write_torso_box_coords`.
                 {"cx": int, "cy": int, "w": int, "h": int},
                 ...
             ],
+            "conf": [float, ...],
         },
     },
     "video_identity": {...},
+    "race_start": {...},  # present only when Stage 2 detected a pre-race phase
     "solve_complete": bool,
 }
 ```
 
-This preserves `stitch_trajectories` and every other iteration site
-unchanged; only the read site changes.
+The loaded raw paths are both present or both `None`. Stored `conf` remains the
+agreement authority even when raw coordinate paths are omitted.
 
 ### Explicitly not stored
 
 - `interval_score` -- lives exclusively in `interval_scores.json`.
-- `forward_path`, `backward_path` -- the per-pass forward and
-  backward interval paths are computed during solve and produce the
-  blended output, but are not persisted to disk.
-- Per-frame extras (`conf`, `source`, `blend_flag`, `blob_gate`) -- not read by
-  production code from a loaded store;
-  dropped at write.
+- Per-frame extras (`source`, `blend_flag`, `blob_gate`) -- omitted from the
+  coordinate transport. `conf` is the deliberate Schema-15 exception.
 
 ### Fingerprint format
 
@@ -183,7 +186,7 @@ serialized with `:.2f`; the two-decimal format is a fingerprint
 component, not a claim that seeds carry subpixel precision.
 
 ```
-49|1635.00|754.50|64.00|81.00|56|1630.50|756.50|69.00|87.00||geometry_schema_v10
+49|1635.00|754.50|64.00|81.00|56|1630.50|756.50|69.00|87.00||schema_v15
 ```
 
 ### Reuse semantics
@@ -214,8 +217,8 @@ allow-list and justification rule.
 
 ## Interval scores JSON
 
-File: `<video>.track_runner.interval_scores.json`. **Sole owner of
-interval scoring.** Reader `state_io.load_interval_scores`, writer
+File: `<video>.track_runner.interval_scores.json`. **Owner of interval-level
+diagnostic and review summaries.** Reader `state_io.load_interval_scores`, writer
 `state_io.write_interval_scores`. `write_solver_interval_scores` assembles a
 solver result before it delegates to that canonical writer.
 
@@ -223,11 +226,9 @@ solver result before it delegates to that canonical writer.
 
 | Key | Type | Notes |
 | --- | --- | --- |
-| `track_runner_diagnostics` | int | Header; must equal current `SCHEMA_VERSION` (`10`). |
+| `track_runner_diagnostics` | int | Header; must equal current `SCHEMA_VERSION` (`15`). |
 | `fps` | float | Video fps, rounded to 6 decimals. |
 | `intervals` | list | Per-interval scoring entries. |
-| `cyclical_prior` | dict or null | Optional: period-detection result. |
-| `pre_race_reference` | dict or null | Optional current pre-race summary. |
 | `video_identity` | dict | Required source identity. |
 
 ### Per-interval entry
@@ -252,8 +253,8 @@ solver result before it delegates to that canonical writer.
 ```
 
 No per-frame trajectory data -- trajectory lives in
-`torso_box_coords.npz`. This file is exclusively the scoring summary
-consumed by review tooling.
+`torso_box_coords.npz`. This JSON remains a reporting sidecar; target and
+refine reconstruct operational score views from the durable NPZ inputs.
 
 ## Camera motion NPZ
 
@@ -267,7 +268,7 @@ artifact per video; motion-model identity lives inside the file. Reader
 | Key | Type | Notes |
 | --- | --- | --- |
 | `motion_model` | bytes (UTF-8) | One of `fixed_zoom`, `discrete_zoom`, `continuous_zoom`. Staleness determined by comparing persisted model against the current configuration. |
-| `video_identity` | bytes (UTF-8 JSON) | Complete source-video identity used for cache reuse. |
+| `video_identity` | bytes (UTF-8 JSON) | Source geometry identity (`width`, `height`, `frame_count`) used for cache reuse. |
 | `frame_count` | int64 | Frame count from video probe. |
 | `bin_factor` | int64 | Processed-frame bin used for measurement; required for reuse. |
 
@@ -288,8 +289,9 @@ the interval scoring.
 - Computed once per video by `precompute_camera_motion`. The result
   is written as the canonical file alongside the video's other
   `tr_config/` files.
-- Solve reuses the artifact only when its motion model, bin factor, and complete
-  source-video identity match. Otherwise it recomputes and atomically replaces
+- Solve reuses the artifact only when its motion model, bin factor, and source
+  geometry identity match. Container name, byte size, and fps do not gate reuse.
+  Otherwise it recomputes and atomically replaces
   the file.
 - Refine, analyze, encode, and the UI read the same canonical filename. A
   missing or stale camera-motion artifact directs the user to run solve.

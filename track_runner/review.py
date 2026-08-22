@@ -4,8 +4,9 @@ After interval solving, analyzes results to tell the user where to add
 more seeds. Provides human-readable summaries and refinement target lists.
 """
 
-# Standard Library
-# (none needed beyond builtins)
+# local repo modules
+import interval_solver
+import scoring
 
 
 #============================================
@@ -17,6 +18,135 @@ _REASON_EXPLANATIONS = {
 	"low_motion_quality": "camera motion estimates are poor quality",
 	"sparse_support": "too few directional support seeds for robust fitting",
 }
+
+
+#============================================
+def build_interval_risk_view(
+	seeds: list,
+	motion_track: object,
+	solve_artifact: dict,
+) -> dict:
+	"""Rebuild target-ranking evidence from durable solve inputs.
+
+	The scoring and Stage-4 owners supply every computed value.  This function
+	only joins their outputs into the cross-process view consumed by target.
+	``scene_transform`` and runtime ``fps`` are deliberately ephemeral entries
+	attached by the target-mode loader; neither is persisted here.
+	"""
+	if "scene_transform" not in solve_artifact:
+		raise RuntimeError("target risk reconstruction requires a scene transform")
+	if "fps" not in solve_artifact:
+		raise RuntimeError("target risk reconstruction requires runtime video fps")
+	video_identity = solve_artifact.get("video_identity")
+	if not isinstance(video_identity, dict) or "frame_count" not in video_identity:
+		raise RuntimeError("target risk reconstruction requires solve video identity")
+	scene_transform = solve_artifact["scene_transform"]
+	fps = float(solve_artifact["fps"])
+	race_start = solve_artifact.get("race_start")
+	race_start_interval = None
+	race_start_frame = int(solve_artifact.get("race_start_frame", 0))
+	if isinstance(race_start, dict):
+		if "race_start_frame" in race_start:
+			race_start_frame = int(race_start["race_start_frame"])
+		if "race_start_interval" in race_start:
+			interval = race_start["race_start_interval"]
+			if len(interval) != 2:
+				raise RuntimeError("solve artifact race_start_interval must have two frames")
+			race_start_interval = (int(interval[0]), int(interval[1]))
+	usable_seeds = interval_solver.filter_usable_seeds_sorted(seeds)
+	by_bounds = {}
+	for artifact_interval in solve_artifact.get("solved_intervals", {}).values():
+		key = (int(artifact_interval["start_frame"]), int(artifact_interval["end_frame"]))
+		by_bounds[key] = artifact_interval
+	interval_results = []
+	for pair_idx in range(len(usable_seeds) - 1):
+		seed_start = usable_seeds[pair_idx]
+		seed_end = usable_seeds[pair_idx + 1]
+		start_frame = int(seed_start["frame_index"])
+		end_frame = int(seed_end["frame_index"])
+		artifact_interval = by_bounds.get((start_frame, end_frame))
+		if artifact_interval is None:
+			raise RuntimeError(
+				f"solve artifact lacks interval ({start_frame}, {end_frame}); run solve first"
+			)
+		# solve_queue classifies a pair as pre-race only when it ends at or
+		# before race_start_interval's low endpoint.  The spanning pair is a
+		# normal analytical interval and must remain scoreable.
+		is_pre_race = (race_start_interval is not None and
+			end_frame <= race_start_interval[0]) or (
+			artifact_interval.get("forward_path") is None
+			and artifact_interval.get("backward_path") is None
+			and artifact_interval.get("conf") is None
+		)
+		if is_pre_race:
+			interval_score = scoring.score_pre_race_artifact_interval()
+			result = {
+				"start_frame": start_frame,
+				"end_frame": end_frame,
+				"source": "pre_race_reference",
+				"interval_score": interval_score,
+			}
+		else:
+			interval_score = scoring.score_interval_from_artifact(
+				seed_start, seed_end, seeds, scene_transform, motion_track,
+				artifact_interval, fps,
+			)
+			result = {
+				"start_frame": start_frame,
+				"end_frame": end_frame,
+				"interval_score": interval_score,
+			}
+		interval_results.append(result)
+	risk_by_pair = interval_solver.promotion_risk_by_pair(
+		interval_results, usable_seeds, scene_transform, fps,
+		int(video_identity["frame_count"]),
+	)
+	promoted_pairs = set(interval_solver.select_promoted_intervals(
+		interval_results, usable_seeds, scene_transform, fps,
+		int(video_identity["frame_count"]), race_start_frame,
+	))
+	view = {}
+	for pair_idx, result in enumerate(interval_results):
+		key = (int(result["start_frame"]), int(result["end_frame"]))
+		interval_score = result["interval_score"]
+		view[key] = {
+			"risk": float(risk_by_pair.get(pair_idx, 0.0)),
+			"severity": classify_interval_severity(result, fps) or "pre_race",
+			"promoted": pair_idx in promoted_pairs,
+			"failure_reasons": list(interval_score["failure_reasons"]),
+			"interval_score": interval_score,
+		}
+	return view
+
+
+#============================================
+def target_intervals_from_risk_view(
+	risk_view: dict,
+	severity: str | None = None,
+	top_n: int | None = None,
+) -> list:
+	"""Order target intervals from the assembled promotion-risk view.
+
+	Default targeting includes exactly current-policy candidates with positive
+	risk.  ``--top`` retains its explicit-request behavior: it selects the top
+	non-pre-race intervals even when their current risk is zero.  No score
+	metric is recomputed here.
+	"""
+	entries = []
+	for (start_frame, end_frame), value in risk_view.items():
+		if value["severity"] == "pre_race":
+			continue
+		if top_n is None:
+			if float(value["risk"]) <= 0.0:
+				continue
+			if severity is not None:
+				if _SEVERITY_RANK.get(value["severity"], 0) < _SEVERITY_RANK[severity]:
+					continue
+		entries.append((float(value["risk"]), int(start_frame), int(end_frame)))
+	entries.sort(key=lambda entry: (-entry[0], entry[1]))
+	if top_n is not None:
+		entries = entries[:top_n]
+	return entries
 
 
 #============================================

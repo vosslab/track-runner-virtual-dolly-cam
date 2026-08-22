@@ -282,7 +282,6 @@ def _make_pre_race_reference(
 		torso_h: float = 64.0,
 		scene_anchor_x: float = 100.0,
 		scene_anchor_y: float = 100.0,
-		source_count: int = 2,
 ) -> dict:
 	"""Build a minimal pre_race_reference dict for synthesis tests."""
 	reference = {
@@ -291,7 +290,6 @@ def _make_pre_race_reference(
 		"torso_h": torso_h,
 		"scene_anchor_x": scene_anchor_x,
 		"scene_anchor_y": scene_anchor_y,
-		"source_count": source_count,
 		"warnings": [],
 	}
 	return reference

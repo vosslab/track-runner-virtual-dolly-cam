@@ -9,6 +9,7 @@ import pytest
 
 # local repo modules
 import common_tools.frame_reader
+import residual_motion
 import track_runner.blend_commitment
 import track_runner.interval_solver
 
@@ -51,7 +52,7 @@ def test_canonical_heat_selects_runner_in_both_pass_orders(
 		return (residual_mag, validity_mask)
 
 	monkeypatch.setattr(
-		track_runner.interval_solver.residual_motion,
+		residual_motion,
 		"compute_residual_for_frame",
 		synthetic_residual,
 	)

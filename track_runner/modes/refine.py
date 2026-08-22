@@ -5,8 +5,8 @@ import os
 
 import fastread_video
 import modes.shared as mode_shared
+import race_start
 import solve_queue
-import state_io
 import torso_box_coords_io
 
 
@@ -50,37 +50,25 @@ def run(
 			f"no solved intervals at {intervals_path}; run 'solve' first"
 		)
 
-	# Fingerprint membership, not interval count or solve_complete, decides reuse.
-	# solve_queue.plan_interval_work is the shared authority for seed filtering,
-	# fingerprint comparison, and orphan pruning in both solve and refine.
+	# Fingerprint membership in the schema-15 solve artifact is the only reuse
+	# authority. solve_queue.plan_interval_work owns seed filtering, fingerprint
+	# comparison, and orphan pruning for both solve and refine.
 	intervals_file = torso_box_coords_io.load_torso_box_coords(intervals_path)
 	solved_intervals = dict(intervals_file.get("solved_intervals", {}))
-	# Geometry without a matching score is excluded from this refinement plan.
-	# Keep the on-disk artifact unchanged until the plan passes the guards below:
-	# a rejected refine must never discard its last usable prior result.
-	scored_keys = set()
-	if os.path.isfile(diag_path):
-		score_data = state_io.load_interval_scores(diag_path)
-		for scored_iv in score_data.get("intervals", []):
-			scored_keys.add((
-				int(scored_iv["start_frame"]),
-				int(scored_iv["end_frame"]),
-			))
-	unscored_fps = [
-		fp for fp, iv in solved_intervals.items()
-		if (int(iv["start_frame"]), int(iv["end_frame"])) not in scored_keys
-	]
-	planned_intervals = {
-		fp: interval for fp, interval in solved_intervals.items()
-		if fp not in unscored_fps
-	}
+	# Race start is a solve-artifact fact. It is optional only when solve found
+	# no pre-race phase; when present, validate it through its public owner so
+	# planning keeps the same pre-race partition without diagnostics.
+	race_start_interval = None
+	if "race_start" in intervals_file:
+		race_start_data = race_start.load_race_start_from_artifact(intervals_file)
+		race_start_interval = tuple(race_start_data["race_start_interval"])
 	# Interval reuse identity is bin-invariant: stored torso boxes are always
 	# unbinned SOURCE-frame, so the fingerprint carries seed-pair geometry plus
 	# the current schema tag only. The refine partition therefore
 	# reuses solved intervals regardless of which bin solve or refine uses;
 	# mode_shared._run_solve resolves the run's bin for the actual solve downstream.
 	plan = solve_queue.plan_interval_work(
-		seeds, planned_intervals,
+		seeds, solved_intervals, race_start_interval=race_start_interval,
 	)
 	total_expected = plan.total_intervals
 

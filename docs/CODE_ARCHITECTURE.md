@@ -29,7 +29,8 @@ in [TRACK_RUNNER_CONTRACT.md](TRACK_RUNNER_CONTRACT.md).
    owns motion-model resolution and NPZ artifact storage.
 2. [scene_coords.py](../track_runner/scene_coords.py) converts between camera
    corrected scene geometry and frame coordinates. [velocity_model.py](../track_runner/velocity_model.py)
-   fits and propagates independent FWD/BWD Hermite paths.
+   propagates independent FWD/BWD analytical paths with linear centers and
+   log-linear box sizes.
 3. [interval_solver.py](../track_runner/interval_solver.py) is the compatibility
    facade for interval solving and stitching. It delegates progress display to
    [interval_progress.py](../track_runner/interval_progress.py), analytical

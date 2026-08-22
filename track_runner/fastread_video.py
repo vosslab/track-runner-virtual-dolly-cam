@@ -34,6 +34,7 @@ import logging
 import subprocess
 import collections
 import dataclasses
+import decimal
 
 # local repo modules
 import tr_paths
@@ -201,9 +202,8 @@ def resolve_video_context(original_video_path: str) -> VideoContext:
 		# (3) present -> validate exactly once for its side-effect (raises on
 		# failure); the returned FastreadValidation is not needed here.
 		# fps_mismatch_fatal=False: the consume path warns and proceeds when
-		# fps probes differ (e.g. 59.94 vs 60.0); geometry/frame_count/duration
-		# are still fatal. Solve consumes fps only via resolve_stride, which is
-		# identical for 59.94 and 60.0, so index alignment is safe.
+		# fps probes differ beyond their precision tolerance; geometry,
+		# frame_count, and duration are still fatal and establish alignment.
 		validate_fastread_structural(
 			original_video_path, expected_fastread_path, fps_mismatch_fatal=False
 		)
@@ -338,10 +338,14 @@ def _check_fps(
 	"""
 	original_fps = original_info["fps"]
 	fastread_fps = fastread_info["fps"]
-	# relative difference absorbs printed-precision rounding (for example
-	# 119.88 vs 119.880) without accepting a different frame rate.
-	rel_diff = abs(fastread_fps - original_fps) / original_fps
-	if rel_diff > FPS_REL_TOLERANCE:
+	# Compare the decimal probe values as reported. Binary-float subtraction
+	# makes the exact 59.94/60.0 boundary microscopically exceed 0.001 even
+	# though both probes are within the documented tolerance.
+	original_decimal = decimal.Decimal(str(original_fps))
+	fastread_decimal = decimal.Decimal(str(fastread_fps))
+	rel_diff_decimal = abs(fastread_decimal - original_decimal) / original_decimal
+	if rel_diff_decimal > decimal.Decimal(str(FPS_REL_TOLERANCE)):
+		rel_diff = float(rel_diff_decimal)
 		detail = (
 			f"fps {fastread_fps} (fastread) differs from source fps"
 			f" {original_fps} by relative {rel_diff:.6f} > tolerance"
@@ -516,8 +520,8 @@ def validate_fastread_structural(
 	used by prepare), a mismatch raises RuntimeError so a freshly generated
 	fast-read is never silently accepted with wrong timing. When
 	fps_mismatch_fatal is False (used by consume paths like solve), a
-	mismatch logs a warning and proceeds, since fps has no effect on
-	stride calculation for 59.94 vs 60.0 (contract C13).
+	mismatch logs a warning and proceeds only after the frame-count and
+	duration checks establish index alignment (contract C13).
 
 	Any failed hard check raises a `RuntimeError` naming the fast-read
 	path, the failed check, and the remedy. A successful return authorizes
@@ -559,8 +563,8 @@ def validate_fastread_structural(
 			# prepare path: fail loud so a timing-defective artifact is rejected
 			_raise_validation_error(fastread_path, "fps", fps_detail)
 		else:
-			# consume path (solve etc.): warn and continue; fps does not affect
-			# resolve_stride for 59.94 vs 60.0, and frame_count/duration passed.
+			# consume path (solve etc.): warn and continue after the hard
+			# frame-count and duration alignment checks have passed.
 			logger.warning(
 				f"fast-read fps mismatch (warn-and-continue on consume path):"
 				f" {fps_detail};"

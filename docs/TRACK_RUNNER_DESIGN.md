@@ -52,14 +52,14 @@ The solve process runs as five named, independently observable stages:
 | --- | --- | --- |
 | 1 | `stage_1_camera_motion` | Precompute camera motion and build scene transform. See [TR_CAMERA_MOTION_METHOD.md](TR_CAMERA_MOTION_METHOD.md). |
 | 2 | `stage_2_race_start_id` | Identify race-start interval (seed pair spanning `race_start_frame`). |
-| 3 | `stage_3_hermite_pass` | Hermite-only solve on all post-race intervals; score for confidence tier. |
+| 3 | `stage_3_hermite_pass` | Pair-local linear/log-linear analytical solve on all post-race intervals. |
 | 3b | `stage_3b_pre_race_synth` | Stationary pre-race synthesis (scene-anchored, seed-averaged per C4). Fires as soon as Stage 3's race-start interval completes. |
-| 4 | `stage_4_blob_promoted` | Blob-coupled re-solve on promoted intervals (low/fair confidence only). |
+| 4 | `stage_4_blob_promoted` | Blob-coupled re-solve on positive-risk intervals within budget. |
 | 5 | `stage_5_blob_full` | Optional blob-coupled re-solve on every post-race interval (via `--full` flag). |
 
-The pipeline's cost philosophy: "Spend expensive evidence only where cheap evidence is uncertain." Stage 3 runs Hermite (fast, ~3 ms per 100-frame interval) on every post-race interval. Stage 4 then promotes intervals with FWD/BWD disagreement (low or fair confidence tier) into the blob observer (expensive, one per interval). Stage 5 is user-selectable (`--full` flag) and runs blob on every interval for maximum fidelity when speed is less critical.
+The pipeline's cost philosophy is "Spend expensive evidence only where cheap evidence is uncertain." Stage 3 directly interpolates centers linearly and torso dimensions log-linearly between the two human endpoint seeds. Stage 4 ranks the retained cheap-model risk predicates and sends whole positive-risk intervals to the blob observer within the per-video frame budget. Stage 5 is user-selectable (`--full` flag) and runs blob on every interval for maximum fidelity when speed is less critical.
 
-Default solve runs Stages 1-4. `--hermite-only` stops after Stage 3 for diagnostics. `--full` runs Stages 1-5. Refine mode respects the same stage selection: refined intervals enter at Stage 3 and optionally promote to Stage 4 per their confidence score.
+Default solve runs Stages 1-4. The legacy-named `--hermite-only` flag stops after the linear/log-linear Stage 3; `--full` runs Stages 1-5. Refine uses the same stage selection and applies Stage-4 promotion only to intervals changed by the current refine.
 
 ### Stage 4 internal step: per-worker per-interval residual pre-pass
 
@@ -116,26 +116,27 @@ returns to roughly the same image-plane positions every lap period.
 
 Residual-motion blobs are consumed by the windowed Viterbi walker
 (`track_runner/blob_walk/`). The walker runs by default on Stage-4-promoted
-intervals (low/fair confidence tier, reader present); `blob_pass=True` for that
-path. Stage 3 stays pure Hermite on
-every interval, and the no-reader test/diagnostic paths stay pure Hermite, so
+positive-risk intervals that fit the frame budget and have a reader;
+`blob_pass=True` for that path. Confidence tiers remain descriptive and do not
+control promotion. Stage 3 stays purely analytical on
+every interval, and the no-reader test/diagnostic paths stay analytical, so
 the walker is gated to the Stage-4 promotion pass only. The analytical FWD/BWD
 propagator in [velocity_model.py](../track_runner/velocity_model.py) produces a
-pure-Hermite `raw_pred` trajectory and does not apply per-frame blob snap; the
+linear/log-linear `raw_pred` trajectory and does not apply per-frame blob snap; the
 walker walks its own image-derived candidate lattice independent of `raw_pred`.
 
-Pure-stall Hermite fallback: a known bootstrap-stall class of bugs can produce
+Pure-stall analytical fallback: a known bootstrap-stall class of bugs can produce
 a degenerate walker pass: either zero accepted frames (path is a straight
 interpolation between seeds) or only the seed frame accepted via bootstrap (all
 remaining frames frozen at the seed position). Both outcomes are strictly worse
-than Hermite. To keep default-on "never worse than Hermite" on promoted
+than the analytical path. To keep default-on "never worse than analytical" on promoted
 intervals, `solve_interval_analytical` selects output per pass after both
 producers run: a pass with `post_seed_accepted == 0` (no accepted frame beyond
-the seed) falls back to its Hermite path, while a pass with
+the seed) falls back to its analytical path, while a pass with
 `post_seed_accepted >= 1` keeps the walker path. The fallback reads
 `WalkCoverage.post_seed_accepted` from the walker's own coverage report, never
 `raw_pred` and never FWD/BWD agreement (the C9 scoring signal), so the walk
-itself remains Hermite-independent. The underlying bootstrap-stall root cause is
+itself remains analytical-path-independent. The underlying bootstrap-stall root cause is
 still open; the fallback masks its worst symptom while further Viterbi weight
 tuning remains follow-up work.
 
@@ -157,7 +158,7 @@ Rules:
 - The per-interval residual cache holds image-derived raw data only
   (residual maps, validity masks, raw extracted blobs). Never accepted
   blobs, filtered-blob lists, gate outcomes, or selected-path positions.
-- The propagator produces a pure-Hermite `raw_pred`. Missing blobs in the
+- The propagator produces an analytical `raw_pred`. Missing blobs in the
   walker fall back to interpolated/extrapolated status, not a memorized
   earlier blob position.
 
@@ -180,8 +181,9 @@ Rules:
 - Seeds load through `state_io.load_seeds` / `state_io.load_seeds_view`.
 - Scene transform is built through `camera_motion.load_motion_cache` +
   `scene_coords.SceneTransform`.
-- Race-start loads through `state_io.load_interval_scores` -- fail loud, never
-  silent zero.
+- Race-start loads through `torso_box_coords_io.load_torso_box_coords`; its
+  absence means the established no-pre-race result for ordinary modes, while
+  race-start targeting requires the stored block and fails clearly without it.
 - Interval preparation routes through
   `interval_fingerprint.filter_usable_seeds_sorted` and the solver's
   canonical interval planner.
@@ -198,7 +200,7 @@ The blob walker core (modules `walk_walker.py`, `walk_viterbi.py`,
 `walk_motion_gate.py`, `walk_status.py`, `walk_debug_log.py`)
 now lives under `track_runner/blob_walk/`. The walker is the default blob pass
 on Stage-4-promoted intervals (`blob_pass=True`); Stage 3 and non-promoted
-dispatches stay pure Hermite (`blob_pass=False`). It selects per-frame blobs
+dispatches stay analytical (`blob_pass=False`). It selects per-frame blobs
 by window-level trajectory
 consistency, not by per-frame `integrated_mag` argmax. Full spec:
 [windowed_path_selection_amendment.md](archive/windowed_path_selection_amendment.md).
@@ -304,60 +306,58 @@ rules above.
 
 ## Dual scoring philosophy
 
-The first-pass FWD/BWD propagation is intentionally independent. The
-disagreement between directions is the honest uncertainty probe. This raw
-diagnostic signal drives:
+Stage 3 uses one endpoint chord, so its FWD and BWD geometry is structurally
+identical and agreement is 1.0 by construction. That value is not independent
+evidence for the cheap model. Stage-4 allocation and default target ordering
+therefore use the count of retained model-risk predicates: motion quality,
+occlusion, size residual, duration, and the approved endpoint chord-span gate.
+Positive risk establishes eligibility; higher risk ranks first, with lower
+`start_frame` as the deterministic tie-breaker.
 
-- Interval confidence scoring (agreement and related geometry-based terms)
-- Seed recommendation (which intervals need more seeds)
-- Severity classification (how urgently an interval needs attention)
+On promoted intervals, the walker still builds independent FWD and BWD paths.
+Their raw agreement is the post-walker uncertainty probe and is transported as
+per-frame `conf` even when quantized raw coordinate paths are omitted. The
+blended interval path remains output geometry: it may supply the velocity term
+whose owner defines it that way, but it never substitutes for raw-pass agreement.
+Confidence tier and severity remain descriptive views; promotion and default
+seed targeting use the separate risk policy above.
 
-Any later refinement step (if and when present) operates after the two
-pass paths have already produced a blended interval path; it must not
-replace the diagnostic signal. If refinement-derived geometry were used
-for scoring, it would mask real identity ambiguity under smooth geometry.
-See `TR_FWD_BWD_MODEL_METHODOLOGY.md` and
-[TRACK_RUNNER_V3_SPEC.md](TRACK_RUNNER_V3_SPEC.md) for the current state
-of any refinement step.
+## Interpreting walker-vs-analytical and held-out-seed error
 
-Rule: scoring uses first-pass signal; output uses the blended interval
-path (and any refined geometry layered on top of it).
-
-## Interpreting walker-vs-Hermite and held-out-seed error
-
-This subsection is a standing rule for reading any walker-vs-Hermite
+This subsection is a standing rule for reading any walker-vs-analytical
 measurement. It exists because the held-out-seed instrument is repeatedly
 misread as a quality ranking and the wrong conclusion ("walker worse than
-Hermite") keeps getting re-derived.
+the analytical path) keeps getting re-derived. Historical reports and field
+names may still use `hermite` for this Stage-3 baseline.
 
 Trust ordering (well documented, not up for re-derivation): the walker is
-the trusted, more-accurate solver for its intervals. Hermite is the cheap
-incumbent -- acceptable, not great. Hermite runs first on every interval
+the trusted, more-accurate solver for its intervals. The analytical path is the
+cheap incumbent -- acceptable, not great. It runs first on every interval
 because it is cheap; the walker is spent ONLY on Stage-4-promoted intervals
 because the walker is significantly more CPU expensive. The gating is cost,
-not quality. When the walker and Hermite disagree, the prior is that the
-walker is closer to the runner, not Hermite.
+not quality. When the walker and analytical path disagree, the prior is that
+the walker is closer to the runner.
 
 Consequence for the held-out-seed instrument (`e2e_walker_ab`, which holds
 out an interior human seed M and measures the solved box at M against M):
-it must NOT be read as a quality ranking of walker against Hermite. Two
-structural biases push it toward Hermite:
+it must NOT be read as a quality ranking of walker against the analytical
+path. Two structural biases favor the analytical path:
 
 - A single interior held-out seed under-samples the interval. It scores one
-  frame, not the trajectory; Hermite can be mediocre across the whole span
+  frame, not the trajectory; the analytical path can be mediocre across the whole span
   yet score well at one held-out midpoint.
-- On smooth motion the held-out frame lies near Hermite's L-to-R cubic, so a
+- On smooth motion the held-out frame lies near the L-to-R interpolation, so a
   small `hermite_err` means the held-out frame was EASY (the runner moved
-  where interpolation predicted), not that Hermite tracked well. Scoring the
+  where interpolation predicted), not that the analytical path tracked well. Scoring the
   trusted tracker by closeness to a yardstick the cheap floor passes
   trivially is the wrong axis.
 
 Correct uses of held-out-seed error:
 
 - ABSOLUTE walker outliers. A walker box two or more torso-widths off the
-  runner is the walker failing at its own job regardless of Hermite, and is
+  runner is the walker failing at its own job regardless of the analytical path, and is
   a real eyes-on-tiles lead. Small deltas on easy frames are noise.
-- Rescues on hard, non-smooth intervals where Hermite visibly fails (the
+- Rescues on hard, non-smooth intervals where the analytical path visibly fails (the
   walker's design domain, e.g. drift-stall and long-run intervals). A walker
   win there is real signal because the instrument is informative there.
 
@@ -365,7 +365,7 @@ The proper quality truth is a dense per-frame human trace over a few full
 promoted intervals, comparing both full trajectories integrated over the
 interval -- not a single held-out point. Until that exists, the strongest
 quality evidence for a walker change is its effect on the promoted /
-ranking-failure bucket (intervals where Hermite already failed), not
+ranking-failure bucket (intervals where the analytical path already failed), not
 held-out single-seed distance on ordinary intervals.
 
 ## Separation of concerns
@@ -391,7 +391,7 @@ The default bin factor is `floor(source_width / 1440)`, a project-wide constant
 bins at 2 (processed 1920x1080), 2.8K (2880) bins at 2, 1440p (2560) and 1080p
 (1920) stay at full resolution (bin=1). The entire solve runs in one coordinate
 space (PROCESSED at bin > 1) and converts to SOURCE exactly once, at the storage
-boundary, immediately before `torso_box_coords_io.write_torso_box_coords`. Hermite and walker
+boundary, immediately before `torso_box_coords_io.write_torso_box_coords`. Analytical and walker
 both emit correct SOURCE boxes via that single boundary. The encoder consumes SOURCE
 and decodes the original full-resolution video.
 

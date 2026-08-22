@@ -14,19 +14,16 @@ import pytest
 import state_io
 import torso_box_coords_io
 import tr_schema
+import trajectory_confidence
 
 
 #============================================
 def _current_video_identity(frame_count: int = 300) -> dict:
 	"""Build the current source identity required by an NPZ artifact."""
 	identity = {
-		"basename": "test.mkv",
-		"size_bytes": 1,
 		"width": 640,
 		"height": 480,
-		"fps": 30.0,
 		"frame_count": frame_count,
-		"duration_s": frame_count / 30.0,
 	}
 	return identity
 
@@ -71,6 +68,24 @@ def test_round_trip_v3_nested(tmp_path: pathlib.Path) -> None:
 	score = loaded_iv["interval_score"]
 	assert abs(score["agreement"] - 0.85) < 0.01
 	assert score["confidence_tier"] == "high"
+
+
+#============================================
+def test_agreement_debug_owner_output_writes_sidecar(tmp_path: pathlib.Path) -> None:
+	"""The debug writer accepts the confidence owner's current field names."""
+	forward = [{"cx": 10.0, "cy": 10.0, "w": 10.0, "h": 20.0}]
+	backward = [{"cx": 12.0, "cy": 10.0, "w": 10.0, "h": 20.0}]
+	debug = trajectory_confidence.compute_agreement_debug(forward, backward)
+	path = tmp_path / "agreement_debug.json"
+	diagnostics = {
+		"intervals": [{
+			"start_frame": 0, "end_frame": 0, "agreement_debug": debug,
+		}],
+	}
+
+	assert state_io.write_agreement_debug_sidecar(diagnostics, str(path)) == 1
+	persisted = json.loads(path.read_text())["intervals"][0]
+	assert persisted["confidence_p50"] == round(debug["confidence_p50"], 4)
 
 
 #============================================
@@ -182,8 +197,8 @@ def test_torso_writer_rejects_path_length_mismatch(tmp_path: pathlib.Path) -> No
 
 #============================================
 
-def test_current_file_without_optional_pre_race_reference_loads(tmp_path: pathlib.Path) -> None:
-	"""Current diagnostics may omit optional pre-race metadata."""
+def test_current_file_without_race_start_diagnostics_loads(tmp_path: pathlib.Path) -> None:
+	"""Current diagnostics contain interval scores, not race-start state."""
 	# Hand-craft a current JSON file with nested interval score data.
 	diag_dict = {
 		state_io.INTERVAL_SCORES_HEADER_KEY: state_io.INTERVAL_SCORES_HEADER_VALUE,
@@ -212,7 +227,7 @@ def test_current_file_without_optional_pre_race_reference_loads(tmp_path: pathli
 
 	# load and verify
 	loaded = state_io.load_interval_scores(str(diag_path))
-	assert loaded["pre_race_reference"] is None
+	assert "pre_race_reference" not in loaded
 	iv = loaded["intervals"][0]
 	assert "interval_score" in iv
 	assert abs(iv["interval_score"]["agreement"] - 0.85) < 0.01
@@ -221,49 +236,29 @@ def test_current_file_without_optional_pre_race_reference_loads(tmp_path: pathli
 #============================================
 
 
-def test_writer_serializes_pre_race_reference_when_present(
+def test_writer_does_not_serialize_pre_race_reference(
 		tmp_path: pathlib.Path,
 ) -> None:
-	"""Writer serializes pre_race_reference when present.
-
-	Diagnostics dict with populated pre_race_reference should survive
-	write+load round-trip.
-	"""
+	"""Race-start state is not retained in interval-scores diagnostics."""
 	diagnostics = {
 		"fps": 30.0,
 		"video_identity": _current_video_identity(),
 		"intervals": [],
-		"pre_race_reference": {
-			"race_start_frame": 120,
-			"torso_w": 35.0,
-			"torso_h": 70.0,
-			"scene_anchor_x": 100.0,
-			"scene_anchor_y": 50.0,
-			"source_count": 3,
-			"warnings": [],
-		}
+		"pre_race_reference": {"race_start_frame": 120},
 	}
 
 	diag_path = tmp_path / "diagnostics.json"
 	state_io.write_interval_scores(str(diag_path), diagnostics)
 
-	# load and verify round-trip
+	# Race-start data belongs only in torso_box_coords.npz.
 	loaded = state_io.load_interval_scores(str(diag_path))
-	assert loaded["pre_race_reference"] is not None
-	ref = loaded["pre_race_reference"]
-	assert ref["race_start_frame"] == 120
-	assert abs(ref["torso_w"] - 35.0) < 0.01
-	assert abs(ref["torso_h"] - 70.0) < 0.01
+	assert "pre_race_reference" not in loaded
 
 
 #============================================
 
 def test_writer_omits_pre_race_reference_when_none(tmp_path: pathlib.Path) -> None:
-	"""Writer with pre_race_reference=None loads back as None.
-
-	Diagnostics dict with pre_race_reference=None should load as None
-	(or omitted key, which load_interval_scores synthesizes as None).
-	"""
+	"""A None race-start value is not a diagnostics field either."""
 	diagnostics = {
 		"fps": 30.0,
 		"video_identity": _current_video_identity(),
@@ -276,7 +271,7 @@ def test_writer_omits_pre_race_reference_when_none(tmp_path: pathlib.Path) -> No
 
 	# load and verify
 	loaded = state_io.load_interval_scores(str(diag_path))
-	assert loaded["pre_race_reference"] is None
+	assert "pre_race_reference" not in loaded
 
 
 #============================================
@@ -322,6 +317,7 @@ def test_torso_box_coords_loader_rejects_one_directional_array_group(
 	for direction_tag in ("blended", "fwd"):
 		for coord_key, value in (("cx", 10), ("cy", 20), ("w", 30), ("h", 40)):
 			arrays[f"i0_{direction_tag}_{coord_key}"] = numpy.asarray([value], dtype=numpy.uint16)
+	arrays["i0_conf"] = numpy.asarray([255], dtype=numpy.uint8)
 	coords_path = tmp_path / "torso_box_coords.npz"
 	numpy.savez(str(coords_path), **arrays)
 	with pytest.raises(RuntimeError, match="only one FWD/BWD path"):
@@ -364,6 +360,19 @@ def test_torso_box_coords_rejects_old_schema(tmp_path: pathlib.Path) -> None:
 
 
 #============================================
+def test_torso_box_coords_v10_requires_resolve(tmp_path: pathlib.Path) -> None:
+	"""Schema 15 is a hard format cutover from the former v10 layout."""
+	coords_path = tmp_path / "torso_box_coords_v10.npz"
+	numpy.savez(
+		coords_path,
+		schema_version=numpy.asarray(10, dtype=numpy.int32),
+		manifest=numpy.frombuffer(b"[]", dtype=numpy.uint8),
+	)
+	with pytest.raises(RuntimeError, match="re-solve"):
+		torso_box_coords_io.load_torso_box_coords(str(coords_path))
+
+
+#============================================
 def test_load_torso_box_coords_rejects_frame_count_mismatch(
 		tmp_path: pathlib.Path,
 ) -> None:
@@ -397,16 +406,13 @@ def test_load_torso_box_coords_rejects_frame_count_mismatch(
 		"i0_blended_cy": numpy.arange(frame_count_arrays, dtype=numpy.uint16),
 		"i0_blended_w": numpy.ones(frame_count_arrays, dtype=numpy.uint16) * 100,
 		"i0_blended_h": numpy.ones(frame_count_arrays, dtype=numpy.uint16) * 100,
+		"i0_conf": numpy.ones(frame_count_arrays, dtype=numpy.uint8) * 255,
 		# Corrupt: claim frame_count=100, but manifest has end_frame=200
 		"video_identity": numpy.frombuffer(
 			json.dumps({
-				"basename": "test.mp4",
-				"size_bytes": 1000000,
 				"width": 1920,
 				"height": 1080,
-				"fps": 30.0,
 				"frame_count": 100,
-				"duration_s": 33.0,
 			}).encode("utf-8"),
 			dtype=numpy.uint8,
 		),
@@ -460,3 +466,167 @@ def test_load_torso_box_coords_rejects_incomplete_blended_path(
 
 	with pytest.raises(RuntimeError, match="incomplete blended path"):
 		torso_box_coords_io.load_torso_box_coords(str(coords_path))
+
+
+#============================================
+def test_load_torso_box_coords_rejects_non_uint16_coordinates(
+		tmp_path: pathlib.Path,
+) -> None:
+	"""The shared path loader rejects corrupt coordinate transport dtypes."""
+	coords_path = tmp_path / "torso_box_coords.npz"
+	manifest = [{
+		"fingerprint": "fp",
+		"array_index": 0,
+		"start_frame": 0,
+		"end_frame": 0,
+	}]
+	numpy.savez(
+		coords_path,
+		schema_version=numpy.asarray(tr_schema.SCHEMA_VERSION, dtype=numpy.int32),
+		manifest=numpy.frombuffer(json.dumps(manifest).encode("utf-8"), dtype=numpy.uint8),
+		video_identity=numpy.frombuffer(
+			json.dumps(_current_video_identity()).encode("utf-8"), dtype=numpy.uint8,
+		),
+		solve_complete=numpy.asarray(False),
+		i0_blended_cx=numpy.asarray([10.0], dtype=numpy.float32),
+		i0_blended_cy=numpy.asarray([20], dtype=numpy.uint16),
+		i0_blended_w=numpy.asarray([30], dtype=numpy.uint16),
+		i0_blended_h=numpy.asarray([40], dtype=numpy.uint16),
+		i0_conf=numpy.asarray([255], dtype=numpy.uint8),
+	)
+	with pytest.raises(RuntimeError, match="coordinates must be uint16"):
+		torso_box_coords_io.load_torso_box_coords(str(coords_path))
+
+
+#============================================
+def test_load_torso_box_coords_rejects_missing_confidence(
+		tmp_path: pathlib.Path,
+) -> None:
+	"""Every schema-15 interval must transport raw-pass agreement."""
+	coords_path = tmp_path / "coords.npz"
+	manifest = [{
+		"fingerprint": "fp", "array_index": 0,
+		"start_frame": 0, "end_frame": 0,
+	}]
+	numpy.savez(
+		coords_path,
+		schema_version=numpy.asarray(tr_schema.SCHEMA_VERSION, dtype=numpy.int32),
+		manifest=numpy.frombuffer(json.dumps(manifest).encode("utf-8"), dtype=numpy.uint8),
+		video_identity=numpy.frombuffer(
+			json.dumps(_current_video_identity()).encode("utf-8"), dtype=numpy.uint8,
+		),
+		solve_complete=numpy.asarray(False),
+		i0_blended_cx=numpy.asarray([10], dtype=numpy.uint16),
+		i0_blended_cy=numpy.asarray([20], dtype=numpy.uint16),
+		i0_blended_w=numpy.asarray([30], dtype=numpy.uint16),
+		i0_blended_h=numpy.asarray([40], dtype=numpy.uint16),
+	)
+	with pytest.raises(RuntimeError, match="missing stored confidence"):
+		torso_box_coords_io.load_torso_box_coords(str(coords_path))
+
+
+#============================================
+def _artifact_path(cx: float, conf: float) -> list[dict]:
+	"""Build one frame of SOURCE-space raw path data."""
+	return [{"cx": cx, "cy": 20.0, "w": 30.0, "h": 60.0, "conf": conf}]
+
+
+#============================================
+def test_torso_box_coords_v15_conditional_raw_paths_and_confidence(
+		tmp_path: pathlib.Path,
+) -> None:
+	"""V15 retains raw paths only when their uint16 difference survives."""
+	coords_path = tmp_path / "coords.npz"
+	torso_box_coords_io.write_torso_box_coords(str(coords_path), {
+		"video_identity": _current_video_identity(),
+		"solve_complete": True,
+		"solved_intervals": {
+			"diverging": {
+				"start_frame": 0, "end_frame": 0,
+				"forward_path": _artifact_path(10.0, 0.2),
+				"backward_path": _artifact_path(12.0, 0.2),
+				"blended_path": _artifact_path(11.0, 0.2),
+				"conf": [0.2],
+			},
+			"quantization_equal": {
+				"start_frame": 1, "end_frame": 1,
+				"forward_path": _artifact_path(20.1, 0.2),
+				"backward_path": _artifact_path(20.4, 0.2),
+				"blended_path": _artifact_path(20.25, 0.2),
+				"conf": [0.2],
+			},
+		},
+	})
+	with numpy.load(coords_path, allow_pickle=False) as npz:
+		assert npz["i0_conf"].dtype == numpy.uint8
+		assert npz["i1_conf"].dtype == numpy.uint8
+		assert "i0_fwd_cx" in npz.files
+		assert "i0_bwd_cx" in npz.files
+		assert "i1_fwd_cx" not in npz.files
+		assert "i1_bwd_cx" not in npz.files
+	loaded = torso_box_coords_io.load_torso_box_coords(str(coords_path))
+	diverging = loaded["solved_intervals"]["diverging"]
+	equal = loaded["solved_intervals"]["quantization_equal"]
+	assert diverging["forward_path"] is not None
+	assert diverging["backward_path"] is not None
+	assert equal["forward_path"] is None
+	assert equal["backward_path"] is None
+	assert abs(equal["conf"][0] - 0.2) <= 1.0 / 255.0
+
+
+#============================================
+def test_torso_box_coords_round_trips_optional_race_start(
+		tmp_path: pathlib.Path,
+) -> None:
+	"""A detected race start round-trips; no detected phase may omit the block."""
+	coords_path = tmp_path / "coords.npz"
+	race_start = {
+		"race_start_frame": 5,
+		"race_start_interval": [0, 10],
+		"torso_w": 30.0,
+		"torso_h": 60.0,
+		"scene_anchor_x": 1.0,
+		"scene_anchor_y": 2.0,
+		"method": "test",
+		"warnings": [],
+	}
+	torso_box_coords_io.write_torso_box_coords(str(coords_path), {
+		"video_identity": _current_video_identity(),
+		"race_start": race_start,
+		"solve_complete": True,
+		"solved_intervals": {},
+	})
+	assert torso_box_coords_io.load_torso_box_coords(str(coords_path))["race_start"] == race_start
+	with pytest.raises(RuntimeError, match="race_start is incomplete"):
+		torso_box_coords_io.write_torso_box_coords(str(tmp_path / "bad.npz"), {
+			"video_identity": _current_video_identity(),
+			"race_start": {"race_start_frame": 5},
+			"solve_complete": True,
+			"solved_intervals": {},
+		})
+
+
+#============================================
+def test_torso_box_coords_round_trips_pre_race_without_directional_paths(
+	tmp_path: pathlib.Path,
+) -> None:
+	"""Pre-race synthesis persists its blended path without invented passes."""
+	coords_path = tmp_path / "coords.npz"
+	path = _artifact_path(10.0, 1.0)
+	torso_box_coords_io.write_torso_box_coords(str(coords_path), {
+		"video_identity": _current_video_identity(),
+		"solve_complete": False,
+		"solved_intervals": {
+			"pre_race": {
+				"start_frame": 0,
+				"end_frame": 0,
+				"blended_path": path,
+				"source": "pre_race_reference",
+			},
+		},
+	})
+	loaded = torso_box_coords_io.load_torso_box_coords(str(coords_path))
+	interval = loaded["solved_intervals"]["pre_race"]
+	assert interval["forward_path"] is None
+	assert interval["backward_path"] is None
+	assert interval["blended_path"][0]["cx"] == 10

@@ -14,8 +14,45 @@ import pytest
 
 # local repo modules (track_runner/ is on sys.path via tests/conftest.py)
 import analyze_report
-import analyze_report_fixtures
 import modes.analyze as analyze_mode
+
+
+class _IdentitySceneTransform:
+	"""Minimal same-file transform for report inputs."""
+
+	def pixel_to_scene(
+		self, unused_frame_index: int, px: float, py: float,
+	) -> tuple[float, float]:
+		"""Return pixel coordinates unchanged."""
+		return px, py
+
+
+def _make_synthetic_inputs() -> tuple:
+	"""Return short in-memory report inputs shared within this test module."""
+	trajectory = [
+		{
+			"cx": 100.0 + 2.0 * index,
+			"cy": 50.0 + 1.5 * index,
+			"w": 20.0,
+			"h": 40.0 + index % 3,
+		}
+		for index in range(30)
+	]
+	crop_rects = [
+		(0, 0, 200, 200 + index % 3)
+		for index in range(30)
+	]
+	motion_track = types.SimpleNamespace(
+		dx=numpy.zeros(30),
+		dy=numpy.zeros(30),
+		scale=numpy.ones(30),
+		quality=numpy.ones(30),
+	)
+	config = {"processing": {"torso_height_multiple": 5.0}}
+	return (
+		trajectory, crop_rects, motion_track, _IdentitySceneTransform(),
+		30.0, config,
+	)
 
 
 #============================================
@@ -284,10 +321,6 @@ def test_warnings_html_escaped(
 #============================================
 # Group D: Patch 5 helpers (WP-2B-1 through WP-2B-4)
 
-# _IdentitySceneTransform is shared with Group G via analyze_report_fixtures
-_IdentitySceneTransform = analyze_report_fixtures._IdentitySceneTransform
-
-
 def test_running_mean_nan_aware_constant_input_passes_through() -> None:
 	"""Constant input -> smoothed output equals raw within float epsilon."""
 	values = numpy.full(20, 7.0)
@@ -532,7 +565,7 @@ def test_full_html_when_all_inputs_present(
 	tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
 	"""Happy path: all four panels rendered, no warnings, JSON has 4 panels."""
-	trajectory, crop_rects, mt, st, fps, cfg = analyze_report_fixtures.make_synthetic_inputs()
+	trajectory, crop_rects, mt, st, fps, cfg = _make_synthetic_inputs()
 	_out, body = _call_write(
 		monkeypatch, tmp_path,
 		trajectory=trajectory, crop_rects=crop_rects,
@@ -554,7 +587,7 @@ def test_html_when_motion_missing(
 	tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
 	"""When motion_track=None, only the two zoom panels render."""
-	trajectory, crop_rects, _mt, st, fps, cfg = analyze_report_fixtures.make_synthetic_inputs()
+	trajectory, crop_rects, _mt, st, fps, cfg = _make_synthetic_inputs()
 	_out, body = _call_write(
 		monkeypatch, tmp_path,
 		trajectory=trajectory, crop_rects=crop_rects,
@@ -574,7 +607,7 @@ def test_html_when_scene_transform_missing(
 	tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
 	"""When scene_transform=None but motion_track present, three panels render (no speed)."""
-	trajectory, crop_rects, mt, _st, fps, cfg = analyze_report_fixtures.make_synthetic_inputs()
+	trajectory, crop_rects, mt, _st, fps, cfg = _make_synthetic_inputs()
 	_out, body = _call_write(
 		monkeypatch, tmp_path,
 		trajectory=trajectory, crop_rects=crop_rects,
@@ -593,7 +626,7 @@ def test_html_no_external_url_under_all_degradation_cases(
 	tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
 	"""no-CDN contract holds across all three degradation cases."""
-	trajectory, crop_rects, mt, st, fps, cfg = analyze_report_fixtures.make_synthetic_inputs()
+	trajectory, crop_rects, mt, st, fps, cfg = _make_synthetic_inputs()
 	common = {'trajectory': trajectory, 'crop_rects': crop_rects}
 	cases = (
 		('full',      {**common, 'motion_track': mt,   'scene_transform': st}),
@@ -610,7 +643,7 @@ def test_embedded_json_series_lengths_match_frames(
 	tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
 	"""Every series.values array has the same length as data.frames."""
-	trajectory, crop_rects, mt, st, fps, cfg = analyze_report_fixtures.make_synthetic_inputs()
+	trajectory, crop_rects, mt, st, fps, cfg = _make_synthetic_inputs()
 	_out, body = _call_write(
 		monkeypatch, tmp_path,
 		trajectory=trajectory, crop_rects=crop_rects,
@@ -674,7 +707,7 @@ def test_integration_full_html_under_full_inputs(
 ) -> None:
 	"""End-to-end: write_analyze_report under the WP-3C-1 fixture renders all four panels."""
 	monkeypatch.setattr(analyze_report, '_load_renderer_js', lambda: '/* test stub */')
-	trajectory, crop_rects, mt, st, fps, cfg = analyze_report_fixtures.make_synthetic_inputs()
+	trajectory, crop_rects, mt, st, fps, cfg = _make_synthetic_inputs()
 	out = tmp_path / 'integration.encode_analysis.html'
 	report_path = analyze_report.write_analyze_report(
 		out_path=out,
@@ -708,7 +741,7 @@ def test_integration_motion_missing_skips_camera_and_speed(
 ) -> None:
 	"""When motion_track is None (CLI degradation path), only zoom panels render."""
 	monkeypatch.setattr(analyze_report, '_load_renderer_js', lambda: '/* test stub */')
-	trajectory, crop_rects, _mt, st, fps, cfg = analyze_report_fixtures.make_synthetic_inputs()
+	trajectory, crop_rects, _mt, st, fps, cfg = _make_synthetic_inputs()
 	out = tmp_path / 'integration_no_motion.encode_analysis.html'
 	report_path = analyze_report.write_analyze_report(
 		out_path=out,
@@ -746,7 +779,7 @@ def test_integration_trajectory_padded_to_match_crop_rects(
 	and emit nan in the corresponding series positions.
 	"""
 	monkeypatch.setattr(analyze_report, '_load_renderer_js', lambda: '/* test stub */')
-	trajectory, crop_rects, mt, st, fps, cfg = analyze_report_fixtures.make_synthetic_inputs()
+	trajectory, crop_rects, mt, st, fps, cfg = _make_synthetic_inputs()
 	# Simulate post-erasure trajectory shorter than crop_rects: drop the last
 	# 5 entries from trajectory and pad with None (the cli.py fix path).
 	short_trajectory = list(trajectory[:-5]) + [None] * 5
@@ -780,7 +813,7 @@ def test_integration_scene_transform_missing_skips_speed(
 ) -> None:
 	"""When scene_transform is None (motion present, projection unavailable), speed panel drops."""
 	monkeypatch.setattr(analyze_report, '_load_renderer_js', lambda: '/* test stub */')
-	trajectory, crop_rects, mt, _st, fps, cfg = analyze_report_fixtures.make_synthetic_inputs()
+	trajectory, crop_rects, mt, _st, fps, cfg = _make_synthetic_inputs()
 	out = tmp_path / 'integration_no_scene.encode_analysis.html'
 	report_path = analyze_report.write_analyze_report(
 		out_path=out,

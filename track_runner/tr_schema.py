@@ -1,7 +1,7 @@
 """Single source of truth for track-runner schema version and policy.
 
 Everything related to "what version is this artifact" lives here. Per contract
-C9, there is exactly one SCHEMA_VERSION authority in the codebase; this module
+C10, there is exactly one SCHEMA_VERSION authority in the codebase; this module
 is that authority. Do not introduce parallel version constants in other
 modules. If a stored artifact needs versioning, it goes under SCHEMA_VERSION
 here.
@@ -15,10 +15,11 @@ Public surface:
 
 #============================================
 # the one and only schema version constant.
-# Schema 10 is current. Method-only changes (residual stride, walker DP, cost
-# weights) keep this number and use the `solve` full re-solve; see the decision
-# rule in docs/TR_SCHEMA_VERSION_HISTORY.md.
-SCHEMA_VERSION = 10
+# Schema 15 is the explicitly human-approved persistence change under C10.
+# Rolled-back method-only artifacts carry stamps 11-14, but are deliberately
+# unreadable: the v15 layout stores per-interval confidence and conditionally
+# stores the raw paths.  See docs/TR_SCHEMA_VERSION_HISTORY.md.
+SCHEMA_VERSION = 15
 
 #============================================
 # Per-artifact readability table. Loaders accept only the current owned
@@ -26,13 +27,10 @@ SCHEMA_VERSION = 10
 SUPPORTED_ARTIFACT_SCHEMAS: dict = {
 	# diagnostics JSON: only the current nested layout is readable.
 	"diagnostics": {SCHEMA_VERSION},
-	# torso_box_coords.npz: per-frame coordinate arrays changed dtype
-	# from float32 (v8, v9) to uint16 (v10) per C12.4. Hard-cut at v10:
-	# v8 and v9 are no longer readable; cache invalidation required. v10 is
-	# the current floor and the last change that altered the stored format.
-	# Artifacts stamped v11-v14 (method-only bumps that were rolled back) are
-	# intentionally not accepted as current solver artifacts; `solve`
-	# regenerates them fresh at v10. See TR_SCHEMA_VERSION_HISTORY.md.
+	# torso_box_coords.npz: v15 keeps uint16 SOURCE-space coordinates, adds
+	# uint8 per-frame raw-pass confidence, and omits both raw paths when their
+	# difference does not survive uint16 quantization. Hard-cut at v15: older
+	# artifacts, including rolled-back v11-v14 stamps, must be re-solved.
 	"torso_box_coords": {SCHEMA_VERSION},
 }
 

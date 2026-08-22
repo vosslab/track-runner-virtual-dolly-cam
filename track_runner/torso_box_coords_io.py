@@ -11,6 +11,7 @@ import numpy
 # local repo modules
 import common_tools.coord_space as coord_space
 import tr_schema
+import trajectory_confidence
 
 #============================================
 
@@ -70,9 +71,9 @@ def peek_torso_box_coords_schema(path: str) -> int | None:
 def load_torso_box_coords(path: str) -> dict:
 	"""Load a unified SOURCE-space torso_box_coords.npz artifact.
 
-	Pre-race intervals persist only their blended arrays and reload with both
-	directional paths set to None. Regular intervals must have complete FWD and
-	BWD array groups.
+	Every interval persists its blended path and raw-pass ``conf`` array. Raw
+	directions are present only when their difference survives uint16
+	quantization; otherwise stored confidence carries the raw-pass agreement.
 
 	Args:
 		path: Path to the torso_box_coords.npz file.
@@ -101,6 +102,8 @@ def load_torso_box_coords(path: str) -> dict:
 			)
 		manifest_bytes = bytes(npz["manifest"])
 		manifest = json.loads(manifest_bytes.decode("utf-8"))
+		if not isinstance(manifest, list):
+			raise RuntimeError("torso_box_coords manifest must be a list")
 		if "video_identity" not in npz.files:
 			raise RuntimeError(
 				"torso_box_coords artifact is missing video_identity; re-solve"
@@ -114,6 +117,11 @@ def load_torso_box_coords(path: str) -> dict:
 				"torso_box_coords artifact is missing solve_complete; re-solve"
 			)
 		solve_complete = bool(npz["solve_complete"])
+		race_start = None
+		if "race_start" in npz.files:
+			race_start_bytes = bytes(npz["race_start"])
+			race_start = json.loads(race_start_bytes.decode("utf-8"))
+			_validate_race_start(race_start)
 		solved = {}
 		for entry in manifest:
 			fingerprint = entry["fingerprint"]
@@ -135,6 +143,14 @@ def load_torso_box_coords(path: str) -> dict:
 					f"torso_box_coords interval {idx} has an incomplete blended path"
 				)
 			blended_path = _load_path(npz, blended_keys, expected_length)
+			conf_key = f"i{idx}_conf"
+			if conf_key not in npz.files:
+				raise RuntimeError(
+					f"torso_box_coords interval {idx} is missing stored confidence"
+				)
+			stored_confidence = _load_confidence(
+				npz[conf_key], expected_length,
+			)
 			fwd_keys = (
 				f"i{idx}_fwd_cx", f"i{idx}_fwd_cy",
 				f"i{idx}_fwd_w", f"i{idx}_fwd_h"
@@ -164,6 +180,7 @@ def load_torso_box_coords(path: str) -> dict:
 				"forward_path": forward_path,
 				"backward_path": backward_path,
 				"blended_path": blended_path,
+				"conf": stored_confidence,
 			}
 	if video_identity is not None and "frame_count" in video_identity:
 		persisted_frame_count = int(video_identity["frame_count"])
@@ -181,6 +198,8 @@ def load_torso_box_coords(path: str) -> dict:
 	}
 	if video_identity is not None:
 		result["video_identity"] = video_identity
+	if race_start is not None:
+		result["race_start"] = race_start
 	return result
 
 
@@ -192,6 +211,9 @@ def _load_path(npz: object, keys: tuple, expected_length: int) -> list[dict]:
 	cy_arr = npz[keys[1]]
 	w_arr = npz[keys[2]]
 	h_arr = npz[keys[3]]
+	arrays = (cx_arr, cy_arr, w_arr, h_arr)
+	if any(array.dtype != numpy.uint16 for array in arrays):
+		raise RuntimeError("torso_box_coords path coordinates must be uint16")
 	lengths = {len(cx_arr), len(cy_arr), len(w_arr), len(h_arr)}
 	if len(lengths) != 1 or len(cx_arr) != expected_length:
 		raise RuntimeError(
@@ -207,6 +229,36 @@ def _load_path(npz: object, keys: tuple, expected_length: int) -> list[dict]:
 		for i in range(len(cx_arr))
 	]
 	return path
+
+
+#============================================
+
+def _load_confidence(confidence: numpy.ndarray, expected_length: int) -> list[float]:
+	"""Decode the schema-15 uint8 transport for raw-pass confidence."""
+	if confidence.dtype != numpy.uint8:
+		raise RuntimeError("torso_box_coords stored confidence must be uint8")
+	if len(confidence) != expected_length:
+		raise RuntimeError(
+			"torso_box_coords stored confidence length does not match interval"
+		)
+	return [float(value) / 255.0 for value in confidence]
+
+
+#============================================
+
+def _validate_race_start(race_start: object) -> None:
+	"""Validate the complete v15 race-start block when it is supplied."""
+	if not isinstance(race_start, dict):
+		raise RuntimeError("torso_box_coords race_start must be a mapping")
+	required = {
+		"race_start_frame", "race_start_interval", "torso_w", "torso_h",
+		"scene_anchor_x", "scene_anchor_y", "method", "warnings",
+	}
+	missing = sorted(required - set(race_start))
+	if missing:
+		raise RuntimeError(
+			"torso_box_coords race_start is incomplete: " + ", ".join(missing)
+		)
 
 
 #============================================
@@ -248,17 +300,65 @@ def _round_clip_uint16(arr: numpy.ndarray) -> numpy.ndarray:
 
 #============================================
 
-def _write_path_arrays(arrays: dict, idx: int, direction_tag: str, track: list) -> None:
-	"""Convert one SOURCE-space path to the four pixel-snapped NPZ arrays."""
+def _path_arrays(track: list) -> tuple[numpy.ndarray, numpy.ndarray, numpy.ndarray, numpy.ndarray]:
+	"""Convert one SOURCE-space path to four pixel-snapped coordinate arrays."""
 	coords = [_extract_source_box_coords(frame_obj) for frame_obj in track]
 	cx_in = numpy.asarray([coord[0] for coord in coords], dtype=numpy.float32)
 	cy_in = numpy.asarray([coord[1] for coord in coords], dtype=numpy.float32)
 	w_in = numpy.asarray([coord[2] for coord in coords], dtype=numpy.float32)
 	h_in = numpy.asarray([coord[3] for coord in coords], dtype=numpy.float32)
-	arrays[f"i{idx}_{direction_tag}_cx"] = _round_clip_uint16(cx_in)
-	arrays[f"i{idx}_{direction_tag}_cy"] = _round_clip_uint16(cy_in)
-	arrays[f"i{idx}_{direction_tag}_w"] = _round_clip_uint16(w_in)
-	arrays[f"i{idx}_{direction_tag}_h"] = _round_clip_uint16(h_in)
+	return (
+		_round_clip_uint16(cx_in),
+		_round_clip_uint16(cy_in),
+		_round_clip_uint16(w_in),
+		_round_clip_uint16(h_in),
+	)
+
+
+#============================================
+
+def _write_path_arrays(
+		arrays: dict,
+		idx: int,
+		direction_tag: str,
+		path_arrays: tuple[numpy.ndarray, numpy.ndarray, numpy.ndarray, numpy.ndarray],
+) -> None:
+	"""Store pixel-snapped coordinate arrays under one interval path prefix."""
+	for coord_name, values in zip(("cx", "cy", "w", "h"), path_arrays):
+		arrays[f"i{idx}_{direction_tag}_{coord_name}"] = values
+
+
+#============================================
+
+def _confidence_values(entry: dict, expected_length: int) -> list[float]:
+	"""Return raw-pass confidence for one interval before uint8 transport."""
+	stored_confidence = entry.get("conf")
+	if stored_confidence is not None:
+		if len(stored_confidence) != expected_length:
+			raise ValueError("stored confidence length does not match interval bounds")
+		values = [float(value) for value in stored_confidence]
+		trajectory_confidence.interval_agreement_from_stored_confidence(values)
+		return values
+	# Pre-race synthesis intentionally has no directional passes.
+	fwd = entry.get("forward_path")
+	bwd = entry.get("backward_path")
+	if fwd is not None and bwd is not None:
+		return [
+			trajectory_confidence.frame_confidence(fwd[index], bwd[index])
+			for index in range(expected_length)
+		]
+	blended = entry["blended_path"]
+	values = [float(frame.get("conf", 1.0)) for frame in blended]
+	trajectory_confidence.interval_agreement_from_stored_confidence(values)
+	return values
+
+
+#============================================
+
+def _quantize_confidence(values: list[float]) -> numpy.ndarray:
+	"""Encode owner confidence as schema-15 uint8 transport values."""
+	confidence = numpy.asarray(values, dtype=numpy.float32)
+	return numpy.round(confidence * 255.0).astype(numpy.uint8)
 
 
 #============================================
@@ -266,9 +366,10 @@ def _write_path_arrays(arrays: dict, idx: int, direction_tag: str, track: list) 
 def write_torso_box_coords(path: str, cache_data: dict) -> None:
 	"""Write unified SOURCE-space torso-box coordinates to an NPZ artifact.
 
-	Coordinates preserve schema-v10 pixel snapping and unsigned-16-bit storage.
-	A pre-race interval writes a blended path only; other intervals must supply
-	both FWD and BWD paths.
+	Coordinates use uint16 pixel snapping. Every interval writes uint8 raw-pass
+	confidence. Both raw directions are omitted only when they are absent or
+	their quantized arrays are identical: omission means no raw-path difference
+	survived quantization, not that agreement is 1.0.
 
 	Args:
 		path: Output NPZ file path.
@@ -289,8 +390,9 @@ def write_torso_box_coords(path: str, cache_data: dict) -> None:
 		if end_frame < start_frame:
 			raise ValueError("solved interval has reversed frame bounds")
 		expected_length = end_frame - start_frame + 1
-		fwd = entry["forward_path"]
-		bwd = entry["backward_path"]
+		# Pre-race synthesis intentionally omits both directional paths.
+		fwd = entry.get("forward_path")
+		bwd = entry.get("backward_path")
 		blended = entry["blended_path"]
 		if blended is None:
 			raise RuntimeError("solved interval must provide a blended path")
@@ -305,10 +407,20 @@ def write_torso_box_coords(path: str, cache_data: dict) -> None:
 			raise ValueError("FWD path length does not match interval bounds")
 		if bwd is not None and len(bwd) != expected_length:
 			raise ValueError("BWD path length does not match interval bounds")
-		_write_path_arrays(arrays, idx, "blended", blended)
+		blended_arrays = _path_arrays(blended)
+		_write_path_arrays(arrays, idx, "blended", blended_arrays)
+		arrays[f"i{idx}_conf"] = _quantize_confidence(
+			_confidence_values(entry, expected_length)
+		)
 		if fwd is not None and bwd is not None:
-			_write_path_arrays(arrays, idx, "fwd", fwd)
-			_write_path_arrays(arrays, idx, "bwd", bwd)
+			fwd_arrays = _path_arrays(fwd)
+			bwd_arrays = _path_arrays(bwd)
+			if any(
+				not numpy.array_equal(fwd_array, bwd_array)
+				for fwd_array, bwd_array in zip(fwd_arrays, bwd_arrays)
+			):
+				_write_path_arrays(arrays, idx, "fwd", fwd_arrays)
+				_write_path_arrays(arrays, idx, "bwd", bwd_arrays)
 		manifest.append({
 			"fingerprint": fingerprint,
 			"start_frame": start_frame,
@@ -322,5 +434,12 @@ def write_torso_box_coords(path: str, cache_data: dict) -> None:
 	arrays["manifest"] = numpy.frombuffer(manifest_json, dtype=numpy.uint8)
 	vid_json = json.dumps(video_identity).encode("utf-8")
 	arrays["video_identity"] = numpy.frombuffer(vid_json, dtype=numpy.uint8)
+	race_start = cache_data.get("race_start")
+	if race_start is not None:
+		_validate_race_start(race_start)
+		race_start_json = json.dumps(race_start).encode("utf-8")
+		arrays["race_start"] = numpy.frombuffer(race_start_json, dtype=numpy.uint8)
+	# Absence is the established valid result when Stage 2 detects no pre-race
+	# phase. A detected race start is stored only in this artifact.
 	arrays["solve_complete"] = numpy.asarray(bool(solve_complete))
 	_write_npz_atomic(path, arrays)

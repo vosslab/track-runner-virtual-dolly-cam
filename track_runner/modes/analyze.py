@@ -175,7 +175,7 @@ def run(
 	# truth for analysis panels and confidence metrics: a NIF seed means the
 	# runner is absent, not located at the source-frame edge.
 	crop_trajectory, nif_frames = modes.shared.build_nif_crop_inputs(
-		trajectory, all_seeds, diag_data, video_info,
+		trajectory, all_seeds, intervals_file.get("race_start"), video_info,
 	)
 
 	# compute crop trajectory

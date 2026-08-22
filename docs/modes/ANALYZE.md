@@ -55,8 +55,8 @@ options:
                         set used by 'target --from-analyze'). Implied by '-t
                         N'.
   -t TOP_N, --top TOP_N
-                        limit output to the worst N intervals (sorted worst-
-                        first by rank_key).
+                        limit output to the worst N intervals in the mode's
+                        current ordering.
   -g GAP_TOP_N, --gaps GAP_TOP_N
                         add midpoints of the N largest seed gaps to the
                         seeding target list (independent of -t/--top). Implies

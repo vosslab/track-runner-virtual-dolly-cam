@@ -13,7 +13,7 @@ import trajectory_confidence
 
 
 #============================================
-def _stamp_interval_endpoint_seed_truth(
+def stamp_interval_endpoint_seed_truth(
 	path: list, seed_start: dict, seed_end: dict,
 ) -> None:
 	"""Apply C3 to an interval result before persistence."""
@@ -48,7 +48,7 @@ def restamp_cached_interval_seed_truth(solved_intervals: dict, seeds: list) -> i
 			state = path[index]
 			if any(state.get(key) != seed[key] for key in ("cx", "cy", "w", "h")):
 				repaired += 1
-		_stamp_interval_endpoint_seed_truth(path, seed_start, seed_end)
+		stamp_interval_endpoint_seed_truth(path, seed_start, seed_end)
 	return repaired
 
 

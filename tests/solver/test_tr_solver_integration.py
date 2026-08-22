@@ -122,13 +122,9 @@ def test_diagnostics_v3_write_and_read(tmp_path: pathlib.Path) -> None:
 	# build minimal v3 diagnostics
 	diagnostics = {
 		"video_identity": {
-			"basename": "test.mkv",
-			"size_bytes": 1,
 			"width": 640,
 			"height": 480,
-			"fps": 30.0,
 			"frame_count": 101,
-			"duration_s": 101 / 30.0,
 		},
 		"intervals": [
 			{

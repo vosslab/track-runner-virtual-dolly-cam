@@ -140,11 +140,32 @@ def check_identity_mismatch(
 			"Run solve to regenerate derived artifacts; re-annotate seeds for "
 			"a different video."
 		)
-	if result["informational"]:
-		print(f"  warning: {label} file video identity mismatch:")
+
+
+#============================================
+def check_seed_identity_mismatch(
+	path: str,
+	video_identity: dict | None,
+) -> None:
+	"""Validate optional seed identity without rejecting current legacy files.
+
+	Current seed schema 3 files may predate the optional top-level identity
+	metadata. Their human-authored geometry remains valid and carries forward.
+	When identity metadata is present, the normal strict geometry comparison
+	still applies.
+	"""
+	if video_identity is None or not os.path.isfile(path):
+		return
+	stored = _load_stored_video_identity(path)
+	if stored is None:
+		return
+	result = tr_video_identity.compare_video_identity(stored, video_identity)
+	if result["blocking"]:
 		summary = tr_video_identity.summarize_mismatches(result)
-		for line in summary.split("\n"):
-			print(f"    {line}")
+		raise RuntimeError(
+			f"seeds file belongs to incompatible video geometry:\n{summary}\n"
+			"Re-annotate seeds for a different video."
+		)
 
 
 #============================================

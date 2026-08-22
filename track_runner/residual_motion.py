@@ -356,8 +356,8 @@ def observe_blob_at(
 
 	Two call shapes, same code path:
 
-	1. **Production-shape (FWD/BWD propagator).** Caller provides
-	   pred_center and pred_box (from kinematic Hermite prediction).
+	1. **Analytical-prediction shape.** Caller provides `pred_center` and
+	   `pred_box` from pair-local endpoint interpolation.
 	   Uses prediction-derived ROI sizing and DoG diameter. With no
 	   acceptance_box, every raw blob in that ROI remains eligible. Fully
 	   benefits from residual caching.
@@ -388,8 +388,8 @@ def observe_blob_at(
 	the stored blob set would not represent that request.
 
 	Cache key is `(frame_index, roi)`. FWD and BWD at the same frame
-	usually produce near-identical ROIs (both pass's raw_pred converges
-	at endpoints and differs only by Hermite slope asymmetry in between);
+	usually produce near-identical ROIs. Stage-3 analytical geometry coincides;
+	other callers may still supply distinct directional predictions.
 	when they DO produce identical ROIs the second caller reuses the
 	first caller's raw blobs. When they produce DIFFERENT ROIs (tight
 	curves, occlusion edges, crowd scenes) each pass computes its own
@@ -554,7 +554,7 @@ def observe_blob_at(
 		roi = _compute_roi(pred_cx_p, pred_cy_p, pred_h_p, frame_w, frame_h)
 	# Guard: degenerate ROI after clamping (e.g. roi_override that barely
 	# clips the frame edge and clamps to zero extent). Return None so the
-	# walker can fall back to Hermite rather than crashing downstream.
+	# walker can fall back to the analytical path rather than crashing downstream.
 	if roi[2] <= roi[0] or roi[3] <= roi[1]:
 		_set_reject_reason("off_frame")
 		return None

@@ -10,14 +10,14 @@ This module lives next to the Stage 4 integration seam (not inside the core
 `track_runner/blob_walk/` package) so the core walker does not absorb
 pipeline orchestration.
 
-Maintained invariant (Hermite independence): the bundle carries the seed,
+Maintained invariant (analytical-path independence): the bundle carries the seed,
 frame range, direction, torso-unit scale, and the candidate-lattice source
 plumbing (reader + scene_transform + residual sampling). It deliberately
-does NOT carry the Hermite raw_pred path. The walker walks from the seed
+does NOT carry the analytical `raw_pred` path. The walker walks from the seed
 over the image-derived candidate lattice; snapping onto raw_pred is v1's
 fatal flaw and is rejected by construction. The data-boundary test pairs a
 positive assertion (the bundle carries seed + lattice source) with a
-negative assertion (no Hermite path field).
+negative assertion (no analytical path field).
 
 The walker IS the Stage-4 producer on promoted intervals (blob_pass=True with
 a reader present). `interval_solver.solve_interval_analytical` calls
@@ -51,7 +51,7 @@ class WalkCoverage:
 		post_seed_accepted: Accepted frames excluding the pass's own seed
 			frame. A pass with post_seed_accepted == 0 carries no
 			post-seed trajectory evidence even if accepted_count == 1
-			(bootstrap-only stall), and must fall back to Hermite.
+			(bootstrap-only stall), and must fall back to the analytical path.
 	"""
 	accepted_count: int
 	post_seed_accepted: int
@@ -74,9 +74,9 @@ class WalkerInputBundle:
 	The seed anchors the walk and supplies the torso-unit scale (seed w/h),
 	the contract C2 unit for all spatial thresholds.
 
-	The Hermite raw_pred path is intentionally absent. The walker is
-	Hermite-independent; it must be free to diverge from a failed Hermite
-	path. A data-boundary test asserts no Hermite path is reachable through
+	The analytical `raw_pred` path is intentionally absent. The walker is
+	analytical-path-independent; it must be free to diverge from a failed
+	analytical path. A data-boundary test asserts no analytical path is reachable through
 	this bundle.
 
 	Attributes:
@@ -129,8 +129,8 @@ def build_walker_bundles_for_interval(
 
 	The caller (Stage 4) builds both bundles from the interval seed pair and
 	the run-invariant state already present at the
-	`solve_interval_analytical` seam. The Stage 3 Hermite-only confidence
-	tier has already decided promotion before this runs (Stage-3-first), so
+	`solve_interval_analytical` seam. The Stage-3 analytical risk view has
+	already decided promotion before this runs (Stage-3-first), so
 	walker output cannot influence eligibility.
 
 	FWD anchors on `seed_start` and targets `seed_end` (sign +1). BWD anchors
@@ -149,7 +149,7 @@ def build_walker_bundles_for_interval(
 
 	Returns:
 		(forward_bundle, backward_bundle) tuple of WalkerInputBundle. Note
-		the Hermite raw_pred is NOT read here and is not a bundle field.
+		the analytical `raw_pred` is NOT read here and is not a bundle field.
 	"""
 	start_frame = int(seed_start["frame_index"])
 	end_frame = int(seed_end["frame_index"])
@@ -254,7 +254,7 @@ def _build_full_span_path(
 
 	  - reindexes walker rows by absolute frame_index (order-independent);
 	  - forces both interval endpoints to the bracketing seed boxes (the seed
-	    boxes are exact, matching the pure-Hermite propagator endpoints);
+	    boxes are exact, matching the analytical propagator endpoints);
 	  - fills any interior frame the walker did not emit by linear interpolation
 	    between the nearest bracketing emitted frames (or holds the last/first
 	    emitted box past the walk's stop point), so FWD and BWD cover exactly
@@ -264,7 +264,7 @@ def _build_full_span_path(
 	length (end_frame - start_frame + 1), in the same PROCESSED pixel space the
 	walker and the solver share (both are fed the same scene_transform and
 	reader, so no coordinate conversion is needed at any bin_factor). The shape
-	matches the pure-Hermite propagator output exactly.
+	matches the analytical propagator output exactly.
 
 	Args:
 		direction_path: walker WalkSummary.direction_path (PROCESSED pixels,
@@ -447,7 +447,7 @@ def count_post_seed_accepts(accepts: list, seed_frame: int) -> int:
 	"Post-seed accepts" is the count of accepted frames that carry real
 	post-seed trajectory evidence. A pass whose only accepted frame is the
 	seed frame (bootstrap-only stall) has post_seed_accepted == 0 and must
-	fall back to Hermite even though accepted_count == 1.
+	fall back to the analytical path even though accepted_count == 1.
 
 	Args:
 		accepts: List of accepted frame indices from WalkSummary.accepts.
@@ -478,7 +478,7 @@ def walk_bundle_to_path(bundle: WalkerInputBundle) -> list:
 	FWD and BWD are driven by separate bundles and separate calls (contract C9):
 	this function reads only `bundle`, never the other direction's output. The
 	walker walks from `bundle.seed` over its own image-derived candidate
-	lattice; no Hermite raw_pred is read (the bundle carries none).
+	lattice; no analytical `raw_pred` is read (the bundle carries none).
 
 	The walker's direction_path is PROCESSED pixels and this adapter returns
 	PROCESSED pixels unchanged. The PROCESSED -> SOURCE conversion happens once,
@@ -556,12 +556,12 @@ def walk_bundle_to_path_with_coverage(bundle: WalkerInputBundle) -> tuple:
 
 	The fallback gate reads `post_seed_accepted`, not `accepted_count`.
 	A bootstrap-only stall carries no post-seed trajectory evidence and
-	must fall back to Hermite even though accepted_count is 1.
+	must fall back to the analytical path even though accepted_count is 1.
 
-	Hermite independence: this function reads
+	Analytical-path independence: this function reads
 	only the walker's own output. The fallback decision lives in the caller
 	(interval_solver), which already owns velocity_model; walker_bundle stays
-	free of any Hermite import.
+	free of any analytical-propagator import.
 
 	Args:
 		bundle: WalkerInputBundle for one direction (FWD or BWD).

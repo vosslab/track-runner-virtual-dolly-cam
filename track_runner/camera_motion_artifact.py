@@ -111,7 +111,7 @@ def save_motion_cache(
 	"""Save motion track to the canonical camera_motion.npz file.
 
 	Writes per-model arrays (fixed_zoom omits `scale`; discrete and
-	continuous include it) plus `motion_model`, complete `video_identity`,
+	continuous include it) plus `motion_model`, source geometry identity,
 	`frame_count`, and `bin_factor` as artifact-identity metadata. All
 	per-frame arrays are stored as float32. No `event_flags`. This is a
 	durable solved-result artifact, not cache.
@@ -131,8 +131,8 @@ def save_motion_cache(
 			differs from the stored value on load, the stored version is
 			treated as stale and recomputed.
 		motion_model: One of MOTION_MODEL_{FIXED,DISCRETE,CONTINUOUS}.
-		video_identity: Complete current source-video identity. Persisted so
-			cache reuse requires the same source video.
+		video_identity: Current source-video geometry identity. Persisted so
+			cache reuse requires matching frame geometry.
 	"""
 	if motion_model not in VALID_MOTION_MODELS:
 		raise ValueError(f"unknown motion_model: {motion_model}")
@@ -173,7 +173,7 @@ def load_motion_cache(
 	Returns None if the file does not exist OR the persisted
 	`motion_model` differs from `expected_motion_model` OR the persisted
 	`bin_factor` differs from `expected_bin_factor`, or its complete source
-	video identity differs from `expected_video_identity`. A stale artifact
+	video geometry differs from `expected_video_identity`. A stale artifact
 	is treated as absent so the caller recomputes and overwrites atomically.
 	No merge, no partial reuse.
 
@@ -192,8 +192,8 @@ def load_motion_cache(
 			(one of MOTION_MODEL_*); if provided and disagreeing with
 			the stored value, the artifact is treated as stale and None
 			is returned.
-		expected_video_identity: Current complete source-video identity. When
-			provided, a missing or different persisted identity is stale.
+		expected_video_identity: Current source-video geometry identity. When
+			provided, a missing or geometry-mismatched identity is stale.
 
 	Returns:
 		MotionTrack instance, or None if missing / stale / unknown
@@ -229,7 +229,10 @@ def load_motion_cache(
 			stored_identity = json.loads(
 				bytes(npz["video_identity"]).decode("utf-8"),
 			)
-			if stored_identity != expected_video_identity:
+			comparison = tr_video_identity.compare_video_identity(
+				stored_identity, expected_video_identity,
+			)
+			if comparison["blocking"]:
 				return None
 		required = _REQUIRED_ARRAYS[motion_model]
 		for key in required:

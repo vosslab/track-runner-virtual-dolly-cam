@@ -1,6 +1,6 @@
 # solve mode
 
-Full solve runs through multiple stages: camera motion precompute, race-start identification, Hermite-only interpolation on all post-race intervals, and optional blob-coupled refinement on weak intervals. Clears all prior results and solves every interval from scratch.
+Full solve runs through multiple stages: camera motion precompute, race-start identification, analytical linear/log-linear interpolation on all post-race intervals, and optional blob-coupled refinement on promoted intervals. Clears all prior results and solves every interval from scratch.
 
 ## When to use it
 
@@ -29,8 +29,7 @@ options:
                        intervals to blob results.
   -f, --full           Run Stage 5: blob pass on every post-race interval
                        (slow).
-  -H, --hermite-only   Stop after Stage 3: Hermite-only solve (fast
-                       diagnostics).
+  -H, --hermite-only   Stop after Stage 3: analytical linear/log-linear solve.
   --bin BIN_FACTOR     Optional spatial downsample applied to camera-motion
                        and residual stages only. Integer >= 1. When neither
                        --bin nor --auto-bin is given, the production default
@@ -59,9 +58,9 @@ options:
 
 **Solve modes (choose at most one):**
 
-- **(default)** Stages 1-4: Hermite on all intervals, blob-coupled re-solve on promoted intervals (low/fair confidence). Wall time ~5-10 min.
-- `--full`, `-f` Stages 1-5: Hermite on all, then blob on every interval. Maximum fidelity. Wall time ~30-60 min.
-- `--hermite-only`, `-H` Stages 1-3: Camera motion, race-start, Hermite only. Fast diagnostics, no blob. Wall time ~2-5 min.
+- **(default)** Stages 1-4: analytical solve on all intervals, then blob-coupled re-solve within the promotion budget. Wall time depends on the video and promoted intervals.
+- `--full`, `-f` Stages 1-5: analytical solve on all intervals, then blob on every interval. Maximum fidelity and correspondingly slower.
+- `--hermite-only`, `-H` Stages 1-3: Camera motion, race-start, and analytical solve only. The flag name is retained for CLI compatibility; no blob walk runs.
 
 **Common options:**
 
@@ -93,7 +92,7 @@ camera-motion (Stage 1) and residual-motion stages, leaving every persisted
 output in source-frame pixels. Goodbox crop is automatic when `bin > 1`
 (right/bottom edges only, capped at 10% per-axis loss). The entire solve runs in
 one coordinate space (PROCESSED at bin > 1) and converts to SOURCE exactly once,
-at the storage boundary before `torso_box_coords_io.write_torso_box_coords`. Hermite and
+at the storage boundary before `torso_box_coords_io.write_torso_box_coords`. Analytical and
 walker both produce correct SOURCE boxes via that single boundary.
 
 For the pipeline philosophy, see [../TRACK_RUNNER_DESIGN.md](../TRACK_RUNNER_DESIGN.md) (stages and signal hierarchy). For the camera motion method, see [../TR_CAMERA_MOTION_METHOD.md](../TR_CAMERA_MOTION_METHOD.md).

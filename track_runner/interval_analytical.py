@@ -10,6 +10,7 @@ import common_tools.in_box_heat
 import residual_motion
 import residual_pre_pass
 import scoring
+import interval_seed_anchoring
 import track_runner.blend_commitment
 import trajectory_confidence
 import velocity_model
@@ -29,7 +30,7 @@ def measure_canonical_blend_boxes(
 	compared_states: dict,
 	residual_cache: dict,
 ) -> dict | None:
-	"""Measure named SOURCE boxes on the production full-frame M3 field."""
+	"""Measure named SOURCE boxes on the production blend-commitment field."""
 	residual_mag, validity_mask = residual_motion.compute_residual_for_frame(
 		reader=reader, frame_index=frame_index, scene_transform=scene_transform,
 		cache=residual_cache, fps=fps,
@@ -58,7 +59,7 @@ def measure_canonical_blend_boxes(
 def build_canonical_blend_heat_evaluator(
 	reader: common_tools.frame_reader.FrameReader, scene_transform: object, fps: float,
 ) -> collections.abc.Callable:
-	"""Build the offline M3 evidence provider for one reader and interval."""
+	"""Build the offline blend-commitment evidence provider for one interval."""
 	residual_cache = {}
 
 	def evaluate(
@@ -81,7 +82,7 @@ def build_canonical_blend_heat_evaluator(
 def blend_paths(
 	forward_path: list, backward_path: list, start_frame: int = 0, heat_evaluator: object = None,
 ) -> list:
-	"""Return the M3 policy-owner blend."""
+	"""Return the canonical commitment-policy blend."""
 	result = track_runner.blend_commitment.commit_paths(
 		forward_path=forward_path, backward_path=backward_path,
 		start_frame=start_frame, heat_evaluator=heat_evaluator,
@@ -122,15 +123,14 @@ def solve_interval_analytical(
 	seed_start: dict, seed_end: dict, scene_transform: object, all_seeds_scene: list,
 	fps: float, debug: bool = False, motion_track: object = None, all_seeds: list | None = None,
 	reader: object = None, blob_pass: bool = True,
-	telemetry: dict | None = None, blend_callable: collections.abc.Callable | None = None,
-	endpoint_stamp_callable: collections.abc.Callable | None = None,
+	telemetry: dict | None = None,
 ) -> dict:
-	"""Solve one interval while accepting facade-owned compatibility seams."""
+	"""Solve one interval through the canonical analytical and walker owners."""
 	start_frame, end_frame = int(seed_start["frame_index"]), int(seed_end["frame_index"])
 	if start_frame >= end_frame:
 		raise RuntimeError(f"degenerate interval: start_frame={start_frame} >= end_frame={end_frame}")
 	if debug:
-		print(f"    fitting Hermite curves {start_frame}-{end_frame}...")
+		print(f"    fitting analytical curves {start_frame}-{end_frame}...")
 	interval_curves = velocity_model.fit_interval_curves(
 		seed_start, seed_end, scene_transform,
 	)
@@ -223,26 +223,32 @@ def solve_interval_analytical(
 		if reader is None
 		else build_canonical_blend_heat_evaluator(reader, scene_transform, fps)
 	)
-	if blend_callable is None:
-		blend_callable = blend_paths
-	blended_path = blend_callable(
-		forward_path,
-		backward_path,
-		start_frame=start_frame,
-		heat_evaluator=heat_evaluator,
+	blend_kwargs = {"start_frame": start_frame, "heat_evaluator": heat_evaluator}
+	try:
+		blended_path = blend_paths(forward_path, backward_path, **blend_kwargs)
+	except track_runner.blend_commitment.BlendTransitionInfeasibleError:
+		if not walker_active:
+			raise
+		# Stage 4 is an optional replacement for this already-valid Stage-3
+		# interval. Reject an unsafe committed walker transition by retaining
+		# the analytical pair, preserving the default-on never-worse contract.
+		forward_path = list(velocity_model.propagate_forward_analytical(
+			interval_curves, scene_transform,
+		))
+		backward_path = list(velocity_model.propagate_backward_analytical(
+			interval_curves, scene_transform,
+		))
+		walker_fallback_fwd = True
+		walker_fallback_bwd = True
+		blended_path = blend_paths(forward_path, backward_path, **blend_kwargs)
+	interval_seed_anchoring.stamp_interval_endpoint_seed_truth(
+		blended_path, seed_start, seed_end,
 	)
-	if endpoint_stamp_callable is not None:
-		endpoint_stamp_callable(blended_path, seed_start, seed_end)
 	if debug:
 		print("    scoring interval analytically...")
 	interval_score = scoring.score_interval_analytical(
 		forward_path, backward_path, all_seeds_scene, interval_curves, scene_transform,
 		motion_track=motion_track, all_seeds=all_seeds, blended_path=blended_path, fps=fps,
-	)
-	propagator_path = (
-		"hermite"
-		if not walker_active or (walker_fallback_fwd and walker_fallback_bwd)
-		else "walker"
 	)
 	result = {
 		"start_frame": start_frame,
@@ -251,7 +257,6 @@ def solve_interval_analytical(
 		"forward_path": forward_path,
 		"backward_path": backward_path,
 		"interval_score": interval_score,
-		"propagator_path": propagator_path,
 		"walker_fallback_fwd": walker_fallback_fwd,
 		"walker_fallback_bwd": walker_fallback_bwd,
 	}
@@ -260,23 +265,3 @@ def solve_interval_analytical(
 			forward_path, backward_path, start_frame=start_frame,
 		)
 	return result
-
-
-#============================================
-def run_stage4_walker_seam(
-	seed_start: dict, seed_end: dict, stage3_interval_score: dict, reader: object,
-	scene_transform: object, fps: float, walker_callable: object,
-) -> dict:
-	"""Promote from Stage-3 tier and invoke independent FWD/BWD walkers."""
-	confidence_tier = stage3_interval_score["confidence_tier"]
-	if confidence_tier not in PROMOTION_TIERS:
-		return {"promoted": False, "confidence_tier": confidence_tier,
-			"forward_result": None, "backward_result": None}
-	forward_bundle, backward_bundle = walker_bundle.build_walker_bundles_for_interval(
-		seed_start=seed_start, seed_end=seed_end, reader=reader, scene_transform=scene_transform,
-		fps=fps, stride=residual_motion.resolve_stride(fps),
-	)
-	forward_result = walker_bundle.run_walker_pass(forward_bundle, walker_callable)
-	backward_result = walker_bundle.run_walker_pass(backward_bundle, walker_callable)
-	return {"promoted": True, "confidence_tier": confidence_tier,
-		"forward_result": forward_result, "backward_result": backward_result}

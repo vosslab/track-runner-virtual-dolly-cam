@@ -6,14 +6,14 @@ stall occurs when a pass has zero post-seed accepted frames. Two stall shapes:
 - Seed-only stall: accepted_count == 1, post_seed_accepted == 0 (only the
   seed frame was observed via bootstrap; all remaining frames missed).
 
-Both produce a degenerate path strictly worse than Hermite. solve_interval_analytical
+Both produce a degenerate path strictly worse than the analytical path. solve_interval_analytical
 falls back per pass when post_seed_accepted == 0, reading the WalkCoverage
 named field so the seed-only case cannot silently bypass the gate. A pass with
 post_seed_accepted >= 1 keeps the walker path. This guarantees "never worse
-than Hermite" on promoted intervals.
+than the analytical pass" on promoted intervals.
 
 These tests inject a fake walk_bundle_to_path_with_coverage that returns a
-controlled (path, WalkCoverage) for each direction, and stub the Hermite
+controlled (path, WalkCoverage) for each direction, and stub the analytical
 propagators with tagged outputs, so the test sees which producer drove each
 pass without decoding any video. The fallback is output selection: it reads
 the walker's own post-seed coverage, never raw_pred and never FWD/BWD
@@ -25,7 +25,10 @@ import pytest
 import common_tools.frame_reader as frame_reader
 
 # local repo modules (track_runner/ is on sys.path via tests/conftest.py)
+import interval_analytical
 import interval_solver
+import residual_pre_pass
+import track_runner.blend_commitment
 import velocity_model
 import walker_bundle
 
@@ -66,7 +69,7 @@ def _stub_collaborators(monkeypatch: pytest.MonkeyPatch) -> None:
 
 	blend_paths returns the forward path verbatim so the test can read the
 	winning forward producer off blended_path[0]['source']. Scoring returns a
-	fixed tier. The Hermite propagators are tagged so a fallback is visible.
+	fixed tier. The analytical propagators are tagged so a fallback is visible.
 	"""
 	monkeypatch.setattr(
 		velocity_model, "fit_interval_curves",
@@ -76,18 +79,18 @@ def _stub_collaborators(monkeypatch: pytest.MonkeyPatch) -> None:
 		velocity_model, "_compute_raw_pred", lambda *a, **k: [],
 	)
 	monkeypatch.setattr(
-		interval_solver.residual_pre_pass, "precompute_interval_residuals",
+		residual_pre_pass, "precompute_interval_residuals",
 		lambda **k: {},
 	)
 	monkeypatch.setattr(
 		velocity_model, "propagate_forward_analytical",
-		lambda *a, **k: [_state("hermite_fwd")],
+		lambda *a, **k: [_state("analytical_fwd")],
 	)
 	monkeypatch.setattr(
 		velocity_model, "propagate_backward_analytical",
-		lambda *a, **k: [_state("hermite_bwd")],
+		lambda *a, **k: [_state("analytical_bwd")],
 	)
-	monkeypatch.setattr(interval_solver, "blend_paths", lambda f, b, **kwargs: list(f))
+	monkeypatch.setattr(interval_analytical, "blend_paths", lambda f, b, **kwargs: list(f))
 	monkeypatch.setattr(
 		interval_solver.scoring, "score_interval_analytical",
 		lambda *a, **k: {"confidence_tier": "low"},
@@ -95,8 +98,8 @@ def _stub_collaborators(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 #============================================
-def test_zero_accepted_pass_falls_back_to_hermite(monkeypatch: pytest.MonkeyPatch) -> None:
-	"""A pass with zero accepted walker frames uses its Hermite path."""
+def test_zero_accepted_pass_falls_back_to_analytical(monkeypatch: pytest.MonkeyPatch) -> None:
+	"""A pass with zero accepted walker frames uses its analytical path."""
 	_stub_collaborators(monkeypatch)
 
 	# both passes pure-stall: accepted_count == 0, post_seed_accepted == 0
@@ -118,16 +121,50 @@ def test_zero_accepted_pass_falls_back_to_hermite(monkeypatch: pytest.MonkeyPatc
 		blob_pass=True,
 	)
 
-	# both passes stalled -> Hermite path won and the interval reports hermite
-	assert result["forward_path"][0]["source"] == "hermite_fwd"
-	assert result["backward_path"][0]["source"] == "hermite_bwd"
+	# both passes stalled -> the analytical paths win
+	assert result["forward_path"][0]["source"] == "analytical_fwd"
+	assert result["backward_path"][0]["source"] == "analytical_bwd"
 	assert result["walker_fallback_fwd"] is True
 	assert result["walker_fallback_bwd"] is True
-	assert result["propagator_path"] == "hermite"
 
 
 #============================================
-def test_seed_only_accepted_pass_falls_back_to_hermite(
+def test_infeasible_walker_commitment_retains_analytical_interval(
+	monkeypatch: pytest.MonkeyPatch,
+) -> None:
+	"""An unsafe optional walker blend does not discard its valid baseline."""
+	_stub_collaborators(monkeypatch)
+
+	def fake_coverage(bundle: object) -> tuple[list[dict], walker_bundle.WalkCoverage]:
+		coverage = walker_bundle.WalkCoverage(accepted_count=3, post_seed_accepted=3)
+		return [_state("walker")], coverage
+
+	def reject_walker(forward: list, backward: list, **kwargs: object) -> list:
+		if forward[0]["source"] == "walker":
+			raise track_runner.blend_commitment.BlendTransitionInfeasibleError(
+				"unsafe walker transition"
+			)
+		return list(forward)
+
+	monkeypatch.setattr(
+		walker_bundle, "walk_bundle_to_path_with_coverage", fake_coverage,
+	)
+	monkeypatch.setattr(interval_analytical, "blend_paths", reject_walker)
+	result = interval_solver.solve_interval_analytical(
+		_seed(0, 0.0, 0.0, 1.0, 1.0),
+		_seed(2, 2.0, 0.0, 1.0, 1.0),
+		scene_transform=object(),
+		all_seeds_scene=[],
+		fps=30.0,
+		reader=_FakeReader(),
+		blob_pass=True,
+	)
+	assert result["forward_path"][0]["source"] == "analytical_fwd"
+	assert result["backward_path"][0]["source"] == "analytical_bwd"
+
+
+#============================================
+def test_seed_only_accepted_pass_falls_back_to_analytical(
 	monkeypatch: pytest.MonkeyPatch,
 ) -> None:
 	"""A bootstrap-only pass (seed frame accepted, all others missed) falls back.
@@ -163,9 +200,8 @@ def test_seed_only_accepted_pass_falls_back_to_hermite(
 	# bootstrap-only stall must trigger the fallback (gate on post_seed_accepted)
 	assert result["walker_fallback_fwd"] is True
 	assert result["walker_fallback_bwd"] is True
-	assert result["forward_path"][0]["source"] == "hermite_fwd"
-	assert result["backward_path"][0]["source"] == "hermite_bwd"
-	assert result["propagator_path"] == "hermite"
+	assert result["forward_path"][0]["source"] == "analytical_fwd"
+	assert result["backward_path"][0]["source"] == "analytical_bwd"
 
 
 #============================================
@@ -197,4 +233,3 @@ def test_accepted_pass_keeps_walker_path(monkeypatch: pytest.MonkeyPatch) -> Non
 	assert result["backward_path"][0]["source"] == "walker"
 	assert result["walker_fallback_fwd"] is False
 	assert result["walker_fallback_bwd"] is False
-	assert result["propagator_path"] == "walker"

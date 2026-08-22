@@ -19,8 +19,8 @@ options:
   -h, --help           show this help message and exit
   -f, --full           Run Stage 5: blob pass on every interval refine touches
                        (slow).
-  -H, --hermite-only   Stop after Stage 3: Hermite-only refine (fast
-                       diagnostics).
+  -H, --hermite-only   Stop after Stage 3: analytical linear/log-linear
+                       refine.
   --bin BIN_FACTOR     Optional spatial downsample applied to camera-motion
                        and residual stages only. Integer >= 1. When neither
                        --bin nor --auto-bin is given, the production default

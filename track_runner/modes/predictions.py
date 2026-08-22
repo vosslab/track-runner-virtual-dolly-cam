@@ -39,7 +39,7 @@ def source_box_from_prediction_state(
 def build_predictions_from_solved_intervals(solved_data: dict) -> dict:
 	"""Build frame-indexed SOURCE predictions with interval metadata.
 
-	Live M3 blended states retain their ephemeral commitment review item. The
+	Live blended states retain their ephemeral commitment review item. The
 	coordinate-only NPZ artifact intentionally does not preserve that item.
 	"""
 	fps = float(solved_data.get("fps", 30.0))
@@ -124,7 +124,7 @@ def predictions_from_torso_box_coords(
 	fps: float,
 	seeds: list | None = None,
 ) -> dict:
-	"""Build SOURCE predictions with advisory scores and optional C3 seeds."""
+	"""Build SOURCE predictions with optional advisory scores and C3 seeds."""
 	intervals_file = torso_box_coords_io.load_torso_box_coords(torso_box_coords_path)
 	solved_intervals = intervals_file.get("solved_intervals", {})
 	if not solved_intervals:
@@ -133,9 +133,9 @@ def predictions_from_torso_box_coords(
 		interval_solver.restamp_cached_interval_seed_truth(solved_intervals, seeds)
 	intervals_list = list(solved_intervals.values())
 	if not os.path.isfile(diag_path):
-		raise RuntimeError(
-			f"interval scores are missing at {diag_path}; run 'solve' first"
-		)
+		return build_predictions_from_solved_intervals({
+			"intervals": intervals_list, "fps": float(fps),
+		})
 	scored_by_key = {}
 	score_data = state_io.load_interval_scores(diag_path)
 	for scored_iv in score_data.get("intervals", []):

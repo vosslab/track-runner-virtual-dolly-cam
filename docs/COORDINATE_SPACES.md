@@ -49,10 +49,11 @@ Use `--bin N` for an exact override or `--bin 1` as an escape hatch. Use
 The entire solve runs in ONE coordinate space (PROCESSED at bin > 1). Conversion
 to SOURCE happens exactly once, at the storage boundary, immediately before
 `torso_box_coords_io.write_torso_box_coords`, via `geometry.processed_to_source` (centers)
-and `geometry.processed_to_source_delta` (width/height). Hermite produces SOURCE
-coordinates directly (its `MotionTrack.dx/dy` are stored in SOURCE pixels). The
-walker produces PROCESSED coordinates and must always cross the boundary before
-persist. At `bin_factor = 1` the conversion is an identity no-op.
+and `geometry.processed_to_source_delta` (width/height). The analytical path
+produces SOURCE coordinates directly because `SceneTransform` consumes camera
+motion stored in SOURCE pixels. The walker produces PROCESSED coordinates and
+must always cross the boundary before persistence. At `bin_factor = 1` the
+conversion is an identity no-op.
 
 The camera-motion artifact keys on `bin_factor`. The phase-correlation estimator
 runs on PROCESSED frames, so the stored SOURCE dx/dy depend on the analysis bin.

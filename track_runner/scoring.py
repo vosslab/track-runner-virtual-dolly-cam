@@ -1,9 +1,4 @@
-"""Interval confidence metrics for track_runner.
-
-Takes interval evidence from the forward interval path and backward interval path and
-returns agreement score, identity score, competitor margin, and a
-final confidence label.
-"""
+"""Canonical interval scoring and Stage-3 promotion-risk predicates."""
 
 # Standard Library
 import enum
@@ -13,14 +8,13 @@ import math
 import numpy
 
 # local repo modules
+import interval_fingerprint
 import trajectory_confidence
+import velocity_model
 
-
-# Track-runner schema versions are kept in lockstep per contract C9.
-# Alias directly to tr_schema.SCHEMA_VERSION (the single authority);
-# do not chain through state_io.
-import tr_schema
-INTERVAL_SCORE_SCHEMA_VERSION = tr_schema.SCHEMA_VERSION
+PROMOTION_RISK_SCORE_FIELDS = (
+	"motion_quality", "occlusion_fraction", "size_consistency",
+)
 
 
 #============================================
@@ -38,55 +32,44 @@ class ConfidenceTier(enum.IntEnum):
 		return self.name.lower()
 
 
+# Promotion risk is cheap-model and cost-allocation evidence.  It is distinct
+# from conf, which is post-solver directional-path agreement; analytical
+# FWD/BWD passes agree structurally, so analytical conf=1 is not independent
+# validation of the cheap interpolation.
 #============================================
-def compute_meeting_point_errors(
-	forward_path: list,
-	backward_path: list,
-) -> list:
-	"""Compute per-frame center and scale errors between forward and backward interval paths.
+def compute_promotion_risk(
+	interval_score: dict,
+	start_frame: int,
+	end_frame: int,
+	fps: float,
+	chord_span_widths: float | None = None,
+) -> float:
+	"""Count the retained Stage-4 promotion-risk predicates.
 
-	Args:
-		forward_path: List of tracking state dicts from forward propagation.
-			Each dict has keys "cx", "cy", "w", "h", "conf", "source".
-		backward_path: List of tracking state dicts from backward propagation.
-			Chronological from propagate_backward_analytical; aligned
-			frame-by-frame with forward_path by shared slot convention
-			(slot i for both is absolute frame start_frame + i).
-
-	Returns:
-		List of dicts with keys:
-			- "frame_index": int, frame index
-			- "center_err_px": float, Euclidean center distance in pixels
-			- "scale_err_pct": float, fractional height difference (0.0 to 1.0+)
+	The policy owner keeps the existing scoring thresholds: low motion quality,
+	high occlusion, unstable size residual, and a duration above ten seconds.
+	When a finite chord span is supplied, the accepted Branch-B threshold adds
+	the fifth predicate.  Callers retain ownership of endpoint geometry and
+	allocation because those require the solve work plan.
 	"""
-	errors = []
-	# Iterate over the shorter of the two tracks to avoid index errors
-	num_frames = min(len(forward_path), len(backward_path))
-	for i in range(num_frames):
-		fwd = forward_path[i]
-		bwd = backward_path[i]
-		# Compute Euclidean center distance
-		dx = fwd["cx"] - bwd["cx"]
-		dy = fwd["cy"] - bwd["cy"]
-		center_err = float(numpy.sqrt(dx * dx + dy * dy))
-		# Compute scale error as fractional height difference
-		fwd_h = fwd["h"]
-		bwd_h = bwd["h"]
-		if fwd_h > 0 and bwd_h > 0:
-			# Use mean height as reference so the ratio is symmetric
-			mean_h = (fwd_h + bwd_h) / 2.0
-			scale_err = abs(fwd_h - bwd_h) / mean_h
-		else:
-			scale_err = 1.0
-		frame_error = {
-			"frame_index": i,
-			"center_err_px": center_err,
-			"scale_err_pct": scale_err,
-		}
-		errors.append(frame_error)
-	return errors
+	interval_duration = int(end_frame) - int(start_frame) + 1
+	triggered = [
+		float(interval_score["motion_quality"]) < 0.5,
+		float(interval_score["occlusion_fraction"]) > 0.3,
+		float(interval_score["size_consistency"]) < 0.5,
+		interval_duration > 10.0 * float(fps),
+	]
+	if chord_span_widths is not None and math.isfinite(chord_span_widths):
+		triggered.append(chord_span_widths >= 10.0)
+	risk = float(sum(triggered))
+	return risk
 
 
+#============================================
+def promotion_risk_inputs_available(interval_score: dict) -> bool:
+	"""Return whether a Stage-3 score contains every retained risk signal."""
+	available = all(field in interval_score for field in PROMOTION_RISK_SCORE_FIELDS)
+	return available
 #============================================
 # minimum-real-motion floor for velocity_consistency, in scene units per
 # frame. Prevents the ratio median(|a|) / median(|v|) from blowing up when
@@ -174,6 +157,8 @@ def score_interval_analytical(
 	all_seeds: list = None,
 	blended_path: list = None,
 	fps: float = 30.0,
+	agreement_override: float | None = None,
+	size_path: list | None = None,
 ) -> dict:
 	"""Score an interval using analytical velocity model metrics.
 
@@ -208,7 +193,15 @@ def score_interval_analytical(
 			- warning_flags: list of str
 	"""
 	# The confidence owner reads only independent raw FWD/BWD paths (C9).
-	agreement = trajectory_confidence.interval_agreement(forward_path, backward_path)
+	# Schema-15 reloads may transport that owner-produced value in ``conf`` when
+	# quantization removed both raw paths.  Blended geometry never establishes
+	# agreement.
+	if agreement_override is None:
+		agreement = trajectory_confidence.interval_agreement(forward_path, backward_path)
+	else:
+		agreement = float(agreement_override)
+		if not math.isfinite(agreement) or agreement < 0.0 or agreement > 1.0:
+			raise RuntimeError("stored interval agreement is outside [0, 1]")
 
 	# velocity consistency: internal trajectory smoothness in scene coords
 	# rationale: the previous LOO-slope metric measured whether a linear
@@ -235,19 +228,32 @@ def score_interval_analytical(
 		start_frame, scene_transform,
 	)
 
-	# compute size consistency: box height interpolation residual
-	left_sw, left_sh = interval_curves["left_size"]
-	right_sw, right_sh = interval_curves["right_size"]
+	# Compute size consistency in SCENE coordinates.  The interval producer
+	# models box dimensions by interpolating their logarithms, so score against
+	# that same geometric expectation.  Raw-path states remain SOURCE pixels;
+	# convert each box only for this dimensionless residual.
+	unused_left_sw, left_sh = interval_curves["left_size"]
+	unused_right_sw, right_sh = interval_curves["right_size"]
 	interval_length = float(end_frame - start_frame)
 	if interval_length > 0:
 		# average interpolation error over interval
 		size_errors = []
-		for i, state in enumerate(forward_path):
+		for i, state in enumerate(size_path if size_path is not None else forward_path):
 			frame_index = start_frame + i
 			t = (frame_index - start_frame) / interval_length
-			# expected height by linear interpolation
-			expected_h = (1.0 - t) * left_sh + t * right_sh
-			actual_h = float(state.get("h", expected_h))
+			# Use the forward producer's exact size policy: its endpoint pins,
+			# finite-log fallback, and high-log anchor fallback all define the
+			# model whose residual this metric measures.
+			expected_h = velocity_model.interpolate_size(
+				left_sh, right_sh, t, velocity_model.RAW_PRED_FORWARD,
+			)
+			unused_sx, unused_sy, unused_sw, actual_h = scene_transform.pixel_box_to_scene(
+				frame_index,
+				float(state["cx"]),
+				float(state["cy"]),
+				float(state["w"]),
+				float(state["h"]),
+			)
 			if expected_h > 0:
 				rel_error = abs(actual_h - expected_h) / expected_h
 				size_errors.append(rel_error)
@@ -367,6 +373,87 @@ def score_interval_analytical(
 		"warning_flags": warning_flags,
 	}
 	return result
+
+
+#============================================
+def score_interval_from_artifact(
+	seed_start: dict,
+	seed_end: dict,
+	all_seeds: list,
+	scene_transform: object,
+	motion_track: object,
+	artifact_interval: dict,
+	fps: float,
+) -> dict:
+	"""Reconstruct one canonical score from durable solve inputs.
+
+	The adapter is deliberately owned by scoring: review callers receive a
+	score, not a second collection of metric formulas.  Stored ``conf`` is the
+	only replacement for absent raw paths; the blended path remains confined to
+	velocity consistency.  Size residuals use the deterministic cheap forward
+	analytical path reconstructed from the human endpoint seeds.
+	"""
+	interval_curves = velocity_model.fit_interval_curves(
+		seed_start, seed_end, scene_transform,
+	)
+	analytical_forward = velocity_model.propagate_forward_analytical(
+		interval_curves, scene_transform,
+	)
+	forward_path = artifact_interval.get("forward_path")
+	backward_path = artifact_interval.get("backward_path")
+	if (forward_path is None) != (backward_path is None):
+		raise RuntimeError("solve artifact has only one FWD/BWD path")
+	stored_confidence = artifact_interval.get("conf")
+	agreement_override = None
+	if stored_confidence is not None:
+		# Schema-15 transports the confidence owner's raw-pass evidence even
+		# when the quantized raw paths happen to remain available.  Do not
+		# recompute it from lossy storage.
+		agreement_override = trajectory_confidence.interval_agreement_from_stored_confidence(
+			stored_confidence,
+		)
+	elif forward_path is None:
+			raise RuntimeError(
+				"solve artifact lacks raw FWD/BWD paths and stored confidence; re-solve"
+			)
+	if forward_path is None:
+		# These placeholders cannot affect agreement (overridden) or size
+		# (size_path supplied); they retain score_interval_analytical's compact
+		# shared scoring surface for the other metrics.
+		forward_path = analytical_forward
+		backward_path = analytical_forward
+	# Geometry support is defined by the canonical usable-seed owner.  NIF
+	# records intentionally omit box geometry, but remain in ``all_seeds`` below
+	# so the scorer's existing occlusion semantics can inspect their status.
+	all_seeds_scene = []
+	for seed in interval_fingerprint.filter_usable_seeds_sorted(all_seeds):
+		frame_index = int(seed["frame_index"])
+		sx, sy, sw, sh = scene_transform.pixel_box_to_scene(
+			frame_index, float(seed["cx"]), float(seed["cy"]),
+			float(seed["w"]), float(seed["h"]),
+		)
+		all_seeds_scene.append((frame_index, sx, sy, sw, sh))
+	return score_interval_analytical(
+		forward_path, backward_path, all_seeds_scene, interval_curves,
+		scene_transform, motion_track=motion_track, all_seeds=all_seeds,
+		blended_path=artifact_interval["blended_path"], fps=fps,
+		agreement_override=agreement_override, size_path=analytical_forward,
+	)
+
+
+#============================================
+def score_pre_race_artifact_interval() -> dict:
+	"""Return the scoring-owner representation for a synthetic pre-race span."""
+	return {
+		"agreement": 1.0,
+		"velocity_consistency": 1.0,
+		"size_consistency": 1.0,
+		"motion_quality": 1.0,
+		"occlusion_fraction": 0.0,
+		"confidence_tier": "pre_race",
+		"failure_reasons": [],
+		"warning_flags": [],
+	}
 
 
 #============================================

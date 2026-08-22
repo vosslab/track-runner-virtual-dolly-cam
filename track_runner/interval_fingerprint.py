@@ -22,10 +22,10 @@ import state_io
 #============================================
 # Fingerprint tags.
 #
-# The unified geometry tag per contract C9 encodes the current readable schema
+# The unified geometry tag per contract C10 encodes the current readable schema
 # version. An interval's identity is determined by its seed-pair geometry
 # (frame indices and positions) plus schema version.
-# How the interval was solved (hermite vs blob propagator) is metadata
+# How the interval was solved (analytical vs blob propagator) is metadata
 # on the result, not part of the fingerprint key.
 #
 # * GEOMETRY_TAG -- the unified fingerprint suffix. Format: `schema_v<N>`
@@ -36,7 +36,7 @@ import state_io
 # Fingerprint invalidation rule: a stored-format change updates
 # SCHEMA_VERSION and therefore this tag. Method changes refresh output through
 # solve without changing the stored format or this key.
-# Per contract C9, do NOT introduce parallel version constants
+# Per contract C10, do NOT introduce parallel version constants
 # (BLOB_OBSERVER_VERSION, etc.) to bypass this scheme.
 
 def build_geometry_tag() -> str:

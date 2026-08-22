@@ -24,6 +24,18 @@ class MockSceneTransform:
 	) -> tuple[float, float]:
 		return (px, py)
 
+	#============================================
+	def pixel_box_to_scene(
+		self,
+		frame_index: int,
+		cx: float,
+		cy: float,
+		w: float,
+		h: float,
+	) -> tuple[float, float, float, float]:
+		"""Keep box dimensions unchanged for the identity test transform."""
+		return (cx, cy, w, h)
+
 
 #============================================
 def _make_track(positions: list) -> list:

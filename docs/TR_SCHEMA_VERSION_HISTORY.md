@@ -73,8 +73,10 @@ Schema-owned (justifies a bump when the field/meaning/encoding changes):
 | `schema_version` | torso_box_coords.npz | The validate contract itself |
 | `video_identity` | torso_box_coords.npz | Guards artifact-to-video compatibility; the field/meaning is schema-owned (its per-video value is not) |
 | `solve_complete` | torso_box_coords.npz | Determines whether the artifact is complete output or a partial resume |
-| `interval_score` fields (agreement, velocity/size consistency, motion quality, occlusion fraction, confidence tier, failure reasons, warning flags) | interval-scores JSON | Persisted score contract that downstream review/target reads |
-| `pre_race_reference` fields (race_start_frame, torso dims, scene anchor, race_start_interval, warnings) | interval-scores JSON | Persisted pre-race reference contract |
+| `i<k>_conf` uint8 arrays | torso_box_coords.npz | Durable raw FWD/BWD agreement transport, including when identical quantized raw paths are omitted |
+| optional paired `i<k>_fwd_*` / `i<k>_bwd_*` groups | torso_box_coords.npz | Conditional raw-pass evidence; the all-or-neither presence rule is part of the read contract |
+| optional `race_start` block | torso_box_coords.npz | Sole durable owner of detected race-start state; absence is a valid no-pre-race result |
+| `interval_score` fields (agreement, velocity/size consistency, motion quality, occlusion fraction, confidence tier, failure reasons, warning flags) | interval-scores JSON | Advisory diagnostics consumed by analyze and reporting; operational target/refine/encode use the torso artifact |
 
 Method-owned (changes computed values; use `solve` when the stored contract is unchanged):
 
@@ -184,7 +186,7 @@ removed.
 
 ## Rolled back: 11, 12, 13, 14 (2026-06-14)
 
-Rolled back because these changes did not alter the stored solver artifact format or any per-video variable. Current schema is 10.
+Rolled back because these changes did not alter the stored solver artifact format or any per-video variable. They are not readable artifact layouts.
 
 - v11: changed the residual-sampling computation method (fps-invariant stride). The on-disk layout was unchanged from v10; the stride is runtime-computed from fps and was never persisted. This was a method change; the correct path is `solve`.
 - v12: versioned walker debug verdict-CSV telemetry columns. The verdict CSV is a diagnostic artifact; it stores no solver geometry. This was a diagnostic telemetry change; the correct path is the diagnostic history.
@@ -193,9 +195,33 @@ Rolled back because these changes did not alter the stored solver artifact forma
 
 These bumps were avoidable mistakes. The rule above -- "use `solve` for method-derived stale values; use `SCHEMA_VERSION` only for approved persisted artifact contract changes" -- now makes the correct decision visible on first read.
 
-Pre-existing v10 artifacts stay readable but may hold older-method boxes; run `solve` for current-method values.
+Pre-existing v10 artifacts were the rollback floor until the later v15 format
+change. They now require a fresh solve along with rolled-back stamps 11-14.
 
 Human approver: user decision 2026-06-14 (rollback floor v10; full re-solve via `solve`).
+
+## 15 (2026-08-21)
+
+**Per-interval raw-pass confidence and conditional raw-path storage.**
+Geometry-affecting: yes.
+
+- `torso_box_coords.npz` always stores uint16 SOURCE-space blended coordinates
+  and a uint8 `i<k>_conf` array, decoded as `value / 255`. Stored confidence is
+  the authoritative raw FWD/BWD agreement when both raw paths are omitted
+  because their uint16 quantizations are identical.
+- FWD and BWD coordinate groups remain all-or-neither and are written only when
+  a raw-path difference survives uint16 quantization. Omission no longer means
+  pre-race or agreement 1.0.
+- `torso_box_coords.npz` is the sole durable owner of a detected `race_start`
+  block. Absence preserves the established no-pre-race result for ordinary
+  target, refine, and encode; race-start targeting requires the block.
+- Artifact video identity contains only width, height, and frame count. The
+  diagnostics JSON remains advisory and stores neither race-start nor retired
+  cyclical provenance.
+- `SUPPORTED_ARTIFACT_SCHEMAS` for both diagnostics and torso coordinates is
+  `{15}`. v10 and rolled-back v11-v14 artifacts require a fresh `solve`; no
+  conversion path exists.
+- Human approver: user-approved schema-15 persistence plan, 2026-08-21.
 
 ## Historical entries
 

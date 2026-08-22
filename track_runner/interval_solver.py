@@ -2,6 +2,7 @@
 
 # Standard Library
 import concurrent.futures
+import math
 import time
 
 # local repo modules
@@ -12,9 +13,6 @@ import interval_seed_anchoring
 import off_frame_geometry
 import race_start
 import solve_queue
-import walker_bundle
-import residual_motion
-import residual_pre_pass
 import scoring
 import velocity_model
 
@@ -32,13 +30,9 @@ build_canonical_blend_heat_evaluator = (
 blend_paths = interval_analytical.blend_paths
 _seed_source_to_processed = interval_analytical._seed_source_to_processed
 _walker_path_processed_to_source = interval_analytical._walker_path_processed_to_source
-run_stage4_walker_seam = interval_analytical.run_stage4_walker_seam
 stitch_trajectories = interval_seed_anchoring.stitch_trajectories
 reconstruct_trajectory_with_confidence = (
 	interval_seed_anchoring.reconstruct_trajectory_with_confidence
-)
-_stamp_interval_endpoint_seed_truth = (
-	interval_seed_anchoring._stamp_interval_endpoint_seed_truth
 )
 restamp_cached_interval_seed_truth = (
 	interval_seed_anchoring.restamp_cached_interval_seed_truth
@@ -64,12 +58,7 @@ def solve_interval_analytical(
 	blob_pass: bool = True,
 	telemetry: dict | None = None,
 ) -> dict:
-	"""Solve through the extracted implementation and retain facade seams."""
-	interval_analytical.walker_bundle = walker_bundle
-	interval_analytical.residual_motion = residual_motion
-	interval_analytical.residual_pre_pass = residual_pre_pass
-	interval_analytical.scoring = scoring
-	interval_analytical.velocity_model = velocity_model
+	"""Preserve the public facade while delegating to the canonical owner."""
 	result = interval_analytical.solve_interval_analytical(
 		seed_start, seed_end, scene_transform, all_seeds_scene, fps,
 		debug=debug,
@@ -78,8 +67,6 @@ def solve_interval_analytical(
 		reader=reader,
 		blob_pass=blob_pass,
 		telemetry=telemetry,
-		blend_callable=blend_paths,
-		endpoint_stamp_callable=_stamp_interval_endpoint_seed_truth,
 	)
 	return result
 
@@ -87,13 +74,19 @@ def solve_interval_analytical(
 #============================================
 def select_promoted_intervals(
 	interval_results: list,
+	usable_seeds_sorted: list,
+	scene_transform: object,
+	fps: float,
+	video_frame_count: int | None,
+	race_start_frame: int,
 	candidate_indices: "list | None" = None,
 ) -> list:
-	"""Select intervals from Stage 3 results whose confidence_tier warrants promotion to Stage 4.
+	"""Select post-race Stage-3 intervals for the bounded Stage-4 walker.
 
-	Filters for post-race intervals (not pre-race) whose Stage 3 confidence_tier is in
-	PROMOTION_TIERS. Pre-race intervals are never promoted, by contract C4 (they are
-	stationary and scene-anchored, not Hermite-propagated or blob-corrected).
+	Risk uses the scoring owner's retained predicates plus the Branch-B chord
+	predicate.  Allocation is first-fit-decreasing by risk, then start frame,
+	and consumes whole inclusive intervals without exceeding the per-video
+	walker budget.  Pre-race intervals are never promoted (C4).
 
 	When `candidate_indices` is supplied, only those pair_idx values are
 	considered. Refine mode passes `plan.pending_pair_indices` so cached
@@ -101,9 +94,12 @@ def select_promoted_intervals(
 	C6 says refine must not touch already-solved intervals.
 
 	Args:
-		interval_results: List of interval result dicts from Stage 3, each with
-			an 'interval_score' dict containing 'confidence_tier' and (if present)
-			a 'source' field that may be 'pre_race_reference'.
+		interval_results: List of Stage-3 interval result dicts.
+		usable_seeds_sorted: Exact seed sequence used by the solve work plan.
+		scene_transform: Converts endpoint seed boxes to scene coordinates.
+		fps: Video frame rate for the retained duration predicate.
+		video_frame_count: Authoritative total video frame count.
+		race_start_frame: First post-race frame; zero when no pre-race phase exists.
 		candidate_indices: Optional list of pair_idx values to consider. When
 			None, every interval in interval_results is a candidate (solve
 			mode default).
@@ -112,25 +108,148 @@ def select_promoted_intervals(
 		List of pair_idx integers (0-based position in interval_results) for
 		intervals eligible for promotion.
 	"""
-	candidate_set = (
-		None if candidate_indices is None else set(candidate_indices)
+	risk_by_pair = promotion_risk_by_pair(
+		interval_results, usable_seeds_sorted, scene_transform, fps,
+		video_frame_count, candidate_indices=candidate_indices,
 	)
+	candidates = []
+	for pair_idx, result in enumerate(interval_results):
+		if pair_idx not in risk_by_pair:
+			continue
+		candidates.append((risk_by_pair[pair_idx], int(result["start_frame"]), pair_idx, result))
+
+	if not candidates:
+		return []
+	if video_frame_count is None:
+		raise RuntimeError(
+			"Stage-4 promotion requires authoritative video_frame_count; "
+			"run solve through the video-artifact mode"
+		)
+	budget = stage4_walker_frame_budget(
+		interval_results, video_frame_count, race_start_frame,
+	)
+	candidates.sort(key=lambda item: (-item[0], item[1]))
+	remaining_budget = budget
 	promoted = []
+	for unused_risk, unused_start_frame, pair_idx, result in candidates:
+		interval_frames = _inclusive_interval_frame_count(result)
+		if interval_frames <= remaining_budget:
+			promoted.append(pair_idx)
+			remaining_budget -= interval_frames
+	return promoted
+
+
+#============================================
+def stage4_walker_frame_budget(
+	interval_results: list,
+	video_frame_count: int,
+	race_start_frame: int,
+) -> int:
+	"""Return the approved whole-frame Stage-4 walker budget for one video.
+
+	The measured floor counts current low/fair, non-pre-race intervals in their
+	inclusive frame spans. The policy preserves at least ten percent of the
+	post-race video span when that measured amount is smaller.
+	"""
+	post_race_frames = max(0, int(video_frame_count) - int(race_start_frame))
+	measured_walker_frames = 0
+	for result in interval_results:
+		if result is None or result.get("source") == "pre_race_reference":
+			continue
+		if result["interval_score"]["confidence_tier"] in PROMOTION_TIERS:
+			measured_walker_frames += _inclusive_interval_frame_count(result)
+	budget = max(measured_walker_frames, math.ceil(0.10 * post_race_frames))
+	return budget
+
+
+#============================================
+def promotion_risk_by_pair(
+	interval_results: list,
+	usable_seeds_sorted: list,
+	scene_transform: object,
+	fps: float,
+	video_frame_count: int | None,
+	candidate_indices: "list | None" = None,
+) -> dict:
+	"""Return positive Stage-4 promotion risk keyed by pair index.
+
+	This is the public, non-allocating half of the Stage-4 policy.  Review and
+	target use it to display the same risk that ``select_promoted_intervals``
+	packs into the walker budget.
+	"""
+	candidate_set = None if candidate_indices is None else set(candidate_indices)
+	risk_by_pair = {}
 	for pair_idx, result in enumerate(interval_results):
 		if result is None:
 			continue
 		if candidate_set is not None and pair_idx not in candidate_set:
 			continue
-		# Skip pre-race intervals: contract C4
 		if result.get("source") == "pre_race_reference":
 			continue
-		interval_score = result["interval_score"]
-		tier = interval_score["confidence_tier"]
-		if tier in PROMOTION_TIERS:
-			promoted.append(pair_idx)
-	return promoted
+		if not scoring.promotion_risk_inputs_available(result["interval_score"]):
+			if video_frame_count is None:
+				continue
+			raise RuntimeError(
+				"Stage-3 interval score is missing promotion-risk inputs; "
+				"run solve to regenerate the score"
+			)
+		chord_span_widths = _endpoint_chord_span_widths(
+			usable_seeds_sorted[pair_idx], usable_seeds_sorted[pair_idx + 1],
+			scene_transform,
+		)
+		risk = scoring.compute_promotion_risk(
+			result["interval_score"], result["start_frame"], result["end_frame"],
+			fps, chord_span_widths=chord_span_widths,
+		)
+		if risk > 0.0:
+			risk_by_pair[pair_idx] = risk
+	return risk_by_pair
 
 
+#============================================
+def _inclusive_interval_frame_count(interval_result: dict) -> int:
+	"""Return the whole inclusive frame span consumed by one walker interval."""
+	frame_count = int(interval_result["end_frame"]) - int(interval_result["start_frame"]) + 1
+	return frame_count
+
+
+#============================================
+def _endpoint_chord_span_widths(
+	seed_start: dict,
+	seed_end: dict,
+	scene_transform: object,
+) -> float | None:
+	"""Return endpoint chord length in canonical midpoint torso widths.
+
+	Only the two work-plan endpoints contribute.  A nonphysical width leaves
+	the Branch-B predicate unavailable instead of inventing a pixel threshold.
+	"""
+	start_frame = int(seed_start["frame_index"])
+	end_frame = int(seed_end["frame_index"])
+	start_sx, start_sy, start_sw, unused_start_sh = scene_transform.pixel_box_to_scene(
+		start_frame, float(seed_start["cx"]), float(seed_start["cy"]),
+		float(seed_start["w"]), float(seed_start["h"]),
+	)
+	end_sx, end_sy, end_sw, unused_end_sh = scene_transform.pixel_box_to_scene(
+		end_frame, float(seed_end["cx"]), float(seed_end["cy"]),
+		float(seed_end["w"]), float(seed_end["h"]),
+	)
+	midpoint_width = velocity_model.interpolate_size(
+		float(start_sw), float(end_sw), 0.5, velocity_model.RAW_PRED_FORWARD,
+	)
+	if not math.isfinite(midpoint_width) or midpoint_width <= 0.0:
+		return None
+	dx = float(end_sx) - float(start_sx)
+	dy = float(end_sy) - float(start_sy)
+	if not math.isfinite(dx) or not math.isfinite(dy):
+		return None
+	chord_span_widths = math.hypot(dx, dy) / midpoint_width
+	if not math.isfinite(chord_span_widths):
+		return None
+	return chord_span_widths
+
+
+#============================================
 def _dispatch_blob_pass(
 	stage_name: str,
 	pair_indices: list,
@@ -148,7 +267,7 @@ def _dispatch_blob_pass(
 
 	Shared by Stage 4 (promotion-selected) and Stage 5 (full pass) dispatch.
 	Modifies interval_results in-place, overwriting each selected interval's
-	Stage 3 result with a Stage 4/5 blob result. Hermite is recomputed (cheap);
+	Stage 3 result with a Stage 4/5 blob result. The analytical path is cheap;
 	the expensive blob observer runs once per selected interval.
 
 	Args:
@@ -165,8 +284,8 @@ def _dispatch_blob_pass(
 			(resolved working-decode: fast-read when valid, else original).
 		blob_pass: Default True. blob_pass flows to both the in-process and
 			pool paths; promoted intervals run the windowed walker with a
-			per-pass Hermite stall fallback in either path. Passing False
-			reverts a stage to the pure-Hermite re-solve.
+			per-pass analytical stall fallback in either path. Passing False
+			reverts a stage to the analytical re-solve.
 	"""
 	if not pair_indices:
 		return
@@ -203,7 +322,7 @@ def _dispatch_blob_pass(
 	# dispatch: in-process if single worker or very few tasks,
 	# pool if multiple workers and enough work to amortize pool setup.
 	# The pool carries blob_pass as run-invariant worker context, so Stage-4
-	# walker intervals use the pool exactly like Stage-3 Hermite intervals.
+	# walker intervals use the pool exactly like Stage-3 analytical intervals.
 	use_pool = num_workers >= 2 and len(tasks) >= 4
 	worker_telemetry = None
 	if use_pool:
@@ -408,18 +527,18 @@ def solve_all_intervals(
 		video_frame_count: Total frame count from mediainfo (required for
 			contact sheet rendering and frame clamping). Must be the
 			authoritative value from modes.video_artifacts.probe_video(), not OpenCV.
-		hermite_only: If True, stop after Stage 3 (Hermite-only); skip Stage 4
+		hermite_only: If True, stop after the linear/log-linear Stage 3; skip Stage 4
 			and Stage 5. Used for fast diagnostics.
 		full_solve: If True, run Stage 5 (blob pass on every post-race interval).
 			Default False runs Stages 1-4 (blob only on promoted intervals).
 		blob_pass: Default True (on). The Stage 4 promotion pass (and the
 			Stage 5 full pass under --full) runs the windowed walker on its
-			selected intervals, with a per-pass Hermite fallback when a walk
-			stalls (zero accepted frames -> that pass uses its Hermite path).
+			selected intervals, with a per-pass analytical fallback when a walk
+			stalls (zero accepted frames -> that pass uses its analytical path).
 			Forces in-process dispatch for the affected stage (the blob_pass
 			flag is not carried across the worker-pool boundary). Stage 3 stays
-			pure Hermite on every interval. Passing False reverts the blob pass
-			to the pure-Hermite re-solve.
+			analytical on every interval. Passing False reverts the blob pass
+			to the analytical re-solve.
 	Returns:
 		Dict with keys:
 			- "intervals": list of interval result dicts
@@ -443,7 +562,7 @@ def solve_all_intervals(
 	# it, so solve and refine agree on every fingerprint byte-for-byte.
 	# Pass race_start_interval for classification.
 	# The unified fingerprint encodes seed geometry plus the current schema;
-	# how an interval was solved (hermite vs blob) is metadata
+	# how an interval was solved (analytical vs blob) is metadata
 	# on the result, not part of the fingerprint.
 	# A cache hit can predate the C3 endpoint stamp even though its fingerprint
 	# still matches the current human seeds. Repair those paths before the queue
@@ -509,7 +628,7 @@ def solve_all_intervals(
 	# Stage 4 (default): promotion pass on low/fair confidence intervals.
 	# Stage 5 (--full): pass on every post-race interval.
 	# By default these run the windowed walker (blob_pass=True); passing
-	# blob_pass=False reverts a stage to the pure-Hermite re-solve.
+	# blob_pass=False reverts a stage to the analytical re-solve.
 	# Results overwrite the Stage 3 entries in interval_results.
 
 	stage_4_promoted_count = 0
@@ -522,7 +641,7 @@ def solve_all_intervals(
 			# so behavior is unchanged. In refine, it is the small set
 			# refine actually solved. `--upgrade` bypasses the filter on
 			# purpose -- the point of upgrade is to re-blob the entire
-			# cached set after a hermite-only batch.
+			# cached set after an analytical-only batch.
 			candidate_indices = (
 				None if upgrade else set(plan.pending_pair_indices)
 			)
@@ -557,13 +676,20 @@ def solve_all_intervals(
 			# so behavior is unchanged for the no-cache path.
 			# `--upgrade` mode: bypass the freshly-solved restriction and
 			# consider every cached interval -- the whole point of upgrade
-			# is to promote weak intervals from a hermite-only batch.
-			if upgrade:
-				promoted_indices = select_promoted_intervals(interval_results)
-			else:
-				promoted_indices = select_promoted_intervals(
-					interval_results, plan.pending_pair_indices,
-				)
+			# is to promote weak intervals from an analytical-only batch.
+			race_start_frame = 0
+			if context.pre_race_reference is not None:
+				race_start_frame = int(context.pre_race_reference["race_start_frame"])
+			candidate_indices = None if upgrade else plan.pending_pair_indices
+			promoted_indices = select_promoted_intervals(
+				interval_results,
+				plan.usable_seeds_sorted,
+				context.scene_transform,
+				context.fps,
+				context.video_frame_count,
+				race_start_frame,
+				candidate_indices=candidate_indices,
+			)
 			stage_4_promoted_count = len(promoted_indices)
 			_dispatch_blob_pass(
 				"Stage 4: blob promotion pass",
@@ -612,7 +738,7 @@ def solve_all_intervals(
 	# Surface race-start detection so the user can sanity-check the
 	# pre-race reference (contract C2) without opening diagnostics files.
 	pre_race_reference = context.pre_race_reference
-	race_start.print_race_phase_summary(pre_race_reference, fps=fps)
+	race_start.print_race_phase_summary(pre_race_reference, fps=fps, seeds=seeds)
 
 	output = {
 		"intervals": interval_results,

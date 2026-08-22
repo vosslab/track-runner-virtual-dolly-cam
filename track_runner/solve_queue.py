@@ -784,7 +784,7 @@ def execute_interval_work(
 							f"  solving interval {pair_idx + 1}/{total_intervals} "
 							f"(frames {start_frame}-{end_frame})"
 						)
-					# Stage 3 in-process path: pure Hermite on every interval.
+					# Stage 3 in-process path: analytical solve on every interval.
 					# solve_interval_analytical now defaults blob_pass=True (the
 					# Stage-4 promoted path), so Stage 3 passes it explicitly
 					# False to stay off the walker despite a real reader.

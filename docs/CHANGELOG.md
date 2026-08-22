@@ -1,6 +1,56 @@
-## 2026-08-21
+## 2026-08-22
 
 ### Fixes and Maintenance
+
+- **Schema-15 audit removed obsolete seams:** fixed debug-sidecar key drift, removed unreachable
+  helpers/callback injection, archived the plan and five records, and retained length exceptions.
+
+### Developer Tests and Notes
+
+- **Six audits found one runtime seam:** fixed; no affine or fixture drift; 3,885 tests passed.
+
+## 2026-08-21
+
+### Behavior or Interface Changes
+
+- **Schema 15 solve artifacts own detected race-start state**
+  (`track_runner/race_start.py` and `track_runner/modes/`): state travels only in
+  `torso_box_coords.npz`; diagnostics omit retired provenance. An absent block
+  preserves no-pre-race detection, so ordinary encode continues normally.
+- **Schema 15 compacts ordinary interval paths**
+  (`track_runner/torso_box_coords_io.py` and `track_runner/trajectory_confidence.py`):
+  uint8 confidence replaces identical uint16 paths; v10-v14 require a fresh solve.
+- **WP-19/20 corpus:** 11 stems reached schema 15; Lyra-Wheeling proved default bin 2.
+  Jason failed frame 36042 before Stage 1 at its documented decode boundary: `pre_existing`.
+- **Stage-4 promotion is risk-ranked and budgeted**
+  (`track_runner/scoring.py` and `track_runner/interval_solver.py`): promotion
+  counts five predicates and requires `risk > 0`; Branch B uses endpoint chord
+  span in scene torso widths. Deterministic budgeted allocation preserves
+  pre-race/refine scope, keeps risk separate from `conf`, and retains Stage 3
+  when an optional walker blend is infeasible.
+- **Standard target rebuilds ranking from durable solve artifacts**
+  (`track_runner/modes/target.py`, `track_runner/review.py`, and
+  `track_runner/scoring.py`): stored `conf` supplies agreement; blended geometry
+  supplies velocity. A fresh IMG3830 process rebuilt 1,579 target intervals
+  without diagnostics; refine reused every interval.
+
+### Fixes and Maintenance
+
+- **Pair-local interpolation uses one canonical size policy**
+  (`track_runner/velocity_model.py` and `track_runner/interval_analytical.py`):
+  centers are linear and torso dimensions log-linear between endpoint boxes;
+  retired `propagator_path` machinery no longer contributes.
+
+- **Size consistency is zoom-invariant in scene space**
+  (`track_runner/scoring.py`): scoring projects observed SOURCE boxes into
+  scene space and compares their heights against the canonical producer
+  interpolation policy.
+
+- **Video identity now reflects durable frame geometry only**
+  (`track_runner/tr_video_identity.py` and `track_runner/camera_motion_artifact.py`):
+  identity consists of width, height, and frame count. Existing camera-motion
+  artifacts with matching geometry remain reusable; current schema-3 seed files
+  without their optional identity metadata carry forward as human truth.
 
 - **Repository-owned pytest is organized by pipeline** (`tests/`): source,
   seed, geometry, storage, solver, tracking, crop, output, mode, and UI tests
@@ -11,13 +61,13 @@
 
 - **Refine preserves its prior solve on rejection**
   (`track_runner/modes/refine.py`): score/geometry partitioning now stays
-  in memory until fingerprint reuse is validated. A refine request that would
-  become a full solve fails without discarding the existing torso-coordinate
-  artifact.
+  in memory until fingerprint reuse is validated, without loading advisory
+  diagnostics. A request that would become a full solve fails without discarding
+  the existing torso-coordinate artifact.
 
 - **Fast pytest now avoids operational and GUI-lifecycle checks** (`tests/`):
-  removed checkout-size, Qt widget/event-loop, private executor, and
-  monkeypatch-routing tests that coupled the fast lane to a developer machine
+  removed generated-video E2Es, Qt widget/event-loop, private executor, and
+  monkeypatch-routing checks that coupled the fast lane to a developer machine
   or implementation internals. Worker budgeting retains compact behavioral
   fit/fail/explicit-override coverage.
 
@@ -38,7 +88,7 @@
 - **Fast tests and current documentation match the maintained product**
   (`tests/` and `docs/`): removed codec round-trips, source-shape inventories,
   and cache-count assertions that coupled the permanent suite to environment
-  or implementation layout. Retained tests use generated in-memory data to
+  or implementation layout. Retained tests use same-file in-memory inputs to
   exercise durable contracts. Usage, storage, motion, schema, crop, and CLI
   documentation now describe the current nine-mode workflow, `dolly` default,
   and current-only artifact lifecycle.
@@ -87,14 +137,14 @@
   selection uses integrated magnitude without an invented corridor or stale
   trace fields.
 
-- **Hermite prediction is now pair-local**
+- **Pair-local prediction is explicitly linear/log-linear**
   (`track_runner/velocity_model.py`, `track_runner/interval_analytical.py`,
   `track_runner/interval_solver.py`, `track_runner/solve_queue.py`, and
   `track_runner/solver_workers.py`): human torso boxes remain position-and-size
-  anchors. Each interval uses the chord between its two endpoint boxes at both
-  Hermite ends; no neighboring seed, inferred derivative, or cross-interval
-  field enters cached geometry. The manager-era derivative comparison tests
-  were removed in favor of two small behavioral checks.
+  anchors. Each interval linearly interpolates center position and interpolates
+  torso dimensions in log space between its two endpoint boxes. No neighboring
+  seed, inferred derivative, or cross-interval field enters cached geometry.
+  Behavioral checks replace tests of the retired derivative scaffolding.
 
 - **Analyze joins the two current solve artifacts explicitly**
   (`track_runner/modes/analyze.py`): solver-context reporting now pairs
@@ -135,6 +185,14 @@
   remain.
 
 ### Decisions and Failures
+
+- **Pair-local M1 measurement and M2 mechanics are recorded**
+  (`docs/archive/pair_local_sagitta_audit.md` and
+  `docs/archive/pair_local_promotion_gate.md`): the audit and
+  mechanical Branch B threshold, per-video budgets, packing rule, and outlier
+  classifications are retained as evidence. The accepted policy counts the five
+  approved predicates, promotes intervals with `risk > 0`, and allocates them
+  by budgeted first-fit decreasing order.
 
 - **Fixup-plan close-out uses grounded repository evidence**
   (`docs/archive/interaction_shell_and_trajectory_truth.md`): the original

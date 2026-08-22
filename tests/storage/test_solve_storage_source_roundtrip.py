@@ -10,7 +10,7 @@ The fix runs the whole solve in ONE space (PROCESSED at bin > 1) and converts
 walker geometry to SOURCE at exactly one seam in
 interval_solver.solve_interval_analytical (_walker_path_processed_to_source),
 immediately before the geometry flows toward torso_box_coords_io.write_torso_box_coords.
-The Hermite path is already SOURCE and is untouched.
+The direct analytical path is already SOURCE and is untouched.
 
 Design of the test (least-brittle route, independent of DoG / residual image
 synthesis): the walker producer
@@ -19,12 +19,12 @@ returns a KNOWN PROCESSED full-span path. The stub also captures the seed the
 production bundle handed it, so Gap A (PROCESSED seeds into the walker) is
 asserted directly. The stub output then flows through the REAL conversion seam,
 the real blend, and the real state_io write/load boundary that production
-walker output uses. The Hermite interval uses the real propagators with no
+walker output uses. The analytical interval uses the real propagators with no
 reader.
 
 Synthetic shape (fixed): SOURCE frame 3840 x 2160, bin_factor = 3 (non power of
 two), two SOURCE seeds with a nonzero x AND y offset and a known constant
-velocity translation, a NON-SQUARE box (w != h). One interval is forced Hermite
+velocity translation, a NON-SQUARE box (w != h). One interval is analytical
 (no reader, blob_pass False), one is the walker (reader present, blob_pass
 True). The stored SOURCE box at an interior frame is compared edge by edge
 against known SOURCE truth.
@@ -46,7 +46,9 @@ import pytest
 # local repo modules (track_runner/ is on sys.path via tests/conftest.py)
 import scoring
 import torso_box_coords_io
+import interval_analytical
 import interval_solver
+import residual_pre_pass
 import velocity_model
 import walker_bundle
 
@@ -145,17 +147,17 @@ def _stub_solve_collaborators(monkeypatch: pytest.MonkeyPatch) -> None:
 		velocity_model, "_compute_raw_pred", lambda *a, **k: [],
 	)
 	monkeypatch.setattr(
-		interval_solver.residual_pre_pass, "precompute_interval_residuals",
+		residual_pre_pass, "precompute_interval_residuals",
 		lambda **k: {},
 	)
 	def identity_blend(fwd: list, bwd: list, **kwargs) -> list:
 		"""Assert the coordinate seam receives M3's explicit policy context."""
 		assert kwargs["start_frame"] == START_FRAME
-		# Hermite-only seam tests intentionally have no reader/evidence source;
+		# Analytical-only seam tests intentionally have no reader/evidence source;
 		# walker tests must thread the explicit evaluator through unchanged.
 		assert "heat_evaluator" in kwargs
 		return list(fwd)
-	monkeypatch.setattr(interval_solver, "blend_paths", identity_blend)
+	monkeypatch.setattr(interval_analytical, "blend_paths", identity_blend)
 	monkeypatch.setattr(
 		scoring, "score_interval_analytical",
 		lambda *a, **k: {"confidence_tier": "low"},
@@ -226,13 +228,12 @@ def _run_walker_interval(
 
 
 #============================================
-def _run_hermite_interval(monkeypatch: pytest.MonkeyPatch, bin_factor: int) -> dict:
-	"""Solve one Hermite interval (no reader, blob_pass False).
+def _run_analytical_interval(monkeypatch: pytest.MonkeyPatch, bin_factor: int) -> dict:
+	"""Solve one analytical interval (no reader, blob_pass False).
 
-	The Hermite propagators are stubbed to emit the SOURCE truth path directly,
-	matching the real Hermite contract (Hermite output is already SOURCE at all
-	bin factors). This confirms the Hermite path stays SOURCE end to end and is
-	not double-converted by the new seam.
+	The analytical propagators are stubbed to emit the SOURCE truth path directly,
+	matching the real coordinate-space contract at all bin factors. This confirms
+	the analytical path stays SOURCE end to end and is not double-converted.
 	"""
 	_stub_solve_collaborators(monkeypatch)
 
@@ -243,7 +244,7 @@ def _run_hermite_interval(monkeypatch: pytest.MonkeyPatch, bin_factor: int) -> d
 			path.append({
 				"frame_index": frame_index,
 				"cx": box["cx"], "cy": box["cy"],
-				"w": box["w"], "h": box["h"], "conf": 1.0, "source": "hermite",
+				"w": box["w"], "h": box["h"], "conf": 1.0, "source": "analytical",
 			})
 		return path
 
@@ -272,13 +273,9 @@ def _store_and_load_blended(tmp_path: pathlib.Path, result: dict) -> list:
 	npz_path = os.path.join(str(tmp_path), "torso_box_coords.npz")
 	cache_data = {
 		"video_identity": {
-			"basename": "runner.mkv",
-			"size_bytes": 1,
 			"width": SOURCE_WIDTH,
 			"height": SOURCE_HEIGHT,
-			"fps": 30.0,
 			"frame_count": END_FRAME + 1,
-			"duration_s": (END_FRAME + 1) / 30.0,
 		},
 		"solve_complete": True,
 		"solved_intervals": {
@@ -363,17 +360,17 @@ def test_walker_interval_stores_source_at_bin1(
 
 
 #============================================
-def test_human_seed_endpoints_survive_hermite_and_walker_selection(
+def test_human_seed_endpoints_survive_analytical_and_walker_selection(
 	monkeypatch: pytest.MonkeyPatch,
 ) -> None:
 	"""C3 stamps both producer paths before an interval can be persisted."""
-	hermite = _run_hermite_interval(monkeypatch, BIN_FACTOR_BIN3)
+	analytical = _run_analytical_interval(monkeypatch, BIN_FACTOR_BIN3)
 	captured_seeds = []
 	walker = _run_walker_interval(
 		monkeypatch, BIN_FACTOR_BIN3, _processed_walker_path, captured_seeds,
 	)
 
-	for result in (hermite, walker):
+	for result in (analytical, walker):
 		start_geometry = tuple(
 			result["blended_path"][0][key] for key in ("cx", "cy", "w", "h")
 		)
@@ -393,11 +390,11 @@ def test_human_seed_endpoints_survive_hermite_and_walker_selection(
 
 
 #============================================
-def test_hermite_interval_stores_source_at_bin3(
+def test_analytical_interval_stores_source_at_bin3(
 	tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-	"""bin=3 Hermite interval: stored box is SOURCE truth, untouched by seam."""
-	result = _run_hermite_interval(monkeypatch, BIN_FACTOR_BIN3)
+	"""A bin-3 analytical interval stores SOURCE truth without conversion."""
+	result = _run_analytical_interval(monkeypatch, BIN_FACTOR_BIN3)
 	blended = _store_and_load_blended(tmp_path, result)
 	stored = _interior_stored_box(blended)
 	truth = _source_truth_box(INTERIOR_FRAME)
@@ -405,11 +402,11 @@ def test_hermite_interval_stores_source_at_bin3(
 
 
 #============================================
-def test_hermite_interval_stores_source_at_bin1(
+def test_analytical_interval_stores_source_at_bin1(
 	tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-	"""bin=1 Hermite interval: byte-identical SOURCE storage."""
-	result = _run_hermite_interval(monkeypatch, 1)
+	"""A bin-1 analytical interval stores SOURCE geometry unchanged."""
+	result = _run_analytical_interval(monkeypatch, 1)
 	blended = _store_and_load_blended(tmp_path, result)
 	stored = _interior_stored_box(blended)
 	truth = _source_truth_box(INTERIOR_FRAME)

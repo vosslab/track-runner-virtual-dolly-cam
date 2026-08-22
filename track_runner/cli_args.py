@@ -108,7 +108,7 @@ def _add_top_arg(parser: argparse.ArgumentParser) -> None:
 	"""
 	parser.add_argument(
 		"-t", "--top", dest="top_n", type=int, default=None,
-		help="limit output to the worst N intervals (sorted worst-first by rank_key).",
+		help="limit output to the worst N intervals in the mode's current ordering.",
 	)
 
 
@@ -389,7 +389,7 @@ def _build_parser() -> argparse.ArgumentParser:
 	)
 	solve_stage_group.add_argument(
 		"-H", "--hermite-only", dest="hermite_only", action="store_true",
-		help="Stop after Stage 3: Hermite-only solve (fast diagnostics).",
+		help="Stop after Stage 3: analytical linear/log-linear solve.",
 	)
 	solve_parser.set_defaults(assume_yes=False, keep_prior=False,
 		upgrade=False, full_solve=False, hermite_only=False)
@@ -407,7 +407,7 @@ def _build_parser() -> argparse.ArgumentParser:
 	)
 	refine_stage_group.add_argument(
 		"-H", "--hermite-only", dest="hermite_only", action="store_true",
-		help="Stop after Stage 3: Hermite-only refine (fast diagnostics).",
+		help="Stop after Stage 3: analytical linear/log-linear refine.",
 	)
 	refine_parser.set_defaults(full_solve=False, hermite_only=False)
 	_add_bin_arg(refine_parser)

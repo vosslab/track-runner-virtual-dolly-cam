@@ -232,7 +232,7 @@ def precompute_interval_residuals(
 			walk. Used by tests to verify no fallback reads occur during
 			compute. Production callers leave None.
 		rois_for_frame: Optional exact frame -> ROI-set map. When supplied,
-			it replaces Hermite-derived ROI construction. Used by the walker
+			it replaces analytical-path ROI construction. Used by the walker
 			pre-pass so only deterministic seed-local observations are cached.
 
 	Returns:

@@ -1,13 +1,14 @@
-TRACK_VIDEOS
-report_*.txt
+/TRACK_VIDEOS
+/report_*.txt
 .DS_Store
 *.log
 *.mp4
 *.mkv
 *.avi
 *.mov
-output_smoke/
-corpus_walk/
+/output_smoke/
+/corpus_walk/
+/elegant-wiggling-kahn.md
 # === UNIVERSAL ===
 output*/
 /graphify-out/
@@ -22,4 +23,3 @@ sdist/
 *.egg
 *.egg-info/
 site/
-

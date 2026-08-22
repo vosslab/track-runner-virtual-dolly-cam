@@ -68,6 +68,26 @@ def interval_agreement(
 
 
 #============================================
+def interval_agreement_from_stored_confidence(
+	stored_confidence: list,
+) -> float:
+	"""Return mean raw-pass agreement transported in a stored conf array.
+
+	Schema-15 may omit quantization-equal raw paths.  Its per-frame ``conf``
+	array remains the raw FWD/BWD agreement produced by this module, so this is
+	the only reload path that may stand in for ``interval_agreement``.
+	"""
+	if not stored_confidence:
+		raise RuntimeError("stored interval confidence is empty")
+	values = numpy.asarray(stored_confidence, dtype=float)
+	if not numpy.all(numpy.isfinite(values)):
+		raise RuntimeError("stored interval confidence contains non-finite values")
+	if numpy.any(values < 0.0) or numpy.any(values > 1.0):
+		raise RuntimeError("stored interval confidence is outside [0, 1]")
+	return float(numpy.mean(values))
+
+
+#============================================
 def compute_agreement_debug(
 	forward_path: list,
 	backward_path: list,
@@ -129,17 +149,32 @@ def derive_per_frame_confidence(
 ) -> list:
 	"""Derive persisted-frame confidence solely from independent raw passes.
 
-	Pre-race synthetic intervals have no raw passes and occupy their declared
-	frame span with confidence 1.0. Frames outside every declared interval
-	remain 0.0.
+	Reloaded schema-15 intervals carry the raw-pass ``conf`` transport and use
+	it before inspecting geometry. Pre-race synthetic intervals without stored
+	confidence occupy their declared span with confidence 1.0. Frames outside
+	every declared interval remain 0.0.
 	"""
 	confs = [0.0] * n_frames
 	for result in interval_results:
 		start = int(result["start_frame"])
+		end = int(result["end_frame"])
+		stored_confidence = result.get("conf")
+		if stored_confidence is not None:
+			expected_length = end - start + 1
+			if len(stored_confidence) != expected_length:
+				raise RuntimeError(
+					"stored interval confidence length does not match interval bounds"
+				)
+			values = [float(value) for value in stored_confidence]
+			interval_agreement_from_stored_confidence(values)
+			for index, confidence in enumerate(values):
+				frame_index = start + index
+				if 0 <= frame_index < n_frames:
+					confs[frame_index] = confidence
+			continue
 		fwd = result.get("forward_path")
 		bwd = result.get("backward_path")
 		if fwd is None or bwd is None:
-			end = int(result["end_frame"])
 			for frame_index in range(max(0, start), min(n_frames - 1, end) + 1):
 				confs[frame_index] = 1.0
 			continue

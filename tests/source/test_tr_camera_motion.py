@@ -103,16 +103,12 @@ def test_fixed_zoom_estimator_detects_motion() -> None:
 
 
 #============================================
-def _dummy_identity(basename: str = "test.mkv", frame_count: int = 3) -> dict:
-	"""Return a complete source-video identity for cache tests."""
+def _dummy_identity(frame_count: int = 3) -> dict:
+	"""Return a source geometry identity for cache tests."""
 	identity = {
-		"basename": basename,
-		"size_bytes": 100,
 		"width": 640,
 		"height": 360,
-		"fps": 30.0,
 		"frame_count": frame_count,
-		"duration_s": frame_count / 30.0,
 	}
 	return identity
 
@@ -194,6 +190,32 @@ def test_motion_cache_recomputes_for_different_video_identity(
 		cache_path, expected_video_identity=different_video,
 	)
 	assert loaded is None
+
+
+#============================================
+def test_motion_cache_reuses_legacy_identity_with_matching_geometry(
+		tmp_path: pathlib.Path,
+) -> None:
+	"""Retired cache metadata does not invalidate matching source geometry."""
+	cache_path = str(tmp_path / "motion.npz")
+	legacy_identity = {
+		"basename": "runner.MOV",
+		"size_bytes": 3_180_000_000,
+		"width": 640,
+		"height": 360,
+		"fps": 119.94,
+		"frame_count": 3,
+		"duration_s": 3 / 119.94,
+	}
+	camera_motion.save_motion_cache(
+		_make_motion_track([1.0, 1.0, 1.0]), cache_path,
+		motion_model=camera_motion.MOTION_MODEL_FIXED,
+		video_identity=legacy_identity,
+	)
+	loaded = camera_motion.load_motion_cache(
+		cache_path, expected_video_identity=_dummy_identity(),
+	)
+	assert loaded is not None
 
 
 #============================================

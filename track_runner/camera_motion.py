@@ -58,7 +58,7 @@ def _make_motion_progress() -> rich.progress.Progress:
 	"""Build the camera-motion progress bar via the centralized helper.
 
 	Delegates to `interval_solver.make_solve_progress` so Stage 1
-	(camera motion), Stage 3 (Hermite pass), Stage 4 (blob promotion)
+	(camera motion), Stage 3 (analytical pass), Stage 4 (blob promotion)
 	all show the same columns: text, block bar, M/N, percent,
 	`ETA M:SS  elapsed M:SS`.
 

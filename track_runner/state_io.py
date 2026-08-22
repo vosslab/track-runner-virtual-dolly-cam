@@ -21,10 +21,11 @@ under the format rule "dense per-frame numeric series -> NPZ". Per
 interval, four uint16 arrays (cx/cy/w/h) plus a small JSON manifest
 mapping fingerprint to array_index. Coordinates are rounded to nearest
 integer before storage (pixel-snapped, no subpixel precision retained).
-No scoring content.
+Schema 15 also transports per-frame raw FWD/BWD agreement as uint8 `conf`;
+raw coordinate paths are retained only when their quantized geometry differs.
 
-Interval-scores files (JSON) are the sole owner of per-interval scoring and
-review summary data. No per-frame trajectory is stored there.
+Interval-scores files (JSON) own per-interval diagnostic and review summaries.
+No per-frame trajectory or durable operational state is stored there.
 """
 
 # Standard Library
@@ -474,9 +475,6 @@ def load_interval_scores(path: str) -> dict:
 	_validate_interval_score_records(
 		intervals, f"stale interval scores in {path}; delete and re-solve",
 	)
-	# pre_race_reference is optional current metadata.
-	if "pre_race_reference" not in data:
-		data["pre_race_reference"] = None
 	return data
 
 
@@ -507,14 +505,20 @@ def write_interval_scores(path: str, interval_scores_data: dict) -> None:
 	if not isinstance(intervals, list):
 		raise RuntimeError("interval scores require an intervals list")
 	_validate_interval_score_records(intervals, "interval scores")
-	# Ensure the current header is written after validating its full contract.
-	interval_scores_data[INTERVAL_SCORES_HEADER_KEY] = INTERVAL_SCORES_HEADER_VALUE
+	# Diagnostics are advisory interval scores only.  Emit the owned fields
+	# explicitly so solve-state metadata cannot leak back into this artifact.
+	payload = {
+		INTERVAL_SCORES_HEADER_KEY: INTERVAL_SCORES_HEADER_VALUE,
+		"fps": fps,
+		"video_identity": video_identity,
+		"intervals": intervals,
+	}
 	# atomic write: temp file + rename to avoid corrupt file on interruption
 	dir_path = os.path.dirname(os.path.abspath(path))
 	fd, tmp_path = tempfile.mkstemp(dir=dir_path, suffix=".tmp.json")
 	try:
 		with os.fdopen(fd, "w") as fh:
-			json.dump(interval_scores_data, fh, indent=2)
+			json.dump(payload, fh, indent=2)
 		os.replace(tmp_path, path)
 	except Exception:
 		if os.path.exists(tmp_path):
@@ -541,7 +545,7 @@ def interval_fingerprint(
 	add algorithm details to the fingerprint.
 
 	The unified `solver_tag` encodes the current schema only (format:
-	`schema_v<N>`). How an interval was solved (Hermite or blob propagator) is
+	`schema_v<N>`). How an interval was solved (analytical or blob producer) is
 	metadata on the result, not part of the fingerprint.
 
 	Args:
@@ -648,46 +652,12 @@ def write_solver_interval_scores(
 		}
 		intervals_summary.append(entry)
 
-	# preserve cyclical prior if detected
-	cyclical = solve_data.get("cyclical_prior")
-	cyclical_safe = None
-	if cyclical is not None:
-		cyclical_safe = {
-			"period_frames": int(cyclical.get("period_frames", 0)),
-			"period_s": round(
-				float(cyclical.get("period_s", 0.0)), 3,
-			),
-			"correlation": round(
-				float(cyclical.get("correlation", 0.0)), 4,
-			),
-		}
-
 	diag_out = {
 		INTERVAL_SCORES_HEADER_KEY: INTERVAL_SCORES_HEADER_VALUE,
 		"fps": round(fps, 6),
 		"intervals": intervals_summary,
-		"cyclical_prior": cyclical_safe,
 		"video_identity": solve_data["video_identity"],
 	}
-	# serialize pre_race_reference if present. The top-level presence check is
-	# an intentional optional (callers that do not have pre-race data simply
-	# omit the key). All inner keys are required by compute_pre_race_reference;
-	# accessing them directly fails loud on a malformed reference rather than
-	# writing zeros silently.
-	pre_race_reference = solve_data.get("pre_race_reference")
-	if pre_race_reference is not None:
-		diag_out["pre_race_reference"] = {
-			"race_start_frame": int(pre_race_reference["race_start_frame"]),
-			"race_start_interval": list(pre_race_reference["race_start_interval"]),
-			"torso_w": round(float(pre_race_reference["torso_w"]), 4),
-			"torso_h": round(float(pre_race_reference["torso_h"]), 4),
-			"scene_anchor_x": round(float(pre_race_reference["scene_anchor_x"]), 4),
-			"scene_anchor_y": round(float(pre_race_reference["scene_anchor_y"]), 4),
-			"source_frame_indices": list(pre_race_reference["source_frame_indices"]),
-			"source_count": int(pre_race_reference["source_count"]),
-			"method": pre_race_reference["method"],
-			"warnings": list(pre_race_reference["warnings"]),
-		}
 	write_interval_scores(path, diag_out)
 
 
@@ -719,9 +689,9 @@ def write_agreement_debug_sidecar(
 			"start_frame": iv["start_frame"],
 			"end_frame": iv["end_frame"],
 			"agreement_mean": round(float(ad["agreement"]), 4),
-			"iou_p10": round(float(ad["iou_p10"]), 4),
-			"iou_p50": round(float(ad["iou_p50"]), 4),
-			"iou_p90": round(float(ad["iou_p90"]), 4),
+			"confidence_p10": round(float(ad["confidence_p10"]), 4),
+			"confidence_p50": round(float(ad["confidence_p50"]), 4),
+			"confidence_p90": round(float(ad["confidence_p90"]), 4),
 			"per_frame": ad["per_frame"],
 		})
 	if not intervals_with_debug:

@@ -143,7 +143,7 @@ def main() -> None:
 	# Seed geometry is authored truth and must match this video in every mode.
 	# Solve owns rebuild of derived artifacts, so it clears incompatible
 	# diagnostics/coordinates inside modes.solve after its stale-schema check.
-	modes.video_artifacts.check_identity_mismatch("seeds", seeds_path, video_identity)
+	modes.video_artifacts.check_seed_identity_mismatch(seeds_path, video_identity)
 	if args.mode != "solve":
 		modes.video_artifacts.check_identity_mismatch(
 			"diagnostics", diag_path, video_identity,
@@ -171,17 +171,6 @@ def main() -> None:
 			f"no per-video config at {config_path} -- "
 			f"run 'setup' mode first: "
 			f"./track_runner/track_runner.py -i {args.input_file} setup"
-		)
-
-	# gate `refine` on `solve` having been run at least once: refine
-	# reads per-interval diagnostics to decide which intervals to redo.
-	# `target` is not gated on solve because target-mode auto-runs a
-	# fresh solve when diagnostics are missing (see modes.target.run below).
-	if mode == "refine" and not os.path.isfile(diag_path):
-		raise RuntimeError(
-			f"no diagnostics at {diag_path} -- "
-			f"run 'solve' mode first: "
-			f"./track_runner/track_runner.py -i {args.input_file} solve"
 		)
 
 	if mode == "seed":

@@ -46,7 +46,7 @@ for evolution from v1 and v2.
 | `camera_motion_artifact.py` | persistence | Camera-motion NPZ I/O |
 | `trajectory_confidence.py` | confidence owner | Derives confidence from independent raw FWD/BWD geometry |
 | `blend_commitment.py` | commitment owner | Resolves a disagreement run from canonical residual/DoG evidence |
-| `interval_solver.py` | solver | Per-interval Hermite solve, walker dispatch, stitching, and seed stamping |
+| `interval_solver.py` | solver | Per-interval analytical solve, walker dispatch, stitching, and seed stamping |
 | `tr_crop.py` | crop | Whole-path dolly crop and the smooth/direct-center baselines |
 | `encoder.py` | encode | Applies crop rectangles and drives ffmpeg |
 
@@ -214,9 +214,10 @@ seed), then blends the two interval paths into a scored result.
 
 ### Forward and backward propagation
 
-`velocity_model.py` builds independent FWD and BWD Hermite paths from human
-seed anchors. Stage 4 may replace promoted spans with the blob walker, using
-the residual-motion evidence pipeline. Appearance evidence is not identity
+`velocity_model.py` builds independent FWD and BWD analytical paths from human
+seed anchors. Centers interpolate linearly and box sizes interpolate in log
+space. Stage 4 may replace promoted spans with the blob walker, using the
+residual-motion evidence pipeline. Appearance evidence is not identity
 evidence. FWD and BWD remain independent until the confidence/commitment
 boundary.
 
@@ -370,27 +371,29 @@ from the human-authored visible/partial brackets and erases only that span.
 and partial bracket frames remain intact. Edge anchors belong only to the
 separate crop-output trajectory.
 
-### Cyclical prior detection
-
-`_detect_cyclical_prior()` looks for repeating patterns in the trajectory
-(minimum 900 frames, period 25-40 s). When a cyclical period is detected, it
-can inform seed placement and gap analysis.
-
 ## Confidence scoring
 
-`scoring.py` scores each interval using three aggregate metrics.
+`scoring.py` owns the canonical interval score. Agreement comes from independent
+raw FWD/BWD passes, velocity consistency comes from the blended geometry, and
+size consistency evaluates the pair-local log-linear size model in scene space.
+Motion quality and occlusion remain separate score inputs.
 
 ### Confidence decision grid
 
-| Agreement | Separation (margin) | Confidence | Notes |
-| --- | --- | --- | --- |
-| > 0.5 | > 0.5 | `high` | Trusted |
-| > 0.5 | > 0.2 | `good` | Acceptable |
-| > 0.2 | > 0.1 | `fair` | Borderline |
-| else | | `low` | Needs seed |
+Confidence tiers are descriptive summaries of agreement, velocity consistency,
+size consistency, motion quality, occlusion, and interval length. Exact tier
+thresholds come from `scoring.py`.
 
 Competitor-margin and appearance-based identity scoring are removed under C6.
 Current diagnostics use only the documented geometry and motion fields.
+
+Stage 3 uses the same two endpoint seeds for both raw directions, so its
+agreement is structurally 1.0 and is not evidence that the cheap interpolation
+fits the runner. Stage-4 allocation and default target ordering instead count
+the five retained risk predicates: motion quality, occlusion, size residual,
+duration, and endpoint chord span. Positive risk establishes eligibility;
+higher risk ranks first, with lower `start_frame` as the deterministic
+tie-breaker. Whole intervals are packed within the per-video frame budget.
 
 ### Interval-length-aware scoring
 
@@ -401,7 +404,8 @@ compensates for inherent noise in FWD/BWD agreement on very short intervals.
 ### Interval severity classification
 
 `review.py` classifies intervals for refinement prioritization.
-Severity is driven by FWD/BWD agreement and current geometry-based terms.
+Severity is a descriptive view derived from current score fields and duration.
+It can filter the positive-risk target list but does not replace risk ordering.
 
 - **high**: very low agreement
 - **medium**: low agreement
@@ -422,8 +426,8 @@ The `--refine` flag controls which intervals trigger a new seeding round.
 
 ### suggested
 
-Default mode. `review.py` identifies the worst intervals by confidence.
-Seed targets are placed at midpoints of low-confidence intervals.
+Default mode. `review.py` rebuilds the current risk view from durable solve
+inputs and places seed targets at the midpoints of positive-risk intervals.
 
 ### interval
 
@@ -713,7 +717,7 @@ of truth on conflict.
 - PROCESSED: post-bin analysis pixels. `reader.width`/`reader.height` are
   PROCESSED. The blob walker decodes, steps, and selects candidates here. At
   `bin_factor = 1`, PROCESSED equals SOURCE.
-- SCENE: a frame-0-anchored internal space used only inside the Hermite leg,
+- SCENE: a frame-0-anchored internal space used only inside the analytical leg,
   built from `MotionTrack.dx/dy/scale`. Because `MotionTrack.dx/dy` are stored
   in SOURCE pixels (camera motion upscales by `bin_factor` before persist), the
   `SceneTransform` pixel side is SOURCE.
@@ -724,7 +728,7 @@ is `floor(source_width / 1440)` (`TARGET_DEFAULT_WIDTH_PX` constant in
 stay at bin=1 (full-res). Override with `--bin N` or `--auto-bin HEIGHT`.
 
 Storage-space rule: every value written to the torso-box npz must be SOURCE.
-The Hermite leg produces SOURCE pixels directly (SOURCE seed -> SCENE -> SOURCE
+The analytical leg produces SOURCE pixels directly (SOURCE seed -> SCENE -> SOURCE
 pixel). The walker leg produces PROCESSED pixels, so the walker path must be
 projected PROCESSED -> SOURCE exactly once, at the storage boundary,
 immediately before `torso_box_coords_io.write_torso_box_coords`, via
@@ -768,8 +772,8 @@ compatibility reader.
 
 Path: `tr_config/<video-stem>.track_runner.interval_scores.json`.
 
-Sole owner of per-interval scoring: interval scores, failure reasons,
-pre-race summary. Reader `state_io.load_interval_scores`, writer
+Owner of per-interval diagnostic summaries: interval scores and failure
+reasons. Reader `state_io.load_interval_scores`, writer
 `state_io.write_interval_scores`.
 
 This file does NOT carry the forward, backward, or blended interval
@@ -781,12 +785,14 @@ below and the canonical reference in
 
 Path: `tr_config/<video-stem>.track_runner.torso_box_coords.npz`.
 
-Persists pixel-snapped uint16 `cx`, `cy`, `w`, and `h` arrays plus a JSON
-manifest for each interval. Every interval persists blended SOURCE-frame
-geometry only; forward and backward paths are transient solve-time inputs to
-scoring and commitment. There is no debug-track sidecar. Readers reject
-incomplete array groups or a path whose length disagrees with its manifest
-interval. Full schema is in [TR_CONFIG_FILES.md](TR_CONFIG_FILES.md).
+Persists pixel-snapped uint16 blended SOURCE-frame geometry and uint8 raw-pass
+agreement transport (`conf`) plus a JSON manifest for each interval. Both raw
+coordinate paths are retained only when their difference survives uint16
+quantization. The artifact is also the sole durable owner of detected
+race-start state; absence means Stage 2 found no pre-race phase. There is no
+debug-track sidecar. Readers reject incomplete array groups or a path whose
+length disagrees with its manifest interval. Full schema is in
+[TR_CONFIG_FILES.md](TR_CONFIG_FILES.md).
 
 ## Key constants
 

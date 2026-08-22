@@ -1,6 +1,9 @@
 # target mode
 
-Add seeds at weak interval frames. The annotation UI shows forward/backward propagation overlays to help you see where the two passes diverge and to place corrective seeds at those uncertain locations.
+Add seeds at weak interval frames. The annotation UI always shows the durable
+blended prediction. It also shows forward/backward overlays when Schema 15
+retained distinct raw paths, helping you place corrective seeds where the
+passes diverge.
 
 ## When to use it
 
@@ -29,8 +32,8 @@ options:
   -H, --high            Alias for -s high.
   -L, --low             Alias for -s low.
   -t TOP_N, --top TOP_N
-                        limit output to the worst N intervals (sorted worst-
-                        first by rank_key).
+                        limit output to the worst N intervals in the mode's
+                        current ordering.
   -g GAP_TOP_N, --gaps GAP_TOP_N
                         add midpoints of the N largest seed gaps to the
                         seeding target list (independent of -t/--top). Implies
@@ -52,7 +55,7 @@ options:
 - `-L`, `--low` Alias for `-s low`.
 - `-A`, `--from-analyze` Target frames from the latest analyze report.
 - `-I`, `--seed-interval` Seconds between candidate target frames (default 10).
-- `--race-start` Target frames around the detected race-start transition for confirmation. Selects interval endpoints and offset-derived frames around `race_start_frame`, prints the race-start contact-sheet path, and enters the target UI. Use this after viewing the contact-sheet PNG produced during solve/refine to refine race-start seeds.
+- `--race-start` Target frames around the detected race-start transition for confirmation. Reads the detected reference from the current solve artifact, selects interval endpoints and offset-derived frames around `race_start_frame`, prints the race-start contact-sheet path, and enters the target UI. Use this after viewing the contact-sheet PNG produced during solve/refine to refine race-start seeds.
 
 **Mutual exclusivity:** `--race-start` and `-A`/`--from-analyze` are mutually exclusive; use only one per invocation.
 

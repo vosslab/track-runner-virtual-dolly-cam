@@ -20,6 +20,18 @@ class _IdentitySceneTransform:
 	def pixel_to_scene(self, frame_index: int, px: float, py: float) -> tuple:
 		return (px, py)
 
+	#============================================
+	def pixel_box_to_scene(
+		self,
+		frame_index: int,
+		cx: float,
+		cy: float,
+		w: float,
+		h: float,
+	) -> tuple:
+		"""Keep SOURCE box geometry unchanged for the boundary test."""
+		return (cx, cy, w, h)
+
 
 #============================================
 def _state(

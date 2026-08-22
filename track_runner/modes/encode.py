@@ -13,6 +13,7 @@ import common_tools.probe_video
 import fastread_video
 import interval_solver
 import key_input
+import race_start
 import scene_coords
 import state_io
 import torso_box_coords_io
@@ -221,7 +222,7 @@ def run(
 	intervals_path: str | None = None,
 	video_context: fastread_video.VideoContext | None = None,
 ) -> None:
-	"""Encode mode: encode cropped video from existing diagnostics.
+	"""Encode mode: encode cropped video from the solve artifact.
 
 	Reconstructs the per-frame trajectory from the solved intervals
 	file, since the diagnostics file stores only interval summaries
@@ -231,7 +232,7 @@ def run(
 		args: Parsed argparse namespace.
 		cfg: Configuration dict.
 		video_info: Video metadata dict.
-		diag_path: Path to diagnostics JSON file.
+		diag_path: Retained CLI routing path; encode does not load it.
 		intervals_path: Path to solved torso-coordinate NPZ file.
 			If None, derived from input_file.
 		video_context: Resolved per-run routing. Encode always reads
@@ -253,13 +254,6 @@ def run(
 
 	# apply CLI overrides (aspect + phase-4 encode-only flags)
 	_apply_encode_overrides(args, cfg)
-
-	# load diagnostics (for fps and interval metadata)
-	if not os.path.isfile(diag_path):
-		raise RuntimeError(
-			f"no diagnostics found at {diag_path}; run 'solve' first"
-		)
-	diag_data = state_io.load_interval_scores(diag_path)
 
 	# reconstruct trajectory from solved intervals
 	if intervals_path is None:
@@ -323,8 +317,17 @@ def run(
 
 	# NIF edge anchors are output-crop geometry, never runner truth. The
 	# original seed-erased trajectory remains available to debug overlays.
+	# Stage 2 legitimately has no result for videos without a detectable
+	# pre-race phase. In that established state the artifact omits race_start,
+	# and C4 has no pre-race frames to synthesize. A present block still goes
+	# through the strict artifact validator rather than falling back to scores.
+	race_start_reference = None
+	if "race_start" in intervals_file:
+		race_start_reference = race_start.load_race_start_from_artifact(
+			intervals_file,
+		)
 	crop_trajectory, nif_frames = modes.shared.build_nif_crop_inputs(
-		trajectory, all_seeds, diag_data, video_info,
+		trajectory, all_seeds, race_start_reference, video_info,
 	)
 
 	num_workers = modes.shared._resolve_workers(args)
@@ -454,7 +457,7 @@ def run(
 					"frame_index": i,
 					"bbox": (state["cx"], state["cy"], state["w"], state["h"]),
 				}
-				# M3 commitment is diagnostic-only overlay metadata.  It stays
+				# Blend commitment is diagnostic-only overlay metadata.  It stays
 				# alongside the raw FWD/BWD boxes rather than changing the
 				# persisted trajectory payload or review-tier rendering.
 				if state.get("blend_flag", False):

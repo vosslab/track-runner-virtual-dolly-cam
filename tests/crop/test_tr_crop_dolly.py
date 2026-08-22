@@ -358,7 +358,6 @@ def test_analyze_and_encode_entrypoints_build_nif_crop_inputs(
 	_assert_mode_calls_nif_crop_builder(monkeypatch, encode_mode, encode_args)
 
 
-#============================================
 @pytest.mark.parametrize("report", [
 	{"converged": True, "iterations": 2, "fallback_used": False},
 	{"converged": False, "iterations": 8, "fallback_used": True},

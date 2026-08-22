@@ -5,8 +5,14 @@ thresholds. Synthetic interval dicts are used; no video, disk I/O, or
 mocking.
 """
 
+# PIP3 modules
+import numpy
+
 # local repo modules
+import camera_motion
 import review
+import scene_coords
+import scoring
 
 
 #============================================
@@ -128,3 +134,159 @@ def test_rank_key_sorts_pre_race_to_end() -> None:
 	]
 	sorted_intervals = sorted(intervals, key=review.rank_key)
 	assert sorted_intervals[-1]["interval_score"]["confidence_tier"] == "pre_race"
+
+
+#============================================
+def _artifact_seed(frame_index: int, cx: float, status: str = "visible") -> dict:
+	"""Build one durable human seed for artifact-adapter coverage."""
+	return {
+		"frame_index": frame_index, "cx": cx, "cy": 50.0,
+		"w": 10.0, "h": 20.0, "status": status, "pass": 1,
+	}
+
+
+#============================================
+def _artifact_motion(frame_count: int) -> object:
+	"""Build an identity-motion track with deliberately low quality."""
+	return camera_motion.MotionTrack(
+		dx=numpy.zeros(frame_count, dtype=numpy.float32),
+		dy=numpy.zeros(frame_count, dtype=numpy.float32),
+		scale=numpy.ones(frame_count, dtype=numpy.float32),
+		quality=numpy.zeros(frame_count, dtype=numpy.float32),
+	)
+
+
+#============================================
+def test_artifact_score_uses_stored_conf_and_analytical_size_path() -> None:
+	"""Reloaded confidence is raw-pass evidence; blended does not score size."""
+	seeds = [_artifact_seed(0, 10.0), _artifact_seed(2, 30.0)]
+	motion = _artifact_motion(3)
+	transform = scene_coords.SceneTransform(motion)
+	artifact_interval = {
+		"start_frame": 0, "end_frame": 2,
+		"forward_path": None, "backward_path": None,
+		"conf": [0.2, 0.4, 0.6],
+		"blended_path": [
+			{"cx": 10.0 + 10.0 * i, "cy": 50.0, "w": 10.0, "h": 200.0}
+			for i in range(3)
+		],
+	}
+	score = scoring.score_interval_from_artifact(
+		seeds[0], seeds[1], seeds, transform, motion, artifact_interval, 30.0,
+	)
+	assert numpy.isclose(score["agreement"], 0.4)
+	assert score["size_consistency"] == 1.0
+	assert score["motion_quality"] == 0.0
+
+
+#============================================
+def test_artifact_score_prefers_stored_conf_over_quantized_raw_paths() -> None:
+	"""Schema-15 conf transports agreement even when raw arrays survive."""
+	seeds = [_artifact_seed(0, 10.0), _artifact_seed(2, 30.0)]
+	motion = _artifact_motion(3)
+	transform = scene_coords.SceneTransform(motion)
+	forward = [
+		{"cx": 10.0 + 10.0 * i, "cy": 50.0, "w": 10.0, "h": 20.0}
+		for i in range(3)
+	]
+	backward = [
+		{"cx": 110.0 + 10.0 * i, "cy": 50.0, "w": 10.0, "h": 20.0}
+		for i in range(3)
+	]
+	artifact_interval = {
+		"start_frame": 0, "end_frame": 2,
+		"forward_path": forward, "backward_path": backward,
+		"conf": [0.75, 0.75, 0.75], "blended_path": forward,
+	}
+	score = scoring.score_interval_from_artifact(
+		seeds[0], seeds[1], seeds, transform, motion, artifact_interval, 30.0,
+	)
+	assert score["agreement"] == 0.75
+
+
+#============================================
+def test_artifact_score_does_not_project_geometryless_not_in_frame_seed() -> None:
+	"""NIF seeds remain occlusion input but never enter scene geometry support."""
+	seeds = [
+		_artifact_seed(0, 10.0),
+		{"frame_index": 1, "status": "not_in_frame", "pass": 1},
+		_artifact_seed(2, 30.0),
+	]
+	motion = _artifact_motion(3)
+	transform = scene_coords.SceneTransform(motion)
+	path = [
+		{"cx": 10.0 + 10.0 * i, "cy": 50.0, "w": 10.0, "h": 20.0}
+		for i in range(3)
+	]
+	artifact_interval = {
+		"start_frame": 0, "end_frame": 2,
+		"forward_path": path, "backward_path": path,
+		"blended_path": path,
+	}
+	score = scoring.score_interval_from_artifact(
+		seeds[0], seeds[2], seeds, transform, motion, artifact_interval, 30.0,
+	)
+	assert score["agreement"] == 1.0
+
+
+#============================================
+def test_risk_view_delegates_to_artifact_scoring_and_m6_policy() -> None:
+	"""The view contains scoring-owner results and current M6 allocation."""
+	seeds = [_artifact_seed(0, 10.0), _artifact_seed(9, 30.0)]
+	motion = _artifact_motion(100)
+	transform = scene_coords.SceneTransform(motion)
+	forward = [
+		{"cx": 10.0 + 2.0 * i, "cy": 50.0, "w": 10.0, "h": 20.0}
+		for i in range(10)
+	]
+	solve_artifact = {
+		"scene_transform": transform,
+		"fps": 30.0,
+		"video_identity": {"frame_count": 100},
+		"solved_intervals": {
+			"pair": {
+				"start_frame": 0, "end_frame": 9,
+				"forward_path": forward, "backward_path": forward,
+				"blended_path": forward,
+			}
+		},
+	}
+	view = review.build_interval_risk_view(seeds, motion, solve_artifact)
+	entry = view[(0, 9)]
+	assert entry["risk"] == 1.0
+	assert entry["promoted"] is True
+	assert "low_motion_quality" in entry["failure_reasons"]
+	assert entry["interval_score"]["agreement"] == 1.0
+
+
+#============================================
+def test_risk_view_only_marks_pairs_before_race_start_interval_pre_race() -> None:
+	"""The race-start spanning pair remains a normal scored interval."""
+	seeds = [
+		_artifact_seed(0, 10.0), _artifact_seed(10, 30.0),
+		_artifact_seed(20, 50.0),
+	]
+	motion = _artifact_motion(100)
+	transform = scene_coords.SceneTransform(motion)
+	path_a = [
+		{"cx": 10.0 + 2.0 * i, "cy": 50.0, "w": 10.0, "h": 20.0}
+		for i in range(11)
+	]
+	path_b = [
+		{"cx": 30.0 + 2.0 * i, "cy": 50.0, "w": 10.0, "h": 20.0}
+		for i in range(11)
+	]
+	artifact = {
+		"scene_transform": transform, "fps": 30.0,
+		"video_identity": {"frame_count": 100},
+		"race_start": {"race_start_frame": 15, "race_start_interval": [10, 20]},
+		"solved_intervals": {
+			"before": {"start_frame": 0, "end_frame": 10,
+				"forward_path": path_a, "backward_path": path_a, "blended_path": path_a},
+			"spanning": {"start_frame": 10, "end_frame": 20,
+				"forward_path": path_b, "backward_path": path_b, "blended_path": path_b},
+		},
+	}
+	view = review.build_interval_risk_view(seeds, motion, artifact)
+	assert view[(0, 10)]["severity"] == "pre_race"
+	assert view[(10, 20)]["severity"] != "pre_race"

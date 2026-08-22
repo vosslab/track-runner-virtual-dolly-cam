@@ -327,8 +327,8 @@ def _worker_init(
 		all_seeds: Original seed list (pixel coords).
 		fps: Video frame rate.
 		debug: Debug flag; constant across all tasks in this run.
-		blob_pass: Run-invariant blob-pass flag; False for Stage-3 (pure
-			Hermite), True for the Stage-4 walker pass. Constant across all
+		blob_pass: Run-invariant blob-pass flag; False for Stage-3
+			analytical work, True for the Stage-4 walker pass. Constant across all
 			tasks in this run.
 	"""
 	global _WORKER_CONTEXT
@@ -401,8 +401,8 @@ def _solve_interval_worker(task: tuple) -> tuple:
 	fingerprint = interval_solver.compute_interval_fingerprint(
 		seed_start, seed_end,
 	)
-	# The worker solves with the dispatch's blob_pass: False for Stage-3 (pure
-	# Hermite on every interval) and True for the Stage-4 walker pass. The flag
+	# The worker solves with the dispatch's blob_pass: False for Stage-3
+	# analytical work and True for the Stage-4 walker pass. The flag
 	# is run-invariant per dispatch, carried on the frozen WorkerContext.
 	started = time.monotonic()
 	telemetry = {} if ctx.telemetry_enabled else None
@@ -540,8 +540,8 @@ def make_pool(
 		all_seeds: Seeds in pixel coordinates.
 		fps: Video frame rate.
 		debug: Debug flag.
-		blob_pass: Run-invariant blob-pass flag; False for Stage-3 (pure
-			Hermite), True for the Stage-4 walker pass.
+		blob_pass: Run-invariant blob-pass flag; False for Stage-3 analytical
+			work, True for the Stage-4 walker pass.
 
 	Returns:
 		A started ProcessPoolExecutor. Caller is responsible for using

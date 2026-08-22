@@ -192,8 +192,8 @@ tr_config/<basename>.track_runner.camera_motion.npz
 
 - `motion_model` (utf-8 bytes): one of `fixed_zoom`, `discrete_zoom`,
   `continuous_zoom`.
-- `video_identity` (utf-8 JSON): complete source-video identity, used to
-  reject cache reuse for a different source video.
+- `video_identity` (utf-8 JSON): source geometry identity (`width`, `height`,
+  and `frame_count`), used to reject incompatible cache reuse.
 - `frame_count` (int64): expected length of the per-frame arrays.
 - `bin_factor` (int64): processed-frame bin used for measurement and required
   for reuse.
@@ -202,7 +202,7 @@ tr_config/<basename>.track_runner.camera_motion.npz
   since it is constant 1.0 by construction.
 
 `load_motion_cache` returns `None` if the file is missing or its persisted
-model, analysis bin, or complete source-video identity disagrees with the
+model, analysis bin, or source geometry identity disagrees with the
 current run. A stale artifact is treated as absent so `solve` recomputes and
 replaces it; other consuming modes direct the user to run `solve`. There is
 no merge or partial reuse. For `fixed_zoom`, the loader synthesizes a constant
@@ -214,7 +214,7 @@ Note: `camera_motion.npz` is **not** tracked in
 the unified `SCHEMA_VERSION` (see
 [TRACK_RUNNER_CONTRACT.md](TRACK_RUNNER_CONTRACT.md) C9).
 Staleness is determined by comparing the persisted motion model, bin factor,
-and source-video identity with the current run. Camera-motion method changes
+and source geometry identity with the current run. Camera-motion method changes
 retain this artifact layout and refresh through `solve`; they do not create a
 separate schema-version track.
 
@@ -230,7 +230,7 @@ need direct access to `quality`.
   so each worker process holds the same scene transform.
 - [velocity_model.py](../track_runner/velocity_model.py)
   uses `SceneTransform` to convert seed pixel positions into scene
-  coordinates for Hermite curve fitting. It never touches
+  coordinates for linear/log-linear interval propagation. It never touches
   `MotionTrack` directly.
 - [residual_motion.py](../track_runner/residual_motion.py)
   `build_warp_matrix` (lines 100-141) derives a per-frame-pair 2x3

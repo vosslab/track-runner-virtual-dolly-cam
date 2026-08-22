@@ -132,7 +132,7 @@ strength and isotropic proximity metadata; it does not reject a blob or choose
 the winner.
 
 FWD and BWD call the observer independently with their own predictions.
-Stage-3 Hermite never calls it. The Stage-4 walker decides how to use the
+Stage-3 analytical propagation never calls it. The Stage-4 walker decides how to use the
 optional observation after this image-only boundary.
 
 ## Coordinate spaces

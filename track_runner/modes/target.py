@@ -4,26 +4,29 @@
 import argparse
 
 # local repo modules
+import camera_motion
 import encode_analysis_report
 import fastread_video
+import interval_solver
 import modes.predictions as mode_predictions
 import modes.shared as mode_shared
+import race_start
 import review
+import scene_coords
 import seeding
-import state_io
+import torso_box_coords_io
 import tr_paths
 
 
 def _generate_race_start_target_frames(
-	diagnostics: dict,
+	race_start_reference: dict,
 	fps: float,
 	frame_count: int,
 ) -> list:
 	"""Generate target frame list for --race-start mode.
 
 	Args:
-		diagnostics: Loaded diagnostics dict with race_start_interval and
-			race_start_frame in pre_race_reference.
+		race_start_reference: Current solve-artifact race-start block.
 		fps: Video frame rate.
 		frame_count: Total frame count for clamping.
 
@@ -31,34 +34,13 @@ def _generate_race_start_target_frames(
 		list: Sorted, deduped, clamped frame indices.
 
 	Raises:
-		RuntimeError: If diagnostics lacks required fields.
+		RuntimeError: If the solve artifact lacks required fields.
 	"""
-	pre_race_reference = diagnostics.get("pre_race_reference")
-	if pre_race_reference is None:
-		raise RuntimeError(
-			"diagnostics missing pre_race_reference; "
-			"run 'solve' first to detect race_start_frame"
-		)
-
-	# Race-start targeting consumes only the current interval-score record.
-	if state_io.INTERVAL_SCORES_HEADER_KEY not in diagnostics:
-		raise RuntimeError(
-			"interval-score file missing current header; "
-			"run 'solve' first to generate current interval scores"
-		)
-	header = diagnostics[state_io.INTERVAL_SCORES_HEADER_KEY]
-	if header != state_io.INTERVAL_SCORES_HEADER_VALUE:
-		raise RuntimeError(
-			f"interval-score schema is version {header}; target --race-start "
-			f"requires current schema v{state_io.INTERVAL_SCORES_HEADER_VALUE}. "
-			"Run solve first to regenerate."
-		)
-
 	# Validate race_start_frame is present (fail loud on missing key);
 	# the actual frame is not needed for selection -- the interval
 	# bounds drive it.
-	_ = int(pre_race_reference["race_start_frame"])
-	race_start_interval = pre_race_reference["race_start_interval"]
+	_ = int(race_start_reference["race_start_frame"])
+	race_start_interval = race_start_reference["race_start_interval"]
 	if len(race_start_interval) != 2:
 		raise RuntimeError(
 			"race_start_interval must have exactly 2 elements; "
@@ -83,7 +65,7 @@ def _generate_race_start_target_frames(
 	#   interval_low (last stationary seed)
 	#   interval_low + 1/8 * width
 	#   interval_low + 1/4 * width
-	#   interval_low + 1/2 * width  (= race_start_frame midpoint)
+	#   interval_low + 1/2 * width  (central interval sample)
 	#   interval_low + 3/4 * width
 	#   interval_low + 7/8 * width
 	#   interval_high (first moving seed)
@@ -106,6 +88,58 @@ def _generate_race_start_target_frames(
 
 
 #============================================
+def _load_target_risk_view(
+	args: argparse.Namespace,
+	cfg: dict,
+	video_info: dict,
+	seeds: list,
+	intervals_path: str,
+) -> tuple:
+	"""Load the durable target inputs and rebuild their in-memory risk view."""
+	solve_artifact = torso_box_coords_io.load_torso_box_coords(intervals_path)
+	if not solve_artifact.get("solved_intervals"):
+		raise RuntimeError("target mode: no solved intervals; run solve first")
+	bin_factor, unused_bin_info = mode_shared._resolve_solve_bin_factor(
+		getattr(args, "bin_factor", None),
+		getattr(args, "auto_bin_target", None),
+		int(video_info["width"]), int(video_info["height"]),
+	)
+	motion_track = camera_motion.load_active_camera_motion_or_fail(
+		args.input_file, cfg, expected_bin_factor=bin_factor, video_info=video_info,
+	)
+	solve_artifact["scene_transform"] = scene_coords.SceneTransform(motion_track)
+	solve_artifact["fps"] = float(video_info["fps"])
+	risk_view = review.build_interval_risk_view(
+		seeds, motion_track, solve_artifact,
+	)
+	return solve_artifact, risk_view
+
+
+#============================================
+def _predictions_from_risk_view(
+	solve_artifact: dict,
+	risk_view: dict,
+	seeds: list,
+	fps: float,
+) -> dict:
+	"""Build target overlays from the artifact and its ephemeral score view."""
+	solved_intervals = solve_artifact["solved_intervals"]
+	interval_solver.restamp_cached_interval_seed_truth(solved_intervals, seeds)
+	intervals = []
+	for artifact_interval in solved_intervals.values():
+		key = (
+			int(artifact_interval["start_frame"]),
+			int(artifact_interval["end_frame"]),
+		)
+		interval = dict(artifact_interval)
+		interval["interval_score"] = risk_view[key]["interval_score"]
+		intervals.append(interval)
+	return mode_predictions.build_predictions_from_solved_intervals({
+		"fps": float(fps), "intervals": intervals,
+	})
+
+
+#============================================
 def run(
 	args: argparse.Namespace,
 	cfg: dict,
@@ -118,7 +152,7 @@ def run(
 ) -> None:
 	"""Target mode: add seeds at weak interval frames with FWD/BWD overlays.
 
-	Loads solved intervals and diagnostics, generates refinement targets
+	Loads solved intervals, generates refinement targets
 	filtered by severity, builds FWD/BWD predictions, and launches the
 	interactive seed collection UI at those frames.
 
@@ -127,7 +161,7 @@ def run(
 		cfg: Configuration dict.
 		video_info: Video metadata dict.
 		seeds_path: Path to the seeds JSON file.
-		diag_path: Path to diagnostics JSON file.
+		diag_path: Retained CLI routing path; target does not load it.
 		intervals_path: Path to solved torso-coordinate NPZ file.
 		video_context: Resolved per-run routing; the target UI decodes
 			from video_context.working_decode.path while seed state keys
@@ -145,8 +179,8 @@ def run(
 		raise RuntimeError(f"no seeds found in {seeds_path}")
 	print(f"loaded {len(seeds)} seeds from {seeds_path}")
 	fps = video_info["fps"]
-	diag_data = mode_shared._ensure_target_diagnostics(
-		args, cfg, video_info, seeds, diag_path, intervals_path,
+	solve_artifact, risk_view = _load_target_risk_view(
+		args, cfg, video_info, seeds, intervals_path,
 	)
 
 	# Check for sub-modes
@@ -174,7 +208,7 @@ def run(
 	elif use_race_start_mode:
 		# Race-start target mode: fixed frame selection around detected race-start
 		target_frames = _generate_race_start_target_frames(
-			diag_data,
+			race_start.load_race_start_from_artifact(solve_artifact),
 			fps,
 			video_info["frame_count"],
 		)
@@ -184,68 +218,21 @@ def run(
 		)
 		print(f"  race-start confirmation: {contact_sheet_path}")
 	else:
-		# Standard target mode: generate refinement targets with optional severity filter
+		# Standard target mode: promotion-risk ordering with an optional severity filter.
 		severity = getattr(args, "severity", None)
-		seed_interval = getattr(args, "seed_interval", 10.0)
 		top_n = getattr(args, "top_n", None)
-
-		# generate target frames
-		target_frames = review.generate_refinement_targets(
-			diag_data,
-			mode="suggested",
-			seed_interval=int(seed_interval * fps),
-			severity=severity,
+		target_intervals = review.target_intervals_from_risk_view(
+			risk_view, severity=severity, top_n=top_n,
 		)
-
-		# apply --top slicing if requested. UX: --top N means "give me N
-		# frames, period" -- if the severity floor or confidence-based
-		# filter produces fewer than N candidates, supplement with the
-		# next-worst intervals so the user always gets the requested count
-		# (capped at the number of non-pre-race intervals available).
-		if top_n is not None:
-			intervals = diag_data.get("intervals", [])
-			# every non-pre-race interval is a potential candidate, ranked
-			# worst-first by rank_key. Pre-race is excluded per C4.
-			candidates = [
-				iv for iv in intervals
-				if review.get_confidence_label(iv["interval_score"]) != "pre_race"
-			]
-			candidates.sort(key=review.rank_key)
-			top_intervals = candidates[:top_n]
-
-			if top_intervals:
-				top_diag = dict(diag_data)
-				top_diag["intervals"] = top_intervals
-				# severity=None for the regenerate step: --top has already
-				# selected the worst-N regardless of severity floor, so
-				# re-applying the severity filter would discard frames the
-				# user explicitly asked for.
-				target_frames = review.generate_refinement_targets(
-					top_diag,
-					mode="suggested",
-					seed_interval=int(seed_interval * fps),
-					severity=None,
-				)
-				# Ensure every top-N interval contributes at least one
-				# target frame (midpoint), even high/good-confidence ones
-				# that identify_weak_spans skips. With --top N the user
-				# expects N frames.
-				target_set = set(target_frames)
-				for iv in top_intervals:
-					start_frame = int(iv["start_frame"])
-					end_frame = int(iv["end_frame"])
-					if any(start_frame <= f <= end_frame for f in target_set):
-						continue
-					target_set.add((start_frame + end_frame) // 2)
-				target_frames = sorted(target_set)
-			else:
-				target_frames = []
-
-			if len(top_intervals) < top_n:
-				print(
-					f"  hint: only {len(top_intervals)} intervals available "
-					f"(--top={top_n} requested)"
-				)
+		target_frames = [
+			(start_frame + end_frame) // 2
+			for unused_risk, start_frame, end_frame in target_intervals
+		]
+		if top_n is not None and len(target_intervals) < top_n:
+			print(
+				f"  hint: only {len(target_intervals)} intervals available "
+				f"(--top={top_n} requested)"
+			)
 
 	if not target_frames:
 		if use_from_analyze_mode:
@@ -266,9 +253,10 @@ def run(
 		top_label = f" (top {top_n})" if top_n is not None else ""
 		print(f"  {len(target_frames)} target frames from weak intervals{sev_label}{top_label}")
 
-	# build FWD/BWD predictions from solved intervals with scores merged in
-	predictions = mode_predictions.predictions_from_torso_box_coords(
-		intervals_path, diag_path, fps, seeds=seeds,
+	# Build prediction overlays from the same in-memory view used for target
+	# placement.  Diagnostics remain reporting-only and are not a target input.
+	predictions = _predictions_from_risk_view(
+		solve_artifact, risk_view, seeds, fps,
 	)
 	if predictions:
 		print(f"  loaded predictions for {len(predictions)} frames")

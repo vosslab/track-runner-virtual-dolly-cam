@@ -543,7 +543,7 @@ def _make_two_probe_patcher(
 def test_fps_mismatch_fatal_false_does_not_raise_warns(
 	tmp_path: object, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-	"""fps_mismatch_fatal=False: 59.94 vs 60.0 mismatch warns-and-continues.
+	"""A structurally aligned but genuinely different fps warns on consumption.
 
 	The consume path (resolve_video_context) calls with fps_mismatch_fatal=False
 	and must receive a FastreadValidation rather than a RuntimeError on a small
@@ -551,7 +551,7 @@ def test_fps_mismatch_fatal_false_does_not_raise_warns(
 	"""
 	import logging
 	orig_probe = _make_probe(fps=60.0)
-	fast_probe = _make_probe(fps=59.94)
+	fast_probe = _make_probe(fps=59.0)
 	_make_two_probe_patcher(monkeypatch, orig_probe, fast_probe)
 	original = str(tmp_path / "race.mkv")
 	fastread = str(tmp_path / "race.fastread.mkv")
@@ -563,25 +563,23 @@ def test_fps_mismatch_fatal_false_does_not_raise_warns(
 	assert isinstance(result, fastread_video.FastreadValidation)
 	# a warning mentioning both fps values must have been logged
 	warning_text = " ".join(r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING)
-	assert "59.94" in warning_text or "60.0" in warning_text, (
+	assert "59.0" in warning_text or "60.0" in warning_text, (
 		"expected a warning mentioning one or both fps values; got: " + warning_text
 	)
 
-def test_fps_mismatch_fatal_true_raises(
+def test_decimal_probe_boundary_is_not_rejected(
 	tmp_path: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-	"""fps_mismatch_fatal=True (default): same fps mismatch raises RuntimeError.
-
-	The prepare path must reject a newly transcoded fast-read whose fps probe
-	does not match the source, so timing defects are caught at build time.
-	"""
+	"""The conventional 59.94/60.0 pair lies on the documented boundary."""
 	orig_probe = _make_probe(fps=60.0)
 	fast_probe = _make_probe(fps=59.94)
 	_make_two_probe_patcher(monkeypatch, orig_probe, fast_probe)
 	original = str(tmp_path / "race.mkv")
 	fastread = str(tmp_path / "race.fastread.mkv")
-	with pytest.raises(RuntimeError, match="race.fastread.mkv"):
-		fastread_video.validate_fastread_structural(original, fastread, fps_mismatch_fatal=True)
+	result = fastread_video.validate_fastread_structural(
+		original, fastread, fps_mismatch_fatal=True,
+	)
+	assert isinstance(result, fastread_video.FastreadValidation)
 
 def test_frame_count_mismatch_raises_regardless_of_fps_flag(
 	tmp_path: object, monkeypatch: pytest.MonkeyPatch

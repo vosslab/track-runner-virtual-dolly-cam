@@ -66,3 +66,18 @@ def test_apply_confidence_replaces_stale_stored_values() -> None:
 	assert [state["conf"] for state in trajectory] == [
 		1.0, math.exp(-1.0),
 	]
+
+
+#============================================
+def test_reloaded_quantization_equal_interval_uses_stored_confidence() -> None:
+	"""Absent raw paths must not promote an ordinary interval to confidence 1."""
+	results = [{
+		"start_frame": 1,
+		"end_frame": 2,
+		"forward_path": None,
+		"backward_path": None,
+		"conf": [0.2, 0.4],
+	}]
+	assert trajectory_confidence.derive_per_frame_confidence(results, 4) == [
+		0.0, 0.2, 0.4, 0.0,
+	]

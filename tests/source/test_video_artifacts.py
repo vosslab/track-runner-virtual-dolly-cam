@@ -84,15 +84,11 @@ def test_probe_video_reports_missing_tool_and_failed_command(
 
 #============================================
 def _identity(frame_count: int = 10) -> dict:
-	"""Return a complete identity block for comparison tests."""
+	"""Return a source geometry identity for comparison tests."""
 	identity = {
-		"basename": "runner.mkv",
-		"size_bytes": 100,
 		"width": 640,
 		"height": 360,
-		"fps": 30.0,
 		"frame_count": frame_count,
-		"duration_s": frame_count / 30.0,
 	}
 	return identity
 
@@ -106,7 +102,18 @@ def test_check_identity_mismatch_rejects_incompatible_json_identity(
 	path.write_text(json.dumps({"video_identity": _identity(11)}))
 
 	with pytest.raises(RuntimeError, match="incompatible video geometry"):
-		video_artifacts.check_identity_mismatch("seeds", str(path), _identity())
+		video_artifacts.check_seed_identity_mismatch(str(path), _identity())
+
+
+#============================================
+def test_seed_identity_check_allows_missing_optional_metadata(
+	tmp_path: pathlib.Path,
+) -> None:
+	"""Existing current-schema seed files remain usable without identity metadata."""
+	path = tmp_path / "seeds.json"
+	path.write_text(json.dumps({"track_runner_seeds": 3, "seeds": []}))
+
+	video_artifacts.check_seed_identity_mismatch(str(path), _identity())
 
 
 #============================================

@@ -267,11 +267,11 @@ def test_compute_pre_race_reference_averages_w_and_h() -> None:
 	)
 	assert abs(ref["torso_w"] - 32.0) < 0.5
 	assert abs(ref["torso_h"] - 62.0) < 0.5
-	assert ref["source_count"] >= 1
+	assert "source_count" not in ref
 
 
 def test_compute_pre_race_reference_excludes_approximate() -> None:
-	"""Approximate seeds excluded; source_count drops accordingly."""
+	"""Approximate seeds are excluded from the averaged dimensions."""
 	seeds = [
 		_mk_seed(0, w=30.0, status="visible"),
 		_mk_seed(10, w=999.0, status="approximate"),
@@ -280,7 +280,7 @@ def test_compute_pre_race_reference_excludes_approximate() -> None:
 		seeds, race_start_frame=50, scene_transform=FakeSceneTransform(0.0),
 		race_start_interval=(0, 50),
 	)
-	assert ref["source_count"] >= 1
+	assert "source_count" not in ref
 	assert abs(ref["torso_w"] - 30.0) < 0.5
 
 
@@ -294,7 +294,7 @@ def test_compute_pre_race_reference_excludes_not_in_frame() -> None:
 		seeds, race_start_frame=50, scene_transform=FakeSceneTransform(0.0),
 		race_start_interval=(0, 50),
 	)
-	assert ref["source_count"] >= 1
+	assert "source_count" not in ref
 
 
 def test_compute_pre_race_reference_excludes_post_boundary_seeds() -> None:
@@ -308,7 +308,7 @@ def test_compute_pre_race_reference_excludes_post_boundary_seeds() -> None:
 		seeds, race_start_frame=50, scene_transform=FakeSceneTransform(0.0),
 		race_start_interval=(0, 50),
 	)
-	assert ref["source_count"] == 1
+	assert "source_count" not in ref
 	assert abs(ref["torso_w"] - 30.0) < 0.5
 
 
@@ -356,6 +356,29 @@ def test_compute_pre_race_reference_includes_interval() -> None:
 		race_start_interval=interval,
 	)
 	assert ref["race_start_interval"] == [10, 20]
+
+
+#============================================
+def test_load_race_start_from_artifact_requires_complete_block() -> None:
+	"""Operational consumers fail loud instead of consulting diagnostics."""
+	with pytest.raises(RuntimeError, match="run solve first"):
+		race_start.load_race_start_from_artifact({})
+
+
+#============================================
+def test_load_race_start_from_artifact_returns_persisted_block() -> None:
+	"""The artifact block is passed through without a diagnostics adapter."""
+	reference = {
+		"race_start_frame": 15,
+		"race_start_interval": [10, 20],
+		"torso_w": 30.0,
+		"torso_h": 60.0,
+		"scene_anchor_x": 100.0,
+		"scene_anchor_y": 200.0,
+		"method": "test",
+		"warnings": [],
+	}
+	assert race_start.load_race_start_from_artifact({"race_start": reference}) is reference
 
 
 #============================================
@@ -473,12 +496,14 @@ def test_print_race_phase_summary_with_result(capsys: pytest.CaptureFixture[str]
 	result = {
 		"race_start_frame": 120,
 		"race_start_interval": [115, 125],
-		"source_count": 3,
 		"torso_w": 60.0,
 		"torso_h": 100.0,
 		"warnings": [],
 	}
-	race_start.print_race_phase_summary(result, fps=60.0)
+	seeds = [
+		_mk_seed(0), _mk_seed(10), _mk_seed(20), _mk_seed(130),
+	]
+	race_start.print_race_phase_summary(result, fps=60.0, seeds=seeds)
 	captured = capsys.readouterr().out
 	assert "RACE-START DETECTION" in captured
 	assert "race_start_frame: 120" in captured

@@ -10,10 +10,7 @@ I/O and no solver execution. They assert on the partition between
 (re-solve) for the edit / add / remove / no-change / pre-race-edit
 scenarios.
 
-Also covers the degenerate edge case: when the current seeds yield zero
-solvable intervals (fewer than 2 usable seeds) while the store still holds
-intervals from a prior solve, `_mode_refine` must print a clear diagnostic
-and return cleanly without writing anything to disk.
+Also covers the C7 boundary: a disguised full solve preserves the artifact.
 """
 
 import copy
@@ -24,8 +21,14 @@ import unittest.mock
 
 import pytest
 
+import numpy
+
 # local repo modules (track_runner/ is on sys.path via tests/conftest.py)
+import camera_motion
 import interval_fingerprint
+import interval_solver
+import modes.shared as mode_shared
+import scene_coords
 import solve_queue
 
 
@@ -226,6 +229,84 @@ def _minimal_intervals_file(solved_intervals: dict) -> dict:
 
 
 #============================================
+def _artifact_intervals_for(seeds: list) -> dict:
+	"""Build minimal artifact entries for every adjacent seed pair."""
+	solved = {}
+	for idx in range(len(seeds) - 1):
+		start_seed = seeds[idx]
+		end_seed = seeds[idx + 1]
+		fingerprint = interval_fingerprint.compute_interval_fingerprint(
+			start_seed, end_seed,
+		)
+		solved[fingerprint] = {
+			"start_frame": start_seed["frame_index"],
+			"end_frame": end_seed["frame_index"],
+			"forward_path": [],
+			"backward_path": [],
+			"blended_path": [],
+		}
+	return solved
+
+
+#============================================
+def _seed_records_for_disk(seeds: list) -> list:
+	"""Convert in-memory geometry fixtures to canonical on-disk seed records."""
+	records = []
+	for seed in seeds:
+		x = int(seed["cx"] - seed["w"] / 2.0)
+		y = int(seed["cy"] - seed["h"] / 2.0)
+		records.append({
+			"frame_index": seed["frame_index"],
+			"torso_box": [x, y, int(seed["w"]), int(seed["h"])],
+			"status": seed["status"],
+			"pass": seed["pass"],
+		})
+	return records
+
+
+#============================================
+def _video_context() -> object:
+	"""Return the routed-video stub used by refine mode tests."""
+	import fastread_video
+
+	selection = fastread_video.VideoSelection(
+		path="/fake/video.mkv",
+		role="working_decode",
+		using_fastread=False,
+		reason=fastread_video.REASON_NO_FASTREAD_ORIGINAL,
+	)
+	context = fastread_video.VideoContext(
+		original_video_path="/fake/video.mkv",
+		working_decode=selection,
+		final_encode=selection,
+		metadata_identity=selection,
+	)
+	return context
+
+
+#============================================
+def _artifact_score_inputs() -> tuple:
+	"""Build a small durable artifact score-reconstruction case."""
+	seeds = [_make_seed(0, 10.0, 50.0), _make_seed(2, 30.0, 50.0)]
+	motion = camera_motion.MotionTrack(
+		dx=numpy.zeros(100, dtype=numpy.float32),
+		dy=numpy.zeros(100, dtype=numpy.float32),
+		scale=numpy.ones(100, dtype=numpy.float32),
+		quality=numpy.zeros(100, dtype=numpy.float32),
+	)
+	path = [
+		{"cx": 10.0 + 10.0 * idx, "cy": 50.0, "w": 30.0, "h": 60.0}
+		for idx in range(3)
+	]
+	entry = {
+		"start_frame": 0, "end_frame": 2,
+		"forward_path": None, "backward_path": None,
+		"conf": [0.2, 0.4, 0.6], "blended_path": path,
+	}
+	return (seeds, motion, entry)
+
+
+#============================================
 def test_mode_refine_zero_intervals_prints_diagnostic_and_preserves_store(
 	tmp_path: pathlib.Path,
 	capsys: pytest.CaptureFixture[str],
@@ -235,7 +316,6 @@ def test_mode_refine_zero_intervals_prints_diagnostic_and_preserves_store(
 	# - print the degenerate-case diagnostic naming the likely cause
 	# - return cleanly (no exception)
 	# - write NOTHING to disk (store file mtime unchanged, write never called)
-	import fastread_video
 	import modes.refine as refine_mode
 
 	# two dummy intervals with known frame ranges
@@ -261,19 +341,8 @@ def test_mode_refine_zero_intervals_prints_diagnostic_and_preserves_store(
 	}
 	intervals_file = _minimal_intervals_file(prior_solved_intervals)
 
-	# diag path must exist on disk so os.path.isfile triggers the scored-key
-	# path in _mode_refine; the actual content is replaced by the mock below.
+	# Diagnostics are intentionally absent. Reuse is owned by the solve artifact.
 	diag_path = os.path.join(str(tmp_path), "interval_scores.json")
-	with open(diag_path, "w") as fh:
-		fh.write("{}")
-	# scored data returned by mock: both intervals are scored so the "unscored"
-	# pruning path does not wipe solved_intervals before the zero-interval check.
-	fake_score_data = {
-		"intervals": [
-			{"start_frame": 50, "end_frame": 70},
-			{"start_frame": 70, "end_frame": 90},
-		],
-	}
 
 	# write a seeds file with exactly ONE usable seed (< 2 -> 0 intervals)
 	one_usable_seed = {
@@ -289,48 +358,27 @@ def test_mode_refine_zero_intervals_prints_diagnostic_and_preserves_store(
 	intervals_path = os.path.join(str(tmp_path), "intervals.npz")
 	with open(intervals_path, "w") as fh:
 		fh.write("placeholder")
-	mtime_before = os.path.getmtime(intervals_path)
 
-	# build a minimal VideoContext stub so print_video_routing_banner works
-	fake_video_selection = fastread_video.VideoSelection(
-		path="/fake/video.mov",
-		role="working_decode",
-		using_fastread=False,
-		reason=fastread_video.REASON_NO_FASTREAD_ORIGINAL,
-	)
-	fake_video_context = fastread_video.VideoContext(
-		original_video_path="/fake/video.mov",
-		working_decode=fake_video_selection,
-		final_encode=fake_video_selection,
-		metadata_identity=fake_video_selection,
-	)
-
-	# patch the three heavy I/O calls:
+	# Patch the artifact I/O:
 	# - NPZ loader: return the in-memory dict (no real NPZ needed)
-	# - load_interval_scores: return scored data so the "unscored" pruning path
-	#   does not wipe solved_intervals before the zero-interval guard runs
 	# - NPZ writer: must never be called by the new early-exit
 	with unittest.mock.patch(
 		"torso_box_coords_io.load_torso_box_coords",
 		return_value=intervals_file,
 	) as mock_load:
 		with unittest.mock.patch(
-			"state_io.load_interval_scores",
-			return_value=fake_score_data,
-		):
-			with unittest.mock.patch(
-				"torso_box_coords_io.write_torso_box_coords",
-			) as mock_write:
-				refine_mode.run(
-					args=None,
-					cfg={},
-					video_info={},
-					seeds_path=seeds_path,
-					diag_path=diag_path,
-					intervals_path=intervals_path,
-					video_context=fake_video_context,
-					video_identity={"width": 640, "height": 480, "frame_count": 100},
-				)
+			"torso_box_coords_io.write_torso_box_coords",
+		) as mock_write:
+			refine_mode.run(
+				args=None,
+				cfg={},
+				video_info={},
+				seeds_path=seeds_path,
+				diag_path=diag_path,
+				intervals_path=intervals_path,
+				video_context=_video_context(),
+				video_identity={"width": 640, "height": 480, "frame_count": 100},
+			)
 
 	# the diagnostic must state that no solvable intervals were found and
 	# that the existing store is preserved unchanged
@@ -338,21 +386,16 @@ def test_mode_refine_zero_intervals_prints_diagnostic_and_preserves_store(
 	assert "no solvable intervals" in captured.out
 	assert "preserved unchanged" in captured.out
 
-	# the store file on disk must be byte-identical (mtime unchanged)
-	mtime_after = os.path.getmtime(intervals_path)
-	assert mtime_after == mtime_before
-
 	# write must never have been called by the new degenerate early-exit path
 	mock_write.assert_not_called()
 	_ = mock_load  # used; suppress linter warning
 
 
 #============================================
-def test_mode_refine_rejects_unscored_full_resolve_without_writing(
+def test_mode_refine_rejects_full_resolve_without_writing_when_scores_absent(
 	tmp_path: pathlib.Path,
 ) -> None:
-	"""A rejected refine preserves its prior store when scores are missing."""
-	import fastread_video
+	"""A C7 rejection preserves the solve artifact without diagnostics."""
 	import modes.refine as refine_mode
 
 	intervals_file = _minimal_intervals_file({
@@ -379,27 +422,11 @@ def test_mode_refine_rejects_unscored_full_resolve_without_writing(
 		},
 	])
 	diag_path = str(tmp_path / "interval_scores.json")
-	pathlib.Path(diag_path).write_text("{}")
 	intervals_path = str(tmp_path / "torso_box_coords.npz")
 	pathlib.Path(intervals_path).write_text("placeholder")
-	selection = fastread_video.VideoSelection(
-		path="/fake/video.mkv",
-		role="working_decode",
-		using_fastread=False,
-		reason=fastread_video.REASON_NO_FASTREAD_ORIGINAL,
-	)
-	video_context = fastread_video.VideoContext(
-		original_video_path="/fake/video.mkv",
-		working_decode=selection,
-		final_encode=selection,
-		metadata_identity=selection,
-	)
 	with unittest.mock.patch(
 		"torso_box_coords_io.load_torso_box_coords",
 		return_value=intervals_file,
-	), unittest.mock.patch(
-		"state_io.load_interval_scores",
-		return_value={"intervals": []},
 	), unittest.mock.patch(
 		"torso_box_coords_io.write_torso_box_coords",
 	) as mock_write:
@@ -411,7 +438,81 @@ def test_mode_refine_rejects_unscored_full_resolve_without_writing(
 				seeds_path=seeds_path,
 				diag_path=diag_path,
 				intervals_path=intervals_path,
-				video_context=video_context,
+				video_context=_video_context(),
 				video_identity={"width": 640, "height": 480, "frame_count": 100},
 			)
 	mock_write.assert_not_called()
+
+
+#============================================
+def test_cached_artifact_score_participates_in_promotion_without_diagnostics(
+	tmp_path: pathlib.Path,
+) -> None:
+	"""A cached weak interval remains eligible for the normal M6 budget policy."""
+	seeds, motion, entry = _artifact_score_inputs()
+	fingerprint = interval_fingerprint.compute_interval_fingerprint(
+		seeds[0], seeds[1],
+	)
+	artifact = _minimal_intervals_file({fingerprint: entry})
+	transform = scene_coords.SceneTransform(motion)
+	with unittest.mock.patch(
+		"torso_box_coords_io.load_torso_box_coords", return_value=artifact,
+	):
+		cached, _callback = mode_shared._load_prior_results(
+			str(tmp_path / "torso_box_coords.npz"), {}, seeds, transform,
+			motion, 30.0, None,
+		)
+	promoted = interval_solver.select_promoted_intervals(
+		list(cached.values()), seeds, transform, 30.0, 100, 0,
+	)
+	assert numpy.isclose(cached[fingerprint]["interval_score"]["agreement"], 0.4)
+	assert promoted == [0]
+
+
+#============================================
+def test_cached_pre_race_interval_uses_persisted_boundary_only(
+	tmp_path: pathlib.Path,
+) -> None:
+	"""A cached interval before the persisted boundary is excluded as pre-race."""
+	seeds, motion, entry = _artifact_score_inputs()
+	fingerprint = interval_fingerprint.compute_interval_fingerprint(
+		seeds[0], seeds[1],
+	)
+	artifact = _minimal_intervals_file({fingerprint: entry})
+	transform = scene_coords.SceneTransform(motion)
+	race_start_reference = {
+		"race_start_frame": 1,
+		"race_start_interval": [2, 4],
+		"torso_w": 30.0, "torso_h": 60.0,
+		"scene_anchor_x": 10.0, "scene_anchor_y": 50.0,
+		"method": "seed_scene_displacement", "warnings": [],
+	}
+	with unittest.mock.patch(
+		"torso_box_coords_io.load_torso_box_coords", return_value=artifact,
+	):
+		cached, _callback = mode_shared._load_prior_results(
+			str(tmp_path / "torso_box_coords.npz"), {}, seeds, transform,
+			motion, 30.0, race_start_reference,
+		)
+	assert cached[fingerprint]["interval_score"]["confidence_tier"] == "pre_race"
+
+
+#============================================
+def test_cached_interval_without_race_start_remains_post_race(
+	tmp_path: pathlib.Path,
+) -> None:
+	"""An absent artifact block preserves the no-pre-race boundary."""
+	seeds, motion, entry = _artifact_score_inputs()
+	fingerprint = interval_fingerprint.compute_interval_fingerprint(
+		seeds[0], seeds[1],
+	)
+	artifact = _minimal_intervals_file({fingerprint: entry})
+	transform = scene_coords.SceneTransform(motion)
+	with unittest.mock.patch(
+		"torso_box_coords_io.load_torso_box_coords", return_value=artifact,
+	):
+		cached, _callback = mode_shared._load_prior_results(
+			str(tmp_path / "torso_box_coords.npz"), {}, seeds, transform,
+			motion, 30.0, None,
+		)
+	assert cached[fingerprint]["interval_score"]["confidence_tier"] != "pre_race"

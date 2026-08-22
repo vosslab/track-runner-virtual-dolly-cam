@@ -29,10 +29,10 @@ These three terms are the canonical vocabulary for per-interval geometry.
 Use them in prose and in new identifiers.
 
 - **forward interval path** -- the per-pass solved trajectory the FWD
-  propagator emits for one seed-to-seed interval. Pure Hermite on Stage-3 and
+  propagator emits for one seed-to-seed interval. Linear/log-linear on Stage 3 and
   on non-promoted intervals; the windowed walker (`track_runner/blob_walk/`)
   produces a blob-coupled variant by default on Stage-4-promoted intervals (the
-  `blob_pass` seam is True for that path), with a pure-stall Hermite
+  `blob_pass` seam is True for that path), with a pure-stall analytical
   fallback. Local to that interval, local to that pass.
 - **backward interval path** -- the per-pass solved trajectory the BWD
   propagator emits for the same interval. Independent of the forward
@@ -46,13 +46,13 @@ Use them in prose and in new identifiers.
 
 Supporting terms:
 
-- **`raw_pred`** -- the pair-local Hermite-only fallback prediction inside one
+- **`raw_pred`** -- the pair-local linear/log-linear fallback prediction inside one
   pass. The Stage-4 walker does not read it; it gathers image evidence from
   its endpoint seed and candidate lattice.
 - **agreement-debug summary** -- optional per-interval FWD/BWD agreement
-  measurements emitted to `<video>.track_runner.agreement_debug.json` by a
-  debug solve. It supports investigation only and is never an input to solve,
-  refine, target, or scoring.
+  measurements and confidence percentiles emitted to
+  `<video>.track_runner.agreement_debug.json` by a debug solve. It supports
+  investigation only and is never an input to solve, refine, target, or scoring.
 
 Why "interval path" and not "track": "track" reads as whole-video and
 collides with the track-and-field source material. Each of these three
@@ -63,43 +63,49 @@ honest name.
 
 Every seed-to-seed interval is solved by TWO independent propagations: a
 forward (FWD) pass that starts at the left seed and a backward (BWD) pass
-that starts at the right seed. Each pass builds a pair-local Hermite fallback
+that starts at the right seed. Each pass builds the pair-local analytical fallback
 from the same two endpoint boxes and keeps its own confidence anchor. By
-default the propagator emits a pure-Hermite interval path on Stage 3 and on
-non-promoted intervals. On Stage-4-promoted intervals (low/fair confidence,
-reader present) the windowed Viterbi walker (`track_runner/blob_walk/`) runs by
-default and produces a blob-coupled interval path; the `blob_pass` seam is True
+default the propagator emits a linear/log-linear interval path on Stage 3 and on
+non-promoted intervals. On positive-risk Stage-4-promoted intervals (reader
+present and within the frame budget), the windowed Viterbi walker
+(`track_runner/blob_walk/`) runs by default and produces a blob-coupled interval
+path; the `blob_pass` seam is True
 for that path. A pass with `post_seed_accepted == 0` (no accepted frame beyond
 the seed, covering both zero-accept stall and seed-only stall) falls back to
-its Hermite path so default-on stays never-worse-than-Hermite; the gate reads
+its analytical path so default-on stays never-worse-than-analytical; the gate reads
 `WalkCoverage.post_seed_accepted` and the seed-frame stall root cause remains
-open. The resulting
+open. If the optional walker paths cannot form a transition within the C2 step
+cap, the interval likewise retains its valid Stage-3 analytical result. The resulting
 forward interval path and backward interval path are ONLY combined at two
 clearly separated points: by
 [interval_solver.py](../track_runner/interval_solver.py) to
 produce the blended interval path for output (`blend_paths`), and by
-[scoring.py](../track_runner/scoring.py) for a diagnostic
-agreement metric computed on the two raw pass paths. Raw disagreement
-between the passes is the system's primary uncertainty signal; anything
-that narrows it without evidence is a regression.
+[scoring.py](../track_runner/scoring.py) for a diagnostic agreement metric
+computed on the two raw pass paths. Stage-3 geometry is identical in both
+directions, so its agreement and stored confidence are structurally 1.0 rather
+than evidence that the interpolation is correct. After walker promotion, raw
+FWD/BWD disagreement is again the primary uncertainty signal and is persisted
+as `conf`; anything that narrows those independent walker paths without evidence
+is a regression.
 
 ## Why two passes
 
-- Each Hermite fallback uses only its two endpoint seed boxes. The endpoint
-  chord supplies both derivatives, which is linear for center position and
-  log-linear for size. No neighboring seed supplies an inferred slope. See
+- Each analytical fallback uses only its two endpoint seed boxes. Centers are
+  interpolated linearly and torso dimensions log-linearly; no neighboring seed
+  supplies an inferred slope. See
   `fit_interval_curves` in [velocity_model.py](../track_runner/velocity_model.py).
 - The independent passes use separate confidence anchors and, when promoted,
   separate image-derived walker paths. Walker disagreement under occlusion or
   identity ambiguity is the uncertainty signal.
-- Without both passes there is no cheap per-interval uncertainty probe
-  and the confidence tier in [scoring.py](../track_runner/scoring.py)
-  collapses to a guess.
+- Stage-3 model risk comes from the retained motion-quality, occlusion, size,
+  duration, and chord-span predicates, not from its structural agreement.
+  Independent passes remain necessary on promoted intervals so the walker can
+  produce the raw disagreement carried by `conf`.
 
 ## Core invariants
 
 - **Walker decisions use image evidence only.** The windowed walker does not
-  consume the Hermite fallback or a selected-path position. A cost term that
+  consume the analytical fallback or a selected-path position. A cost term that
   reads a previous accepted blob re-introduces cross-frame state and fails
   review.
 - **No cross-pass blob decisions are stored anywhere.** The residual
@@ -156,32 +162,32 @@ fit_interval_curves  (velocity_model.py)
   |       v
   |     precomputed_store -> consumed by both passes below
   |
-  +---- FWD Hermite slopes (backward regression at left seed)
+  +---- FWD linear/log-linear interpolation (left confidence anchor)
   |       |
   |       v
-  |    _compute_raw_pred_forward  -> raw[] (frozen, tuple-valued)
+  |    _compute_raw_pred -> raw[] (frozen, tuple-valued)
   |       |
   |       v
-  |    forward_path (pure Hermite by default)
+  |    forward_path (analytical Stage-3 result)
   |       |  [blob_pass=True: Stage-4/5 promoted intervals]
   |       v
   |    windowed Viterbi walker (track_runner/blob_walk/)
-  |       reads raw[] + residual_motion.observe_blob_at
+  |       reads endpoint seeds + residual_motion.observe_blob_at
   |       |
   |       v
   |    forward_path (blob-coupled, default on promoted intervals)
   |
-  +---- BWD Hermite slopes (forward regression at right seed)
+  +---- BWD linear/log-linear interpolation (right confidence anchor)
           |
           v
-       _compute_raw_pred_backward -> raw[] (frozen)
+       _compute_raw_pred -> raw[] (frozen)
           |
           v
-       backward_path (pure Hermite by default)
+       backward_path (analytical Stage-3 result)
           |  [blob_pass=True: Stage-4/5 promoted intervals]
           v
        windowed Viterbi walker (track_runner/blob_walk/)
-          reads raw[] + residual_motion.observe_blob_at
+          reads endpoint seeds + residual_motion.observe_blob_at
           |
           v
        backward_path (blob-coupled, default on promoted intervals)
@@ -189,8 +195,10 @@ fit_interval_curves  (velocity_model.py)
 forward_path, backward_path
   |           |
   |           +--> scoring.compute_agreement()          [DIAGNOSTIC]
-  |           |    (raw-pass agreement drives confidence_tier,
-  |           |     review severity, seed recommendations)
+  |           |    (Stage 3 = 1.0 structurally; post-walker is `conf`)
+  |           |
+  |           +--> scoring.compute_promotion_risk()     [ALLOCATION]
+  |                (cheap-model predicates drive promotion and target order)
   |           |
   v           v
 blend_paths(forward_path, backward_path)                [OUTPUT]
@@ -215,7 +223,7 @@ is documented in
 `TR_MOTION_CUE_HEAT_MAP.md`.
 
 On Stage 3 and on non-promoted intervals, the propagator does NOT call
-`observe_blob_at`. It produces a pure-Hermite `raw_pred` trajectory and returns
+`observe_blob_at`. It produces a linear/log-linear `raw_pred` trajectory and returns
 it as the interval path.
 
 On Stage-4-promoted intervals the windowed Viterbi walker
@@ -224,8 +232,8 @@ The walker calls `observe_blob_at` at each
 non-endpoint frame, retrieves raw image candidates from the trace, and
 runs a window-level Viterbi DP to select a globally consistent path. A pass with
 `post_seed_accepted == 0` (no accepted frame beyond the seed, covering both
-zero-accept stall and seed-only stall) falls back to its Hermite path, keeping
-default-on never-worse-than-Hermite; the gate reads `WalkCoverage.post_seed_accepted`.
+zero-accept stall and seed-only stall) falls back to its analytical path, keeping
+default-on never-worse-than-analytical; the gate reads `WalkCoverage.post_seed_accepted`.
 Viterbi weight tuning and the promoted-only A/B shipped 2026-06-12 (pairwise
 velocity-delta cost model); only the seed-frame stall root cause
 remains open. Full
@@ -249,8 +257,7 @@ Reject these at code review:
 - Writing accepted-blob positions, filtered blobs, or walker decisions into
   `residual_cache`. The cache is IMAGE DATA ONLY.
 - Passing `blended_path` (the blended interval path) or the stitched
-  trajectory into `compute_agreement`,
-  `compute_meeting_point_errors`, or any severity computation in
+  trajectory into `compute_agreement` or any severity computation in
   [review.py](../track_runner/review.py).
 - Reintroducing per-pass running state: any variable named `last_*`,
   `prev_accepted_*`, `miss_count`, `chain_*`, or any list that grows as
@@ -263,8 +270,8 @@ Reject these at code review:
 
 ## Testing strategy
 
-Core propagator tests live in `tests/test_tr_velocity_model.py`. These
-lock the pure-Hermite path and verify that `raw_pred` is frozen and that
+Core propagator tests live in `tests/solver/test_tr_velocity_model.py`. These
+lock the analytical path and verify that `raw_pred` is frozen and that
 propagation is independent across FWD and BWD.
 
 The `observe_blob_at` / `BlobObservation` contract tests
@@ -279,15 +286,15 @@ walker buffer. These tests apply to Stage-4/5 dispatches (`blob_pass=True`).
 ## Historical context
 
 Through early 2026 the solver ran motion-cue fusion as a separate stage
-after propagation; the propagator itself used pure Hermite. That stage
+after propagation; the propagator was then described as pure Hermite. That stage
 carried chained, cross-frame state and proved impossible to reason
 about. On 2026-04-17 that stage was removed (see [CHANGELOG.md](CHANGELOG.md)).
 A subsequent per-frame blob snap layer inside the propagator was introduced
 and later removed in favor of the windowed Viterbi walker
-(`track_runner/blob_walk/`). The propagator is pure Hermite on Stage 3 and on
+(`track_runner/blob_walk/`). The propagator is linear/log-linear on Stage 3 and on
 non-promoted intervals; the walker is the designated blob consumer and now runs
 by default on Stage-4-promoted intervals (`blob_pass=True` for that path),
-with a pure-stall Hermite fallback.
+with a pure-stall analytical fallback.
 
 ## Related docs
 

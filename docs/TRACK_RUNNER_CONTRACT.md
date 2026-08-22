@@ -67,7 +67,7 @@ range reflects human annotation noise, not runner motion.
   scene coordinates), not re-estimated per frame.
 - Code that treats pre-race seeds as independent measurements of a moving
   target violates this rule.
-- Torso-box dimensions for frames in `[TRACK_RUNNER_V3_FINDINGS.md](archive/TRACK_RUNNER_V3_FINDINGS.md).
+- See torso-box dimension specs for frames in `[TRACK_RUNNER_V3_FINDINGS.md](archive/TRACK_RUNNER_V3_FINDINGS.md).
 - The current active machine-evidence set lives in
   [TRACK_RUNNER_DESIGN.md](TRACK_RUNNER_DESIGN.md) and may evolve. This
   clause only forbids re-introducing the unreliable cues.

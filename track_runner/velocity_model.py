@@ -2,8 +2,8 @@
 
 An interval derives geometry only from its two endpoint seeds.  Human boxes
 measure position and size at those frames; they do not measure velocity or
-size derivatives.  The endpoint chord is used at both Hermite ends, which is
-equivalent to linear center interpolation and log-linear size interpolation.
+size derivatives.  Centers use linear interpolation and dimensions use
+log-linear interpolation.
 FWD and BWD still build independent raw passes by using separate confidence
 anchors; the optional walker then gathers image evidence independently.
 """
@@ -20,27 +20,6 @@ RAW_PRED_START_CONFIDENCE = 1.0
 RAW_PRED_FORWARD = "forward"
 RAW_PRED_BACKWARD = "backward"
 _RAW_PRED_DIRECTIONS = frozenset((RAW_PRED_FORWARD, RAW_PRED_BACKWARD))
-
-
-#============================================
-def hermite_interpolate(
-	t: float,
-	p0: float,
-	p1: float,
-	m0: float,
-	m1: float,
-) -> float:
-	"""Return cubic Hermite interpolation at normalized position ``t``.
-
-	``m0`` and ``m1`` are derivatives scaled to the interval's unit domain.
-	Pair-local callers pass the endpoint chord for both values.
-	"""
-	h00 = (1.0 + 2.0 * t) * (1.0 - t) ** 2
-	h10 = t * (1.0 - t) ** 2
-	h01 = t * t * (3.0 - 2.0 * t)
-	h11 = t * t * (t - 1.0)
-	value = h00 * p0 + h10 * m0 + h01 * p1 + h11 * m1
-	return value
 
 
 #============================================
@@ -87,9 +66,42 @@ def fit_interval_curves(
 
 
 #============================================
-def _log_size(size: float) -> float:
-	"""Return a finite log-size for interpolation of positive box dimensions."""
+def log_size(size: float) -> float:
+	"""Return the finite log-size used by pair-local interpolation.
+
+	The physical-size parity domain is ``1e-6 < size < exp(100)``.  Values at
+	or below the lower bound retain the existing zero-log fallback; the caller
+	keeps raw seed dimensions exact at both interval endpoints.
+	"""
 	return math.log(size) if size > 1e-6 else 0.0
+
+
+#============================================
+def interpolate_size(
+	left_size: float,
+	right_size: float,
+	t: float,
+	direction: str,
+) -> float:
+	"""Return one pair-local dimension under the canonical size policy.
+
+	Seed endpoints remain exact for every input.  Interior values use log-linear
+	interpolation.  Tiny dimensions retain the zero-log fallback, while values
+	whose interpolated log reaches 100 retain the direction anchor rather than
+	overflowing an exponential.
+	"""
+	if direction not in _RAW_PRED_DIRECTIONS:
+		raise ValueError(f"Unknown raw prediction direction: {direction}")
+	if t == 0.0:
+		return left_size
+	if t == 1.0:
+		return right_size
+	left_log_size = log_size(left_size)
+	right_log_size = log_size(right_size)
+	interpolated_log_size = left_log_size + t * (right_log_size - left_log_size)
+	if interpolated_log_size < 100.0:
+		return math.exp(interpolated_log_size)
+	return left_size if direction == RAW_PRED_FORWARD else right_size
 
 
 #============================================
@@ -98,7 +110,13 @@ def _compute_raw_pred(
 	scene_transform: object,
 	direction: str,
 ) -> list:
-	"""Build one chronological raw pass from pair-local endpoint geometry."""
+	"""Build one chronological raw pass from pair-local endpoint geometry.
+
+	Centers are computed directly with linear interpolation and dimensions with
+	log-linear interpolation. Degenerate and overflow-risk dimensions retain
+	exact raw endpoint boxes; overlarge interior dimensions use the established
+	direction-anchored fallback.
+	"""
 	if direction not in _RAW_PRED_DIRECTIONS:
 		raise ValueError(f"Unknown raw prediction direction: {direction}")
 	start_frame = interval_curves["start_frame"]
@@ -108,33 +126,13 @@ def _compute_raw_pred(
 	left_sw, left_sh = interval_curves["left_size"]
 	right_sw, right_sh = interval_curves["right_size"]
 	interval_length = float(end_frame - start_frame)
-	chord_x = (right_sx - left_sx) / interval_length
-	chord_y = (right_sy - left_sy) / interval_length
-	log_left_w, log_right_w = _log_size(left_sw), _log_size(right_sw)
-	log_left_h, log_right_h = _log_size(left_sh), _log_size(right_sh)
-	chord_log_w = (log_right_w - log_left_w) / interval_length
-	chord_log_h = (log_right_h - log_left_h) / interval_length
-	fallback_w = left_sw if direction == RAW_PRED_FORWARD else right_sw
-	fallback_h = left_sh if direction == RAW_PRED_FORWARD else right_sh
 	raw = []
 	for frame_index in range(start_frame, end_frame + 1):
 		t = (frame_index - start_frame) / interval_length
-		scene_cx = hermite_interpolate(
-			t, left_sx, right_sx, chord_x * interval_length, chord_x * interval_length,
-		)
-		scene_cy = hermite_interpolate(
-			t, left_sy, right_sy, chord_y * interval_length, chord_y * interval_length,
-		)
-		log_w = hermite_interpolate(
-			t, log_left_w, log_right_w,
-			chord_log_w * interval_length, chord_log_w * interval_length,
-		)
-		log_h = hermite_interpolate(
-			t, log_left_h, log_right_h,
-			chord_log_h * interval_length, chord_log_h * interval_length,
-		)
-		scene_w = math.exp(log_w) if log_w < 100.0 else fallback_w
-		scene_h = math.exp(log_h) if log_h < 100.0 else fallback_h
+		scene_cx = left_sx + t * (right_sx - left_sx)
+		scene_cy = left_sy + t * (right_sy - left_sy)
+		scene_w = interpolate_size(left_sw, right_sw, t, direction)
+		scene_h = interpolate_size(left_sh, right_sh, t, direction)
 		pixel_cx, pixel_cy, pixel_w, pixel_h = scene_transform.scene_box_to_pixel(
 			frame_index, scene_cx, scene_cy, scene_w, scene_h,
 		)

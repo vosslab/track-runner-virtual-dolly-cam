@@ -2,7 +2,7 @@
 
 solve_interval_analytical takes a `blob_pass` flag (default True for the
 Stage-4 promoted path). When off, the FWD/BWD interval paths come from the
-pure-Hermite propagators (velocity_model.propagate_forward/backward_analytical).
+pure analytical propagators (velocity_model.propagate_forward/backward_analytical).
 When on (and a reader is present), they come from the windowed walker adapter
 (walker_bundle.walk_bundle_to_path_with_coverage) instead.
 
@@ -18,6 +18,7 @@ import pytest
 import common_tools.frame_reader as frame_reader
 
 # local repo modules (track_runner/ is on sys.path via tests/conftest.py)
+import interval_analytical
 import interval_solver
 import velocity_model
 import walker_bundle
@@ -67,12 +68,12 @@ def _stub_heavy(monkeypatch: pytest.MonkeyPatch, calls: list[str]) -> None:
 	)
 
 	def fake_forward(*a: object, **k: object) -> list[dict]:
-		calls.append("hermite_forward")
+		calls.append("analytical_forward")
 		return [{"cx": 0.0, "cy": 0.0, "w": 1.0, "h": 1.0, "conf": 1.0,
 			"source": "propagated"}]
 
 	def fake_backward(*a: object, **k: object) -> list[dict]:
-		calls.append("hermite_backward")
+		calls.append("analytical_backward")
 		return [{"cx": 0.0, "cy": 0.0, "w": 1.0, "h": 1.0, "conf": 1.0,
 			"source": "propagated"}]
 
@@ -96,7 +97,7 @@ def _stub_heavy(monkeypatch: pytest.MonkeyPatch, calls: list[str]) -> None:
 	monkeypatch.setattr(
 		walker_bundle, "walk_bundle_to_path_with_coverage", fake_adapter,
 	)
-	monkeypatch.setattr(interval_solver, "blend_paths", lambda f, b, **kwargs: list(f))
+	monkeypatch.setattr(interval_analytical, "blend_paths", lambda f, b, **kwargs: list(f))
 	monkeypatch.setattr(
 		interval_solver.scoring, "score_interval_analytical",
 		lambda *a, **k: {"confidence_tier": "low"},
@@ -104,8 +105,8 @@ def _stub_heavy(monkeypatch: pytest.MonkeyPatch, calls: list[str]) -> None:
 
 
 #============================================
-def test_flag_off_takes_hermite_propagator_path(monkeypatch: pytest.MonkeyPatch) -> None:
-	"""Default (blob_pass off): the pure-Hermite propagators produce the paths."""
+def test_flag_off_takes_analytical_path(monkeypatch: pytest.MonkeyPatch) -> None:
+	"""Default (blob_pass off): the analytical propagators produce the paths."""
 	calls = []
 	_stub_heavy(monkeypatch, calls)
 
@@ -119,9 +120,9 @@ def test_flag_off_takes_hermite_propagator_path(monkeypatch: pytest.MonkeyPatch)
 		blob_pass=False,
 	)
 
-	# the Hermite propagators ran; the walker adapter did not
-	assert "hermite_forward" in calls
-	assert "hermite_backward" in calls
+	# the analytical propagators ran; the walker adapter did not
+	assert "analytical_forward" in calls
+	assert "analytical_backward" in calls
 	assert "walker" not in calls
 
 
@@ -141,7 +142,7 @@ def test_flag_on_takes_walker_adapter_path(monkeypatch: pytest.MonkeyPatch) -> N
 		blob_pass=True,
 	)
 
-	# the walker adapter ran (twice: FWD + BWD); the Hermite propagators did not
+	# the walker adapter ran (twice: FWD + BWD); analytical propagators did not
 	assert calls.count("walker") == 2
-	assert "hermite_forward" not in calls
-	assert "hermite_backward" not in calls
+	assert "analytical_forward" not in calls
+	assert "analytical_backward" not in calls

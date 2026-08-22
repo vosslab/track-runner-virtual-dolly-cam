@@ -6,11 +6,13 @@ import time
 
 import camera_motion
 import common_tools.frame_reader
+import interval_fingerprint
 import interval_solver
 import key_input
 import off_frame_geometry
 import race_start
 import review
+import scoring
 import scene_coords
 import solver_workers
 import state_io
@@ -22,7 +24,7 @@ import modes.seed_validation as seed_validation
 def build_nif_crop_inputs(
 	trajectory: list,
 	seeds: list,
-	diagnostics: dict,
+	race_start_reference: dict | None,
 	video_info: dict,
 ) -> tuple:
 	"""Return crop-only NIF anchors without changing trajectory truth.
@@ -36,7 +38,8 @@ def build_nif_crop_inputs(
 	Args:
 		trajectory: Reconstructed, seed-erased tracking states.
 		seeds: Human-authored seed records.
-		diagnostics: Solve diagnostics, optionally with pre-race reference.
+		race_start_reference: Solve-artifact race-start block, if Stage 2
+			detected a pre-race phase.
 		video_info: Source video metadata with width and height.
 
 	Returns:
@@ -51,10 +54,9 @@ def build_nif_crop_inputs(
 	if not seeds:
 		return (crop_trajectory, nif_frames)
 
-	pre_race_ref = diagnostics.get("pre_race_reference")
 	race_start_frame = 0
-	if pre_race_ref is not None:
-		race_start_frame = int(pre_race_ref["race_start_frame"])
+	if race_start_reference:
+		race_start_frame = int(race_start_reference["race_start_frame"])
 	frame_size = (video_info["width"], video_info["height"])
 	solved_trajectory = {}
 	for frame_index, state in enumerate(trajectory):
@@ -115,53 +117,6 @@ def _parse_time_range(time_range_str: str | None) -> tuple | None:
 	# parse end, allowing empty string for open-ended end
 	end_s = float(parts[1]) if parts[1].strip() else None
 	return (start_s, end_s)
-
-
-def _ensure_target_diagnostics(
-	args: argparse.Namespace,
-	cfg: dict,
-	video_info: dict,
-	seeds: list,
-	diag_path: str,
-	intervals_path: str,
-) -> dict:
-	"""Return complete diagnostics usable by target mode.
-
-	Target mode depends on interval diagnostics to rank weak spans and
-	build prediction overlays. If the diagnostics file is missing or
-	empty, target mode reports that solve must regenerate it first.
-
-	`state_io.load_interval_scores` admits only complete current records. Target
-	therefore never filters or partially reuses stale interval scores.
-
-	Args:
-		args: Parsed argparse namespace.
-		cfg: Configuration dict.
-		video_info: Video metadata dict.
-		seeds: Loaded seed list.
-		diag_path: Path to diagnostics JSON file.
-		intervals_path: Path to solved torso-coordinate NPZ file.
-
-	Returns:
-		Diagnostics dict with complete current interval confidence data.
-	"""
-	need_solve = False
-	reason = None
-	if not os.path.isfile(diag_path):
-		need_solve = True
-		reason = "missing diagnostics"
-	else:
-		diag_data = state_io.load_interval_scores(diag_path)
-		if diag_data.get("intervals"):
-			return diag_data
-		need_solve = True
-		reason = "diagnostics file has no intervals"
-
-	if need_solve:
-		raise RuntimeError(
-			f"target mode: {reason}. Run 'solve' first, then re-run target."
-		)
-	return diag_data
 
 
 #============================================
@@ -227,26 +182,29 @@ def _print_quality_summary(diagnostics: dict, fps: float) -> None:
 #============================================
 def _load_prior_results(
 	intervals_path: str,
-	diag_path: str,
 	video_identity: dict,
+	seeds: list,
+	scene_transform: object,
+	motion_track: object,
+	fps: float,
+	race_start_reference: dict | None,
 ) -> tuple:
-	"""Load previously solved intervals and build a write-through callback.
+	"""Load cached artifact intervals and reconstruct their canonical scores.
 
-	Geometry (forward_path, backward_path, blended_path) comes from
-	`torso_box_coords.npz`. Scoring (interval_score) comes from
-	`interval_scores.json`. This helper merges the two so every prior
-	interval returned carries both its trajectory AND its score, matching
-	the shape `write_solver_interval_scores` expects when it later rewrites
-	the scoring file.
-
-	Scores are matched to intervals by (start_frame, end_frame) because
-	that pair is what `interval_scores.json` stores. A prior interval
-	without a matching score entry is discarded so the next solve can
-	regenerate both its geometry and score together.
+	Manifest fingerprints in the schema-15 torso-coordinate artifact are the
+	only reuse identity.  The persisted geometry, confidence, human seeds,
+	camera motion, and video metadata provide every input required by the
+	scoring owner; diagnostics remain a reporting sidecar and are not read.
 
 	Args:
 		intervals_path: Path to the torso_box_coords NPZ (unified artifact).
-		diag_path: Path to the interval_scores JSON.
+		video_identity: Identity of the source video that owns this artifact.
+		seeds: Current human seed records.
+		scene_transform: Current transform from the durable camera-motion artifact.
+		motion_track: Current durable camera-motion track.
+		fps: Source-video frame rate.
+		race_start_reference: Persisted race-start mapping, or None when no
+			pre-race phase exists.
 
 	Returns:
 		Tuple (prior_results_dict, on_interval_solved_callback).
@@ -255,32 +213,35 @@ def _load_prior_results(
 	intervals_file["video_identity"] = video_identity
 	intervals_file["solve_complete"] = False
 	solved = intervals_file.get("solved_intervals", {})
-	# merge prior interval_score back onto each geometry entry.
-	# key on (start_frame, end_frame) because interval_scores.json does
-	# not carry fingerprints.
-	prior_scores = {}
-	if os.path.isfile(diag_path):
-		diag = state_io.load_interval_scores(diag_path)
-		for iv in diag.get("intervals", []):
-			key = (int(iv["start_frame"]), int(iv["end_frame"]))
-			prior_scores[key] = iv.get("interval_score", {})
-	# Geometry without a matching score is unusable downstream:
-	# Stage 4 promotion reads interval_score["confidence_tier"] and
-	# would KeyError on an empty score dict. Drop such entries so the
-	# solver re-runs them and re-populates scores from scratch.
-	stale_fingerprints = []
-	for fingerprint, entry in solved.items():
-		key = (int(entry["start_frame"]), int(entry["end_frame"]))
-		score = prior_scores.get(key, {})
-		if not score:
-			stale_fingerprints.append(fingerprint)
+	usable_seeds = interval_fingerprint.filter_usable_seeds_sorted(seeds)
+	seed_pairs = {}
+	for pair_idx in range(len(usable_seeds) - 1):
+		seed_start = usable_seeds[pair_idx]
+		seed_end = usable_seeds[pair_idx + 1]
+		seed_pairs[(
+			int(seed_start["frame_index"]), int(seed_end["frame_index"]),
+		)] = (seed_start, seed_end)
+
+	pre_race_end_frame = None
+	if race_start_reference is not None:
+		pre_race_end_frame = int(race_start_reference["race_start_interval"][0])
+	for entry in solved.values():
+		start_frame = int(entry["start_frame"])
+		end_frame = int(entry["end_frame"])
+		seed_pair = seed_pairs.get((start_frame, end_frame))
+		if seed_pair is None:
+			# The manifest is allowed to retain an orphan until the caller's
+			# work plan prunes it.  It cannot be a cache hit for current seeds,
+			# so it needs no reconstructed score.
 			continue
-		entry["interval_score"] = score
-	for fingerprint in stale_fingerprints:
-		del solved[fingerprint]
-	if stale_fingerprints:
-		print(f"  store: dropped {len(stale_fingerprints)} interval(s) "
-			f"with missing scores; will re-solve")
+		if pre_race_end_frame is not None and end_frame <= pre_race_end_frame:
+			entry["interval_score"] = scoring.score_pre_race_artifact_interval()
+			continue
+		seed_start, seed_end = seed_pair
+		entry["interval_score"] = scoring.score_interval_from_artifact(
+			seed_start, seed_end, seeds, scene_transform, motion_track,
+			entry, fps,
+		)
 
 	def _on_interval_solved(fingerprint: str, result: dict) -> None:
 		"""Persist a newly solved interval to disk."""
@@ -616,9 +577,13 @@ def _run_solve(
 		f"({len(usable_seeds)} usable seeds, {num_workers} workers)")
 	print("  (press Q to quit, P to pause)")
 	t_solve_start = time.time()
-	prior_ivs, on_solved_cb = _load_prior_results(
-		intervals_path, diag_path, video_identity,
-	)
+	persisted_race_start = None
+	if is_refine:
+		refine_artifact = torso_box_coords_io.load_torso_box_coords(intervals_path)
+		if "race_start" in refine_artifact:
+			persisted_race_start = race_start.load_race_start_from_artifact(
+				refine_artifact,
+			)
 
 	# build solver kwargs.  When neither --bin nor --auto-bin is given,
 	# the no-flag default routes source WIDTH through the shared floor
@@ -642,8 +607,6 @@ def _run_solve(
 	solve_kwargs = {
 		"num_workers": num_workers,
 		"debug": args.debug,
-		"prior_solved_intervals": prior_ivs,
-		"on_interval_solved": on_solved_cb,
 		"hermite_only": args.hermite_only,
 		"full_solve": args.full_solve,
 		"upgrade": getattr(args, "upgrade", False),
@@ -702,21 +665,28 @@ def _run_solve(
 	t_stage1_elapsed = time.time() - t_stage1_start
 	print(f"  (Stage 1 complete, {t_stage1_elapsed:.1f}s)")
 
-	# Stage 2: race-start interval identification. Locate the seed pair
-	# spanning race_start_frame so Stage 3 can classify intervals as
-	# pre-race vs post-race up front. Returns None when no pre-race phase
-	# is identifiable; downstream code treats that as "skip pre-race
-	# synthesis."
+	# Stage 2: a fresh solve identifies race start from current seeds. Refine
+	# preserves the solve artifact's durable result (or its deliberate absence),
+	# rather than detecting a new boundary from changed seed geometry.
 	print()
 	print("Stage 2: race-start identification")
 	t_stage2_start = time.time()
-	race_start_interval = race_start.locate_race_start_interval(
-		seeds, scene_transform, fps,
-	)
+	pre_race_reference = None
+	if is_refine:
+		pre_race_reference = persisted_race_start
+		if pre_race_reference is None:
+			race_start_interval = None
+		else:
+			race_start_interval = tuple(pre_race_reference["race_start_interval"])
+	else:
+		race_start_interval = race_start.locate_race_start_interval(
+			seeds, scene_transform, fps,
+		)
 	solve_kwargs["race_start_interval"] = race_start_interval
 	t_stage2_elapsed = time.time() - t_stage2_start
 	if race_start_interval is None:
-		print(f"  (no pre-race phase detected, {t_stage2_elapsed:.1f}s)")
+		phase_message = "preserved" if is_refine else "detected"
+		print(f"  (no pre-race phase {phase_message}, {t_stage2_elapsed:.1f}s)")
 	else:
 		rs_a, rs_b = race_start_interval
 		print(
@@ -724,15 +694,17 @@ def _run_solve(
 			f"({t_stage2_elapsed:.1f}s)"
 		)
 
-		# Compute race-start frame and pre-race reference immediately after Stage 2
-		# (before Stage 3 dispatches). These use only Stage 2 output.
-		final_race_start_frame = race_start.pick_race_start_frame_midpoint(
-			rs_a, rs_b,
-		)
-		pre_race_reference = race_start.compute_pre_race_reference(
-			seeds, final_race_start_frame, scene_transform,
-			race_start_interval=race_start_interval
-		)
+		if is_refine:
+			final_race_start_frame = int(pre_race_reference["race_start_frame"])
+		else:
+			# Fresh solve computes the durable reference immediately after Stage 2.
+			final_race_start_frame = race_start.pick_race_start_frame_midpoint(
+				rs_a, rs_b,
+			)
+			pre_race_reference = race_start.compute_pre_race_reference(
+				seeds, final_race_start_frame, scene_transform,
+				race_start_interval=race_start_interval
+			)
 		print()
 		print("RACE-START DETECTION")
 		print(f"  race_start_frame: {final_race_start_frame}")
@@ -741,9 +713,19 @@ def _run_solve(
 		# Store in solve_kwargs so the early pre-race fast-path can reuse it
 		solve_kwargs["pre_race_reference"] = pre_race_reference
 
-	# Stage 3: Hermite-only analytical solve on all post-race intervals
+	# Cached intervals are reconstructed from the same durable inputs used by
+	# scoring, after Stage 1 has supplied the current camera transform and
+	# Stage 2 has established the applicable race-start boundary.
+	prior_ivs, on_solved_cb = _load_prior_results(
+		intervals_path, video_identity, seeds, scene_transform, motion_track,
+		fps, pre_race_reference,
+	)
+	solve_kwargs["prior_solved_intervals"] = prior_ivs
+	solve_kwargs["on_interval_solved"] = on_solved_cb
+
+	# Stage 3: pair-local linear/log-linear solve on all post-race intervals
 	print()
-	print("Stage 3: Hermite pass (analytical solver)")
+	print("Stage 3: analytical pass (linear/log-linear)")
 	t_stage3_start = time.time()
 
 	# set up keyboard controls and signal handler
@@ -777,7 +759,8 @@ def _run_solve(
 	print()
 	print(f"Stage 3 complete ({t_stage3_elapsed:.1f}s)")
 	diagnostics["fps"] = fps
-	# Record the solve mode: default (1-4), hermite_only (1-3), or full (1-5)
+	# Record the solve mode. The hermite_only value is retained for artifact
+	# and CLI compatibility even though Stage 3 is now linear/log-linear.
 	hermite_only = solve_kwargs["hermite_only"]
 	full_solve = solve_kwargs["full_solve"]
 	if hermite_only:
@@ -788,7 +771,7 @@ def _run_solve(
 		solve_mode = "default"
 	diagnostics["solve_mode"] = solve_mode
 	# solve_stage reflects the final stage completed in this run.
-	# hermite_only stops after Stage 3; default stops after Stage 4;
+	# The legacy-named hermite_only mode stops after Stage 3; default stops after Stage 4;
 	# full continues through Stage 5. For consistency, record the stage
 	# that completed, not hardcoded "hermite".
 	if hermite_only:
@@ -808,6 +791,12 @@ def _run_solve(
 		torso_box_coords_data["solve_complete"] = True
 		print(f"  solve complete ({t_solve_elapsed:.1f}s)")
 	torso_box_coords_data["video_identity"] = video_identity
+	pre_race_reference = diagnostics.get("pre_race_reference")
+	if is_refine and persisted_race_start is not None:
+		# Refine retains the artifact's already-confirmed C4 boundary exactly.
+		pre_race_reference = persisted_race_start
+	if pre_race_reference is not None:
+		torso_box_coords_data["race_start"] = pre_race_reference
 	torso_box_coords_io.write_torso_box_coords(intervals_path, torso_box_coords_data)
 	print(f"  torso box coordinates written to {intervals_path}")
 	# write diagnostics to disk
