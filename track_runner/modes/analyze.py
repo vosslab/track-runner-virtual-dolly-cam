@@ -11,6 +11,7 @@ import camera_motion
 import encode_analysis
 import encode_analysis_report
 import fastread_video
+import interval_seed_anchoring
 import interval_solver
 import modes.shared
 import regime_classifier
@@ -164,7 +165,7 @@ def run(
 		seeds_data = state_io.load_seeds(seeds_path)
 		all_seeds = seeds_data.get("seeds", [])
 		trajectory = interval_solver.anchor_to_seeds(trajectory, all_seeds)
-		trajectory = interval_solver._stamp_seed_truth(
+		trajectory = interval_seed_anchoring.stamp_seed_truth(
 			trajectory, all_seeds,
 		)
 	if not trajectory:

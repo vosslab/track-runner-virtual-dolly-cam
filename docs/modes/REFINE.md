@@ -24,24 +24,26 @@ options:
   --bin BIN_FACTOR     Optional spatial downsample applied to camera-motion
                        and residual stages only. Integer >= 1. When neither
                        --bin nor --auto-bin is given, the production default
-                       selector picks a bin from source width (floor at the
-                       project-wide default target; 1440p and below stay full-
-                       res). Pass --bin 1 to force full resolution. bin_factor
-                       > 1 also crops each scaled axis to the largest FFT-
-                       friendly goodbox not exceeding it (origin-preserving
-                       right/bottom crop). Source-frame outputs unchanged.
+                       selector picks a bin from the source pixel area,
+                       holding the analysis frame within the project-wide
+                       budget. Pass --bin 1 to force full resolution.
+                       bin_factor > 1 also crops each scaled axis to the
+                       largest FFT-friendly goodbox not exceeding it (origin-
+                       preserving right/bottom crop). Source-frame outputs
+                       unchanged.
   --auto-bin [HEIGHT]  Auto-pick bin_factor from source. Bare flag (--auto-bin
-                       with no value) routes through the project-wide width-
-                       floor selector (same as the no-flag default:
-                       floor(source_width / 1440)). With an explicit HEIGHT
-                       value (--auto-bin 720), uses the height-based selector:
-                       bin = max(1, round(source_h / HEIGHT)). bin_factor is a
-                       whole number, so actual binned size only approximates
-                       the target. Source dims that are not multiples of bin
-                       silently drop at most (bin-1) right/bottom pixels, the
-                       same kind of crop goodbox already does. Examples at
-                       --auto-bin 720: 1080->bin1 (1080), 2160->bin3 (720).
-                       Mutually exclusive with --bin.
+                       with no value) routes through the project-wide area-
+                       budget selector (same as the no-flag default:
+                       ceil(sqrt(source_pixels / 1036800))). With an explicit
+                       HEIGHT value (--auto-bin 720), uses the height-based
+                       selector: bin = max(1, round(source_h / HEIGHT)).
+                       bin_factor is a whole number, so actual binned size
+                       only approximates the target. Source dims that are not
+                       multiples of bin silently drop at most (bin-1)
+                       right/bottom pixels, the same kind of crop goodbox
+                       already does. Examples at --auto-bin 720: 1080->bin1
+                       (1080), 2160->bin3 (720). Mutually exclusive with
+                       --bin.
 ```
 <!-- END AUTO HELP: refine -->
 

@@ -57,11 +57,20 @@ track-runner-virtual-dolly-cam/
 ## Walker, crop, encode, and UI
 
 - `blob_walk` contains the Stage-4 walker.
-  [walk_walker.py](../track_runner/blob_walk/walk_walker.py) is its facade;
-  [walk_engine.py](../track_runner/blob_walk/walk_engine.py),
-  [walk_observer.py](../track_runner/blob_walk/walk_observer.py), and
-  [walk_summary.py](../track_runner/blob_walk/walk_summary.py) own execution,
-  observation, and summary metrics.
+  [walk_engine.py](../track_runner/blob_walk/walk_engine.py) owns the walking
+  loop and the `walk_one_direction` entry point;
+  [walk_observer.py](../track_runner/blob_walk/walk_observer.py) owns ROI
+  observation and candidate gathering;
+  [walk_viterbi.py](../track_runner/blob_walk/walk_viterbi.py) selects the
+  lowest-cost path through a candidate window;
+  [walk_motion_gate.py](../track_runner/blob_walk/walk_motion_gate.py) holds the
+  runner motion-physics constants;
+  [walk_status.py](../track_runner/blob_walk/walk_status.py) assigns the
+  five per-frame statuses and their positions;
+  [walk_summary.py](../track_runner/blob_walk/walk_summary.py) owns the
+  `WalkSummary` record and coverage metrics; and
+  [walk_debug_log.py](../track_runner/blob_walk/walk_debug_log.py) writes the
+  diagnostic verdict CSV.
 - [tr_crop.py](../track_runner/tr_crop.py) is the crop facade, split into
   [tr_crop_math.py](../track_runner/tr_crop_math.py),
   [tr_crop_direct.py](../track_runner/tr_crop_direct.py), and

@@ -53,7 +53,7 @@ def restamp_cached_interval_seed_truth(solved_intervals: dict, seeds: list) -> i
 
 
 #============================================
-def _stamp_seed_truth(trajectory: list, seeds: list) -> list:
+def stamp_seed_truth(trajectory: list, seeds: list) -> list:
 	"""Stamp human-authored C1/C3 truth onto trajectory seed frames."""
 	n = len(trajectory)
 	stamped = 0

@@ -729,11 +729,12 @@ def test_integration_full_html_under_full_inputs(
 	data = _extract_embedded_json(body)
 	assert len(data['panels']) >= 4
 	assert data['fps'] == 30.0
+	# every frame of the synthetic 30-frame trajectory reaches the payload
 	assert len(data['frames']) == 30
 	# Series lengths match frames
 	for panel in data['panels']:
 		for series in panel['series']:
-			assert len(series['values']) == 30
+			assert len(series['values']) == len(data['frames'])
 
 
 def test_integration_motion_missing_skips_camera_and_speed(

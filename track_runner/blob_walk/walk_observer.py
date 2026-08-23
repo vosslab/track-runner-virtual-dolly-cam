@@ -96,11 +96,11 @@ def gather_frame_candidates(obs: object, trace_sink_holder: object) -> list:
 #============================================
 def build_window_entry(
 	obs: object, trace_sink_holder: object, frame_f: int, pred_cx: float,
-	pred_cy: float, gather_candidates: object, lighten_trace_fn: object,
+	pred_cy: float,
 ) -> dict:
 	"""Freeze one image-derived observation into a rolling Viterbi entry."""
 	trace = trace_sink_holder.observer_trace if obs is not None else None
-	candidates = tuple(gather_candidates(obs, trace_sink_holder))
+	candidates = tuple(gather_frame_candidates(obs, trace_sink_holder))
 	if obs is not None and trace is not None:
 		obs_candidate_n = len(trace.candidate_blobs)
 		obs_raw_n = len(trace.raw_blobs)
@@ -127,6 +127,6 @@ def build_window_entry(
 		"candidates_json": candidates_json_val, "winner_strength_score": winner_strength_score,
 		"winner_size_score": winner_size_score, "winner_proximity_score": winner_proximity_score,
 		"winner_total_score": winner_total_score,
-		"light_trace": lighten_trace_fn(trace) if trace is not None else None,
+		"light_trace": lighten_trace(trace) if trace is not None else None,
 		"live_trace": trace}
 	return entry

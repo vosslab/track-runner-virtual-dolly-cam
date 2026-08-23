@@ -1,5 +1,12 @@
 # Bin default sanity study (M2 / WS2-verify)
 
+**Historical record.** This study evaluated the width-target bin rule that was
+current at the time of writing. The production selector now budgets by pixel
+area against `MAX_ANALYSIS_PIXELS`; see
+[bin_target_table.md](bin_target_table.md) for the current policy and its
+measured small-target recovery. The findings below are retained as evidence of
+what was measured under the earlier rule.
+
 Empirical safety check that the new binned walker default does not break
 tracking. This is a bounded sanity study, NOT a full A/B baseline. Read-only on
 production code: the study reuses the shared `open_analysis_reader`,

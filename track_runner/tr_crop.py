@@ -283,11 +283,22 @@ def dolly_crop_trajectory(
 	if nif_frames is None:
 		nif_frames = set()
 	processing = config.get("processing", {})
-	aspect = parse_aspect_ratio(processing.get("crop_aspect", "1:1"))
-	multiple = float(processing.get("torso_height_multiple", 3.33))
-	anchor = float(processing.get("crop_torso_anchor", 0.50))
-	radius = float(processing.get("crop_containment_radius", 0.20))
-	fit = bool(processing.get("crop_centered_fit_to_source", True))
+	aspect = parse_aspect_ratio(
+		processing.get("crop_aspect", tr_crop_math.DEFAULT_CROP_ASPECT),
+	)
+	multiple = float(processing.get(
+		"torso_height_multiple", tr_crop_math.DEFAULT_CROP_TORSO_HEIGHT_MULTIPLE,
+	))
+	anchor = float(processing.get(
+		"crop_torso_anchor", tr_crop_math.DEFAULT_CROP_TORSO_ANCHOR,
+	))
+	radius = float(processing.get(
+		"crop_containment_radius", tr_crop_math.DEFAULT_CROP_CONTAINMENT_RADIUS,
+	))
+	fit = bool(processing.get(
+		"crop_centered_fit_to_source",
+		tr_crop_math.DEFAULT_CROP_CENTERED_FIT_TO_SOURCE,
+	))
 	smoothness = float(processing.get("crop_dolly_smoothness", DOLLY_DEFAULT_SMOOTHNESS))
 	raw_cx = numpy.asarray([state["cx"] for state in full_trajectory], dtype=float)
 	raw_cy = numpy.asarray([state["cy"] for state in full_trajectory], dtype=float)

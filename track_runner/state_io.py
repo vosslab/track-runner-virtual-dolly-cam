@@ -630,21 +630,25 @@ def write_solver_interval_scores(
 		if "confidence_tier" not in score:
 			raise RuntimeError("interval score missing confidence_tier")
 		confidence_tier = score["confidence_tier"]
+		# failure_reasons and warning_flags are absent when nothing fired, so
+		# an empty list is the truthful value rather than a substituted one.
 		failure_reasons = list(score.get("failure_reasons", []))
-		agreement = float(score.get("agreement", 0.0))
+		# The five numeric fields are produced on every scoring branch, so read
+		# them directly and let an absent one surface where it went missing.
+		agreement = float(score["agreement"])
 		entry["interval_score"] = {
 			"agreement": round(agreement, 4),
 			"velocity_consistency": round(
-				float(score.get("velocity_consistency", 0.0)), 4,
+				float(score["velocity_consistency"]), 4,
 			),
 			"size_consistency": round(
-				float(score.get("size_consistency", 0.0)), 4,
+				float(score["size_consistency"]), 4,
 			),
 			"motion_quality": round(
-				float(score.get("motion_quality", 0.0)), 4,
+				float(score["motion_quality"]), 4,
 			),
 			"occlusion_fraction": round(
-				float(score.get("occlusion_fraction", 0.0)), 4,
+				float(score["occlusion_fraction"]), 4,
 			),
 			"confidence_tier": confidence_tier,
 			"failure_reasons": failure_reasons,

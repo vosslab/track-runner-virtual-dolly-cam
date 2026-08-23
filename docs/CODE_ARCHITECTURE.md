@@ -44,12 +44,11 @@ in [TRACK_RUNNER_CONTRACT.md](TRACK_RUNNER_CONTRACT.md).
    [blob_trace.py](../track_runner/blob_trace.py) owns observer trace records.
    [residual_pre_pass.py](../track_runner/residual_pre_pass.py) prepares
    worker-local residual data for Stage 4.
-5. [walk_walker.py](../track_runner/blob_walk/walk_walker.py) remains
-   the compatibility facade for independent directional walks. It delegates
-   path execution to [walk_engine.py](../track_runner/blob_walk/walk_engine.py),
-   residual observation and trace handling to
-   [walk_observer.py](../track_runner/blob_walk/walk_observer.py), and metrics
-   to [walk_summary.py](../track_runner/blob_walk/walk_summary.py).
+5. [walk_engine.py](../track_runner/blob_walk/walk_engine.py) owns independent
+   directional walks through its `walk_one_direction` entry point. It reads
+   residual observation and trace handling from
+   [walk_observer.py](../track_runner/blob_walk/walk_observer.py) and metrics
+   from [walk_summary.py](../track_runner/blob_walk/walk_summary.py).
    [walk_viterbi.py](../track_runner/blob_walk/walk_viterbi.py) owns the
    candidate-lattice optimization. FWD and BWD remain independent for scoring.
 6. [scoring.py](../track_runner/scoring.py),
@@ -107,9 +106,10 @@ in [TRACK_RUNNER_CONTRACT.md](TRACK_RUNNER_CONTRACT.md).
 
 - Add a CLI behavior to its owning file in `modes`,
   leaving dispatch and shared gates in [cli.py](../track_runner/cli.py).
-- Add a new solver concern behind the appropriate facade rather than expanding
-  [interval_solver.py](../track_runner/interval_solver.py) or
-  [walk_walker.py](../track_runner/blob_walk/walk_walker.py).
+- Add a new solver concern to the module that owns that concern, keeping
+  [interval_solver.py](../track_runner/interval_solver.py) and
+  [walk_engine.py](../track_runner/blob_walk/walk_engine.py) focused on
+  orchestration.
 - Add seed or interval-score JSON formats through [state_io.py](../track_runner/state_io.py),
   torso-coordinate NPZ through [torso_box_coords_io.py](../track_runner/torso_box_coords_io.py),
   and camera-motion NPZ through [camera_motion_artifact.py](../track_runner/camera_motion_artifact.py)

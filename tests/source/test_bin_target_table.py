@@ -1,14 +1,14 @@
-"""Table-driven test for the floor-based default-bin selector.
+"""Table-driven test for the pixel-area default-bin selector.
 
-Asserts the human-approved default-bin mapping at target_width=1440 (floor
-rule, option B, confirmed 2026-06-14) and the resulting post-bin (pre-goodbox)
-processed width source_width // bin_factor.  Under floor@1440, 4K (3840) bins
-at 2 (1920x1080 / 1080p band) and 1440p (2560) and below stay full-res.
+Asserts the default-bin mapping at max_pixels=MAX_ANALYSIS_PIXELS and the
+resulting post-bin (pre-goodbox) processed dimensions source // bin_factor.
+Under the area budget, 4K (3840x2160) bins at 3 and 1080p (1920x1080) bins
+at 2, so every listed source lands at or under the budget.
 
-Intentional tripwire: this table and the asserted constant value are hard-coded
-to floor@1440, tied to frame_reader.TARGET_DEFAULT_WIDTH_PX.  If someone retunes
-that project-wide constant, this test fails on purpose to remind them to update
-the documented bin table and the report doc to match.
+Intentional tripwire: this table and the asserted constant value are tied to
+frame_reader.MAX_ANALYSIS_PIXELS.  If someone retunes that project-wide
+constant, this test fails on purpose to remind them to update the documented
+bin table and the report doc to match.
 """
 
 # PIP3 modules
@@ -18,77 +18,69 @@ import pytest
 import frame_reader
 
 
-# target_width 1440 floor mapping: source_width -> (bin_factor, processed_width).
-# processed_width is source_width // bin_factor (post-bin, pre-goodbox snap).
-BIN_TABLE_1440 = {
-	3840: (2, 1920),
-	2880: (2, 1440),
-	2704: (1, 2704),
-	2560: (1, 2560),
-	1920: (1, 1920),
-	1440: (1, 1440),
+# area-budget mapping: (source_w, source_h) -> (bin_factor, processed_w, processed_h).
+# processed dims are source // bin_factor (post-bin, pre-goodbox snap).
+BIN_TABLE_AREA = {
+	(3840, 2160): (3, 1280, 720),
+	(2880, 1620): (3, 960, 540),
+	(2704, 1520): (2, 1352, 760),
+	(2560, 1440): (2, 1280, 720),
+	(1920, 1080): (2, 960, 540),
+	(1280, 720): (1, 1280, 720),
 }
 
 
 #============================================
-def test_default_selector_bin_mapping_target_1440() -> None:
-	"""Selector returns the approved bin_factor for each source width."""
-	for source_width, (expected_bin, _processed) in BIN_TABLE_1440.items():
-		got = frame_reader.select_default_bin_factor(source_width, 1440)
+def test_default_selector_bin_mapping_area_budget() -> None:
+	"""Selector returns the budgeted bin_factor for each source shape."""
+	for (source_w, source_h), (expected_bin, _pw, _ph) in BIN_TABLE_AREA.items():
+		got = frame_reader.select_default_bin_factor(source_w, source_h)
 		assert got == expected_bin, (
-			f"source_width={source_width}: expected bin {expected_bin}, got {got}"
+			f"source={source_w}x{source_h}: expected bin {expected_bin}, got {got}"
 		)
 
 
 #============================================
-def test_default_selector_keeps_1080p_full_res() -> None:
-	"""1080p (1920-wide) stays bin 1 under floor@1440."""
-	assert frame_reader.select_default_bin_factor(1920, 1440) == 1
-
-
-#============================================
-def test_default_selector_keeps_1440p_full_res() -> None:
-	"""1440p (2560-wide) stays bin 1 under floor@1440 (round would pick 2)."""
-	assert frame_reader.select_default_bin_factor(2560, 1440) == 1
-
-
-#============================================
-def test_default_selector_4k_bins_to_1080p_band() -> None:
-	"""4K (3840-wide) bins at 2 -> 1920-wide (1080p band)."""
-	assert frame_reader.select_default_bin_factor(3840, 1440) == 2
-
-
-#============================================
-def test_default_selector_processed_width_target_1440() -> None:
-	"""Post-bin processed width equals source_width // selected bin_factor."""
-	for source_width, (expected_bin, expected_processed) in BIN_TABLE_1440.items():
-		got_bin = frame_reader.select_default_bin_factor(source_width, 1440)
-		processed = source_width // got_bin
-		assert processed == expected_processed, (
-			f"source_width={source_width}: expected processed {expected_processed},"
-			f" got {processed}"
+def test_default_selector_processed_area_stays_within_budget() -> None:
+	"""Every selected bin holds the processed frame at or under the budget."""
+	for (source_w, source_h) in BIN_TABLE_AREA:
+		got_bin = frame_reader.select_default_bin_factor(source_w, source_h)
+		processed_area = (source_w // got_bin) * (source_h // got_bin)
+		assert processed_area <= frame_reader.MAX_ANALYSIS_PIXELS, (
+			f"source={source_w}x{source_h}: processed area {processed_area}"
+			f" exceeds {frame_reader.MAX_ANALYSIS_PIXELS}"
 		)
+
+
+#============================================
+def test_default_selector_processed_dimensions() -> None:
+	"""Post-bin dimensions equal source // selected bin_factor."""
+	for (source_w, source_h), (_bin, exp_w, exp_h) in BIN_TABLE_AREA.items():
+		got_bin = frame_reader.select_default_bin_factor(source_w, source_h)
+		assert (source_w // got_bin, source_h // got_bin) == (exp_w, exp_h)
+
+
+#============================================
+def test_default_selector_prices_aspect_ratio() -> None:
+	"""Two sources of equal width but different height can bin differently."""
+	wide_bin = frame_reader.select_default_bin_factor(1920, 1080)
+	letterboxed_bin = frame_reader.select_default_bin_factor(1920, 480)
+	assert letterboxed_bin < wide_bin
 
 
 #============================================
 def test_default_selector_never_upscales() -> None:
-	"""Sources at or below target stay at bin_factor 1 (never upscaled)."""
-	assert frame_reader.select_default_bin_factor(1440, 1440) == 1
-	assert frame_reader.select_default_bin_factor(640, 1440) == 1
-
-
-#============================================
-def test_default_selector_default_target_uses_constant() -> None:
-	"""Calling without target_width uses TARGET_DEFAULT_WIDTH_PX (1440)."""
-	assert frame_reader.select_default_bin_factor(3840) == 2
-	assert frame_reader.select_default_bin_factor(2560) == 1
-	assert frame_reader.select_default_bin_factor(1920) == 1
+	"""Sources already under budget stay at bin_factor 1."""
+	assert frame_reader.select_default_bin_factor(1280, 720) == 1
+	assert frame_reader.select_default_bin_factor(640, 360) == 1
 
 
 #============================================
 def test_default_selector_rejects_nonpositive() -> None:
 	"""Selector raises ValueError on non-positive inputs."""
 	with pytest.raises(ValueError):
-		frame_reader.select_default_bin_factor(0, 1440)
+		frame_reader.select_default_bin_factor(0, 1080)
 	with pytest.raises(ValueError):
-		frame_reader.select_default_bin_factor(3840, 0)
+		frame_reader.select_default_bin_factor(1920, 0)
+	with pytest.raises(ValueError):
+		frame_reader.select_default_bin_factor(1920, 1080, 0)

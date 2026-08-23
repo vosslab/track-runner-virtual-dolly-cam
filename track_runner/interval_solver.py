@@ -18,30 +18,18 @@ import velocity_model
 
 compute_interval_fingerprint = interval_fingerprint.compute_interval_fingerprint
 filter_usable_seeds_sorted = interval_fingerprint.filter_usable_seeds_sorted
-PROMOTION_TIERS = interval_analytical.PROMOTION_TIERS
-BlockBarColumn = interval_progress.BlockBarColumn
 FrameETAColumn = interval_progress.FrameETAColumn
-TaskETAColumn = interval_progress.TaskETAColumn
 make_solve_progress = interval_progress.make_solve_progress
-measure_canonical_blend_boxes = interval_analytical.measure_canonical_blend_boxes
 build_canonical_blend_heat_evaluator = (
 	interval_analytical.build_canonical_blend_heat_evaluator
 )
 blend_paths = interval_analytical.blend_paths
-_seed_source_to_processed = interval_analytical._seed_source_to_processed
-_walker_path_processed_to_source = interval_analytical._walker_path_processed_to_source
-stitch_trajectories = interval_seed_anchoring.stitch_trajectories
 reconstruct_trajectory_with_confidence = (
 	interval_seed_anchoring.reconstruct_trajectory_with_confidence
 )
 restamp_cached_interval_seed_truth = (
 	interval_seed_anchoring.restamp_cached_interval_seed_truth
 )
-_stamp_seed_truth = interval_seed_anchoring._stamp_seed_truth
-_collect_anchor_knots = interval_seed_anchoring._collect_anchor_knots
-_build_local_fit = interval_seed_anchoring._build_local_fit
-_eval_fit = interval_seed_anchoring._eval_fit
-_segment_by_knot_window = interval_seed_anchoring._segment_by_knot_window
 anchor_to_seeds = interval_seed_anchoring.anchor_to_seeds
 
 #============================================
@@ -156,7 +144,7 @@ def stage4_walker_frame_budget(
 	for result in interval_results:
 		if result is None or result.get("source") == "pre_race_reference":
 			continue
-		if result["interval_score"]["confidence_tier"] in PROMOTION_TIERS:
+		if result["interval_score"]["confidence_tier"] in interval_analytical.PROMOTION_TIERS:
 			measured_walker_frames += _inclusive_interval_frame_count(result)
 	budget = max(measured_walker_frames, math.ceil(0.10 * post_race_frames))
 	return budget
@@ -708,7 +696,7 @@ def solve_all_intervals(
 	# stitch and finalize
 	trajectory = reconstruct_trajectory_with_confidence(interval_results)
 	trajectory = anchor_to_seeds(trajectory, seeds)
-	trajectory = _stamp_seed_truth(trajectory, seeds)
+	trajectory = interval_seed_anchoring.stamp_seed_truth(trajectory, seeds)
 	# NIF span membership is the authoritative absence boundary for the
 	# returned solver trajectory.
 	race_start_frame = 0

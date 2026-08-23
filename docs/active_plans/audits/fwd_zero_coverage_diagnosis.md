@@ -20,7 +20,7 @@ asymmetry is incidental: the backward pass happens to accept at its own seed
 frame and therefore reports a real (low) coverage fraction instead of `None`.
 
 The single most likely cause: the acceptance box geometry and anchor in
-[walk_walker.py](../../../track_runner/blob_walk/walk_walker.py)
+`walk_walker.py`
 `_compute_roi_and_observe` (half-width `0.5*seed_w`, half-height `0.75*seed_h`,
 centered on a never-advancing seed anchor), interacting with the no-velocity
 frozen-anchor step.
@@ -47,7 +47,7 @@ Dice agreement metric is what collapses the M4 `agreement` number.
 
 Source of truth: a read-only probe that walks each interval forward via the
 production library path
-([walk_walker.walk_one_direction](../../../track_runner/blob_walk/walk_walker.py)),
+(`walk_walker.py`),
 with `residual_motion.observe_blob_at` and `extract_frame_blobs` wrapped in
 memory to record per-frame reject reasons and raw-blob counts. The two named
 intervals are not on disk under `corpus_walk/` (that set is an older standalone
@@ -149,7 +149,7 @@ acceptance-box stall is fixed. Two concrete, separable actions:
 
 1. Primary (code fix, highest value): fix the frozen-anchor / acceptance-box
    stall in
-   [walk_walker.py](../../../track_runner/blob_walk/walk_walker.py). The fix
+   `walk_walker.py`. The fix
    belongs in `_compute_roi_and_observe` and the bootstrap/step anchor logic,
    not in the metric. Candidate directions (for the fix owner to choose and
    validate, all expressible in torso units per contract C2):

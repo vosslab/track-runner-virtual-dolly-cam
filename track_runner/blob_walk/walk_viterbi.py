@@ -120,7 +120,7 @@ class WalkCostMemo:
 
 	Candidate positions, evidence, torso width, fps, and fixed weights do not
 	change during one walk. Candidate lists are frozen to tuples by
-	``walk_walker._build_window_entry`` before entering the rolling buffer, so a
+	``walk_observer.build_window_entry`` before entering the rolling buffer, so a
 	candidate index identifies the same blob while its frame remains buffered.
 
 	``edge_costs`` is keyed by both absolute frame numbers and both candidate

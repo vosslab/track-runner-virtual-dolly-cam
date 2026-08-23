@@ -30,18 +30,23 @@ Solve and walker analyze in PROCESSED space by default. The default bin factor
 is computed by `common_tools/frame_reader.select_default_bin_factor`:
 
 ```
-bin_factor = max(1, floor(source_width / TARGET_DEFAULT_WIDTH_PX))
+bin_factor = max(1, ceil(sqrt(source_width * source_height / MAX_ANALYSIS_PIXELS)))
 ```
 
-`TARGET_DEFAULT_WIDTH_PX = 1440` is a project-wide constant in
-`common_tools/frame_reader.py` (not config).
+`MAX_ANALYSIS_PIXELS = 1036800` is a project-wide constant in
+`common_tools/frame_reader.py` (not config). Budgeting on pixel AREA keeps the
+analysis cost proportional to the work actually done, and prices a non-16:9
+source correctly against a 16:9 one of the same width.
 
-| Source width | bin_factor | Processed width |
-| --- | --- | --- |
-| 3840 (4K) | 2 | 1920 |
-| 2880 (2.8K) | 2 | 1440 |
-| 2560 (1440p) | 1 | 2560 (full-res) |
-| 1920 (1080p) | 1 | 1920 (full-res) |
+| Source | bin_factor | Processed | Processed area |
+| --- | --- | --- | --- |
+| 3840x2160 (4K) | 3 | 1280x720 | 0.92 MP |
+| 2880x1620 (2.8K) | 3 | 960x540 | 0.52 MP |
+| 2704x1520 (2.7K) | 2 | 1352x760 | 1.03 MP |
+| 2560x1440 (1440p) | 2 | 1280x720 | 0.92 MP |
+| 1920x1080 (1080p) | 2 | 960x540 | 0.52 MP |
+
+The rule holds `processed_area <= MAX_ANALYSIS_PIXELS` for every source.
 
 Use `--bin N` for an exact override or `--bin 1` as an escape hatch. Use
 `--auto-bin HEIGHT` for a height-based target (different formula; see SOLVE.md).

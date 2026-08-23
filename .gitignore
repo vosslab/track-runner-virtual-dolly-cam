@@ -10,7 +10,9 @@
 /corpus_walk/
 /elegant-wiggling-kahn.md
 # === UNIVERSAL ===
-output*/
+# Anchored to the repo root: generated output lands there, while the source
+# directory tests/output/ holds tracked pipeline tests.
+/output*/
 /graphify-out/
 _temp*.?*
 /OTHER_REPOS/

@@ -1,6 +1,6 @@
 """Per-frame status and position logic for the windowed blob walker.
 
-Pure functions extracted from walk_walker.py. Given a Viterbi-selected path
+Pure functions consumed by walk_engine.py. Given a Viterbi-selected path
 over a window of candidate lists, assign each frame one of five statuses and
 compute its interpolated / extrapolated position when no candidate was
 selected.
@@ -58,8 +58,11 @@ def emit_status_from_path(
 	accepted_positions = []
 	for t, blob in enumerate(path):
 		if blob is not None:
-			cx = blob.get("centroid_x", 0.0)
-			cy = blob.get("centroid_y", 0.0)
+			# A selected blob carries its centroid; read it directly so a
+			# malformed candidate fails here instead of entering the path
+			# at the frame origin.
+			cx = blob["centroid_x"]
+			cy = blob["centroid_y"]
 			accepted_positions.append((t, cx, cy))
 
 	# Consec extrap counter; reset at each accept or soft_miss_no_blob.
@@ -73,8 +76,8 @@ def emit_status_from_path(
 		if blob is not None:
 			# Real candidate on the selected path.
 			status = "accepted"
-			cx = blob.get("centroid_x", 0.0)
-			cy = blob.get("centroid_y", 0.0)
+			cx = blob["centroid_x"]
+			cy = blob["centroid_y"]
 			consec_extrap = 0
 		elif candidates_empty:
 			# No candidates extracted at all.

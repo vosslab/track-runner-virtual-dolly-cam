@@ -424,7 +424,7 @@ def build_walker_initial_rois(
 ) -> dict:
 	"""Return exact seed-local ROIs queried before walker anchoring adapts.
 
-	This mirrors ``walk_walker._compute_roi_and_observe`` exactly: the
+	This mirrors ``walk_observer.compute_roi_and_observe`` exactly: the
 	bootstrap and first ``window_frames`` non-seed observations in each
 	direction retain their own anchor seed. Once Viterbi emits, later anchors
 	may adapt, so they deliberately remain cache misses and use direct

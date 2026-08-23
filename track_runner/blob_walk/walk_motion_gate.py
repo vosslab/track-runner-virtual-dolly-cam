@@ -6,8 +6,8 @@ plausible given the recent velocity estimate. This module is pure math: no
 I/O, no observer calls, no image reading.
 
 All numeric constants for runner motion physics live here. Every other
-module (walk_viterbi.py, walk_html.py) imports the constants from this
-module. There must be no duplicate definitions outside this file.
+module (walk_viterbi.py, blend_commitment.py) imports the constants from
+this module, which is the single definition site for them.
 
 Physical envelope (W = torso width):
 ================================================================

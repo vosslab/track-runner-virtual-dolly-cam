@@ -42,20 +42,23 @@ def build_predictions_from_solved_intervals(solved_data: dict) -> dict:
 	Live blended states retain their ephemeral commitment review item. The
 	coordinate-only NPZ artifact intentionally does not preserve that item.
 	"""
-	fps = float(solved_data.get("fps", 30.0))
+	fps = float(solved_data["fps"])
 	predictions = {}
-	for interval_idx, iv in enumerate(solved_data.get("intervals", [])):
+	for interval_idx, iv in enumerate(solved_data["intervals"]):
+		# Schema 15 omits the raw pass paths when their difference does not
+		# survive uint16 quantization, so None is an expected value here.
 		fwd_track = iv.get("forward_path")
 		bwd_track = iv.get("backward_path")
 		blended_path = iv.get("blended_path")
 
-		# Build interval quality metadata once per interval.
+		# Build interval quality metadata once per interval. An interval
+		# carries a score or it carries none; the branch below handles both.
 		score = iv.get("interval_score", {})
 		if score:
 			severity = review.classify_interval_severity(iv, fps)
-			conf_label = score.get("confidence_tier", "unknown")
-			agree_val = float(score.get("agreement", 0.0))
-			secondary_val = float(score.get("velocity_consistency", 0.0))
+			conf_label = score["confidence_tier"]
+			agree_val = float(score["agreement"])
+			secondary_val = float(score["velocity_consistency"])
 		else:
 			severity = None
 			conf_label = "unknown"

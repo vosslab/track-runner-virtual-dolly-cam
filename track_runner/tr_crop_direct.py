@@ -46,9 +46,11 @@ def direct_center_crop_trajectory(
 
 	processing = config.get("processing", {})
 	aspect_ratio = tr_crop_math.parse_aspect_ratio(
-		processing.get("crop_aspect", "1:1"),
+		processing.get("crop_aspect", tr_crop_math.DEFAULT_CROP_ASPECT),
 	)
-	torso_multiple = float(processing.get("torso_height_multiple", 3.33))
+	torso_multiple = float(processing.get(
+		"torso_height_multiple", tr_crop_math.DEFAULT_CROP_TORSO_HEIGHT_MULTIPLE,
+	))
 	raw_cx = numpy.asarray(
 		[state["cx"] for state in full_trajectory],
 		dtype=float,
@@ -77,9 +79,12 @@ def direct_center_crop_trajectory(
 	else:
 		size_h = desired_h.copy()
 
-	torso_anchor = float(processing.get("crop_torso_anchor", 0.50))
-	if torso_anchor != 0.50:
-		center_y += (0.50 - torso_anchor) * size_h
+	torso_anchor = float(processing.get(
+		"crop_torso_anchor", tr_crop_math.DEFAULT_CROP_TORSO_ANCHOR,
+	))
+	# The centered anchor needs no shift; any other anchor offsets the center.
+	if torso_anchor != tr_crop_math.DEFAULT_CROP_TORSO_ANCHOR:
+		center_y += (tr_crop_math.DEFAULT_CROP_TORSO_ANCHOR - torso_anchor) * size_h
 
 	max_height_change = float(processing.get("crop_max_height_change", 0.005))
 	zoom_stabilization = bool(processing.get("crop_zoom_stabilization", False))
@@ -102,7 +107,9 @@ def direct_center_crop_trajectory(
 
 	size_h = numpy.maximum(size_h, 1.0)
 	size_w = numpy.maximum(size_h * aspect_ratio, 1.0)
-	containment_radius = float(processing.get("crop_containment_radius", 0.20))
+	containment_radius = float(processing.get(
+		"crop_containment_radius", tr_crop_math.DEFAULT_CROP_CONTAINMENT_RADIUS,
+	))
 	if containment_radius > 0:
 		for crop_pass in range(2):
 			for index in range(n):
@@ -117,7 +124,10 @@ def direct_center_crop_trajectory(
 				center_x = tr_crop_math._forward_backward_ema(center_x, 0.3)
 				center_y = tr_crop_math._forward_backward_ema(center_y, 0.3)
 
-	if bool(processing.get("crop_centered_fit_to_source", True)):
+	if bool(processing.get(
+		"crop_centered_fit_to_source",
+		tr_crop_math.DEFAULT_CROP_CENTERED_FIT_TO_SOURCE,
+	)):
 		if _use_rolling_min_ceiling:
 			ceiling = tr_crop_math._rolling_min_ceiling_per_frame(
 				center_x,

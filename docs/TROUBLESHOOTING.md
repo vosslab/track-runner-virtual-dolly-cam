@@ -23,7 +23,7 @@ a random frame requires the decoder to seek back to the nearest preceding
 keyframe and decode forward to the target frame. The walker evaluates
 scattered frames, so repeated seeks can dominate runtime on long-GOP media.
 
-Auto-bin (bin_factor 4 at 3840 px width) does not reduce decode cost.
+Auto-bin (bin_factor 3 at 3840x2160) does not reduce decode cost.
 Binning resizes the frame after decode; the seek itself and the keyframe
 decode forward are unchanged by any bin factor.
 

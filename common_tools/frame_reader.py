@@ -23,15 +23,16 @@ Coordinate-system model:
   Frame bounds are checked explicitly via coord_space.ProcessedPoint.in_bounds.
 
 Auto-bin selection:
-  Use select_default_bin_factor(source_width) before constructing a
-  FrameReader to automatically pick a bin_factor via the floor-toward-target
+  Use select_default_bin_factor(source_width, source_height) before
+  constructing a FrameReader to pick a bin_factor via the pixel-area budget
   default policy.  The selection function is the policy; FrameReader is the
-  mechanism.  Call sites that do NOT need downsampling (UI, crop encoder,
-  solve-mode workers) should pass bin_factor=1 (the default) to FrameReader.
+  mechanism.  Call sites that want full resolution (UI, crop encoder,
+  solve-mode workers) pass bin_factor=1 (the default) to FrameReader.
 """
 
 # Standard Library
 import collections.abc
+import math
 import os
 import types
 import warnings
@@ -50,41 +51,43 @@ import common_tools.goodbox
 # scaled axis and warns once.
 _MAX_CROP_FRACTION = 0.10
 
-# Default analysis bin target (WIDTH px).  Change this ONE value to retune the
+# Default analysis pixel-area budget.  Change this ONE value to retune the
 # project-wide default bin; this is THE single source of truth.  It is a static
 # project-wide constant (per contract C13: obscure tuning is a fixed code
 # constant, NOT per-video config) -- it does NOT live in tr_config, in
 # track_runner.config.yaml, in any per-video config, or in argparse, and it has
 # no SCHEMA_VERSION impact.  The only per-invocation levers are --bin/--auto-bin.
 #
-# Resulting floor bin table (source_width -> bin -> analysis W x H), assuming
-# 16:9 source.  Tied tripwire test: tests/source/test_bin_target_table.py.
-#   floor(source_width / TARGET_DEFAULT_WIDTH_PX):
-#     3840 (4K)    -> bin 2 -> 1920 x 1080 (1080p band)
-#     2880 (2.8K)  -> bin 2 -> 1440 x  810
-#     2560 (1440p) -> bin 1 -> 2560 x 1440 (full-res)
-#     1920 (1080p) -> bin 1 -> 1920 x 1080 (full-res)
-#     1440         -> bin 1 -> 1440 (full-res)
-TARGET_DEFAULT_WIDTH_PX = 1440
+# Resulting bin table (source W x H -> bin -> analysis W x H).  The rule reads
+# both dimensions, so a non-16:9 source is priced by its true pixel count.
+# Tied tripwire test: tests/source/test_bin_target_table.py.
+#   ceil(sqrt(source_pixels / MAX_ANALYSIS_PIXELS)):
+#     3840 x 2160 (4K)    -> bin 3 -> 1280 x  720 (0.92 MP)
+#     2880 x 1620 (2.8K)  -> bin 3 ->  960 x  540 (0.52 MP)
+#     2704 x 1520 (2.7K)  -> bin 2 -> 1352 x  760 (1.03 MP)
+#     2560 x 1440 (1440p) -> bin 2 -> 1280 x  720 (0.92 MP)
+#     1920 x 1080 (1080p) -> bin 2 ->  960 x  540 (0.52 MP)
+MAX_ANALYSIS_PIXELS = 1_036_800
 
 
 #============================================
 def select_default_bin_factor(
 	source_width: int,
-	target_width: int = TARGET_DEFAULT_WIDTH_PX,
+	source_height: int,
+	max_pixels: int = MAX_ANALYSIS_PIXELS,
 ) -> int:
-	"""Select the production default bin_factor by FLOOR division.
+	"""Select the production default bin_factor from a pixel-area budget.
 
-	Chooses bin_factor = max(1, floor(source_width / target_width)).  This is
-	the conservative floor rule (human-approved 2026-06-14 at target 1440,
-	option B): it never bins so hard that the post-bin width drops below the
-	target, and it keeps 1440p (2560-wide) and below at full resolution
-	because floor(2560/1440)=1.  4K (3840-wide) bins at 2 -> 1920-wide, the
-	1080p band.  Integer floor division (//) is exactly floor for positive
-	ints.
+	Chooses bin_factor = max(1, ceil(sqrt(source_pixels / max_pixels))), which
+	holds the analysis frame at or under the budget for every source shape.
+	Area is the cost proxy because analysis work scales with pixel count, so
+	this prices a 4:3 or 2.39:1 source correctly against a 16:9 one of the
+	same width.
 
-	This floors toward the default target (~1440 px), so 4K source bins at 2
-	(not 4) and stays closer to full resolution.
+	Ceiling division gives the invariant processed_area <= max_pixels for all
+	inputs, and the max(1, ...) clamp keeps sources already under budget at
+	full resolution.
+
 	Non-power-of-two bins are intentional and fully supported by FrameReader
 	(_apply_bin scales via cv2.resize to source // bin_factor, the goodbox
 	snap operates on the scaled width regardless of bin, and coord_space
@@ -93,31 +96,34 @@ def select_default_bin_factor(
 	This is the shared default-bin POLICY function.  Callers pick the bin once
 	per video and pass the result as bin_factor to FrameReader().
 
-	Examples (target_width=1440):
-	  3840 -> floor 2.67 -> bin_factor=2 -> processed width 1920 (1080p band)
-	  2880 -> floor 2.0  -> bin_factor=2 -> processed width 1440
-	  2560 -> floor 1.78 -> bin_factor=1 -> processed width 2560 (full-res)
-	  1920 -> floor 1.33 -> bin_factor=1 -> processed width 1920 (full-res)
-	  1440 -> floor 1.0  -> bin_factor=1 -> processed width 1440 (full-res)
+	Examples (max_pixels=1_036_800):
+	  3840 x 2160 -> 8.29 MP -> bin_factor=3 -> 1280 x 720 (0.92 MP)
+	  2880 x 1620 -> 4.67 MP -> bin_factor=3 ->  960 x 540 (0.52 MP)
+	  2704 x 1520 -> 4.11 MP -> bin_factor=2 -> 1352 x 760 (1.03 MP)
+	  2560 x 1440 -> 3.69 MP -> bin_factor=2 -> 1280 x 720 (0.92 MP)
+	  1920 x 1080 -> 2.07 MP -> bin_factor=2 ->  960 x 540 (0.52 MP)
 
 	Args:
 		source_width: Raw source frame width in pixels.
-		target_width: Desired minimum post-bin width in pixels.
-			Defaults to TARGET_DEFAULT_WIDTH_PX (1440).
+		source_height: Raw source frame height in pixels.
+		max_pixels: Analysis pixel-area budget.
+			Defaults to MAX_ANALYSIS_PIXELS (1_036_800).
 
 	Returns:
 		Integer bin_factor (>= 1, not constrained to powers of two).
 
 	Raises:
-		ValueError: source_width or target_width is <= 0.
+		ValueError: source_width, source_height, or max_pixels is <= 0.
 	"""
 	if source_width <= 0:
 		raise ValueError(f"source_width must be > 0, got {source_width}")
-	if target_width <= 0:
-		raise ValueError(f"target_width must be > 0, got {target_width}")
-	# floor division toward target, clamped to >= 1 (never upscale).
-	# // is exactly floor for positive ints, so 1920//1280 == 1.
-	bin_factor = max(1, source_width // target_width)
+	if source_height <= 0:
+		raise ValueError(f"source_height must be > 0, got {source_height}")
+	if max_pixels <= 0:
+		raise ValueError(f"max_pixels must be > 0, got {max_pixels}")
+	# area ratio, then the linear scale factor that brings it under budget.
+	source_pixels = source_width * source_height
+	bin_factor = max(1, math.ceil(math.sqrt(source_pixels / max_pixels)))
 	return bin_factor
 
 
@@ -127,6 +133,7 @@ def open_analysis_reader(
 	fps: float,
 	total_frames: int,
 	source_width: int = 0,
+	source_height: int = 0,
 	bin_factor: int | None = None,
 	debug: bool = False,
 ) -> "FrameReader":
@@ -141,11 +148,12 @@ def open_analysis_reader(
 
 	Bin selection:
 	  - bin_factor is None: compute the project default via
-	    select_default_bin_factor(source_width) (floor rule toward
-	    TARGET_DEFAULT_WIDTH_PX).  source_width must be > 0 in this case.
+	    select_default_bin_factor(source_width, source_height) (pixel-area
+	    budget toward MAX_ANALYSIS_PIXELS).  Both dimensions must be > 0 in
+	    this case.
 	  - bin_factor is given: use it exactly (explicit --bin or a bin already
 	    resolved by the caller, e.g. cli._resolve_solve_bin_factor).  No
-	    selector call is made and source_width is ignored.
+	    selector call is made and the source dimensions are ignored.
 
 	Args:
 		video_path: Path to the .mkv video file.
@@ -153,25 +161,28 @@ def open_analysis_reader(
 		total_frames: Total number of frames in the video.
 		source_width: Raw source frame width in pixels.  Required (> 0)
 			only when bin_factor is None; ignored when bin_factor is given.
+		source_height: Raw source frame height in pixels.  Required (> 0)
+			only when bin_factor is None; ignored when bin_factor is given.
 		bin_factor: Explicit integer bin_factor (>= 1) to use as-is, or
-			None to compute the default from source_width.
+			None to compute the default from the source dimensions.
 		debug: Enable verbose per-frame debug output on the reader.
 
 	Returns:
 		A constructed FrameReader bound to the resolved bin_factor.
 
 	Raises:
-		ValueError: bin_factor is None and source_width <= 0.
+		ValueError: bin_factor is None and either source dimension is <= 0.
 	"""
 	if bin_factor is None:
 		# default-bin path: this is the single reader-construction call site
-		# of select_default_bin_factor.  source_width must be valid here.
-		if source_width <= 0:
+		# of select_default_bin_factor.  Both dimensions must be valid here.
+		if source_width <= 0 or source_height <= 0:
 			raise ValueError(
-				"open_analysis_reader requires source_width > 0 when"
-				f" bin_factor is None, got {source_width}"
+				"open_analysis_reader requires source_width > 0 and"
+				" source_height > 0 when bin_factor is None, got"
+				f" {source_width}x{source_height}"
 			)
-		bin_factor = select_default_bin_factor(source_width)
+		bin_factor = select_default_bin_factor(source_width, source_height)
 	reader = FrameReader(
 		video_path=video_path,
 		fps=fps,
@@ -322,8 +333,8 @@ class FrameReader:
 			is downsampled via cv2.INTER_AREA to floor(W/bin) x floor(H/bin).
 			At any bin_factor the goodbox snap applies (largest FFT-friendly box
 			not exceeding scaled dims, cropping only from right/bottom edges).
-			Use select_default_bin_factor(source_width) to pick a
-			bin_factor automatically for analysis/walker entry points.
+			Use select_default_bin_factor(source_width, source_height) to
+			pick a bin_factor automatically for analysis/walker entry points.
 	"""
 
 	#============================================

@@ -851,9 +851,9 @@ def analyze_solver_context(
 	motion_qualities = []
 	for result_item in interval_results:
 		iscore = result_item["interval_score"]
-		velocity_consistencies.append(float(iscore.get("velocity_consistency", 0.5)))
-		size_consistencies.append(float(iscore.get("size_consistency", 0.5)))
-		motion_qualities.append(float(iscore.get("motion_quality", 1.0)))
+		velocity_consistencies.append(float(iscore["velocity_consistency"]))
+		size_consistencies.append(float(iscore["size_consistency"]))
+		motion_qualities.append(float(iscore["motion_quality"]))
 	# Compute current score summaries.
 	result = {
 		"seed_density": seed_density,

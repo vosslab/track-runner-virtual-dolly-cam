@@ -11,6 +11,7 @@ import camera_motion
 import common_tools.frame_reader
 import common_tools.probe_video
 import fastread_video
+import interval_seed_anchoring
 import interval_solver
 import key_input
 import race_start
@@ -307,7 +308,7 @@ def run(
 		seeds_data = state_io.load_seeds(seeds_path)
 		all_seeds = seeds_data.get("seeds", [])
 		trajectory = interval_solver.anchor_to_seeds(trajectory, all_seeds)
-		trajectory = interval_solver._stamp_seed_truth(
+		trajectory = interval_seed_anchoring.stamp_seed_truth(
 			trajectory, all_seeds,
 		)
 	if not trajectory:

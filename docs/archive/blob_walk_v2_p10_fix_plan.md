@@ -48,7 +48,7 @@ bootstrap accept can mask that fallback too.
 Three loci, observed at current line numbers:
 
 Bootstrap accept --
-[walk_walker.py](../../track_runner/blob_walk/walk_walker.py),
+`walk_walker.py`,
 `_run_bootstrap_step` (lines 919-924): the seed-frame observation
 increments the same `accepts` list and `accepted` status count as
 windowed-step accepts:

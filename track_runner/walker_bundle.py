@@ -29,7 +29,7 @@ import dataclasses
 import collections.abc
 
 # local repo modules
-import blob_walk.walk_walker as walk_walker
+import blob_walk.walk_engine as walk_engine
 
 
 #============================================
@@ -200,7 +200,7 @@ def run_walker_pass(
 
 	This is the explicit, injectable invocation seam. Stage 4 passes the
 	bundle and a walker callable; tests pass a fake walker that records the
-	bundle it received. The real walker (`walk_walker.walk_one_direction`)
+	bundle it received. The real walker (`walk_engine.walk_one_direction`)
 	is wired separately; this seam only establishes the interface, so default
 	solve behavior is unchanged.
 
@@ -469,7 +469,7 @@ def walk_bundle_to_path(bundle: WalkerInputBundle) -> list:
 
 	This is the production walker callable for the Stage 4 seam. It bridges a
 	WalkerInputBundle to the relocated core walker
-	blob_walk.walk_walker.walk_one_direction (whose signature takes positional
+	blob_walk.walk_engine.walk_one_direction (whose signature takes positional
 	seed / frame-range / reader arguments, not a bundle), runs exactly one
 	direction, and projects the walker's standalone direction_path into the
 	full-span aligned state-dict list the analytical solver's blend/score path
@@ -506,7 +506,7 @@ def walk_bundle_to_path(bundle: WalkerInputBundle) -> list:
 	neighbor_seed_frame = int(neighbor_seed["frame_index"])
 
 	null_log = _NullDebugLog()
-	summary = walk_walker.walk_one_direction(
+	summary = walk_engine.walk_one_direction(
 		seed=bundle.seed,
 		neighbor_seed_frame=neighbor_seed_frame,
 		reader=bundle.reader,
@@ -576,7 +576,7 @@ def walk_bundle_to_path_with_coverage(bundle: WalkerInputBundle) -> tuple:
 	neighbor_seed_frame = int(neighbor_seed["frame_index"])
 
 	null_log = _NullDebugLog()
-	summary = walk_walker.walk_one_direction(
+	summary = walk_engine.walk_one_direction(
 		seed=bundle.seed,
 		neighbor_seed_frame=neighbor_seed_frame,
 		reader=bundle.reader,

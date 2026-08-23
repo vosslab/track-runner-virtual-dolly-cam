@@ -19,6 +19,34 @@ import state_io
 import torso_box_coords_io
 import modes.seed_validation as seed_validation
 
+# Container the pipeline decodes from. Random-access seek on .mov/.mp4 is too
+# slow for the Stage 4 pre-pass and the FrameReader strategy-1 path, and remux
+# to this container is lossless and one-time.
+SUPPORTED_SOURCE_EXTENSION = ".mkv"
+
+
+#============================================
+def validate_source_container(input_file: str) -> None:
+	"""Accept a source path only when it names the supported container.
+
+	Args:
+		input_file: Path to the source video named on the command line.
+
+	Raises:
+		RuntimeError: The path names any other container, with the lossless
+			remux command that produces an acceptable source.
+	"""
+	extension = os.path.splitext(input_file)[1].lower()
+	if extension == SUPPORTED_SOURCE_EXTENSION:
+		return
+	stem = os.path.splitext(input_file)[0]
+	raise RuntimeError(
+		f"input video must be {SUPPORTED_SOURCE_EXTENSION}, got {input_file!r}. "
+		f".mov/.mp4 are no longer supported because random-access "
+		f"seek is too slow on those containers. Remux losslessly: "
+		f"mkvmerge -o {stem}{SUPPORTED_SOURCE_EXTENSION} {input_file}"
+	)
+
 
 #============================================
 def build_nif_crop_inputs(
@@ -461,17 +489,17 @@ def _resolve_solve_bin_factor(
 	  - explicit --bin N (cli_bin is not None): use N exactly. --bin 1 is
 	    the full-resolution escape hatch.
 	  - bare --auto-bin (auto_target == -1, the sentinel set by argparse
-	    const=-1): route through the same width-floor selector as the
+	    const=-1): route through the same area-budget selector as the
 	    no-flag default so that re-solve.sh and interactive refine agree.
 	  - explicit --auto-bin HEIGHT (auto_target is not None and != -1):
 	    keep the existing HEIGHT-based meaning: bin = max(1, round(source_h / HEIGHT)).
-	  - neither flag (both None): production default, route source WIDTH
-	    through the shared floor selector at the project-wide default
-	    target (TARGET_DEFAULT_WIDTH_PX; 1440p and below stay full-res).
+	  - neither flag (both None): production default, route the source pixel
+	    area through the shared selector at the project-wide budget
+	    (MAX_ANALYSIS_PIXELS).
 
 	The bare-flag and no-flag paths both call select_default_bin_factor on
-	source_width, so they always resolve the same bin. --auto-bin HEIGHT
-	keys on source HEIGHT intentionally and must not be conflated with
+	the source dimensions, so they always resolve the same bin. --auto-bin
+	HEIGHT keys on source HEIGHT alone and stays a separate meaning from
 	either default path.
 
 	Args:
@@ -494,16 +522,18 @@ def _resolve_solve_bin_factor(
 			raise ValueError(f"--bin must be >= 1, got {cli_bin}")
 		return (cli_bin, None)
 	if auto_target is not None:
-		# bare --auto-bin (sentinel -1): route through the same width-floor
+		# bare --auto-bin (sentinel -1): route through the same area-budget
 		# selector so batch solve and no-flag default always agree.
 		if auto_target == -1:
 			bin_factor = common_tools.frame_reader.select_default_bin_factor(
-				source_width
+				source_width, source_height
 			)
 			actual_width = source_width // bin_factor
+			actual_height = source_height // bin_factor
 			msg = (
-				f"  --auto-bin (width-floor): source width {source_width}"
-				f" -> bin_factor={bin_factor} (actual width {actual_width})"
+				f"  --auto-bin (area budget): source {source_width}x{source_height}"
+				f" -> bin_factor={bin_factor}"
+				f" (actual {actual_width}x{actual_height})"
 			)
 			return (bin_factor, msg)
 		# explicit --auto-bin HEIGHT: unchanged height-based meaning
@@ -518,15 +548,17 @@ def _resolve_solve_bin_factor(
 			f" -> bin_factor={bin_factor} (actual height {actual_height})"
 		)
 		return (bin_factor, msg)
-	# neither flag: production default keyed on source WIDTH, floored at
-	# the project-wide TARGET_DEFAULT_WIDTH_PX (selector default arg).
+	# neither flag: production default keyed on source pixel area, budgeted at
+	# the project-wide MAX_ANALYSIS_PIXELS (selector default arg).
 	bin_factor = common_tools.frame_reader.select_default_bin_factor(
-		source_width
+		source_width, source_height
 	)
 	actual_width = source_width // bin_factor
+	actual_height = source_height // bin_factor
 	msg = (
-		f"  default bin: source width {source_width}"
-		f" -> bin_factor={bin_factor} (actual width {actual_width})"
+		f"  default bin: source {source_width}x{source_height}"
+		f" -> bin_factor={bin_factor}"
+		f" (actual {actual_width}x{actual_height})"
 	)
 	return (bin_factor, msg)
 
@@ -586,9 +618,9 @@ def _run_solve(
 			)
 
 	# build solver kwargs.  When neither --bin nor --auto-bin is given,
-	# the no-flag default routes source WIDTH through the shared floor
-	# selector at the project-wide TARGET_DEFAULT_WIDTH_PX.  --auto-bin
-	# keeps its HEIGHT-based meaning; the two paths key on different axes
+	# the no-flag default routes the source pixel area through the shared
+	# selector at the project-wide MAX_ANALYSIS_PIXELS.  --auto-bin keeps
+	# its HEIGHT-based meaning; the two paths key on different quantities
 	# on purpose.
 	cli_bin = getattr(args, "bin_factor", None)
 	auto_target = getattr(args, "auto_bin_target", None)

@@ -276,13 +276,13 @@ def classify_interval_severity(interval: dict, fps: float) -> str:
 	"""
 	score = interval["interval_score"]
 	# Pre-race intervals are not quality-ranked; skip severity classification
-	if score.get("confidence_tier") == "pre_race":
+	if score["confidence_tier"] == "pre_race":
 		return None
 	start_frame = int(interval["start_frame"])
 	end_frame = int(interval["end_frame"])
 	interval_frames = end_frame - start_frame
 
-	agreement = float(score.get("agreement", 0.0))
+	agreement = float(score["agreement"])
 	confidence_tier = score["confidence_tier"]
 	if agreement >= 0.40 and confidence_tier in ("good", "high"):
 		severity = "low"
@@ -329,8 +329,8 @@ def rank_key(interval: dict) -> tuple:
 		passing to sorted(..., key=rank_key).
 	"""
 	score = interval["interval_score"]
-	agreement = float(score.get("agreement", 0.0))
-	conf = score.get("confidence_tier", "low")
+	agreement = float(score["agreement"])
+	conf = score["confidence_tier"]
 	# pre_race is not on the quality axis; sort it to the end
 	if conf == "pre_race":
 		return (float('inf'), 999)
@@ -352,8 +352,8 @@ def identify_weak_spans(diagnostics: dict) -> list:
 		List of seed suggestion dicts sorted by frame, each with:
 			frame (int), time_s (float), reason (str), competitor_summary (str or None).
 	"""
-	intervals = diagnostics.get("intervals", [])
-	fps = float(diagnostics.get("fps", 30.0))
+	intervals = diagnostics["intervals"]
+	fps = float(diagnostics["fps"])
 	suggestions = []
 
 	for interval in intervals:
@@ -366,6 +366,8 @@ def identify_weak_spans(diagnostics: dict) -> list:
 		if confidence == "pre_race":
 			continue
 
+		# failure_reasons is omitted when no reason fired, so an empty list is
+		# the truthful value here rather than a substituted measurement.
 		failure_reasons = list(score.get("failure_reasons", []))
 
 		# only suggest seeds for low/fair confidence intervals
@@ -439,8 +441,8 @@ def generate_refinement_targets(
 	Returns:
 		Sorted, deduplicated list of frame numbers (ints).
 	"""
-	fps = float(diagnostics.get("fps", 30.0))
-	intervals = diagnostics.get("intervals", [])
+	fps = float(diagnostics["fps"])
+	intervals = diagnostics["intervals"]
 
 	# build a set of interval frame ranges that pass severity filter
 	# so we can exclude suggestions from intervals below threshold
@@ -573,7 +575,7 @@ def _enforce_severity_gap(
 	Returns:
 		Filtered sorted list of frame numbers.
 	"""
-	intervals = diagnostics.get("intervals", [])
+	intervals = diagnostics["intervals"]
 	min_gap_frames = int(gap_seconds * fps)
 
 	# Build a lookup from frame to parent interval agreement.
@@ -583,8 +585,7 @@ def _enforce_severity_gap(
 			start = int(iv["start_frame"])
 			end = int(iv["end_frame"])
 			if start <= frame <= end:
-				score = iv.get("interval_score", {})
-				agreement = float(score.get("agreement", 0.0))
+				agreement = float(iv["interval_score"]["agreement"])
 				return agreement
 		# frame not in any interval: treat as worst possible
 		return 0.0
@@ -631,7 +632,7 @@ def rank_target_frames_by_severity(
 	Returns:
 		List of frame numbers sorted by frame order, capped to max_count.
 	"""
-	intervals = diagnostics.get("intervals", [])
+	intervals = diagnostics["intervals"]
 
 	# build lookup: for each target frame, find parent interval scores
 	frame_scores = {}
@@ -650,14 +651,14 @@ def rank_target_frames_by_severity(
 			margin = 0.0
 		else:
 			# pre_race intervals are synthesized and not on the quality axis
-			conf_tier = best_score.get("confidence_tier")
+			conf_tier = best_score["confidence_tier"]
 			if conf_tier == "pre_race":
 				# synthesized intervals sort to the end with a sentinel score
 				agreement = float('inf')
 				margin = 0.0
 			else:
-				agreement = float(best_score.get("agreement", 0.0))
-				margin = float(best_score.get("velocity_consistency", 0.0))
+				agreement = float(best_score["agreement"])
+				margin = float(best_score["velocity_consistency"])
 		# round to bin nearby scores into the same tier
 		frame_scores[frame] = (round(agreement, 2), round(margin, 2))
 
@@ -707,8 +708,8 @@ def format_review_summary(diagnostics: dict) -> str:
 	Returns:
 		Multi-line string suitable for printing to the terminal.
 	"""
-	fps = float(diagnostics.get("fps", 30.0))
-	intervals = diagnostics.get("intervals", [])
+	fps = float(diagnostics["fps"])
+	intervals = diagnostics["intervals"]
 	suggestions = identify_weak_spans(diagnostics)
 
 	# index suggestions by the interval they fall in for easy lookup
@@ -746,6 +747,7 @@ def format_review_summary(diagnostics: dict) -> str:
 		duration_s = (end_frame - start_frame) / max(1.0, fps)
 		score = iv["interval_score"]
 		confidence = get_confidence_label(score)
+		# omitted when no reason fired; an empty list is the truthful value.
 		reasons = score.get("failure_reasons", [])
 
 		# format verdict label
@@ -759,9 +761,9 @@ def format_review_summary(diagnostics: dict) -> str:
 			reason_str = ", ".join(reasons) if reasons else "low_confidence"
 			verdict = f"[{tag}: {reason_str}]"
 
-		agree = float(score.get("agreement", 0.0))
-		vel_cons = float(score.get("velocity_consistency", 0.0))
-		size_cons = float(score.get("size_consistency", 0.0))
+		agree = float(score["agreement"])
+		vel_cons = float(score["velocity_consistency"])
+		size_cons = float(score["size_consistency"])
 		metrics_str = (
 			f"agree={agree:.2f}  "
 			f"vel_cons={vel_cons:.2f}  "
@@ -806,7 +808,7 @@ def needs_refinement(diagnostics: dict) -> bool:
 	Returns:
 		True if at least one interval needs refinement.
 	"""
-	intervals = diagnostics.get("intervals", [])
+	intervals = diagnostics["intervals"]
 	for iv in intervals:
 		score = iv["interval_score"]
 		confidence = get_confidence_label(score)

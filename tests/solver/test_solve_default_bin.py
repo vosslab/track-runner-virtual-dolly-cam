@@ -1,12 +1,12 @@
 """Tests for the solve-path default bin resolver in modes.shared.
 
 Covers the default bin policy: when neither --bin nor --auto-bin is given, the
-solve bin_factor is routed through the shared floor selector on source WIDTH at
-the project-wide default target 1440 (4K bins to 2 -> 1080p band; 1440p and
-below stay full-res). Explicit --bin N stays exact (--bin 1 is the full-res
-escape hatch), --auto-bin HEIGHT keeps its height-based meaning, and bare
---auto-bin (sentinel -1 from argparse const=-1) routes through the same
-width-floor selector as the no-flag default.
+solve bin_factor is routed through the shared selector on source pixel AREA at
+the project-wide budget MAX_ANALYSIS_PIXELS (4K bins to 3; 1080p bins to 2).
+Explicit --bin N stays exact (--bin 1 is the full-res escape hatch),
+--auto-bin HEIGHT keeps its height-based meaning, and bare --auto-bin
+(sentinel -1 from argparse const=-1) routes through the same area-budget
+selector as the no-flag default.
 """
 
 # PIP3 modules
@@ -17,22 +17,23 @@ import modes.shared as mode_shared
 
 
 #============================================
-def test_no_flag_default_uses_width_floor_selector() -> None:
-	"""No --bin/--auto-bin: bin resolves from source width (floor @ 1440)."""
+def test_no_flag_default_uses_area_budget_selector() -> None:
+	"""No --bin/--auto-bin: bin resolves from source pixel area."""
 	# (source_width, source_height, expected_bin)
 	cases = [
-		(3840, 2160, 2),
-		(2880, 1620, 2),
-		(2560, 1440, 1),
-		(1920, 1080, 1),
-		(1440, 1080, 1),
+		(3840, 2160, 3),
+		(2880, 1620, 3),
+		(2560, 1440, 2),
+		(1920, 1080, 2),
+		(1440, 1080, 2),
 	]
 	for source_width, source_height, expected_bin in cases:
 		got, _msg = mode_shared._resolve_solve_bin_factor(
 			None, None, source_width, source_height
 		)
 		assert got == expected_bin, (
-			f"width={source_width}: expected bin {expected_bin}, got {got}"
+			f"source={source_width}x{source_height}:"
+			f" expected bin {expected_bin}, got {got}"
 		)
 
 
@@ -66,7 +67,7 @@ def test_auto_bin_keeps_height_based_meaning() -> None:
 def test_bare_auto_bin_matches_no_flag_default() -> None:
 	"""Bare --auto-bin (sentinel -1) resolves the same bin as no-flag default.
 
-	Bare --auto-bin routes through the width-floor /1440 selector so
+	Bare --auto-bin routes through the area-budget selector so
 	re-solve.sh (--auto-bin) and interactive refine (no flag) always
 	agree on the bin for the same source.
 	"""

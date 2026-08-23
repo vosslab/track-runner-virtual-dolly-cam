@@ -7,6 +7,15 @@ import numpy
 # Canonical output-size smoothing strength used by both crop controllers.
 CROP_POST_SMOOTH_SIZE_STRENGTH = 0.15
 
+# Canonical crop-policy defaults, applied when a per-video config omits the
+# corresponding processing key. Both crop controllers read these, so the
+# policy has one definition rather than one copy per controller.
+DEFAULT_CROP_ASPECT = "1:1"
+DEFAULT_CROP_TORSO_HEIGHT_MULTIPLE = 3.33
+DEFAULT_CROP_TORSO_ANCHOR = 0.50
+DEFAULT_CROP_CONTAINMENT_RADIUS = 0.20
+DEFAULT_CROP_CENTERED_FIT_TO_SOURCE = True
+
 
 #============================================
 def _max_centered_fit_size(

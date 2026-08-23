@@ -38,5 +38,9 @@ def test_shorter_trajectory_pads_via_hold_state() -> None:
 		{"cx": 50.0, "cy": 50.0, "w": 20.0, "h": 40.0, "conf": 0.9},
 		{"cx": 60.0, "cy": 50.0, "w": 20.0, "h": 40.0, "conf": 0.9},
 	]
-	rects = tr_crop.trajectory_to_crop_rects(trajectory, _video_info(5), _config())
-	assert len(rects) == 5
+	total_frames = 5
+	rects = tr_crop.trajectory_to_crop_rects(
+		trajectory, _video_info(total_frames), _config(),
+	)
+	# one crop rect per source frame, padded past the 2 real entries
+	assert len(rects) == total_frames

@@ -66,7 +66,7 @@ def _patch_walker(monkeypatch: pytest.MonkeyPatch, direction_path: list[dict]) -
 	def fake_walk(**kwargs: object) -> object:
 		return _fake_summary(direction_path)
 	monkeypatch.setattr(
-		walker_bundle.walk_walker, "walk_one_direction", fake_walk,
+		walker_bundle.walk_engine, "walk_one_direction", fake_walk,
 	)
 
 
@@ -98,7 +98,7 @@ def test_complete_walk_produces_full_span_anchored_path(
 	path = walker_bundle.walk_bundle_to_path(bundle)
 
 	# full interval span: frames 10..13 inclusive
-	assert len(path) == 4
+	assert len(path) == seed_end["frame_index"] - seed_start["frame_index"] + 1
 	# start endpoint pinned to the left seed box, not the walker's frame-10 row
 	assert path[0]["cx"] == seed_start["cx"]
 	# end endpoint pinned to the right seed box, overriding the walker's row
@@ -131,8 +131,8 @@ def test_short_walk_is_padded_to_full_interval_span(monkeypatch: pytest.MonkeyPa
 	bundle = _bundle(1, 0, 10, seed_start, seed_end)
 	path = walker_bundle.walk_bundle_to_path(bundle)
 
-	# padded to the full 0..10 span (11 frames)
-	assert len(path) == 11
+	# padded to the full 0..10 span, one state per frame
+	assert len(path) == seed_end["frame_index"] - seed_start["frame_index"] + 1
 	# every padded frame carries a usable box (filled, not None)
 	assert all(isinstance(state["cx"], float) for state in path)
 	# the filled gap interpolates toward the end seed, staying inside the span
@@ -163,7 +163,7 @@ def test_both_bundle_adapters_forward_exact_precomputed_store(
 			accepts=[0],
 		)
 
-	monkeypatch.setattr(walker_bundle.walk_walker, "walk_one_direction", fake_walk)
+	monkeypatch.setattr(walker_bundle.walk_engine, "walk_one_direction", fake_walk)
 	walker_bundle.walk_bundle_to_path(bundle)
 	walker_bundle.walk_bundle_to_path_with_coverage(bundle)
 

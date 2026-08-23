@@ -37,7 +37,7 @@ documentation -- which keeps the decision-equality surface minimal.
   selection. `select_path`, `transition_cost`, and `compute_path_cost` are
   byte-unchanged. By construction `sum(compute_path_step_costs(p)) ==
   compute_path_cost(p)` for path `p` (node 0 has no inbound edge).
-- [walk_walker.py](../../../track_runner/blob_walk/walk_walker.py)
+- `walk_walker.py`
   -- scope (1),(2). `_run_viterbi_and_emit_oldest` now also computes the
   per-node step costs and the window head frame, and stamps `path_step_cost`
   (indexed by the same path index `k` that already drives status/position) and

@@ -149,7 +149,7 @@ def solve_interval_analytical(
 		if hasattr(reader, "width") and hasattr(reader, "height"):
 			walker_rois = residual_pre_pass.build_walker_initial_rois(
 				seed_start=seed_start_processed, seed_end=seed_end_processed, reader=reader,
-				stride=pre_stride, window_frames=walker_bundle.walk_walker.WALKER_WINDOW_FRAMES,
+				stride=pre_stride, window_frames=walker_bundle.walk_engine.WALKER_WINDOW_FRAMES,
 			)
 		else:
 			walker_rois = {}

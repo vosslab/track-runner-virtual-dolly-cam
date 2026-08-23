@@ -1,14 +1,14 @@
 """Unit tests for the walker neighbor-seed crossing predicate.
 
 Covers the P12 stride-termination fix in
-`blob_walk.walk_walker._neighbor_reached`: the directional
+`blob_walk.walk_engine.neighbor_reached`: the directional
 crossing test that replaced a strict equality check so a stride > 1 walk
 terminates AT the neighbor seed instead of overrunning into the adjacent
 interval when the interval span is not divisible by stride.
 """
 
 # local repo modules
-import blob_walk.walk_walker as walk_walker
+import blob_walk.walk_engine as walk_engine
 
 
 #============================================
@@ -42,7 +42,7 @@ def walk_frames(seed_frame: int, neighbor_seed_frame: int, stride: int, sign: in
 				"predicate broken"
 			)
 		frame_f = seed_frame + sign * step * stride
-		if walk_walker._neighbor_reached(frame_f, neighbor_seed_frame, sign):
+		if walk_engine.neighbor_reached(frame_f, neighbor_seed_frame, sign):
 			frame_f = neighbor_seed_frame
 			return observed, frame_f
 		observed.append(frame_f)
@@ -53,8 +53,8 @@ def walk_frames(seed_frame: int, neighbor_seed_frame: int, stride: int, sign: in
 def test_stride1_fwd_fires_exactly_when_equality_would() -> None:
 	# At stride 1 the step lands exactly on the neighbor seed; the crossing
 	# test must fire there and nowhere earlier (equality-equivalent).
-	assert walk_walker._neighbor_reached(16591, 16591, 1) is True
-	assert walk_walker._neighbor_reached(16590, 16591, 1) is False
+	assert walk_engine.neighbor_reached(16591, 16591, 1) is True
+	assert walk_engine.neighbor_reached(16590, 16591, 1) is False
 
 
 #============================================
@@ -99,9 +99,9 @@ def test_stride2_odd_span_crossing_detected_and_clamped_bwd() -> None:
 #============================================
 def test_bwd_predicate_mirrors_fwd() -> None:
 	# Descending walk: predicate fires on reach-or-pass below the seed.
-	assert walk_walker._neighbor_reached(16588, 16588, -1) is True
-	assert walk_walker._neighbor_reached(16587, 16588, -1) is True
-	assert walk_walker._neighbor_reached(16589, 16588, -1) is False
+	assert walk_engine.neighbor_reached(16588, 16588, -1) is True
+	assert walk_engine.neighbor_reached(16587, 16588, -1) is True
+	assert walk_engine.neighbor_reached(16589, 16588, -1) is False
 
 
 #============================================

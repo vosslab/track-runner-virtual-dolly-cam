@@ -28,8 +28,8 @@ def _add_bin_arg(parser: argparse.ArgumentParser) -> None:
 			"Optional spatial downsample applied to camera-motion and "
 			"residual stages only. Integer >= 1. When neither --bin nor "
 			"--auto-bin is given, the production default selector picks a "
-			"bin from source width (floor at the project-wide default "
-			"target; 1440p and below stay full-res). Pass --bin 1 to "
+			"bin from the source pixel area, holding the analysis frame "
+			"within the project-wide budget. Pass --bin 1 to "
 			"force full resolution. "
 			"bin_factor > 1 also crops each scaled axis to the largest "
 			"FFT-friendly goodbox not exceeding it (origin-preserving "
@@ -41,8 +41,9 @@ def _add_bin_arg(parser: argparse.ArgumentParser) -> None:
 		nargs="?", const=-1, default=None, metavar="HEIGHT",
 		help=(
 			"Auto-pick bin_factor from source. Bare flag (--auto-bin with "
-			"no value) routes through the project-wide width-floor selector "
-			"(same as the no-flag default: floor(source_width / 1440)). "
+			"no value) routes through the project-wide area-budget selector "
+			"(same as the no-flag default: "
+			"ceil(sqrt(source_pixels / 1036800))). "
 			"With an explicit HEIGHT value (--auto-bin 720), uses the "
 			"height-based selector: bin = max(1, round(source_h / HEIGHT)). "
 			"bin_factor is a whole number, so actual binned size only "

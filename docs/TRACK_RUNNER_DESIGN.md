@@ -177,7 +177,7 @@ Rules:
 
 - Production solve and any diagnostic or visualization tool MUST share
   one reader-opener: `common_tools/frame_reader.open_analysis_reader`
-  (single `select_default_bin_factor` / `TARGET_DEFAULT_WIDTH_PX` policy).
+  (single `select_default_bin_factor` / `MAX_ANALYSIS_PIXELS` policy).
 - Seeds load through `state_io.load_seeds` / `state_io.load_seeds_view`.
 - Scene transform is built through `camera_motion.load_motion_cache` +
   `scene_coords.SceneTransform`.
@@ -196,9 +196,13 @@ one of the named core owners.
 
 ## Windowed path-selection walker
 
-The blob walker core (modules `walk_walker.py`, `walk_viterbi.py`,
-`walk_motion_gate.py`, `walk_status.py`, `walk_debug_log.py`)
-now lives under `track_runner/blob_walk/`. The walker is the default blob pass
+The blob walker core lives under `track_runner/blob_walk/` and consists of
+`walk_engine.py` (the walking loop and the `walk_one_direction` entry point),
+`walk_observer.py` (ROI observation, trace handling, candidate gathering),
+`walk_viterbi.py` (candidate-lattice path selection), `walk_motion_gate.py`
+(runner motion-physics constants), `walk_status.py` (per-frame status and
+position), `walk_summary.py` (the `WalkSummary` record and coverage metrics),
+and `walk_debug_log.py` (diagnostic verdict CSV). The walker is the default blob pass
 on Stage-4-promoted intervals (`blob_pass=True`); Stage 3 and non-promoted
 dispatches stay analytical (`blob_pass=False`). It selects per-frame blobs
 by window-level trajectory
@@ -386,10 +390,12 @@ These systems communicate through well-defined interfaces (trajectory arrays,
 crop rectangles, seed JSON) rather than sharing internal state.
 
 The solve and walker analyze in PROCESSED (binned, goodbox) space by default.
-The default bin factor is `floor(source_width / 1440)`, a project-wide constant
-(`TARGET_DEFAULT_WIDTH_PX`) in `common_tools/frame_reader.py`; 4K (3840 px wide)
-bins at 2 (processed 1920x1080), 2.8K (2880) bins at 2, 1440p (2560) and 1080p
-(1920) stay at full resolution (bin=1). The entire solve runs in one coordinate
+The default bin factor is `ceil(sqrt(source_pixels / 1036800))`, budgeted by the
+project-wide constant `MAX_ANALYSIS_PIXELS` in `common_tools/frame_reader.py`;
+4K (3840x2160) and 2.8K (2880x1620) bin at 3, while 2.7K (2704x1520), 1440p
+(2560x1440), and 1080p (1920x1080) bin at 2. Budgeting on area rather than width
+keeps analysis cost proportional to pixel count and prices non-16:9 sources
+correctly. The entire solve runs in one coordinate
 space (PROCESSED at bin > 1) and converts to SOURCE exactly once, at the storage
 boundary, immediately before `torso_box_coords_io.write_torso_box_coords`. Analytical and walker
 both emit correct SOURCE boxes via that single boundary. The encoder consumes SOURCE

@@ -2,7 +2,7 @@
 
 A Python tool for track-meet videographers that produces a cropped, stabilized virtual-dolly output following a single athlete. Users place a handful of seed annotations; the solver propagates geometry between seeds across the full race.
 
-**Status:** v26.05, active development.
+**Status:** v26.08, active development.
 
 ## What it produces
 
@@ -31,17 +31,17 @@ The canonical run order:
 ```bash
 source source_me.sh
 # Optional but recommended for 4K HEVC sources -- creates a fast-read working video.
-python3 track_runner/track_runner.py -i VIDEO.mp4 prepare
-python3 track_runner/track_runner.py -i VIDEO.mp4 setup
-python3 track_runner/track_runner.py -i VIDEO.mp4 seed
-python3 track_runner/track_runner.py -i VIDEO.mp4 solve
-python3 track_runner/track_runner.py -i VIDEO.mp4 target
-python3 track_runner/track_runner.py -i VIDEO.mp4 refine
+python3 track_runner/track_runner.py -i VIDEO.mkv prepare
+python3 track_runner/track_runner.py -i VIDEO.mkv setup
+python3 track_runner/track_runner.py -i VIDEO.mkv seed
+python3 track_runner/track_runner.py -i VIDEO.mkv solve
+python3 track_runner/track_runner.py -i VIDEO.mkv target
+python3 track_runner/track_runner.py -i VIDEO.mkv refine
 # Repeat target + refine until interval scores are acceptable.
-python3 track_runner/track_runner.py -i VIDEO.mp4 encode
+python3 track_runner/track_runner.py -i VIDEO.mkv encode
 ```
 
-`setup` runs once per video and is required before `solve`, `refine`, or `target`. `prepare` is optional but recommended for 4K HEVC sources; see [docs/modes/PREPARE.md](docs/modes/PREPARE.md). To see flags for any subcommand, append `-h` (for example `python3 track_runner/track_runner.py -i VIDEO.mp4 encode -h`). For the per-mode reference, see [docs/MODES.md](docs/MODES.md); for the workflow narrative, see [docs/USAGE.md](docs/USAGE.md).
+`setup` runs once per video and is required before `solve`, `refine`, or `target`. `prepare` is optional but recommended for 4K HEVC sources; see [docs/modes/PREPARE.md](docs/modes/PREPARE.md). To see flags for any subcommand, append `-h` (for example `python3 track_runner/track_runner.py -i VIDEO.mkv encode -h`). For the per-mode reference, see [docs/MODES.md](docs/MODES.md); for the workflow narrative, see [docs/USAGE.md](docs/USAGE.md).
 
 ## Documentation
 

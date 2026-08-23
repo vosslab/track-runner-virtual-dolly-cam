@@ -61,6 +61,16 @@ def test_dolly_rasterization_places_the_rounded_size_about_the_solved_center() -
 
 
 #============================================
+def _repin_passes_use_the_pin_weight(calls: list) -> bool:
+	"""Return whether every pass after the first pins its first target."""
+	repin_calls = calls[1:]
+	for _targets, weights in repin_calls:
+		if weights[0] != tr_crop.DOLLY_PIN_WEIGHT:
+			return False
+	return True
+
+
+#============================================
 def test_dolly_re_solves_after_source_fit_pin(monkeypatch: pytest.MonkeyPatch) -> None:
 	"""A fit-bound frame is pinned and needs a second whole-path solve."""
 	trajectory = [_state(10.0, 50.0) for _ in range(5)]
@@ -81,7 +91,7 @@ def test_dolly_re_solves_after_source_fit_pin(monkeypatch: pytest.MonkeyPatch) -
 	# The crop remains centered at x=10 and shrinks to its 20px source-fit
 	# ceiling rather than sliding outward or producing a black border.
 	assert all(rect[0] == 0 and rect[2] == 20 for rect in rects)
-	assert all(weights[0] == tr_crop.DOLLY_PIN_WEIGHT for _, weights in calls[1:])
+	assert _repin_passes_use_the_pin_weight(calls)
 
 
 #============================================
@@ -329,7 +339,9 @@ def _assert_mode_calls_nif_crop_builder(
 		lambda results: trajectory,
 	)
 	monkeypatch.setattr(mode.interval_solver, "anchor_to_seeds", lambda path, records: path)
-	monkeypatch.setattr(mode.interval_solver, "_stamp_seed_truth", lambda path, records: path)
+	monkeypatch.setattr(
+		mode.interval_seed_anchoring, "stamp_seed_truth", lambda path, records: path,
+	)
 	monkeypatch.setattr(mode.modes.shared, "build_nif_crop_inputs", crop_input_spy)
 	monkeypatch.setattr(mode, "_compute_crop_trajectory", stop_after_crop)
 	if mode is encode_mode:

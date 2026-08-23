@@ -1,4 +1,4 @@
-"""Tests for bin_factor correctness in residual_motion.py and walk_walker.py.
+"""Tests for bin_factor correctness in residual_motion.py and walk_engine.py.
 
 Verifies three coordinate-system fixes from task #99 (auto_bin_coord_stack_audit.md):
   Fix 1: warp scale_factor = 1/bin_factor in compute_residual_for_frame production path.
@@ -6,7 +6,7 @@ Verifies three coordinate-system fixes from task #99 (auto_bin_coord_stack_audit
   Fix 2b: roi_override converted source->processed before clamping.
 
 Also verifies Fix 3 (ROI_CLAMP_SPACE_MISMATCH, degenerate_roi_investigation.md):
-  Fix 3: walk_walker bootstrap and per-step loop clamp roi_x2/roi_y2 against
+  Fix 3: walk_engine bootstrap and per-step loop clamp roi_x2/roi_y2 against
          source-frame dims, not post-bin reader.width/reader.height.
 """
 
@@ -174,9 +174,9 @@ def test_residual_compute_non_empty_at_bin_4() -> None:
 #============================================
 def _compute_roi_override_bootstrap(seed_cx: float, seed_cy: float, seed_w: float,
 		seed_h: float, reader: object) -> tuple[int, int, int, int]:
-	"""Replicate the ROI construction from walk_walker bootstrap/per-step.
+	"""Replicate the ROI construction from walk_engine bootstrap/per-step.
 
-	This mirrors the fixed walk_walker logic so the test stays in sync with
+	This mirrors the fixed walk_engine logic so the test stays in sync with
 	the production code.  Kept as a helper so both bootstrap and per-step
 	paths can be exercised from a single spot.
 

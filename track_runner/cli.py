@@ -6,11 +6,13 @@ crop trajectory computation, and video encoding.
 
 Subcommands:
   prepare Create the fast-read working video beside the original
+  setup   Establish per-video configuration before seeding or solving
   seed    Collect/add seeds, save, exit
   edit    Review/fix/delete existing seeds interactively
   target  Add seeds at weak interval frames with FWD/BWD overlays
   solve   Full re-solve: clears prior results and solves all intervals fresh
   refine  Re-solve only changed/new intervals, reuse prior results
+  analyze Produce diagnostic reports from existing solve artifacts
   encode  Encode from existing trajectory, no solving
 """
 
@@ -37,6 +39,7 @@ PROFILE_MEM = False
 #============================================
 # CLI mode implementations are isolated from orchestration so CLI parsing,
 # artifact paths, and dispatch remain here while mode behavior stays local.
+import modes.shared
 import modes.video_artifacts
 import modes.analyze
 import modes.edit
@@ -58,18 +61,8 @@ def main() -> None:
 	if not os.path.isfile(args.input_file):
 		raise RuntimeError(f"input file not found: {args.input_file}")
 
-	# require .mkv source: random-access seek on .mov/.mp4 is too slow
-	# for the Stage 4 pre-pass and FrameReader strategy-1 path. Remux is
-	# lossless and one-time; transcoding is never done by this pipeline.
-	ext_lower = os.path.splitext(args.input_file)[1].lower()
-	if ext_lower != ".mkv":
-		stem = os.path.splitext(args.input_file)[0]
-		raise RuntimeError(
-			f"input video must be .mkv, got {args.input_file!r}. "
-			f".mov/.mp4 are no longer supported because random-access "
-			f"seek is too slow on those containers. Remux losslessly: "
-			f"mkvmerge -o {stem}.mkv {args.input_file}"
-		)
+	# require the supported container; the guard owns its own message.
+	modes.shared.validate_source_container(args.input_file)
 
 	# verify required external tools are available
 	for tool in ("mediainfo", "ffprobe", "ffmpeg"):

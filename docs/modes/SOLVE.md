@@ -33,24 +33,26 @@ options:
   --bin BIN_FACTOR     Optional spatial downsample applied to camera-motion
                        and residual stages only. Integer >= 1. When neither
                        --bin nor --auto-bin is given, the production default
-                       selector picks a bin from source width (floor at the
-                       project-wide default target; 1440p and below stay full-
-                       res). Pass --bin 1 to force full resolution. bin_factor
-                       > 1 also crops each scaled axis to the largest FFT-
-                       friendly goodbox not exceeding it (origin-preserving
-                       right/bottom crop). Source-frame outputs unchanged.
+                       selector picks a bin from the source pixel area,
+                       holding the analysis frame within the project-wide
+                       budget. Pass --bin 1 to force full resolution.
+                       bin_factor > 1 also crops each scaled axis to the
+                       largest FFT-friendly goodbox not exceeding it (origin-
+                       preserving right/bottom crop). Source-frame outputs
+                       unchanged.
   --auto-bin [HEIGHT]  Auto-pick bin_factor from source. Bare flag (--auto-bin
-                       with no value) routes through the project-wide width-
-                       floor selector (same as the no-flag default:
-                       floor(source_width / 1440)). With an explicit HEIGHT
-                       value (--auto-bin 720), uses the height-based selector:
-                       bin = max(1, round(source_h / HEIGHT)). bin_factor is a
-                       whole number, so actual binned size only approximates
-                       the target. Source dims that are not multiples of bin
-                       silently drop at most (bin-1) right/bottom pixels, the
-                       same kind of crop goodbox already does. Examples at
-                       --auto-bin 720: 1080->bin1 (1080), 2160->bin3 (720).
-                       Mutually exclusive with --bin.
+                       with no value) routes through the project-wide area-
+                       budget selector (same as the no-flag default:
+                       ceil(sqrt(source_pixels / 1036800))). With an explicit
+                       HEIGHT value (--auto-bin 720), uses the height-based
+                       selector: bin = max(1, round(source_h / HEIGHT)).
+                       bin_factor is a whole number, so actual binned size
+                       only approximates the target. Source dims that are not
+                       multiples of bin silently drop at most (bin-1)
+                       right/bottom pixels, the same kind of crop goodbox
+                       already does. Examples at --auto-bin 720: 1080->bin1
+                       (1080), 2160->bin3 (720). Mutually exclusive with
+                       --bin.
 ```
 <!-- END AUTO HELP: solve -->
 
@@ -66,17 +68,19 @@ options:
 
 - `-y`, `--yes` Auto-confirm the "clear and re-solve from scratch?" prompt (useful in scripts).
 
-**Default bin behavior (binned by default as of 2026-06-14):** Solve now picks
-a bin factor automatically when no `--bin` or `--auto-bin` flag is given. The
-rule is `floor(source_width / 1440)` (`TARGET_DEFAULT_WIDTH_PX` constant in
+**Default bin behavior (binned by default):** Solve picks a bin factor
+automatically when no `--bin` or `--auto-bin` flag is given. The rule budgets
+the analysis frame by pixel area:
+`ceil(sqrt(source_pixels / 1036800))` (`MAX_ANALYSIS_PIXELS` constant in
 `common_tools/frame_reader.py`, not a config value):
 
 | Source resolution | Bin factor | Processed resolution |
 | --- | --- | --- |
-| 4K 3840 x 2160 | 2 | 1920 x 1080 |
-| 2.8K 2880 x 1620 | 2 | 1440 x 810 |
-| 1440p 2560 x 1440 | 1 | full-res |
-| 1080p 1920 x 1080 | 1 | full-res |
+| 4K 3840 x 2160 | 3 | 1280 x 720 |
+| 2.8K 2880 x 1620 | 3 | 960 x 540 |
+| 2.7K 2704 x 1520 | 2 | 1352 x 760 |
+| 1440p 2560 x 1440 | 2 | 1280 x 720 |
+| 1080p 1920 x 1080 | 2 | 960 x 540 |
 
 Use `--bin 1` to force full-resolution analysis (slower). Use `--bin N` for an
 exact override. Use `--auto-bin HEIGHT` for a height-based target (different

@@ -279,7 +279,7 @@ tracking mode with measured velocity.
 
 Tracking mode (step >= 2) is identical in shape to the existing
 post-bootstrap rolling-velocity recompute in
-[walk_walker.py](../../track_runner/blob_walk/walk_walker.py),
+`walk_walker.py`,
 seeded so the rolling window includes the seed entry from frame 0.
 
 ## 3. Jump gate formula

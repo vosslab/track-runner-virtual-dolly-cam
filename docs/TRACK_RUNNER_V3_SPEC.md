@@ -65,16 +65,17 @@ for evolution from v1 and v2.
 | `overlay_items.py` | `RectItem`, `PreviewBoxItem`, `ScaleBarItem` overlays |
 | `status_presenter.py` | `StatusPresenter` QLabel for seed status display |
 | `theme.py` | Dark/light/system theme support |
-| `actions.py` | `make_action()` factory for toolbar actions |
 | `app_shell.py` | `AppShell(QMainWindow)` base class with theme toggle |
 
 ### Shared utilities (`common_tools/`)
 
 | Module | Purpose |
 | --- | --- |
-| `tools_common.py` | Video metadata, time formatting, shared helpers |
-| `frame_reader.py` | OpenCV video frame reader with seek |
-| `emwy_yaml_writer.py` | EMWY YAML output writer |
+| `frame_reader.py` | OpenCV video frame reader with seek and default-bin policy |
+| `probe_video.py` | Source video metadata probe |
+| `coord_space.py` | SOURCE and PROCESSED coordinate types |
+| `goodbox.py` | FFT-friendly dimension snapping |
+| `in_box_heat.py` | In-box residual heat measurement |
 | `frame_filters.py` | Display-only and encode image filters |
 
 ### Dependency graph
@@ -91,7 +92,7 @@ tr_config -> yaml, tr_paths
 state_io -> seed JSON, interval-score JSON
 torso_box_coords_io -> torso-coordinate NPZ
 camera_motion_artifact -> camera-motion NPZ
-ui.workspace -> ui.frame_view, ui.app_shell, ui.actions
+ui.workspace -> ui.frame_view, ui.app_shell
 ui.session -> ui.frame_source, ui.keymap, ui.*_controller
 ui.seed_controller -> ui.overlay_items, ui.status_presenter
 ui.edit_controller -> ui.overlay_items, ui.status_presenter
@@ -723,9 +724,9 @@ of truth on conflict.
   `SceneTransform` pixel side is SOURCE.
 
 The solve and walker run in PROCESSED space by default. The default bin factor
-is `floor(source_width / 1440)` (`TARGET_DEFAULT_WIDTH_PX` constant in
-`common_tools/frame_reader.py`): 4K bins at 2, 2.8K bins at 2, 1440p and 1080p
-stay at bin=1 (full-res). Override with `--bin N` or `--auto-bin HEIGHT`.
+is `ceil(sqrt(source_pixels / 1036800))` (`MAX_ANALYSIS_PIXELS` constant in
+`common_tools/frame_reader.py`): 4K and 2.8K bin at 3, while 2.7K, 1440p, and
+1080p bin at 2. Override with `--bin N` or `--auto-bin HEIGHT`.
 
 Storage-space rule: every value written to the torso-box npz must be SOURCE.
 The analytical leg produces SOURCE pixels directly (SOURCE seed -> SCENE -> SOURCE

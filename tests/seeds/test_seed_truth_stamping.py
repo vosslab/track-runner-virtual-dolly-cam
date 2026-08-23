@@ -2,6 +2,7 @@
 
 # local repo modules
 import interval_solver
+import interval_seed_anchoring
 import track_runner.blend_commitment
 
 
@@ -52,7 +53,7 @@ def test_seed_truth_overrides_disagreeing_blend_endpoints() -> None:
 	trajectory = interval_solver.blend_paths(
 		forward_path, backward_path, heat_evaluator=heat,
 	)
-	interval_solver._stamp_seed_truth(trajectory, seeds)
+	interval_seed_anchoring.stamp_seed_truth(trajectory, seeds)
 
 	assert _box(trajectory[0]) == (1.0, 2.0, 3.0, 4.0)
 	assert _box(trajectory[2]) == (5.0, 6.0, 7.0, 8.0)

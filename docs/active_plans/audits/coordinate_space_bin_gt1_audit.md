@@ -48,11 +48,11 @@ SCENE -> SOURCE pixel internally, so its stored boxes are SOURCE.
 | Hermite fit | [velocity_model.py](../../../track_runner/velocity_model.py):284-288 | `pixel_box_to_scene(seed)` | SOURCE in -> SCENE | none; SOURCE seed against SOURCE scene_transform is consistent |
 | Hermite propagate | [velocity_model.py](../../../track_runner/velocity_model.py):404-417 | `scene_box_to_pixel` output `pixel_cx,...` | SOURCE | SCENE -> SOURCE pixel |
 | Walker bundle seed | [walker_bundle.py](../../../track_runner/walker_bundle.py):159-177, 511-525 | `bundle.seed["cx"]` etc. | SOURCE (production) | none; contract REQUIRES PROCESSED here (Gap A) |
-| Walker anchor / ROI | [walk_walker.py](../../../track_runner/blob_walk/walk_walker.py):634-665, 1418-1422 | `anchor_cx`, `pred_center=ProcessedPoint`, acceptance/ROI boxes | PROCESSED (assumed) | none; "All inputs are already PROCESSED" (line 634) |
+| Walker anchor / ROI | `walk_walker.py`:634-665, 1418-1422 | `anchor_cx`, `pred_center=ProcessedPoint`, acceptance/ROI boxes | PROCESSED (assumed) | none; "All inputs are already PROCESSED" (line 634) |
 | observe_blob_at INPUTS | [residual_motion.py](../../../track_runner/residual_motion.py):1029-1034 | `pred_center`, `pred_box`, `roi_override` | PROCESSED | guards reject SOURCE primitives loudly |
 | observe_blob_at RETURN centroid | [residual_motion.py](../../../track_runner/residual_motion.py):916-937, 1029-1030 | `BlobObservation.center_pixel` | SOURCE | observe converts PROCESSED -> SOURCE on return |
-| Candidate list (corridor_blobs) | [walk_walker.py](../../../track_runner/blob_walk/walk_walker.py):733-737, 791-805 | `centroid_x`, `centroid_y` | PROCESSED (full-frame) | none; ROI origin already added back |
-| Walker selected candidate | [walk_walker.py](../../../track_runner/blob_walk/walk_walker.py):412-417, 447-460 | `r["cx"]`, `direction_path` entry | PROCESSED | none (candidate comes from PROCESSED `corridor_blobs`) |
+| Candidate list (corridor_blobs) | `walk_walker.py`:733-737, 791-805 | `centroid_x`, `centroid_y` | PROCESSED (full-frame) | none; ROI origin already added back |
+| Walker selected candidate | `walk_walker.py`:412-417, 447-460 | `r["cx"]`, `direction_path` entry | PROCESSED | none (candidate comes from PROCESSED `corridor_blobs`) |
 | Solver path collect | [interval_solver.py](../../../track_runner/interval_solver.py):514, 536-541, 592-593 | `forward_path`, `backward_path` (walker) | PROCESSED | none |
 | Solver path collect | [interval_solver.py](../../../track_runner/interval_solver.py):572-583, 591-593 | `forward_path`, `backward_path` (Hermite) | SOURCE | none needed (already SOURCE) |
 | Blend / store dict | [interval_solver.py](../../../track_runner/interval_solver.py):600, 626-638 | `blended_path`, `forward_path`, `backward_path` | walker=PROCESSED, Hermite=SOURCE | none |
